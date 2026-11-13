@@ -22,7 +22,10 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.pool import NullPool
 
+from shifde.app import create_app
+from shifde.core.db import Database
 from shifde.core.dbrole import UnsafeDatabaseRole, check_app_role, check_database_url
+from shifde.core.settings import Settings
 
 MakeRole = Callable[..., str]
 
@@ -386,3 +389,61 @@ def test_api_serves_under_application_role(app_url: str) -> None:
     finally:
         proc.terminate()
         proc.communicate(timeout=30)
+
+
+# --------------------------------------------------------------------------- every entrypoint
+def test_database_refuses_unsafe_role_when_built(owner_url: str) -> None:
+    with pytest.raises(UnsafeDatabaseRole, match="owns the database"):
+        Database(owner_url)
+
+
+def test_create_app_refuses_unsafe_role(settings: Settings, owner_url: str) -> None:
+    with pytest.raises(UnsafeDatabaseRole, match="owns the database"):
+        create_app(settings.model_copy(update={"database_url": owner_url}))
+
+
+def test_privileged_database_must_opt_out_explicitly(owner_url: str) -> None:
+    db = Database(owner_url, verify_role=False)  # migrations / test fixtures only
+    try:
+        with db.session() as s:
+            assert s.execute(text("SELECT current_user")).scalar_one() == "shifde_owner"
+    finally:
+        db.dispose()
+
+
+def test_pool_checkout_refuses_preset_context(make_role: MakeRole, admin: Engine) -> None:
+    url = make_role("NOSUPERUSER NOBYPASSRLS")
+    db = Database(url, pool_size=1, max_overflow=0)  # safe when built
+    try:
+        with admin.connect() as c:
+            c.execute(text(f"ALTER ROLE {_role_of(url)} SET app.platform_admin = 'on'"))
+        db.engine.dispose()  # the next checkout opens a new connection, which gets the preset
+        for _ in range(2):  # refused every time: the connection is discarded, not reused
+            with (
+                pytest.raises(UnsafeDatabaseRole, match="app.platform_admin is preset"),
+                db.session() as s,
+            ):
+                s.execute(text("SELECT 1"))
+    finally:
+        db.dispose()
+
+
+def test_session_level_context_does_not_survive_checkin(app_url: str) -> None:
+    db = Database(app_url, pool_size=1, max_overflow=0)
+    try:
+        with db.engine.connect() as c:
+            c.exec_driver_sql(f"SET app.tenant_id = '{TENANT_X}'")  # session-level: a bug
+            c.exec_driver_sql("SET search_path = public")
+            c.commit()
+        with db.session() as s:
+            row = s.execute(
+                text(
+                    "SELECT pg_backend_pid(), current_setting('app.tenant_id', true),"
+                    " current_setting('search_path'), current_setting('TimeZone')"
+                )
+            ).one()
+            assert row[1] in (None, "")
+            assert row[2] == '"$user", public'
+            assert row[3] == "UTC"  # connection options survive RESET ALL
+    finally:
+        db.dispose()

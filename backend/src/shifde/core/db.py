@@ -4,6 +4,14 @@ Tenant context (`app.tenant_id`, `app.principal_id`, `app.request_id`,
 `app.platform_admin`) is applied
 with ``set_config(name, value, true)`` -- transaction-local, never session-level -- in a Session
 ``after_begin`` hook, so a pooled connection can never carry context into another transaction.
+
+`Database` also guards the pool (isolation review 1, items 4-6): it refuses to build on a role
+that could bypass row-level security (`shifde.core.dbrole.check_app_role`), and on every pool
+checkout it runs ``RESET ALL`` (dropping any session-level setting a previous user left behind)
+and then refuses a connection that still carries `app.tenant_id`, `app.principal_id` or
+`app.platform_admin` -- i.e. one preset by the role, the database, the connection options or the
+server configuration. A refused connection is discarded, so the refusal repeats until the preset
+is removed.
 """
 
 from __future__ import annotations
@@ -11,12 +19,16 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import Connection, MetaData, create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Session, SessionTransaction, sessionmaker
+from sqlalchemy.pool import ConnectionPoolEntry
+
+from shifde.core.dbrole import assert_no_preset_context, check_app_role
 
 SCHEMA = "shifde"
 _CTX_KEY = "shifde_ctx"
@@ -111,10 +123,33 @@ def platform_admin_context(session: Session) -> Iterator[None]:
                 session.execute(_APPLY_SQL, _params(get_context(session)))
 
 
+def _clean_checkout(
+    dbapi_connection: Any, connection_record: ConnectionPoolEntry, connection_proxy: object
+) -> None:
+    """Pool `checkout` hook: reset session-level settings, then refuse a preset context.
+    Raising here makes SQLAlchemy invalidate (close) the connection."""
+    autocommit = dbapi_connection.autocommit
+    dbapi_connection.autocommit = True
+    try:
+        dbapi_connection.execute("RESET ALL")
+    finally:
+        dbapi_connection.autocommit = autocommit
+    assert_no_preset_context(dbapi_connection)
+
+
 class Database:
     """Owns the engine and hands out Sessions (one per request / unit of work)."""
 
-    def __init__(self, url: str, *, pool_size: int = 5, max_overflow: int = 5) -> None:
+    def __init__(
+        self,
+        url: str,
+        *,
+        pool_size: int = 5,
+        max_overflow: int = 5,
+        verify_role: bool = True,
+    ) -> None:
+        """`verify_role=False` only for the schema owner's own tooling (migrations, test
+        fixtures); everything that serves requests or runs jobs keeps the default."""
         self.engine: Engine = create_engine(
             url,
             pool_pre_ping=True,
@@ -122,7 +157,14 @@ class Database:
             max_overflow=max_overflow,
             connect_args={"options": "-c timezone=UTC"},  # timestamps are always UTC
         )
+        event.listen(self.engine, "checkout", _clean_checkout)
         self._factory = sessionmaker(self.engine, expire_on_commit=False)
+        if verify_role:
+            try:
+                check_app_role(self.engine)
+            except BaseException:
+                self.engine.dispose()
+                raise
 
     def session(self) -> Session:
         return self._factory()

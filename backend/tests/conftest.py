@@ -227,7 +227,7 @@ def app_engine(app_url: str) -> Iterator[Engine]:
 
 @pytest.fixture(scope="session")
 def owner_db(owner_url: str) -> Iterator[Database]:
-    db = Database(owner_url, pool_size=2)
+    db = Database(owner_url, pool_size=2, verify_role=False)  # the schema owner, deliberately
     yield db
     db.dispose()
 
