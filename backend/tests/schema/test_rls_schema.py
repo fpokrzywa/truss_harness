@@ -45,6 +45,13 @@ A permissive policy is tenant-keyed when:
      - `shifde.is_platform_admin_ctx()` (the platform-admin flag, fail closed when unset);
      - in the USING of a FOR SELECT policy only, `tenant_id IS NULL` (rows shared by every
        client, e.g. built-in roles).
+   On a relation that has a `tenant_id` column only the tenant atoms count, in USING and WITH
+   CHECK alike: `tenant_id = shifde.current_tenant_id()` (and its NOT IS DISTINCT FROM form),
+   `shifde.is_platform_admin_ctx()`, and the shared-rows atom above. A principal key
+   (`user_id = shifde.current_principal_id()`) may narrow such a policy in an `AND` but cannot
+   satisfy it: alone it lets a user write rows with `tenant_id` NULL or another client's, and
+   read their own rows filed under another client (isolation review 4, item 1). Principal keys
+   count only on relations without `tenant_id`.
    Everywhere else -- every WITH CHECK, and the USING of ALL, UPDATE and DELETE policies, where
    a client could create, take over or delete a row every client sees -- each occurrence of
    `tenant_id IS NULL` must sit in an `AND` that has `shifde.is_platform_admin_ctx()` as one of
@@ -97,6 +104,9 @@ _POLICIES = text(
     """SELECT n.nspname, c.relname, p.polname, p.polcmd, p.polpermissive,
               ARRAY(SELECT CASE WHEN r = 0 THEN 'public' ELSE pg_catalog.pg_get_userbyid(r) END
                       FROM pg_catalog.unnest(p.polroles) r ORDER BY 1) AS roles,
+              EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a
+                       WHERE a.attrelid = c.oid AND a.attname = 'tenant_id'
+                         AND a.attnum > 0 AND NOT a.attisdropped) AS tenant_column,
               pg_catalog.pg_get_expr(p.polqual, p.polrelid) AS using_expr,
               pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid) AS check_expr
          FROM pg_catalog.pg_policy p
@@ -146,6 +156,7 @@ _KEYED = (
     re.compile(rf"NOT \((?P<helper>{_HELPER}) IS DISTINCT FROM (?P<col>{_IDENT})\)"),
 )
 _ADMIN = "shifde.is_platform_admin_ctx()"
+_TENANT_HELPER = "shifde.current_tenant_id()"
 _GLOBAL_ROWS = "tenant_id IS NULL"
 _GLOBAL_ROWS_RE = re.compile(r"\btenant_id IS NULL\b")
 
@@ -155,6 +166,7 @@ class _Clause:
     relation: str  # schema.table
     shared_rows: bool  # bare `tenant_id IS NULL` allowed: the USING of a FOR SELECT policy only
     keys: Mapping[str, frozenset[str]]
+    tenant_column: bool = False  # the relation has tenant_id: only tenant atoms count
 
 
 def _strip_parens(expr: str) -> str:
@@ -241,6 +253,8 @@ def _recognised(expr: str, clause: _Clause) -> bool:
         return clause.shared_rows
     for atom in _KEYED:
         if match := atom.fullmatch(expr):
+            if clause.tenant_column and match["helper"] != _TENANT_HELPER:
+                return False  # a principal key may narrow (in an AND) but not satisfy
             allowed = clause.keys.get(match["helper"], frozenset())
             column = match["col"]
             return column in allowed or f"{clause.relation}.{column}" in allowed
@@ -310,7 +324,9 @@ def _policy_problems(
     # Pin the search path for pg_get_expr (transaction-local; the caller's transaction ends it).
     conn.execute(text("SELECT pg_catalog.set_config('search_path', 'pg_catalog', true)"))
     found: dict[tuple[str, str], list[str]] = {}
-    for schema, table, name, cmd, permissive, roles, using, check in conn.execute(_POLICIES):
+    for schema, table, name, cmd, permissive, roles, tenant_column, using, check in conn.execute(
+        _POLICIES
+    ):
         if not permissive:
             continue
         label = f"policy {name} ({_CMD[cmd]})"
@@ -322,7 +338,7 @@ def _policy_problems(
         ):
             if not applies:
                 continue
-            clause = _Clause(relation, kind == "USING" and cmd == "r", keys)
+            clause = _Clause(relation, kind == "USING" and cmd == "r", keys, tenant_column)
             key = _reviewed_key(relation, name, cmd, permissive, roles, kind)
             why = expression_problem(expr, clause, reviewed.get(key))
             if why:
@@ -387,7 +403,9 @@ def test_reviewed_expressions_still_exist(owner_engine: Engine) -> None:
         c.execute(text("SELECT pg_catalog.set_config('search_path', 'pg_catalog', true)"))
         present = {
             _reviewed_key(f"{schema}.{table}", name, cmd, permissive, roles, kind): expr
-            for schema, table, name, cmd, permissive, roles, using, check in c.execute(_POLICIES)
+            for schema, table, name, cmd, permissive, roles, _t, using, check in c.execute(
+                _POLICIES
+            )
             for kind, expr in (("USING", using), ("WITH CHECK", check))
             if expr is not None
         }
@@ -425,10 +443,11 @@ def scratch(owner_engine: Engine) -> Iterator[Connection]:
 TENANT = "tenant_id = shifde.current_tenant_id()"
 
 
-def _secured_table(c: Connection, name: str = "shifde.zz_rls_probe") -> None:
-    c.execute(
-        text(f"CREATE TABLE {name} (id int PRIMARY KEY, tenant_id uuid, user_id uuid, ref uuid)")
-    )
+def _secured_table(
+    c: Connection, name: str = "shifde.zz_rls_probe", *, tenant_column: bool = True
+) -> None:
+    tenant = "tenant_id uuid, " if tenant_column else ""
+    c.execute(text(f"CREATE TABLE {name} (id int PRIMARY KEY, {tenant}user_id uuid, ref uuid)"))
     c.execute(text(f"ALTER TABLE {name} ENABLE ROW LEVEL SECURITY"))
     c.execute(text(f"ALTER TABLE {name} FORCE ROW LEVEL SECURITY"))
 
@@ -542,12 +561,27 @@ def test_disguised_open_policy_is_reported(scratch: Connection, using: str) -> N
 WRITE_FORMS = [
     TENANT,
     "shifde.current_tenant_id() = tenant_id",
-    "user_id = shifde.current_principal_id()",
     f"{TENANT} OR (tenant_id IS NULL AND shifde.is_platform_admin_ctx())",
     "NOT (tenant_id IS DISTINCT FROM shifde.current_tenant_id())",
     f"{TENANT} AND id > 0",
-    "id = 1 AND shifde.current_principal_id() = user_id",
+    f"{TENANT} AND user_id = shifde.current_principal_id()",
 ]
+
+# Principal-owned rows: recognised only on a relation without a tenant_id column (review 4).
+PRINCIPAL_FORMS = [
+    "user_id = shifde.current_principal_id()",
+    "id = 1 AND shifde.current_principal_id() = user_id",
+    "NOT (user_id IS DISTINCT FROM shifde.current_principal_id())",
+]
+
+
+@pytest.mark.parametrize("expr", PRINCIPAL_FORMS)
+def test_principal_keyed_forms_pass_without_a_tenant_column(scratch: Connection, expr: str) -> None:
+    _secured_table(scratch, tenant_column=False)
+    scratch.execute(
+        text(f"CREATE POLICY p ON shifde.zz_rls_probe USING ({expr}) WITH CHECK ({expr})")
+    )
+    assert rls_violations(scratch, set()) == []
 
 
 @pytest.mark.parametrize("expr", WRITE_FORMS)
@@ -653,8 +687,10 @@ def test_reviewed_key_columns() -> None:
 def test_table_specific_key_column_passes_on_its_table_only(
     scratch: Connection, using: str
 ) -> None:
-    _secured_table(scratch)
-    _secured_table(scratch, "shifde.zz_rls_other")
+    # A principal key counts only where there is no tenant_id column (review 4).
+    tenant_column = "tenant" in using
+    _secured_table(scratch, tenant_column=tenant_column)
+    _secured_table(scratch, "shifde.zz_rls_other", tenant_column=tenant_column)
     for table in ("zz_rls_probe", "zz_rls_other"):
         scratch.execute(text(f"CREATE POLICY p ON shifde.{table} FOR SELECT USING ({using})"))
     keys = {
@@ -784,6 +820,39 @@ def test_policy_that_writes_the_client_context_is_reported(
     scratch.execute(text(f"CREATE POLICY {policy.replace(' ', ' ON shifde.zz_rls_probe ', 1)}"))
     problems = rls_violations(scratch, set())
     assert [p.split(": ")[0] for p in problems] == [label], problems
+
+
+# ---- isolation review 4
+USER_KEY = "user_id = shifde.current_principal_id()"
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        # SETH's own_row write rule: A's user wrote rows with tenant_id NULL and = B, B read them
+        f"FOR INSERT WITH CHECK ({USER_KEY})",
+        # A's user read their own row filed under B
+        f"FOR SELECT USING ({USER_KEY})",
+        f"FOR SELECT USING ({TENANT} OR {USER_KEY})",
+        # evades the tenant_id IS NULL text match
+        f"FOR INSERT WITH CHECK (NOT (tenant_id IS NOT NULL) AND {USER_KEY})",
+    ],
+)
+def test_user_key_does_not_satisfy_a_policy_on_a_tenant_table(
+    scratch: Connection, policy: str
+) -> None:
+    """Review 4, item 1: on a relation with tenant_id only tenant atoms count."""
+    _secured_table(scratch)
+    scratch.execute(
+        text(
+            "CREATE POLICY read_shared ON shifde.zz_rls_probe FOR SELECT"
+            f" USING (tenant_id IS NULL OR {TENANT})"
+        )
+    )
+    scratch.execute(text(f"CREATE POLICY p ON shifde.zz_rls_probe {policy}"))
+    (problem,) = rls_violations(scratch, set())
+    assert problem.startswith("shifde.zz_rls_probe: policy p ("), problem
+    assert "not built from recognised" in problem, problem
 
 
 NULL_TENANT_BY_A_CLIENT = [
