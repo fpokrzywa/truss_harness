@@ -10,9 +10,8 @@ Tokens per model: see `python scripts/usage_report.py` (by unit); the figure bel
 | Unit | State | Commit | Verification summary | Tokens (by model, at acceptance) |
 |---|---|---|---|---|
 | plan + control files + agents + usage report | done | (this commit) | `python -m unittest discover -s scripts/tests`: 4 passed | lead only |
-| skeleton: backend, gates, CI | todo | | | |
-| skeleton: local DB, harness, baseline migration, schema tests, startup role check | todo | | | |
-| skeleton: frontend shell | done | cbeb976 (merge on main) | verifier PASS from clean checkout: scan-secrets 0 findings; pnpm lint/typecheck 0; pnpm test 157 passed; pnpm build 0; config byte-identical to SETH. File-to-area map: `docs/build/frontend-areas.md`. CI job pending in `docs/build/frontend-ci-job.yml` until ci.yml exists | sonnet (build + verify) |
+| skeleton: backend, gates, CI, local DB, harness, baseline migration, schema tests, startup role check | in progress: sent back after isolation review | `5acc54d` on branch `skeleton` (pushed, not merged) | Verifier PASS from clean checkout: scan-secrets 0; ruff format/check 0; mypy 0 (119 files); lint-imports 5 kept; `pytest -n 8` 36 passed (~35 s wall); role-check + schema tests 32 passed; scripts unittest 8 OK; pyproject identical to SETH apart from allowed additions/entry-point removals. **Isolation review BLOCKED**: 4 blocking + 9 follow-up, see `docs/build/reviews/skeleton-isolation-review-1.md`. Fix round 1 not started. | opus build (~266k), sonnet verify (~102k), opus review (~165k) |
+| skeleton: frontend shell | done | `cbeb976`, merged `6f60b00` | verifier PASS from clean checkout: scan-secrets 0 findings; pnpm lint/typecheck 0; pnpm test 157 passed; pnpm build 0; config byte-identical to SETH. File-to-area map: `docs/build/frontend-areas.md`. CI job pending in `docs/build/frontend-ci-job.yml` until ci.yml exists | sonnet (build + verify) |
 | hosted database setup | waiting on owner input | | Server is PostgreSQL 16.13 and refuses TLS (`sslmode=require`: "server does not support SSL"); design requires TLS. Database `truss_harness` is empty. Nothing created. See B-009. | lead only |
 | core | todo | | | |
 | adapters | todo | | | |
