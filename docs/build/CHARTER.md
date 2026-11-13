@@ -153,3 +153,37 @@ Spend less by: keeping your own context small; giving `scout` the reading; never
 The check on whether you have finished reads only this conversation. It cannot run commands or open files. So when you believe a goal is met, run its checks again in that same turn and show each command with its exit code and the summary line of its output, followed by the current `STATUS.md` table. A claim without the output in the same turn does not count.
 
 Report things as they are. A blocked unit, a missed time target or an integration that has not touched a real platform is stated as such, with the evidence.
+
+## 10. Context size, handoff and spending less
+
+Added by the owner's supervisor on 2026-11-13. Where this section and an earlier one differ, this one applies.
+
+**Why.** Every turn pays for everything already in your context, and a long context makes mistakes more likely. Automatic compaction is not an acceptable way to shrink it, because it drops detail you did not choose to drop. You hand over to a fresh session on your own terms instead. A supervising process starts that session for you.
+
+**When to hand off.** After every accepted unit, before starting the next, run `python scripts/context_size.py`. At 300,000 tokens or more, hand off. If the script cannot report a figure, hand off after every three accepted units.
+
+**How to hand off.** Only between units, with no agent running and no merge half done:
+
+1. Bring `docs/build/STATUS.md` and `docs/build/DECISIONS.md` fully up to date.
+2. Replace `docs/build/HANDOFF.md` with: what was just finished; the exact next step; every open branch and worktree and the state it is in; and anything you learned that is not in the other files, such as commands that work on this machine and traps you hit.
+3. Commit and push.
+4. End with a final message whose first line is `HANDOFF COMPLETE`. Start nothing else.
+
+A session that starts and finds `docs/build/HANDOFF.md` reads it after this charter and `STATUS.md`, and carries on from its "exact next step".
+
+**Keep agents' contexts small too.**
+
+- Size a unit so one agent finishes it under 200,000 tokens. Split a large module (`runtime`, `build`, `tenancy`, `identity`) into parts by file group and run one agent per part, in sequence, on the same branch.
+- An agent that sees it will not finish commits what passes and returns: what is done, what is left, and the next step. Start a fresh agent on the same branch with that report.
+- An agent's report to you is at most about 40 lines: the result, each command with its exit code, the failures, the files changed. No file contents.
+
+**Do not pay a model for work a command can do.**
+
+- Copy source files from SETH with a command, never by writing them out: `git -C <SETH path> archive 3ba0e06 <paths> | tar -x -C <destination>`. Agents then edit only what has to change.
+- Run the gate set with a script and read its exit codes. Use the `verifier` agent only for a check that needs judgment.
+
+**Use the cheapest model that passes.** The gates are objective, so this can be tested rather than guessed:
+
+- Try `haiku` for the builder on the next small module that is not in the critical list and is mostly a straight copy. If it passes every gate within two rounds, use `haiku` for the remaining modules of that kind; if not, stay on `sonnet` for them. Record the result in `DECISIONS.md`.
+- With a `haiku` builder, move the unit up to `sonnet` after the first failed round, not the second.
+- Never lower the model for `module-builder-critical` or `isolation-reviewer`, and never lower a gate to suit a model.
