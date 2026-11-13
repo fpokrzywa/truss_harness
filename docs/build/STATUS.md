@@ -13,7 +13,7 @@ Tokens per model: see `python scripts/usage_report.py` (by unit); the figure bel
 | skeleton: backend, gates, CI | todo | | | |
 | skeleton: local DB, harness, baseline migration, schema tests, startup role check | todo | | | |
 | skeleton: frontend | todo | | | |
-| hosted database setup | todo | | | |
+| hosted database setup | waiting on owner input | | Server is PostgreSQL 16.13 and refuses TLS (`sslmode=require`: "server does not support SSL"); design requires TLS. Database `truss_harness` is empty. Nothing created. See B-009. | lead only |
 | core | todo | | | |
 | adapters | todo | | | |
 | audit | todo | | | |
@@ -45,6 +45,8 @@ In scope for sub-project 1: C1, C2, batch R2 (ported code), R3 cost items (budge
 (filled in as modules land)
 
 ## Waiting on owner input
+
+- **Hosted PostgreSQL**: enable TLS on the server (and ideally PostgreSQL 17, per design §3). Until then the two-organization proof and all other checks run on the local cluster; the hosted role setup, migration and side-by-side check wait (B-009).
 
 - Databricks development workspace (`.devdata/databricks.env`): not needed in sub-project 1.
 - Entra application registration: not needed in sub-project 1.
