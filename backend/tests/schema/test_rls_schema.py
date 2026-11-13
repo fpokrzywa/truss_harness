@@ -1,5 +1,6 @@
 """Every relation that can hold client data is isolated by forced row-level security with
-tenant-keyed policies (Review Focus item 3; isolation review 1, items 1, 2 and 11).
+tenant-keyed policies and no rewrite rules (Review Focus item 3; isolation review 1, items
+1, 2 and 11; isolation review 2, items 1, 2, 3 and 11).
 
 Scope: every relation in every non-system schema (SETH's tables live in `shifde`; `public` is
 checked too so a relation created there by mistake cannot escape), except exactly
@@ -14,6 +15,10 @@ Rules, per relation kind:
   `shifde_owner` has BYPASSRLS, so it would return every client's rows to `shifde_app`.
 * Materialized views (`m`) and foreign tables (`f`): not allowed at all unless listed in
   `global_tables.txt`. Neither can carry row-level security.
+* Rewrite rules: none on any relation (listed or not), apart from the `_RETURN` rule that is a
+  view's or materialized view's definition. A rule's actions run with the table owner's rights,
+  and `shifde_owner` has BYPASSRLS, so `ON INSERT ... DO ALSO INSERT INTO x SELECT ... FROM y`
+  copies every client's rows.
 
 A permissive policy is tenant-keyed when:
 
@@ -27,15 +32,22 @@ A permissive policy is tenant-keyed when:
 3. Every expression is built only from recognised forms. Top-level `OR` needs every branch
    recognised, `AND` needs at least one recognised conjunct (the rest can only narrow). The
    recognised atoms are:
-     - `<column> = shifde.current_tenant_id()` / `shifde.current_principal_id()` (either side),
-     - `NOT (<column> IS DISTINCT FROM <helper>)` (either side),
-     - `tenant_id IS NULL` (rows shared by every client, e.g. built-in roles),
-     - `shifde.is_platform_admin_ctx()` (the platform-admin flag, fail closed when unset),
-     - an `EXISTS (...)` subquery that compares a column with one of the two helpers (the
-       subquery itself is not parsed further: isolation review reads every such policy).
+     - `<key column> = <helper>` (either side) and `NOT (<key column> IS DISTINCT FROM <helper>)`
+       (either side), where the key column is one `KEY_COLUMNS` lists for that helper:
+       `tenant_id` for `shifde.current_tenant_id()`, `user_id` for
+       `shifde.current_principal_id()`, plus the reviewed `<schema>.<table>.<column>` entries
+       (`shifde.tenants.id`, `shifde.users.id`) that hold only on that table;
+     - `shifde.is_platform_admin_ctx()` (the platform-admin flag, fail closed when unset);
+     - in USING only, `tenant_id IS NULL` (rows shared by every client, e.g. built-in roles). In
+       WITH CHECK it would let any client write rows every client sees, so there it is accepted
+       only ANDed with `shifde.is_platform_admin_ctx()` (which the AND rule already covers).
    Anything else -- `true`, `1 = 1`, `current_user = ...`, `NOT (tenant_id = ...)`, a test of
-   whether the context is set (`shifde.current_tenant_id() IS NOT NULL`), `deleted_at IS NULL`
-   -- is rejected. A new form needs isolation review and a change to this test.
+   whether the context is set (`shifde.current_tenant_id() IS NOT NULL`), `deleted_at IS NULL`,
+   `user_id = shifde.current_tenant_id()`, any `EXISTS (...)` subquery -- is rejected.
+4. An expression the forms above cannot express (for example SETH's membership `EXISTS` on
+   `users`) passes only if `REVIEWED_EXPRESSIONS` holds its exact `pg_get_expr` text under
+   (relation, policy, clause); any change to the text fails until it is reviewed again. Adding
+   an entry or a key column needs isolation review.
 
 Expressions are read with `pg_get_expr` under `search_path = pg_catalog`, so the helpers print
 schema-qualified and a look-alike function in another schema cannot pass for them.
@@ -44,7 +56,8 @@ schema-qualified and a look-alike function in another schema cannot pass for the
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -78,25 +91,52 @@ _POLICIES = text(
         ORDER BY n.nspname, c.relname, p.polname"""
 )
 
+_RULES = text(
+    r"""SELECT n.nspname, c.relname, r.rulename
+         FROM pg_catalog.pg_rewrite r
+         JOIN pg_catalog.pg_class c ON c.oid = r.ev_class
+         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+          AND n.nspname NOT LIKE 'pg\_toast%' AND n.nspname NOT LIKE 'pg\_temp\_%'
+          AND NOT (r.rulename = '_RETURN' AND c.relkind IN ('v', 'm'))
+        ORDER BY n.nspname, c.relname, r.rulename"""
+)
+
 _CMD = {"r": "SELECT", "a": "INSERT", "w": "UPDATE", "d": "DELETE", "*": "ALL"}
 _HAS_USING = {"r", "w", "d", "*"}
 _HAS_CHECK = {"a", "w", "*"}
 _KIND = {"m": "materialized view", "f": "foreign table"}
 
 # --------------------------------------------------------------------------- expression rules
+# helper -> the columns it may be compared with: a bare name holds on every table, a
+# `<schema>.<table>.<column>` entry only on that table. Changing this needs isolation review.
+KEY_COLUMNS: dict[str, frozenset[str]] = {
+    "shifde.current_tenant_id()": frozenset({"tenant_id", "shifde.tenants.id"}),
+    "shifde.current_principal_id()": frozenset({"user_id", "shifde.users.id"}),
+}
+
+# (relation, policy, "USING" | "WITH CHECK") -> exact pg_get_expr text, reviewed by isolation
+# review because the recognised forms cannot express it. Adding an entry needs isolation review.
+REVIEWED_EXPRESSIONS: dict[tuple[str, str, str], str] = {}
+
 _HELPER = r"shifde\.current_(?:tenant|principal)_id\(\)"
-_COLUMN = r"(?:[a-z_][a-z0-9_$]*\.)?(?:[a-z_][a-z0-9_$]*|\"[^\"]+\")"
+_IDENT = r"[a-z_][a-z0-9_$]*"
 _KEY_RE = re.compile(_HELPER)
-_ATOMS = (
-    re.compile(rf"{_COLUMN} = {_HELPER}"),
-    re.compile(rf"{_HELPER} = {_COLUMN}"),
-    re.compile(rf"NOT \({_COLUMN} IS DISTINCT FROM {_HELPER}\)"),
-    re.compile(rf"NOT \({_HELPER} IS DISTINCT FROM {_COLUMN}\)"),
-    re.compile(r"tenant_id IS NULL"),
-    re.compile(r"shifde\.is_platform_admin_ctx\(\)"),
+_KEYED = (
+    re.compile(rf"(?P<col>{_IDENT}) = (?P<helper>{_HELPER})"),
+    re.compile(rf"(?P<helper>{_HELPER}) = (?P<col>{_IDENT})"),
+    re.compile(rf"NOT \((?P<col>{_IDENT}) IS DISTINCT FROM (?P<helper>{_HELPER})\)"),
+    re.compile(rf"NOT \((?P<helper>{_HELPER}) IS DISTINCT FROM (?P<col>{_IDENT})\)"),
 )
-_EXISTS_RE = re.compile(r"EXISTS \(.*", re.DOTALL)
-_EXISTS_KEY_RE = re.compile(rf"{_COLUMN} = {_HELPER}|{_HELPER} = {_COLUMN}")
+_ADMIN = "shifde.is_platform_admin_ctx()"
+_GLOBAL_ROWS = "tenant_id IS NULL"
+
+
+@dataclass(frozen=True)
+class _Clause:
+    relation: str  # schema.table
+    write: bool  # WITH CHECK (a write rule) rather than USING
+    keys: Mapping[str, frozenset[str]]
 
 
 def _strip_parens(expr: str) -> str:
@@ -169,28 +209,39 @@ def _split_top(expr: str, word: str) -> list[str]:
     return [p.strip() for p in parts]
 
 
-def _recognised(expr: str) -> bool:
+def _recognised(expr: str, clause: _Clause) -> bool:
     expr = _strip_parens(expr)
     branches = _split_top(expr, "OR")
     if len(branches) > 1:
-        return all(_recognised(b) for b in branches)
+        return all(_recognised(b, clause) for b in branches)
     conjuncts = _split_top(expr, "AND")
     if len(conjuncts) > 1:
-        return any(_recognised(c) for c in conjuncts)
-    if _EXISTS_RE.fullmatch(expr):
-        return bool(_EXISTS_KEY_RE.search(expr))
-    return any(atom.fullmatch(expr) for atom in _ATOMS)
+        return any(_recognised(c, clause) for c in conjuncts)
+    if expr == _ADMIN:
+        return True
+    if expr == _GLOBAL_ROWS:
+        return not clause.write
+    for atom in _KEYED:
+        if match := atom.fullmatch(expr):
+            allowed = clause.keys.get(match["helper"], frozenset())
+            column = match["col"]
+            return column in allowed or f"{clause.relation}.{column}" in allowed
+    return False
 
 
-def expression_problem(expr: str | None) -> str | None:
+def expression_problem(
+    expr: str | None, clause: _Clause, reviewed: str | None = None
+) -> str | None:
     """Why `expr` is not a tenant-keyed policy expression, or None if it is."""
     if expr is None:
         return "missing"
+    if reviewed is not None:
+        return None if expr == reviewed else "differs from its reviewed text"
     if _strip_parens(expr).lower() == "true":
         return "constant true"
     if not _KEY_RE.search(expr):
         return "does not reference shifde.current_tenant_id() or shifde.current_principal_id()"
-    if not _recognised(expr):
+    if not _recognised(expr, clause):
         return "not built from recognised tenant-keyed forms"
     return None
 
@@ -209,7 +260,11 @@ def global_tables() -> set[str]:
     return entries
 
 
-def _policy_problems(conn: Connection) -> dict[tuple[str, str], list[str]]:
+def _policy_problems(
+    conn: Connection,
+    reviewed: Mapping[tuple[str, str, str], str],
+    keys: Mapping[str, frozenset[str]],
+) -> dict[tuple[str, str], list[str]]:
     # Pin the search path for pg_get_expr (transaction-local; the caller's transaction ends it).
     conn.execute(text("SELECT pg_catalog.set_config('search_path', 'pg_catalog', true)"))
     found: dict[tuple[str, str], list[str]] = {}
@@ -218,17 +273,30 @@ def _policy_problems(conn: Connection) -> dict[tuple[str, str], list[str]]:
             continue
         label = f"policy {name} ({_CMD[cmd]})"
         problems = found.setdefault((schema, table), [])
-        if cmd in _HAS_USING and (why := expression_problem(using)):
-            problems.append(f"{label} USING {why}: {using}")
-        if cmd in _HAS_CHECK and (why := expression_problem(check)):
-            problems.append(f"{label} WITH CHECK {why}: {check}")
+        relation = f"{schema}.{table}"
+        for applies, kind, expr in (
+            (cmd in _HAS_USING, "USING", using),
+            (cmd in _HAS_CHECK, "WITH CHECK", check),
+        ):
+            if not applies:
+                continue
+            clause = _Clause(relation, kind == "WITH CHECK", keys)
+            why = expression_problem(expr, clause, reviewed.get((relation, name, kind)))
+            if why:
+                problems.append(f"{label} {kind} {why}: {expr}")
     return found
 
 
-def rls_violations(conn: Connection, allowed: set[str]) -> list[str]:
+def rls_violations(
+    conn: Connection,
+    allowed: set[str],
+    *,
+    reviewed: Mapping[tuple[str, str, str], str] = REVIEWED_EXPRESSIONS,
+    key_columns: Mapping[str, frozenset[str]] = KEY_COLUMNS,
+) -> list[str]:
     """`schema.relation: problem` for every relation that breaks the rules in the docstring."""
     relations = conn.execute(_RELATIONS).all()
-    policy_problems = _policy_problems(conn)
+    policy_problems = _policy_problems(conn, reviewed, key_columns)
     policy_count: dict[tuple[str, str], int] = {}
     for schema, table, *_ in conn.execute(_POLICIES):
         policy_count[(schema, table)] = policy_count.get((schema, table), 0) + 1
@@ -255,7 +323,10 @@ def rls_violations(conn: Connection, allowed: set[str]) -> list[str]:
         missing += policy_problems.get((schema, table), [])
         if missing:
             problems.append(f"{schema}.{table}: {', '.join(missing)}")
-    return problems
+    problems += [
+        f"{schema}.{table}: rewrite rule {rule}" for schema, table, rule in conn.execute(_RULES)
+    ]
+    return sorted(problems)
 
 
 def test_every_client_table_has_forced_rls_and_tenant_keyed_policies(
@@ -264,6 +335,20 @@ def test_every_client_table_has_forced_rls_and_tenant_keyed_policies(
     with owner_engine.connect() as c:
         problems = rls_violations(c, global_tables())
     assert not problems, "relations not isolated by row-level security:\n" + "\n".join(problems)
+
+
+def test_reviewed_expressions_still_exist(owner_engine: Engine) -> None:
+    """A stale entry would silently approve a future policy that reuses the name."""
+    with owner_engine.connect() as c:
+        c.execute(text("SELECT pg_catalog.set_config('search_path', 'pg_catalog', true)"))
+        present = {
+            (f"{schema}.{table}", name, kind): expr
+            for schema, table, name, _cmd, _perm, using, check in c.execute(_POLICIES)
+            for kind, expr in (("USING", using), ("WITH CHECK", check))
+            if expr is not None
+        }
+    stale = [key for key in REVIEWED_EXPRESSIONS if key not in present]
+    assert not stale, f"REVIEWED_EXPRESSIONS entries with no such policy clause: {stale}"
 
 
 def test_global_tables_exist_and_have_reasons(owner_engine: Engine) -> None:
@@ -297,7 +382,9 @@ TENANT = "tenant_id = shifde.current_tenant_id()"
 
 
 def _secured_table(c: Connection, name: str = "shifde.zz_rls_probe") -> None:
-    c.execute(text(f"CREATE TABLE {name} (id int PRIMARY KEY, tenant_id uuid, user_id uuid)"))
+    c.execute(
+        text(f"CREATE TABLE {name} (id int PRIMARY KEY, tenant_id uuid, user_id uuid, ref uuid)")
+    )
     c.execute(text(f"ALTER TABLE {name} ENABLE ROW LEVEL SECURITY"))
     c.execute(text(f"ALTER TABLE {name} FORCE ROW LEVEL SECURITY"))
 
@@ -408,27 +495,157 @@ def test_disguised_open_policy_is_reported(scratch: Connection, using: str) -> N
     assert problem.startswith("shifde.zz_rls_probe: policy p (SELECT) USING "), problem
 
 
+WRITE_FORMS = [
+    TENANT,
+    "shifde.current_tenant_id() = tenant_id",
+    "user_id = shifde.current_principal_id()",
+    f"{TENANT} OR (tenant_id IS NULL AND shifde.is_platform_admin_ctx())",
+    "NOT (tenant_id IS DISTINCT FROM shifde.current_tenant_id())",
+    f"{TENANT} AND id > 0",
+    "id = 1 AND shifde.current_principal_id() = user_id",
+]
+
+
+@pytest.mark.parametrize("expr", WRITE_FORMS)
+def test_recognised_tenant_keyed_forms_pass(scratch: Connection, expr: str) -> None:
+    _secured_table(scratch)
+    scratch.execute(
+        text(f"CREATE POLICY p ON shifde.zz_rls_probe USING ({expr}) WITH CHECK ({expr})")
+    )
+    assert rls_violations(scratch, set()) == []
+
+
+@pytest.mark.parametrize("using", [*WRITE_FORMS, f"tenant_id IS NULL OR {TENANT}"])
+def test_recognised_read_forms_pass(scratch: Connection, using: str) -> None:
+    _secured_table(scratch)
+    scratch.execute(text(f"CREATE POLICY p ON shifde.zz_rls_probe FOR SELECT USING ({using})"))
+    assert rls_violations(scratch, set()) == []
+
+
+# ---- isolation review 2
+EXISTS_BYPASSES = [
+    # the subquery never looks at the outer row
+    "EXISTS (SELECT 1 WHERE shifde.current_tenant_id() = shifde.current_tenant_id())",
+    # a subquery over another table that ignores the outer row
+    "EXISTS (SELECT 1 FROM shifde.zz_rls_other o WHERE o.tenant_id = shifde.current_tenant_id())",
+    # OR true inside the subquery
+    "EXISTS (SELECT 1 FROM shifde.zz_rls_other o"
+    " WHERE o.id = zz_rls_probe.id AND (o.tenant_id = shifde.current_tenant_id() OR true))",
+    # a well-formed membership check is still not accepted unless reviewed
+    "EXISTS (SELECT 1 FROM shifde.zz_rls_other o"
+    " WHERE o.id = zz_rls_probe.id AND o.tenant_id = shifde.current_tenant_id())",
+]
+
+
+@pytest.mark.parametrize("using", EXISTS_BYPASSES)
+def test_unreviewed_exists_policy_is_reported(scratch: Connection, using: str) -> None:
+    _secured_table(scratch)
+    _secured_table(scratch, "shifde.zz_rls_other")
+    _tenant_policy(scratch, "shifde.zz_rls_other")
+    scratch.execute(text(f"CREATE POLICY p ON shifde.zz_rls_probe FOR SELECT USING ({using})"))
+    (problem,) = rls_violations(scratch, set())
+    assert problem.startswith(
+        "shifde.zz_rls_probe: policy p (SELECT) USING not built from recognised"
+    ), problem
+
+
+def test_reviewed_expression_passes_only_with_its_exact_text(scratch: Connection) -> None:
+    _secured_table(scratch)
+    _secured_table(scratch, "shifde.zz_rls_other")
+    _tenant_policy(scratch, "shifde.zz_rls_other")
+    using = EXISTS_BYPASSES[3]
+    scratch.execute(text(f"CREATE POLICY p ON shifde.zz_rls_probe FOR SELECT USING ({using})"))
+    printed = scratch.execute(
+        text(
+            "SELECT pg_get_expr(polqual, polrelid) FROM pg_policy"
+            " WHERE polrelid = 'shifde.zz_rls_probe'::regclass AND polname = 'p'"
+        )
+    ).scalar_one()
+    key = ("shifde.zz_rls_probe", "p", "USING")
+    assert rls_violations(scratch, set(), reviewed={key: printed}) == []
+    (problem,) = rls_violations(scratch, set(), reviewed={key: printed.replace("o.id", "o.id + 0")})
+    assert "policy p (SELECT) USING differs from its reviewed text" in problem
+
+
+def test_tenant_id_is_null_in_with_check_is_reported(scratch: Connection) -> None:
+    """A write rule must not let a client create rows every client sees."""
+    _secured_table(scratch)
+    expr = f"tenant_id IS NULL OR {TENANT}"
+    scratch.execute(
+        text(f"CREATE POLICY p ON shifde.zz_rls_probe USING ({expr}) WITH CHECK ({expr})")
+    )
+    (problem,) = rls_violations(scratch, set())
+    assert "policy p (ALL) WITH CHECK not built from recognised" in problem
+    assert "USING" not in problem.split("WITH CHECK")[0]
+
+
 @pytest.mark.parametrize(
     "using",
     [
-        TENANT,
-        "shifde.current_tenant_id() = tenant_id",
-        "user_id = shifde.current_principal_id()",
-        f"tenant_id IS NULL OR {TENANT}",
-        f"{TENANT} OR (tenant_id IS NULL AND shifde.is_platform_admin_ctx())",
-        "NOT (tenant_id IS DISTINCT FROM shifde.current_tenant_id())",
-        f"{TENANT} AND id > 0",
-        "id = 1 AND shifde.current_principal_id() = user_id",
-        "EXISTS (SELECT 1 FROM shifde.zz_rls_probe m"
-        " WHERE m.id = zz_rls_probe.id AND m.tenant_id = shifde.current_tenant_id())",
+        "user_id = shifde.current_tenant_id()",
+        "tenant_id = shifde.current_principal_id()",
+        "ref = shifde.current_principal_id()",  # like users.id, which is listed for users only
+        "ref = shifde.current_tenant_id()",  # like tenants.id, which is listed for tenants only
+        "NOT (user_id IS DISTINCT FROM shifde.current_tenant_id())",
     ],
 )
-def test_recognised_tenant_keyed_forms_pass(scratch: Connection, using: str) -> None:
+def test_helper_compared_with_the_wrong_column_is_reported(scratch: Connection, using: str) -> None:
     _secured_table(scratch)
+    scratch.execute(text(f"CREATE POLICY p ON shifde.zz_rls_probe FOR SELECT USING ({using})"))
+    (problem,) = rls_violations(scratch, set())
+    assert "not built from recognised" in problem, problem
+
+
+def test_reviewed_key_columns() -> None:
+    assert {
+        "shifde.current_tenant_id()": frozenset({"tenant_id", "shifde.tenants.id"}),
+        "shifde.current_principal_id()": frozenset({"user_id", "shifde.users.id"}),
+    } == KEY_COLUMNS
+
+
+@pytest.mark.parametrize(
+    "using", ["ref = shifde.current_tenant_id()", "ref = shifde.current_principal_id()"]
+)
+def test_table_specific_key_column_passes_on_its_table_only(
+    scratch: Connection, using: str
+) -> None:
+    _secured_table(scratch)
+    _secured_table(scratch, "shifde.zz_rls_other")
+    for table in ("zz_rls_probe", "zz_rls_other"):
+        scratch.execute(text(f"CREATE POLICY p ON shifde.{table} FOR SELECT USING ({using})"))
+    keys = {
+        "shifde.current_tenant_id()": frozenset({"tenant_id", "shifde.zz_rls_probe.ref"}),
+        "shifde.current_principal_id()": frozenset({"user_id", "shifde.zz_rls_probe.ref"}),
+    }
+    (problem,) = rls_violations(scratch, set(), key_columns=keys)
+    assert problem.startswith("shifde.zz_rls_other: policy p (SELECT) USING not built"), problem
+
+
+def test_rewrite_rule_is_reported(scratch: Connection) -> None:
+    """Rule actions run as the table owner (BYPASSRLS): a rule can copy any client's rows."""
+    _secured_table(scratch)
+    _tenant_policy(scratch)
+    _secured_table(scratch, "shifde.zz_rls_other")
+    _tenant_policy(scratch, "shifde.zz_rls_other")
     scratch.execute(
-        text(f"CREATE POLICY p ON shifde.zz_rls_probe USING ({using}) WITH CHECK ({using})")
+        text(
+            "CREATE RULE leak AS ON INSERT TO shifde.zz_rls_probe DO ALSO"
+            " INSERT INTO shifde.zz_rls_other SELECT id, NEW.tenant_id, user_id, ref"
+            " FROM shifde.zz_rls_other"
+        )
     )
-    assert rls_violations(scratch, set()) == []
+    assert rls_violations(scratch, set()) == ["shifde.zz_rls_probe: rewrite rule leak"]
+
+
+def test_rewrite_rule_on_a_global_table_or_view_is_reported(scratch: Connection) -> None:
+    scratch.execute(text("CREATE TABLE shifde.zz_rls_global (id int PRIMARY KEY)"))
+    scratch.execute(text("CREATE RULE r AS ON DELETE TO shifde.zz_rls_global DO INSTEAD NOTHING"))
+    scratch.execute(text("CREATE VIEW public.zz_rls_view WITH (security_invoker) AS SELECT 1 AS x"))
+    scratch.execute(text("CREATE RULE v AS ON INSERT TO public.zz_rls_view DO INSTEAD NOTHING"))
+    assert rls_violations(scratch, {"zz_rls_global"}) == [
+        "public.zz_rls_view: rewrite rule v",
+        "shifde.zz_rls_global: rewrite rule r",
+    ]
 
 
 def test_lookalike_helper_in_another_schema_is_reported(scratch: Connection) -> None:
