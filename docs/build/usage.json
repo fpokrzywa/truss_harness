@@ -1,17 +1,27 @@
 {
-  "generated": "2026-11-13T21:01:23+00:00",
+  "generated": "2026-11-13T23:34:59+00:00",
   "note": "est_usd is an estimate at list price, not a bill",
   "totals": {
     "all": "all",
-    "input": 654,
-    "output": 548351,
-    "cache_write_5m": 1552435,
-    "cache_write_1h": 841427,
-    "cache_read": 51385700,
-    "requests": 323,
-    "est_usd": 37.6093
+    "input": 1392,
+    "output": 980656,
+    "cache_write_5m": 2756365,
+    "cache_write_1h": 1105820,
+    "cache_read": 92048083,
+    "requests": 685,
+    "est_usd": 62.5256
   },
   "by_model": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 1060,
+      "output": 643599,
+      "cache_write_5m": 1598534,
+      "cache_write_1h": 687899,
+      "cache_read": 69196751,
+      "requests": 520,
+      "est_usd": 40.2114
+    },
     {
       "model": "claude-fable-5-2",
       "input": 160,
@@ -21,16 +31,6 @@
       "cache_read": 13599214,
       "requests": 80,
       "est_usd": 19.4999
-    },
-    {
-      "model": "claude-opus-5-5",
-      "input": 322,
-      "output": 211294,
-      "cache_write_5m": 394604,
-      "cache_write_1h": 423506,
-      "cache_read": 28534368,
-      "requests": 158,
-      "est_usd": 15.2951
     },
     {
       "model": "claude-sonnet-5-5",
@@ -56,23 +56,33 @@
   "by_agent_type": [
     {
       "agent_type": "lead",
-      "input": 268,
-      "output": 248503,
+      "input": 468,
+      "output": 313057,
       "cache_write_5m": 0,
-      "cache_write_1h": 841427,
-      "cache_read": 24187616,
-      "requests": 132,
-      "est_usd": 23.1985
+      "cache_write_1h": 1105820,
+      "cache_read": 39205708,
+      "requests": 229,
+      "est_usd": 29.6092
     },
     {
       "agent_type": "module-builder-critical",
-      "input": 148,
-      "output": 101756,
-      "cache_write_5m": 262738,
+      "input": 482,
+      "output": 332390,
+      "cache_write_5m": 1078769,
       "cache_write_1h": 0,
-      "cache_read": 14101535,
-      "requests": 73,
-      "est_usd": 6.1697
+      "cache_read": 34954490,
+      "requests": 237,
+      "est_usd": 19.0345
+    },
+    {
+      "agent_type": "isolation-reviewer",
+      "input": 232,
+      "output": 163883,
+      "cache_write_5m": 519765,
+      "cache_write_1h": 0,
+      "cache_read": 6289266,
+      "requests": 115,
+      "est_usd": 7.1353
     },
     {
       "agent_type": "general-purpose",
@@ -83,16 +93,6 @@
       "cache_read": 2346501,
       "requests": 19,
       "est_usd": 3.9324
-    },
-    {
-      "agent_type": "isolation-reviewer",
-      "input": 28,
-      "output": 26766,
-      "cache_write_5m": 131866,
-      "cache_write_1h": 0,
-      "cache_read": 1497930,
-      "requests": 14,
-      "est_usd": 1.4943
     },
     {
       "agent_type": "frontend-builder",
@@ -148,23 +148,23 @@
   "by_unit": [
     {
       "unit": "lead",
-      "input": 268,
-      "output": 248503,
+      "input": 468,
+      "output": 313057,
       "cache_write_5m": 0,
-      "cache_write_1h": 841427,
-      "cache_read": 24187616,
-      "requests": 132,
-      "est_usd": 23.1985
+      "cache_write_1h": 1105820,
+      "cache_read": 39205708,
+      "requests": 229,
+      "est_usd": 29.6092
     },
     {
       "unit": "skeleton",
-      "input": 204,
-      "output": 135929,
-      "cache_write_5m": 493148,
+      "input": 742,
+      "output": 503680,
+      "cache_write_5m": 1697078,
       "cache_write_1h": 0,
-      "cache_read": 16757179,
-      "requests": 101,
-      "est_usd": 8.1003
+      "cache_read": 42401470,
+      "requests": 366,
+      "est_usd": 26.606
     },
     {
       "unit": "unassigned",
@@ -199,36 +199,36 @@
   ],
   "by_sub_project": [
     {
-      "sub_project": "lead",
-      "input": 268,
-      "output": 248503,
-      "cache_write_5m": 0,
-      "cache_write_1h": 841427,
-      "cache_read": 24187616,
-      "requests": 132,
-      "est_usd": 23.1985
+      "sub_project": "sp1",
+      "input": 924,
+      "output": 667599,
+      "cache_write_5m": 2756365,
+      "cache_write_1h": 0,
+      "cache_read": 52842375,
+      "requests": 456,
+      "est_usd": 32.9164
     },
     {
-      "sub_project": "sp1",
-      "input": 386,
-      "output": 299848,
-      "cache_write_5m": 1552435,
-      "cache_write_1h": 0,
-      "cache_read": 27198084,
-      "requests": 191,
-      "est_usd": 14.4108
+      "sub_project": "lead",
+      "input": 468,
+      "output": 313057,
+      "cache_write_5m": 0,
+      "cache_write_1h": 1105820,
+      "cache_read": 39205708,
+      "requests": 229,
+      "est_usd": 29.6092
     }
   ],
   "by_day": [
     {
       "day": "2026-11-13",
-      "input": 654,
-      "output": 548351,
-      "cache_write_5m": 1552435,
-      "cache_write_1h": 841427,
-      "cache_read": 51385700,
-      "requests": 323,
-      "est_usd": 37.6093
+      "input": 1392,
+      "output": 980656,
+      "cache_write_5m": 2756365,
+      "cache_write_1h": 1105820,
+      "cache_read": 92048083,
+      "requests": 685,
+      "est_usd": 62.5256
     }
   ],
   "rounds_per_unit": [
@@ -254,10 +254,10 @@
       "unit": "skeleton",
       "build": 1,
       "verify": 1,
-      "fix": 0,
+      "fix": 3,
       "review": 1,
       "inventory": 0,
-      "other": 0
+      "other": 5
     }
   ],
   "unpriced_models": []

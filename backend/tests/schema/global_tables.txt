@@ -1,0 +1,8 @@
+# Tables exempt from the row-level security schema test (tests/schema/test_rls_schema.py).
+#
+# A table belongs here only if it holds no client-owned data (installation-wide settings or
+# catalogs shared by every client). One table per line, in schema `shifde`, with the reason:
+#
+#   <table>  # <why it holds no client-owned data>
+#
+# Adding a line needs isolation review (docs/build/CHARTER.md section 3).

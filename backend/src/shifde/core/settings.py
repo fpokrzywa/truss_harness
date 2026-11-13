@@ -1,0 +1,346 @@
+"""Application settings (pydantic-settings, `SHIFDE_*` environment variables).
+
+In development (``SHIFDE_ENV=development``) the repo-local ``.devdata/dev.env`` file is used as a
+fallback source; real environment variables always win. Other environments never read it.
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import os
+import secrets
+from collections.abc import Callable, Mapping
+from functools import lru_cache
+from pathlib import Path
+from typing import Annotated, Literal
+from urllib.parse import urlsplit
+
+from dotenv import dotenv_values
+from pydantic import SecretStr, ValidationError, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+from shifde.core.crypto import KeyRing
+
+# backend/src/shifde/core/settings.py -> parents[4] is the repository root.
+REPO_ROOT = Path(__file__).resolve().parents[4]
+DEV_ENV_FILE = REPO_ROOT / ".devdata" / "dev.env"
+DEV_USERS_FILE = REPO_ROOT / ".devdata" / "dev-users.txt"
+
+Environment = Literal["development", "test", "production"]
+
+_EPHEMERAL: dict[str, str] = {}  # per-process generated dev/test values (never in production)
+
+
+def _ephemeral(name: str, make: Callable[[], str]) -> str:
+    if name not in _EPHEMERAL:
+        _EPHEMERAL[name] = make()
+    return _EPHEMERAL[name]
+
+
+# Narrowest-acceptable trusted-proxy prefixes in production: anything broader (0.0.0.0/0,
+# 0.0.0.0/1 + 128.0.0.0/1, ::/0, ...) trusts a large part of the Internet. 10.0.0.0/8 and the
+# IPv6 unique-local range fc00::/7 are the widest legitimate private ranges.
+_MIN_PROXY_PREFIX = {4: 8, 6: 7}
+
+
+def _new_pepper() -> str:
+    return secrets.token_urlsafe(48)
+
+
+# Settings that carry secret material. Each also accepts `SHIFDE_<NAME>_FILE`: the path of a file
+# holding the value (mounted / OS-protected secret file). Setting both forms is an error.
+SECRET_FIELDS: tuple[str, ...] = (
+    "database_url",  # carries the application role password
+    "migration_database_url",  # carries the owner role password
+    "api_key_pepper",
+    "secret_keys",  # the KEK ring
+    "metrics_token",
+)
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+class SecretFileError(ValueError):
+    """A `*_FILE` secret indirection is misconfigured (message never contains the secret)."""
+
+
+def resolve_secret_files(environ: Mapping[str, str]) -> dict[str, str]:
+    """Settings kwargs read from `SHIFDE_<NAME>_FILE` indirections in `environ`.
+
+    An empty `_FILE` variable counts as unset. Both `SHIFDE_<NAME>` and `SHIFDE_<NAME>_FILE`
+    set is an error, as are an unreadable or empty file. Only trailing line breaks (and a BOM)
+    are stripped from the file content."""
+    values: dict[str, str] = {}
+    for name in SECRET_FIELDS:
+        env_name = f"SHIFDE_{name.upper()}"
+        file_name = f"{env_name}_FILE"
+        path = environ.get(file_name)
+        if not path:
+            continue
+        if environ.get(env_name):
+            raise SecretFileError(f"{env_name} and {file_name} are both set; set only one")
+        try:
+            raw = Path(path).read_text(encoding="utf-8-sig")
+        except OSError as exc:
+            raise SecretFileError(
+                f"{file_name}: cannot read the secret file ({exc.__class__.__name__})"
+            ) from None
+        except UnicodeDecodeError:
+            raise SecretFileError(f"{file_name}: the secret file is not valid UTF-8") from None
+        value = raw.rstrip("\r\n")
+        if not value:
+            raise SecretFileError(f"{file_name}: the secret file is empty")
+        values[name] = value
+    return values
+
+
+def format_validation_error(exc: ValueError) -> str:
+    """Redacted rendering of a settings error: variable name and message only. pydantic's own
+    string form embeds `input_value=...` (for model validators the whole input, secrets
+    included)."""
+    if not isinstance(exc, ValidationError):
+        return str(exc)
+    lines: list[str] = []
+    for err in exc.errors(include_input=False, include_url=False):
+        loc = err.get("loc", ())
+        subject = f"SHIFDE_{str(loc[0]).upper()}" if loc else "configuration"
+        msg = str(err.get("msg", "invalid value")).removeprefix("Value error, ")
+        lines.append(f"{subject}: {msg}")
+    return "; ".join(lines) or "invalid configuration"
+
+
+class MigrationUrlMissing(RuntimeError):
+    """`SHIFDE_MIGRATION_DATABASE_URL` is required to run migrations and is not set."""
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="SHIFDE_",
+        extra="ignore",
+        # pydantic's error text embeds `input_value=...` (for model validators the whole input,
+        # i.e. the KEK ring and database passwords); never let that reach a log or a terminal.
+        hide_input_in_errors=True,
+        env_file_encoding="utf-8-sig",  # dev.env is written by PowerShell and may carry a BOM
+    )
+
+    env: Environment = "production"
+    deployment_mode: Literal["isolated", "shared"] = "isolated"
+    database_url: str
+    migration_database_url: str | None = None
+    api_host: str = "127.0.0.1"
+    api_port: int = 8710
+    auth_local_enabled: bool = False
+    auth_local_allow_in_production: bool = False
+    login_rate_per_minute: int = 20  # per client IP (skipped for loopback / trusted proxies)
+    login_rate_per_account_per_minute: int = 10  # per normalized email
+    trusted_proxies: Annotated[list[str], NoDecode] = []
+    session_idle_minutes: int = 30
+    session_absolute_hours: int = 12
+    allowed_origins: Annotated[list[str], NoDecode] = [
+        "http://127.0.0.1:3710",
+        "http://localhost:3710",
+    ]
+    log_level: str = "INFO"
+    log_format: Literal["json", "console"] = "json"
+    # Secrets (SECURITY_MODEL 2.4 / 5). Required outside development/test; in development they
+    # are generated once into .devdata/dev.env, in tests they are ephemeral per process.
+    api_key_pepper: SecretStr | None = None
+    secret_keys: SecretStr | None = None
+    api_key_max_days: int = 365
+    public_base_url: str | None = None  # OIDC redirect base; default: first allowed origin
+    oidc_state_ttl_seconds: int = 600
+    oidc_jwks_min_refresh_seconds: int = 30
+    oidc_http_timeout_seconds: float = 5.0
+    # Hard overall deadline of one governed model call; concurrency leases outlive it.
+    model_call_deadline_seconds: float = 120.0
+    # Hard overall deadline of one direct connection invoke (REST / MCP / SQL) through the API.
+    connection_call_deadline_seconds: float = 60.0
+    # P5 runtime
+    worker_poll_ms: int = 1000
+    worker_lease_seconds: int = 60
+    worker_concurrency: int = 4
+    queue_tenant_max_inflight: int = 0  # 0 = no per-tenant cap on leased jobs
+    run_default_deadline_seconds: int = 3600
+    approval_expiry_hours: int = 24
+    runtime_output_reserve_tokens: int = 256  # budget hold for the completion side of a call
+    runtime_retry_base_seconds: float = 1.0  # exponential backoff with full jitter (6.7)
+    runtime_retry_cap_seconds: float = 60.0
+    runtime_model_attempts: int = 3  # attempts per model before the next fallback model
+    # P6: pipeline schedules are stored and listed only when enabled (cron execution is NOT part
+    # of the MVP, OD-8)
+    feature_pipeline_schedules: bool = False
+    # P8 observability. Trace export: none (in-process ring only) | console | otlp (OTLP/HTTP JSON
+    # to SHIFDE_OTEL_OTLP_ENDPOINT, falling back to OTEL_EXPORTER_OTLP_ENDPOINT). `/api/metrics`
+    # needs `Authorization: Bearer <SHIFDE_METRICS_TOKEN>` when a token is set, else it answers
+    # loopback clients only.
+    otel_exporter: Literal["none", "console", "otlp"] = "none"
+    otel_otlp_endpoint: str | None = None
+    metrics_token: SecretStr | None = None
+
+    @field_validator("allowed_origins", mode="before")
+    @classmethod
+    def _split_origins(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [part.strip().rstrip("/") for part in value.split(",") if part.strip()]
+        return value
+
+    @field_validator("trusted_proxies", mode="before")
+    @classmethod
+    def _split_proxies(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [part.strip() for part in value.split(",") if part.strip()]
+        return value
+
+    @field_validator("trusted_proxies")
+    @classmethod
+    def _valid_proxies(cls, value: list[str]) -> list[str]:
+        for entry in value:
+            ipaddress.ip_network(entry, strict=False)  # raises ValueError on garbage
+        return value
+
+    @model_validator(mode="after")
+    def _production_guards(self) -> Settings:
+        if (
+            self.env == "production"
+            and self.auth_local_enabled
+            and not self.auth_local_allow_in_production
+        ):
+            raise ValueError(
+                "SHIFDE_AUTH_LOCAL_ENABLED=true is refused in production unless "
+                "SHIFDE_AUTH_LOCAL_ALLOW_IN_PRODUCTION=true is also set (NFR-SEC-001)"
+            )
+        if self.env == "production":
+            for origin in self.allowed_origins:
+                parts = urlsplit(origin)
+                scheme, host = parts.scheme, parts.hostname or ""
+                if scheme != "https" and host not in _LOOPBACK_HOSTS:
+                    raise ValueError(
+                        "SHIFDE_ALLOWED_ORIGINS must be https:// origins in production "
+                        "(plain http is accepted for loopback only)"
+                    )
+            if self.public_base_url:
+                base = urlsplit(self.public_base_url)
+                if base.scheme != "https" and (base.hostname or "") not in _LOOPBACK_HOSTS:
+                    raise ValueError(
+                        "SHIFDE_PUBLIC_BASE_URL must be an https:// URL in production "
+                        "(plain http is accepted for loopback only)"
+                    )
+            for entry in self.trusted_proxies:
+                net = ipaddress.ip_network(entry, strict=False)
+                if net.prefixlen < _MIN_PROXY_PREFIX[net.version]:
+                    raise ValueError(
+                        f"SHIFDE_TRUSTED_PROXIES entry {entry!r} is too broad: it would trust a "
+                        f"large share of the Internet (minimum /{_MIN_PROXY_PREFIX[net.version]} "
+                        f"for IPv{net.version})"
+                    )
+        if self.session_idle_minutes < 1 or self.session_absolute_hours < 1:
+            raise ValueError("session timeouts must be positive")
+        generated = self.env in ("development", "test")
+        if not self.api_key_pepper or not self.api_key_pepper.get_secret_value():
+            if not generated:
+                raise ValueError("SHIFDE_API_KEY_PEPPER is required outside development/test")
+            self.api_key_pepper = SecretStr(_ephemeral("api_key_pepper", _new_pepper))
+        elif len(self.api_key_pepper.get_secret_value()) < 32:
+            raise ValueError("SHIFDE_API_KEY_PEPPER must be at least 32 characters")
+        if not self.secret_keys or not self.secret_keys.get_secret_value():
+            if not generated:
+                raise ValueError("SHIFDE_SECRET_KEYS is required outside development/test")
+            self.secret_keys = SecretStr(_ephemeral("secret_keys", KeyRing.generate_entry))
+        KeyRing.parse(self.secret_keys.get_secret_value())  # fail fast on a malformed keyring
+        if not 1 <= self.api_key_max_days <= 3650:
+            raise ValueError("SHIFDE_API_KEY_MAX_DAYS must be between 1 and 3650")
+        return self
+
+    @property
+    def is_development(self) -> bool:
+        return self.env == "development"
+
+    @property
+    def cookie_secure(self) -> bool:
+        return not self.is_development
+
+    @property
+    def session_cookie_name(self) -> str:
+        return "shifde_session" if self.is_development else "__Host-shifde_session"
+
+    @property
+    def oidc_cookie_name(self) -> str:
+        return "shifde_oidc_bind" if self.is_development else "__Host-shifde_oidc_bind"
+
+    @property
+    def keyring(self) -> KeyRing:
+        assert self.secret_keys is not None  # guaranteed by the validator
+        return KeyRing.parse(self.secret_keys.get_secret_value())
+
+    @property
+    def pepper(self) -> bytes:
+        assert self.api_key_pepper is not None  # guaranteed by the validator
+        return self.api_key_pepper.get_secret_value().encode()
+
+    @property
+    def key_env_label(self) -> str:
+        return {"development": "dev", "test": "test", "production": "prod"}[self.env]
+
+    @property
+    def oidc_base_url(self) -> str:
+        return (self.public_base_url or self.allowed_origins[0]).rstrip("/")
+
+    @property
+    def effective_migration_url(self) -> str:
+        """The schema owner's URL. Unlike SETH there is no fallback to `database_url`: migrations
+        never run as the application role (isolation review 1, item 13)."""
+        if not self.migration_database_url:
+            raise MigrationUrlMissing(
+                "SHIFDE_MIGRATION_DATABASE_URL is not set; migrations run only as the schema owner"
+            )
+        return self.migration_database_url
+
+
+def _ensure_dev_env_values(path: Path) -> None:
+    """Development only: generate the API-key pepper / secret KEK into dev.env once, so keys and
+    secrets created in dev survive restarts. Real environment variables still win."""
+    text = path.read_text(encoding="utf-8-sig")
+    present = {line.split("=", 1)[0].strip() for line in text.splitlines() if "=" in line}
+    additions: dict[str, Callable[[], str]] = {
+        "SHIFDE_API_KEY_PEPPER": _new_pepper,
+        "SHIFDE_SECRET_KEYS": KeyRing.generate_entry,
+    }
+    missing = [
+        f"{k}={make()}"
+        for k, make in additions.items()
+        if k not in present and k not in os.environ and f"{k}_FILE" not in os.environ
+    ]
+    if missing:
+        sep = "" if text.endswith("\n") or not text else "\n"
+        with path.open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write(sep + "# Generated by shifde (development only). Do not commit.\n")
+            fh.write("\n".join(missing) + "\n")
+
+
+def load_settings() -> Settings:
+    """Build settings; load `.devdata/dev.env` only when SHIFDE_ENV=development. `SHIFDE_*_FILE`
+    secret indirections are resolved here (see `resolve_secret_files`)."""
+    env_file: Path | None = None
+    environ: dict[str, str] = dict(os.environ)
+    if os.environ.get("SHIFDE_ENV", "").strip().lower() == "development" and DEV_ENV_FILE.exists():
+        env_file = DEV_ENV_FILE
+        _ensure_dev_env_values(env_file)
+        environ = {
+            **{k: v for k, v in dotenv_values(env_file, encoding="utf-8-sig").items() if v},
+            **environ,
+        }
+    file_values = resolve_secret_files(environ)
+    return Settings(_env_file=env_file, **file_values)  # type: ignore[arg-type]
+
+
+def settings_or_exit() -> Settings:
+    """`get_settings()` for process entrypoints (api, worker): a configuration error prints one
+    redacted line to stderr and exits 2 instead of escaping as a traceback."""
+    try:
+        return get_settings()
+    except ValueError as exc:  # pydantic ValidationError / SecretFileError subclass ValueError
+        raise SystemExit(f"shifde: invalid configuration: {format_validation_error(exc)}") from None
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return load_settings()

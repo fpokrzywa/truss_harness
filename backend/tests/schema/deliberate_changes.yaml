@@ -1,0 +1,12 @@
+# Reviewed differences between this database and SETH 3ba0e06 for ported tables
+# (tests/schema/test_schema_vs_seth.py). Each entry:
+#
+#   - table: <table name in schema shifde>
+#     path: [<section>, <key>, ...]   # inside the table's snapshot, see tests/schema/snapshot.py;
+#                                     # section is one of columns, constraints, indexes, triggers,
+#                                     # rls, policies, privileges
+#     reason: <why the new schema differs>
+#     migration: <revision id that makes the change>
+#
+# An entry whose path does not actually differ from SETH fails the test (remove it).
+[]

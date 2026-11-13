@@ -1,0 +1,210 @@
+[project]
+name = "shifde-backend"
+version = "0.9.0"
+description = "SHIFDE control-plane backend"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn>=0.32",
+  "sqlalchemy>=2.0.36",
+  "psycopg[binary]>=3.2",
+  "alembic>=1.14",
+  "pydantic>=2.9",
+  "pydantic-settings>=2.7",
+  "argon2-cffi>=23.1",
+  "structlog>=24.4",
+  "typer>=0.15",
+  "httpx>=0.28.1",
+  "cryptography>=50.0.2",
+  "joserfc>=1.8.0",
+  "mcp>=1.12,<2",
+  "jsonschema>=4.26.0",
+  "pyyaml>=6.0",
+]
+
+[project.scripts]
+shifde-api = "shifde.main:run"
+# shifde-admin (shifde.cli.main:app), shifde-worker (shifde.runtime.worker:run) and the
+# "shifde.adapters" entry points are re-added by the module ports that bring them (DECISIONS B-101).
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "httpx>=0.27",
+  "ruff>=0.8",
+  "mypy>=1.13",
+  "import-linter>=2.1",
+  "types-jsonschema>=4.26.0.20261006",
+  "types-pyyaml>=6.0",
+  "pytest-xdist>=3.6",
+  "filelock>=3.16",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/shifde"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"migrations/**" = ["E501"]
+"tests/**" = ["E501"]  # long SQL / assertion literals; ruff format still applies
+
+[tool.mypy]
+strict = true
+python_version = "3.13"
+plugins = ["pydantic.mypy"]
+mypy_path = "src"
+exclude = ["migrations/"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-ra"
+
+# ---------------------------------------------------------------------------
+# Module boundaries (NFR-MAINT-001). Dependency direction per SYSTEM_ARCHITECTURE §5:
+#   api -> service -> repository -> models ; cross-module calls go through the other
+#   module's service; core depends on nothing.
+# ---------------------------------------------------------------------------
+[tool.importlinter]
+root_package = "shifde"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Modules are layered (higher may import lower, never the reverse)"
+type = "layers"
+layers = [
+  "shifde.main",
+  "shifde.app | shifde.cli",
+  "shifde.runtime",
+  "shifde.ontology",
+  "shifde.build",
+  "shifde.governance",
+  "shifde.admin | shifde.models_admin",
+  "shifde.connections",
+  "shifde.vendors",
+  "shifde.installation",
+  "shifde.tenancy",
+  "shifde.identity",
+  "shifde.secrets",
+  "shifde.audit | shifde.authz | shifde.observability | shifde.ledger",
+  "shifde.adapters",
+  "shifde.core",
+]
+
+[[tool.importlinter.contracts]]
+name = "Within a module: api -> service -> repository -> models"
+type = "layers"
+layers = ["(api)", "(service)", "(repository)", "(models)"]
+containers = [
+  "shifde.tenancy",
+  "shifde.identity",
+  "shifde.authz",
+  "shifde.audit",
+  "shifde.secrets",
+  "shifde.vendors",
+  "shifde.connections",
+  "shifde.models_admin",
+  "shifde.build",
+  "shifde.ontology",
+  "shifde.runtime",
+  "shifde.governance",
+]
+exhaustive = false
+
+[[tool.importlinter.contracts]]
+name = "Core depends on nothing inside shifde"
+type = "forbidden"
+source_modules = ["shifde.core"]
+forbidden_modules = [
+  "shifde.tenancy", "shifde.identity", "shifde.authz", "shifde.audit",
+  "shifde.observability", "shifde.app", "shifde.cli", "shifde.main",
+  "shifde.adapters", "shifde.vendors", "shifde.connections", "shifde.models_admin",
+  "shifde.build", "shifde.ontology", "shifde.runtime", "shifde.governance", "shifde.ledger",
+]
+
+[[tool.importlinter.contracts]]
+name = "Only API layers and the app factory may import FastAPI routing; services stay HTTP-free"
+type = "forbidden"
+source_modules = [
+  "shifde.tenancy.service", "shifde.tenancy.repository",
+  "shifde.identity.service", "shifde.identity.repository",
+  "shifde.authz.service", "shifde.authz.repository", "shifde.authz.pdp",
+  "shifde.audit.service", "shifde.audit.repository",
+  "shifde.secrets.service", "shifde.secrets.repository",
+  "shifde.identity.apikeys", "shifde.identity.oidc", "shifde.authz.execution",
+  "shifde.admin.iam", "shifde.admin.credentials", "shifde.admin.providers",
+  "shifde.vendors.service", "shifde.vendors.repository",
+  "shifde.installation.service", "shifde.installation.profile", "shifde.core.configtools",
+  "shifde.connections.service", "shifde.connections.repository", "shifde.connections.egress",
+  "shifde.models_admin.service", "shifde.models_admin.repository", "shifde.models_admin.limiter",
+  "shifde.build.service", "shifde.build.repository", "shifde.build.kind_ops",
+  "shifde.build.tool_runtime", "shifde.build.catalog", "shifde.build.prompts",
+  "shifde.build.tools", "shifde.build.skills", "shifde.build.agents",
+  "shifde.build.orchestrations", "shifde.core.safeexpr", "shifde.core.bodies",
+  "shifde.build.pipelines", "shifde.build.pipeline_nodes", "shifde.core.cron",
+  "shifde.runtime.pipeline", "shifde.runtime.pipeline_ops", "shifde.runtime.settle",
+  "shifde.runtime.schedules",
+  "shifde.runtime.service", "shifde.runtime.repository",
+  "shifde.runtime.agent", "shifde.runtime.graph", "shifde.runtime.steps", "shifde.runtime.gate",
+  "shifde.runtime.lifecycle", "shifde.runtime.worker", "shifde.runtime.governance",
+  "shifde.runtime.context", "shifde.runtime.state", "shifde.runtime.ontology_exec",
+  "shifde.runtime.action", "shifde.build.ontologies", "shifde.build.ontology_expr",
+  "shifde.build.ontology_ops", "shifde.ontology.service", "shifde.ontology.repository",
+  "shifde.ontology.engine", "shifde.ontology.policy",
+  "shifde.adapters.base", "shifde.adapters.rest_http", "shifde.adapters.mcp_http",
+  "shifde.adapters.postgres", "shifde.adapters.model_providers", "shifde.adapters.registry",
+  "shifde.adapters.evidence", "shifde.adapters.maturity", "shifde.adapters.conformance",
+  "shifde.core.egress", "shifde.core.ssrf",
+  "shifde.governance.service", "shifde.governance.repository", "shifde.governance.validation",
+  "shifde.ledger.pricing", "shifde.ledger.usage", "shifde.ledger.budgeting",
+  "shifde.ledger.enforcement",
+  "shifde.runtime.policies", "shifde.observability.tracing", "shifde.observability.metrics",
+]
+forbidden_modules = ["fastapi", "starlette"]
+
+[[tool.importlinter.contracts]]
+name = "Repositories/models are private to their module (cross-module calls use service)"
+type = "forbidden"
+source_modules = [
+  "shifde.tenancy", "shifde.identity", "shifde.audit", "shifde.observability",
+  "shifde.secrets", "shifde.admin", "shifde.vendors", "shifde.connections",
+  "shifde.models_admin", "shifde.build", "shifde.ontology", "shifde.runtime",
+  "shifde.governance", "shifde.ledger",
+]
+forbidden_modules = [
+  "shifde.secrets.repository", "shifde.secrets.models",
+  "shifde.identity.repository", "shifde.identity.models",
+  "shifde.tenancy.repository", "shifde.tenancy.models",
+  "shifde.authz.repository", "shifde.authz.models",
+  "shifde.audit.repository", "shifde.audit.models",
+  "shifde.vendors.repository", "shifde.connections.repository", "shifde.models_admin.repository",
+  "shifde.build.repository", "shifde.ontology.repository", "shifde.governance.repository",
+]
+allow_indirect_imports = true
+ignore_imports = [
+  "shifde.identity.** -> shifde.identity.repository",
+  "shifde.identity.** -> shifde.identity.models",
+  "shifde.tenancy.** -> shifde.tenancy.repository",
+  "shifde.tenancy.** -> shifde.tenancy.models",
+  "shifde.audit.** -> shifde.audit.repository",
+  "shifde.audit.** -> shifde.audit.models",
+  "shifde.secrets.** -> shifde.secrets.repository",
+  "shifde.secrets.** -> shifde.secrets.models",
+  "shifde.vendors.** -> shifde.vendors.repository",
+  "shifde.connections.** -> shifde.connections.repository",
+  "shifde.models_admin.** -> shifde.models_admin.repository",
+  "shifde.build.** -> shifde.build.repository",
+  "shifde.ontology.** -> shifde.ontology.repository",
+  "shifde.runtime.** -> shifde.runtime.repository",
+  "shifde.governance.** -> shifde.governance.repository",
+]
