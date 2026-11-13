@@ -15,6 +15,10 @@ It creates nothing client-owned. Contents, taken from SETH 3ba0e06 `p01_0001_ten
     - `shifde.current_principal_id()` <- `app.principal_id`
     - `shifde.is_platform_admin_ctx()` <- `app.platform_admin` = 'on'
 * The shared trigger helpers `shifde.set_updated_at()` and `shifde.reject_mutation()`.
+* Unlike SETH, every builtin the helpers use is schema-qualified (`pg_catalog.current_setting`,
+  `::pg_catalog.uuid`, `OPERATOR(pg_catalog.=)`, `pg_catalog.now()`), so no object earlier in a
+  caller's `search_path` can stand in for it (isolation review 1, item 7). No `SET search_path`
+  clause: it would stop PostgreSQL inlining the SQL helpers into every policy.
 
 No `ALTER DEFAULT PRIVILEGES`: SETH grants each table explicitly and minimally (no DELETE,
 column-level UPDATE), and a default grant would widen that (DECISIONS B-105).
@@ -47,13 +51,16 @@ def upgrade() -> None:
         "GRANT SELECT ON shifde.alembic_version TO shifde_app",
         # ---- context helpers (fail closed on unset GUC) ----
         """CREATE FUNCTION shifde.current_tenant_id() RETURNS uuid LANGUAGE sql STABLE AS
-           $$ SELECT NULLIF(current_setting('app.tenant_id', true), '')::uuid $$""",
+           $$ SELECT NULLIF(pg_catalog.current_setting('app.tenant_id', true), '')
+                ::pg_catalog.uuid $$""",
         """CREATE FUNCTION shifde.current_principal_id() RETURNS uuid LANGUAGE sql STABLE AS
-           $$ SELECT NULLIF(current_setting('app.principal_id', true), '')::uuid $$""",
+           $$ SELECT NULLIF(pg_catalog.current_setting('app.principal_id', true), '')
+                ::pg_catalog.uuid $$""",
         """CREATE FUNCTION shifde.is_platform_admin_ctx() RETURNS boolean LANGUAGE sql STABLE AS
-           $$ SELECT COALESCE(current_setting('app.platform_admin', true), '') = 'on' $$""",
+           $$ SELECT COALESCE(pg_catalog.current_setting('app.platform_admin', true), '')
+                OPERATOR(pg_catalog.=) 'on' $$""",
         """CREATE FUNCTION shifde.set_updated_at() RETURNS trigger LANGUAGE plpgsql AS
-           $$ BEGIN NEW.updated_at = now(); RETURN NEW; END $$""",
+           $$ BEGIN NEW.updated_at = pg_catalog.now(); RETURN NEW; END $$""",
         """CREATE FUNCTION shifde.reject_mutation() RETURNS trigger LANGUAGE plpgsql AS
            $$ BEGIN
                 RAISE EXCEPTION 'append-only table: UPDATE and DELETE are not permitted'
