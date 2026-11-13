@@ -1112,6 +1112,29 @@ def test_unlisted_principal_keyed_table_is_reported(scratch: Connection) -> None
     assert rls_violations(scratch, set(), principal_tables={"shifde.zz_p": "test"}) == []
 
 
+@pytest.mark.parametrize(
+    "using",
+    [
+        "ref = shifde.current_principal_id()",
+        "shifde.current_principal_id() = ref",
+        "NOT (ref IS DISTINCT FROM shifde.current_principal_id())",
+        "id = 1 AND ref = shifde.current_principal_id()",
+        "user_id = shifde.current_tenant_id()",
+    ],
+)
+def test_principal_wrong_column_on_a_principal_table_is_reported(
+    scratch: Connection, using: str
+) -> None:
+    """Review 5, item 2: on a listed table without tenant_id the column check still applies."""
+    _secured_table(scratch, tenant_column=False)
+    scratch.execute(text(f"CREATE POLICY ok ON shifde.zz_rls_probe FOR SELECT USING ({OWN_ROW})"))
+    scratch.execute(text(f"CREATE POLICY p ON shifde.zz_rls_probe FOR SELECT USING ({using})"))
+    (problem,) = rls_violations(scratch, set(), principal_tables=PROBE_IS_A_PRINCIPAL_TABLE)
+    assert problem.startswith(
+        "shifde.zz_rls_probe: policy p (SELECT) USING not built from recognised"
+    ), problem
+
+
 def test_reviewed_principal_tables() -> None:
     assert set(PRINCIPAL_TABLES) == {
         "shifde.sessions",
