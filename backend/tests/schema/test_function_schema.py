@@ -1,7 +1,10 @@
-"""Functions in schema `shifde` cannot be used to step around row-level security
-(isolation review 1, items 7 and 8).
+"""Functions cannot be used to step around row-level security (isolation review 1, items 7 and
+8; review 2, items 4 and 6; review 3, items 1 and 5).
 
-* The five baseline helpers (`base_0001`, DECISIONS B-104) are pinned: owner `shifde_owner`, not
+* The five baseline helpers (`base_0001`, DECISIONS B-104) are pinned, keyed by oid: each is the
+  one zero-argument function of its name in `shifde`, and no other function in `shifde` shares
+  the name (an overload with the pinned body could otherwise stand in for a replaced helper in
+  the check). Each is owned by `shifde_owner`, not
   SECURITY DEFINER, no `SET` clause (so the SQL helpers stay inlinable), the expected language,
   volatility and body. Their bodies call builtins schema-qualified (`pg_catalog.current_setting`,
   `::pg_catalog.uuid`, `OPERATOR(pg_catalog.=)`, `pg_catalog.now()`) and use no construct that
@@ -13,6 +16,11 @@
   review), pin `search_path` without `public` or `"$user"` and with `pg_temp` listed last (left
   out, `pg_temp` is searched first), and grant EXECUTE to nobody but its owner and `shifde_app`
   -- in particular not to PUBLIC.
+* Nothing in the catalog writes the client context (`app.tenant_id`, `app.principal_id`,
+  `app.platform_admin`): function bodies, SET clauses and argument defaults, views, policies,
+  defaults, constraints, indexes, triggers and statistics in every non-system schema are scanned
+  by `tests/schema/catalog_scan.py` (rules in its docstring); only the three context helpers are
+  exempt, by oid.
 """
 
 from __future__ import annotations
@@ -23,6 +31,12 @@ from collections.abc import Iterator
 import pytest
 from sqlalchemy import Connection, text
 from sqlalchemy.engine import Engine
+
+from tests.schema.catalog_scan import (
+    CONTEXT_WRITE_ALLOWLIST,
+    context_reasons,
+    context_write_violations,
+)
 
 APP_ROLE = "shifde_app"
 
@@ -68,6 +82,7 @@ BASE_HELPERS: dict[str, dict[str, str | None]] = {
 
 _FUNCTIONS = text(
     r"""SELECT n.nspname, p.oid, p.proname, p.prosecdef, p.provolatile, l.lanname AS lang,
+              pg_catalog.pg_get_function_identity_arguments(p.oid) AS args,
               pg_catalog.format_type(p.prorettype, NULL) AS rettype,
               pg_catalog.pg_get_userbyid(p.proowner) AS owner, p.proconfig, p.prosrc,
               p.proacl IS NULL AS default_acl,
@@ -120,11 +135,16 @@ def definer_violations(conn: Connection, allowlist: dict[str, str]) -> list[str]
 
 
 def helper_violations(conn: Connection) -> list[str]:
+    """Keyed by oid: each helper is the one zero-argument function of its name in `shifde`, and
+    no other function shares the name (an overload could stand in for a replaced helper)."""
     problems: list[str] = []
-    rows = {row.proname: row for row in conn.execute(_FUNCTIONS) if row.nspname == "shifde"}
+    rows = [row for row in conn.execute(_FUNCTIONS) if row.nspname == "shifde"]
     for name, want in BASE_HELPERS.items():
-        row = rows.get(name)
+        named = [row for row in rows if row.proname == name]
         where = f"shifde.{name}"
+        if len(named) > 1:
+            problems.append(f"{where}: {len(named)} functions with this name (overloaded)")
+        row = next((row for row in named if row.args == ""), None)
         if row is None:
             problems.append(f"{where}: missing")
             continue
@@ -306,3 +326,248 @@ def test_helpers_ignore_a_hostile_operator_on_the_search_path(scratch: Connectio
         )
     ).one()
     assert tuple(row) == ("01900000-0000-7000-8000-0000000000aa", None, True)
+
+
+# ---- isolation review 3
+ADMIN_ON = "pg_catalog.set_config('app.platform_admin', 'on', true)"
+TENANT_B = "pg_catalog.set_config('app.tenant_id', '01900000-0000-7000-8000-0000000000bb', true)"
+_T = "CREATE TABLE shifde.zz_ctx (id int, c text)"
+
+CONTEXT_WRITERS = [
+    # review 3, item 1: a plain plpgsql function in public
+    (
+        [
+            "CREATE FUNCTION public.zz_peek2() RETURNS void LANGUAGE plpgsql"
+            f" AS $$ BEGIN PERFORM {ADMIN_ON}; END $$"
+        ],
+        {"function public.zz_peek2()"},
+    ),
+    # review 3, item 1: a SQL function in shifde
+    (
+        [f"CREATE FUNCTION shifde.zz_all() RETURNS text LANGUAGE sql AS $$ SELECT {ADMIN_ON} $$"],
+        {"function shifde.zz_all()"},
+    ),
+    # review 3, item 1: a security_invoker view whose FROM sets the flag for the transaction
+    (
+        [
+            "CREATE VIEW shifde.zz_ctx_view WITH (security_invoker) AS"
+            f" SELECT s FROM {ADMIN_ON} AS s"
+        ],
+        {"view shifde.zz_ctx_view"},
+    ),
+    (
+        [f"CREATE MATERIALIZED VIEW shifde.zz_ctx_mv AS SELECT {TENANT_B} AS s"],
+        {"view shifde.zz_ctx_mv"},
+    ),
+    # a SET statement, the name quoted and split by a comment
+    (
+        [
+            "CREATE FUNCTION shifde.zz_set() RETURNS void LANGUAGE sql"
+            ' AS $$ SET LOCAL "app" /* x */ . "platform_admin" TO \'on\' $$'
+        ],
+        {"function shifde.zz_set()"},
+    ),
+    # dynamic SQL hides every name
+    (
+        [
+            "CREATE FUNCTION shifde.zz_dyn() RETURNS void LANGUAGE plpgsql AS $$ BEGIN"
+            " EXECUTE 'SELECT pg_catalog.set_' || 'config(''ap' || 'p.platform_admin'', ''on'', true)';"
+            " END $$"
+        ],
+        {"function shifde.zz_dyn()"},
+    ),
+    # a unicode-escaped identifier hides the name
+    (
+        [
+            "CREATE FUNCTION shifde.zz_uni() RETURNS text LANGUAGE sql AS $$ SELECT"
+            " pg_catalog.U&\"\\0073et_config\"('ap' || 'p.platform_admin', 'on', true) $$"
+        ],
+        {"function shifde.zz_uni()"},
+    ),
+    # pg_settings is written through set_config by a rule
+    (
+        [
+            "CREATE FUNCTION shifde.zz_settings() RETURNS void LANGUAGE sql AS $$"
+            " UPDATE pg_catalog.pg_settings SET setting = 'on' WHERE name = 'ap' || 'p.platform_admin'"
+            " $$"
+        ],
+        {"function shifde.zz_settings()"},
+    ),
+    # a builtin that runs a query given as text
+    (
+        [
+            "CREATE VIEW shifde.zz_ctx_view WITH (security_invoker) AS SELECT"
+            " pg_catalog.query_to_xml('SELECT ' || 'now()', true, false, '') AS x"
+        ],
+        {"view shifde.zz_ctx_view"},
+    ),
+    # a SQL-standard body
+    (
+        [
+            "CREATE FUNCTION shifde.zz_atomic() RETURNS text LANGUAGE sql"
+            f" BEGIN ATOMIC SELECT {ADMIN_ON}; END"
+        ],
+        {"function shifde.zz_atomic()"},
+    ),
+    # an argument default runs in the caller
+    (
+        [
+            f"CREATE FUNCTION shifde.zz_argdef(x text DEFAULT {ADMIN_ON}) RETURNS text"
+            " LANGUAGE sql AS $$ SELECT x $$"
+        ],
+        {"function shifde.zz_argdef(x text)"},
+    ),
+    (
+        [f"CREATE TABLE shifde.zz_ctx (id int, c text DEFAULT {ADMIN_ON})"],
+        {"default shifde.zz_ctx.c"},
+    ),
+    (
+        [
+            "CREATE TABLE shifde.zz_ctx (id int, c text,"
+            " g text GENERATED ALWAYS AS (c || 'app.tenant_id') STORED)"
+        ],
+        {"default shifde.zz_ctx.g"},
+    ),
+    (
+        [_T, f"ALTER TABLE shifde.zz_ctx ADD CONSTRAINT zz_ck CHECK ({TENANT_B} IS NOT NULL)"],
+        {"constraint shifde.zz_ck on shifde.zz_ctx"},
+    ),
+    (
+        [
+            f"CREATE DOMAIN shifde.zz_dom AS text DEFAULT {ADMIN_ON}"
+            f" CONSTRAINT zz_dom_ck CHECK ({ADMIN_ON} IS NOT NULL)"
+        ],
+        {"domain default shifde.zz_dom", "constraint shifde.zz_dom_ck on shifde.zz_dom"},
+    ),
+    (
+        [_T, "CREATE INDEX zz_ctx_ix ON shifde.zz_ctx ((c = 'app.principal_id'))"],
+        {"index shifde.zz_ctx_ix"},
+    ),
+    (
+        [_T, "CREATE INDEX zz_ctx_ix ON shifde.zz_ctx (id) WHERE c = 'app.principal_id'"],
+        {"index shifde.zz_ctx_ix"},
+    ),
+    (
+        [
+            _T,
+            "CREATE TRIGGER zz_ctx_tr BEFORE INSERT ON shifde.zz_ctx FOR EACH ROW"
+            f" WHEN ({ADMIN_ON} IS NOT NULL) EXECUTE FUNCTION shifde.set_updated_at()",
+        ],
+        {"trigger zz_ctx_tr on shifde.zz_ctx"},
+    ),
+    (
+        [_T, "CREATE STATISTICS shifde.zz_ctx_st ON (c || 'app.tenant_id'), id FROM shifde.zz_ctx"],
+        {"statistics shifde.zz_ctx_st"},
+    ),
+    # an overload of a pinned helper is not the pinned helper (exemption is by oid)
+    (
+        [
+            "CREATE FUNCTION shifde.current_tenant_id(x int) RETURNS uuid LANGUAGE sql STABLE"
+            f" AS $$ {BASE_HELPERS['current_tenant_id']['body']} $$"
+        ],
+        {"function shifde.current_tenant_id(x integer)"},
+    ),
+]
+
+
+def _labels(findings: list[str]) -> set[str]:
+    return {finding.split(": ")[0] for finding in findings}
+
+
+@pytest.mark.parametrize(("ddl", "labels"), CONTEXT_WRITERS)
+def test_object_that_writes_the_client_context_is_reported(
+    scratch: Connection, ddl: list[str], labels: set[str]
+) -> None:
+    """Review 3, item 1: code that sets app.* hands a client another client's rows."""
+    for statement in ddl:
+        scratch.execute(text(statement))
+    assert _labels(context_write_violations(scratch)) == labels
+
+
+def test_code_that_only_reads_the_context_through_the_helpers_passes(scratch: Connection) -> None:
+    scratch.execute(text(_T))
+    scratch.execute(
+        text(
+            "CREATE FUNCTION shifde.zz_reader() RETURNS uuid LANGUAGE sql STABLE"
+            " AS $$ SELECT shifde.current_tenant_id() $$"
+        )
+    )
+    scratch.execute(
+        text(
+            "CREATE VIEW shifde.zz_ctx_view WITH (security_invoker) AS"
+            " SELECT id FROM shifde.zz_ctx WHERE c = 'settings' AND id > 0"
+        )
+    )
+    scratch.execute(
+        text(
+            "CREATE FUNCTION shifde.zz_upd() RETURNS void LANGUAGE sql"
+            " AS $$ UPDATE shifde.zz_ctx SET c = 'x' $$"
+        )
+    )
+    assert context_write_violations(scratch) == []
+
+
+def test_context_writer_allowlist_is_exact(scratch: Connection) -> None:
+    scratch.execute(
+        text(
+            f"CREATE FUNCTION shifde.zz_all() RETURNS text LANGUAGE sql AS $$ SELECT {ADMIN_ON} $$"
+        )
+    )
+    assert context_write_violations(scratch, allowlist={"function shifde.zz_all()": "probe"}) == []
+    assert _labels(
+        context_write_violations(scratch, allowlist={"function shifde.zz_all": "probe"})
+    ) == {"function shifde.zz_all()"}
+
+
+@pytest.mark.parametrize(
+    "config",
+    [["app.platform_admin=on"], ["search_path=pg_catalog", "APP.Tenant_Id=x"]],
+)
+def test_function_set_clause_naming_the_context_is_reported(config: list[str]) -> None:
+    """PostgreSQL refuses `SET app.* = ...` on a function to shifde_owner; checked anyway."""
+    assert context_reasons(" ".join(config))
+
+
+def test_nothing_in_the_catalog_writes_the_client_context(owner_engine: Engine) -> None:
+    with owner_engine.connect() as c:
+        problems = context_write_violations(c)
+    assert not problems, "\n".join(problems)
+
+
+def test_context_writer_allowlist_has_reasons_and_no_stale_entries(owner_engine: Engine) -> None:
+    assert all(reason.strip() for reason in CONTEXT_WRITE_ALLOWLIST.values())
+    with owner_engine.connect() as c:
+        found = _labels(context_write_violations(c, allowlist={}))
+    stale = set(CONTEXT_WRITE_ALLOWLIST) - found
+    assert not stale, f"CONTEXT_WRITE_ALLOWLIST entries that match nothing: {stale}"
+
+
+def test_replaced_helper_hidden_by_an_overload_is_reported(scratch: Connection) -> None:
+    """Review 3, item 5: keyed by name, the overload's pinned body hid the replaced helper."""
+    scratch.execute(
+        text(
+            "CREATE OR REPLACE FUNCTION shifde.current_tenant_id() RETURNS uuid LANGUAGE sql STABLE"
+            " AS $$ SELECT '01900000-0000-7000-8000-0000000000bb'::pg_catalog.uuid $$"
+        )
+    )
+    scratch.execute(
+        text(
+            "CREATE FUNCTION shifde.current_tenant_id(x int) RETURNS uuid LANGUAGE sql STABLE"
+            f" AS $$ {BASE_HELPERS['current_tenant_id']['body']} $$"
+        )
+    )
+    problems = helper_violations(scratch)
+    assert "shifde.current_tenant_id: 2 functions with this name (overloaded)" in problems
+    assert any(p.startswith("shifde.current_tenant_id: body is ") for p in problems), problems
+
+
+def test_overloaded_helper_is_reported(scratch: Connection) -> None:
+    scratch.execute(
+        text(
+            "CREATE FUNCTION shifde.is_platform_admin_ctx(x int) RETURNS boolean LANGUAGE sql"
+            " STABLE AS $$ SELECT false $$"
+        )
+    )
+    assert helper_violations(scratch) == [
+        "shifde.is_platform_admin_ctx: 2 functions with this name (overloaded)"
+    ]
