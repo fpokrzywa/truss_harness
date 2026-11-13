@@ -29,7 +29,7 @@ A permissive policy is tenant-keyed when:
 
 1. Its USING expression (commands ALL, SELECT, UPDATE, DELETE) and its WITH CHECK expression
    (commands ALL, INSERT, UPDATE) each reference `shifde.current_tenant_id()` or, for
-   principal-owned rows, `shifde.current_principal_id()`.
+   principal-owned rows on a `PRINCIPAL_TABLES` relation, `shifde.current_principal_id()`.
 2. WITH CHECK is present explicitly on every ALL, INSERT and UPDATE policy. PostgreSQL would use
    the USING expression as the check when WITH CHECK is absent (and an INSERT policy has no USING
    at all, so its writes would be unchecked); we are stricter and require the write rule to be
@@ -40,8 +40,9 @@ A permissive policy is tenant-keyed when:
      - `<key column> = <helper>` (either side) and `NOT (<key column> IS DISTINCT FROM <helper>)`
        (either side), where the key column is one `KEY_COLUMNS` lists for that helper:
        `tenant_id` for `shifde.current_tenant_id()`, `user_id` for
-       `shifde.current_principal_id()`, plus the reviewed `<schema>.<table>.<column>` entries
-       (`shifde.tenants.id`, `shifde.users.id`) that hold only on that table;
+       `shifde.current_principal_id()` (on a `PRINCIPAL_TABLES` relation only), plus the
+       reviewed `<schema>.<table>.<column>` entries (`shifde.tenants.id`, `shifde.users.id`)
+       that hold only on that table;
      - `shifde.is_platform_admin_ctx()` (the platform-admin flag, fail closed when unset);
      - in the USING of a FOR SELECT policy only, `tenant_id IS NULL` (rows shared by every
        client, e.g. built-in roles).
@@ -52,6 +53,17 @@ A permissive policy is tenant-keyed when:
    satisfy it: alone it lets a user write rows with `tenant_id` NULL or another client's, and
    read their own rows filed under another client (isolation review 4, item 1). Principal keys
    count only on relations without `tenant_id`.
+   A principal key on a bare column (`user_id`) counts only on a relation listed in
+   `PRINCIPAL_TABLES` (schema-qualified name -> reason): it keys a row to a person, not to a
+   client, so on a table that may hold client content (agent memory, notes, drafts) a staff user
+   who works in several clients writes in client B and reads it back in client A (isolation
+   review 5, item 1). A listed relation holds per-person identity state, not client content.
+   A table-specific `KEY_COLUMNS` entry (`shifde.users.id`) is reviewed for its table already
+   and counts there without a listing. Adding a `PRINCIPAL_TABLES` entry needs isolation
+   review; an entry that is not a principal-keyed table in the database under test (a table
+   without `tenant_id` with a permissive policy keyed to `shifde.current_principal_id()`) is
+   stale and fails, unless it is a SETH 3ba0e06 principal-keyed table not yet listed in
+   `ported_tables.txt` (its port has not landed).
    Everywhere else -- every WITH CHECK, and the USING of ALL, UPDATE and DELETE policies, where
    a client could create, take over or delete a row every client sees -- each occurrence of
    `tenant_id IS NULL` must sit in an `AND` that has `shifde.is_platform_admin_ctx()` as one of
@@ -73,10 +85,12 @@ schema-qualified and a look-alike function in another schema cannot pass for the
 
 from __future__ import annotations
 
+import json
 import re
-from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from collections.abc import Collection, Iterator, Mapping
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sqlalchemy import Connection, text
@@ -84,6 +98,7 @@ from sqlalchemy.engine import Engine
 
 from tests.schema.catalog_scan import context_write_violations
 from tests.schema.snapshot import load_lines
+from tests.schema.test_schema_vs_seth import PORTED_FILE, SETH_SNAPSHOT
 
 GLOBAL_TABLES_FILE = Path(__file__).with_name("global_tables.txt")
 EXEMPT = frozenset({("shifde", "alembic_version")})
@@ -139,6 +154,17 @@ KEY_COLUMNS: dict[str, frozenset[str]] = {
     "shifde.current_principal_id()": frozenset({"user_id", "shifde.users.id"}),
 }
 
+# schema.table -> why a principal key (`user_id = shifde.current_principal_id()`) may isolate it:
+# the rows are per-person identity state, never client content. Principal keys on bare columns
+# count only on these relations (isolation review 5, item 1). Adding an entry needs isolation
+# review; a stale entry fails `test_principal_tables_are_principal_keyed_tables`.
+_IDENTITY_STATE = "per-person identity state, not client content"
+PRINCIPAL_TABLES: dict[str, str] = {
+    "shifde.sessions": f"{_IDENTITY_STATE}: a person's login sessions",
+    "shifde.local_credentials": f"{_IDENTITY_STATE}: a person's password and MFA state",
+    "shifde.user_identities": f"{_IDENTITY_STATE}: a person's identity-provider subjects",
+}
+
 # (relation, policy, command, "PERMISSIVE" | "RESTRICTIVE", roles, "USING" | "WITH CHECK")
 # -> exact pg_get_expr text, reviewed by isolation review because the recognised forms cannot
 # express it. The command is SELECT, INSERT, UPDATE, DELETE or ALL; roles are sorted, `public`
@@ -167,6 +193,7 @@ class _Clause:
     shared_rows: bool  # bare `tenant_id IS NULL` allowed: the USING of a FOR SELECT policy only
     keys: Mapping[str, frozenset[str]]
     tenant_column: bool = False  # the relation has tenant_id: only tenant atoms count
+    principal_table: bool = False  # listed in PRINCIPAL_TABLES: bare principal keys count
 
 
 def _strip_parens(expr: str) -> str:
@@ -253,11 +280,14 @@ def _recognised(expr: str, clause: _Clause) -> bool:
         return clause.shared_rows
     for atom in _KEYED:
         if match := atom.fullmatch(expr):
-            if clause.tenant_column and match["helper"] != _TENANT_HELPER:
+            principal = match["helper"] != _TENANT_HELPER
+            if clause.tenant_column and principal:
                 return False  # a principal key may narrow (in an AND) but not satisfy
             allowed = clause.keys.get(match["helper"], frozenset())
             column = match["col"]
-            return column in allowed or f"{clause.relation}.{column}" in allowed
+            if f"{clause.relation}.{column}" in allowed:
+                return True  # a table-specific key, reviewed for this table
+            return column in allowed and (clause.principal_table or not principal)
     return False
 
 
@@ -291,6 +321,11 @@ def expression_problem(
     if not clause.shared_rows and _admits_shared_rows(expr):
         return f"admits {_GLOBAL_ROWS} without {_ADMIN}"
     if not _recognised(expr, clause):
+        if not clause.principal_table and _recognised(expr, replace(clause, principal_table=True)):
+            return (
+                "keyed to shifde.current_principal_id() on a relation not listed in"
+                " PRINCIPAL_TABLES"
+            )
         return "not built from recognised tenant-keyed forms"
     return None
 
@@ -320,6 +355,7 @@ def _policy_problems(
     conn: Connection,
     reviewed: Mapping[ReviewedKey, str],
     keys: Mapping[str, frozenset[str]],
+    principal_tables: Collection[str],
 ) -> dict[tuple[str, str], list[str]]:
     # Pin the search path for pg_get_expr (transaction-local; the caller's transaction ends it).
     conn.execute(text("SELECT pg_catalog.set_config('search_path', 'pg_catalog', true)"))
@@ -338,7 +374,13 @@ def _policy_problems(
         ):
             if not applies:
                 continue
-            clause = _Clause(relation, kind == "USING" and cmd == "r", keys, tenant_column)
+            clause = _Clause(
+                relation,
+                kind == "USING" and cmd == "r",
+                keys,
+                tenant_column,
+                relation in principal_tables,
+            )
             key = _reviewed_key(relation, name, cmd, permissive, roles, kind)
             why = expression_problem(expr, clause, reviewed.get(key))
             if why:
@@ -352,10 +394,11 @@ def rls_violations(
     *,
     reviewed: Mapping[ReviewedKey, str] = REVIEWED_EXPRESSIONS,
     key_columns: Mapping[str, frozenset[str]] = KEY_COLUMNS,
+    principal_tables: Collection[str] = PRINCIPAL_TABLES,
 ) -> list[str]:
     """`schema.relation: problem` for every relation that breaks the rules in the docstring."""
     relations = conn.execute(_RELATIONS).all()
-    policy_problems = _policy_problems(conn, reviewed, key_columns)
+    policy_problems = _policy_problems(conn, reviewed, key_columns, principal_tables)
     policy_count: dict[tuple[str, str], int] = {}
     for schema, table, *_ in conn.execute(_POLICIES):
         policy_count[(schema, table)] = policy_count.get((schema, table), 0) + 1
@@ -387,6 +430,84 @@ def rls_violations(
     ]
     problems += context_write_violations(conn, kinds={"policy"})
     return sorted(problems)
+
+
+_PRINCIPAL_TABLE = text(
+    """SELECT c.relkind,
+              EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a
+                       WHERE a.attrelid = c.oid AND a.attname = 'tenant_id'
+                         AND a.attnum > 0 AND NOT a.attisdropped) AS tenant_column,
+              EXISTS (SELECT 1 FROM pg_catalog.pg_policy p
+                       WHERE p.polrelid = c.oid AND p.polpermissive
+                         AND (pg_catalog.strpos(pg_catalog.pg_get_expr(p.polqual, p.polrelid),
+                                                :helper) > 0
+                              OR pg_catalog.strpos(
+                                     pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid),
+                                     :helper) > 0)) AS principal_policy
+         FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = :schema AND c.relname = :table"""
+)
+_PRINCIPAL_HELPER = "shifde.current_principal_id()"
+
+
+def _seth_principal_table(table: Mapping[str, Any]) -> bool:
+    """A SETH 3ba0e06 snapshot table without tenant_id and with a permissive principal policy."""
+    return "tenant_id" not in table["columns"] and any(
+        policy["permissive"] == "PERMISSIVE"
+        and any(_PRINCIPAL_HELPER in (policy[k] or "") for k in ("qual", "with_check"))
+        for policy in table["policies"].values()
+    )
+
+
+def principal_table_problems(
+    conn: Connection,
+    listed: Mapping[str, str],
+    *,
+    seth_tables: Mapping[str, Any],
+    ported: Collection[str],
+) -> list[str]:
+    """`entry: problem` for every stale or unreasoned `PRINCIPAL_TABLES` entry.
+
+    An entry must name a table (`r` or `p`) in the database under test that has no `tenant_id`
+    column and a permissive policy keyed to `shifde.current_principal_id()`. A table not in the
+    database passes only while it is a SETH 3ba0e06 principal-keyed table in schema `shifde`
+    that is not yet listed in `ported_tables.txt`.
+    """
+    # Pin the search path for pg_get_expr (transaction-local; the caller's transaction ends it).
+    conn.execute(text("SELECT pg_catalog.set_config('search_path', 'pg_catalog', true)"))
+    problems: list[str] = []
+    for entry, reason in sorted(listed.items()):
+        schema, dot, table = entry.partition(".")
+        if not dot:
+            problems.append(f"{entry}: not schema-qualified")
+            continue
+        if not reason.strip():
+            problems.append(f"{entry}: no reason")
+            continue
+        row = conn.execute(
+            _PRINCIPAL_TABLE, {"schema": schema, "table": table, "helper": _PRINCIPAL_HELPER}
+        ).one_or_none()
+        if row is None:
+            if schema == "shifde" and table in ported:
+                problems.append(f"{entry}: listed in ported_tables.txt but missing")
+            elif (
+                schema != "shifde"
+                or table not in seth_tables
+                or not _seth_principal_table(seth_tables[table])
+            ):
+                problems.append(
+                    f"{entry}: not a table in the database (nor a SETH 3ba0e06 principal-keyed"
+                    " table awaiting its port)"
+                )
+            continue
+        kind, tenant_column, principal_policy = row
+        if kind not in ("r", "p"):
+            problems.append(f"{entry}: not a table (relkind {kind})")
+        elif tenant_column:
+            problems.append(f"{entry}: has a tenant_id column (principal keys do not count there)")
+        elif not principal_policy:
+            problems.append(f"{entry}: no permissive policy keyed to {_PRINCIPAL_HELPER}")
+    return problems
 
 
 def test_every_client_table_has_forced_rls_and_tenant_keyed_policies(
@@ -567,21 +688,30 @@ WRITE_FORMS = [
     f"{TENANT} AND user_id = shifde.current_principal_id()",
 ]
 
-# Principal-owned rows: recognised only on a relation without a tenant_id column (review 4).
+# Principal-owned rows: recognised only on a relation without a tenant_id column (review 4) that
+# is listed in PRINCIPAL_TABLES (review 5).
 PRINCIPAL_FORMS = [
     "user_id = shifde.current_principal_id()",
     "id = 1 AND shifde.current_principal_id() = user_id",
     "NOT (user_id IS DISTINCT FROM shifde.current_principal_id())",
 ]
+PROBE_IS_A_PRINCIPAL_TABLE = {"shifde.zz_rls_probe": "test: per-person state"}
 
 
 @pytest.mark.parametrize("expr", PRINCIPAL_FORMS)
-def test_principal_keyed_forms_pass_without_a_tenant_column(scratch: Connection, expr: str) -> None:
-    _secured_table(scratch, tenant_column=False)
-    scratch.execute(
-        text(f"CREATE POLICY p ON shifde.zz_rls_probe USING ({expr}) WITH CHECK ({expr})")
-    )
-    assert rls_violations(scratch, set()) == []
+def test_principal_keyed_forms_pass_only_on_a_principal_table(
+    scratch: Connection, expr: str
+) -> None:
+    """Same policy on two tables without tenant_id: only the PRINCIPAL_TABLES one passes."""
+    for table in ("zz_rls_probe", "zz_rls_other"):
+        _secured_table(scratch, f"shifde.{table}", tenant_column=False)
+        scratch.execute(
+            text(f"CREATE POLICY p ON shifde.{table} USING ({expr}) WITH CHECK ({expr})")
+        )
+    problems = rls_violations(scratch, set(), principal_tables=PROBE_IS_A_PRINCIPAL_TABLE)
+    assert [p.split(": ")[0] for p in problems] == ["shifde.zz_rls_other"], problems
+    assert "not listed in PRINCIPAL_TABLES" in problems[0], problems
+    assert len(rls_violations(scratch, set())) == 2  # neither is listed in PRINCIPAL_TABLES
 
 
 @pytest.mark.parametrize("expr", WRITE_FORMS)
@@ -950,3 +1080,107 @@ def test_reviewed_expression_is_keyed_by_command_and_roles(scratch: Connection) 
 )
 def test_split_top_respects_nesting(expr: str, branches: list[str]) -> None:
     assert _split_top(_strip_parens(expr), "OR") == branches
+
+
+# ---- isolation review 5
+OWN_ROW = "user_id = shifde.current_principal_id()"
+
+
+def test_unlisted_principal_keyed_table_is_reported(scratch: Connection) -> None:
+    """Review 5, item 1: SETH's `own_row` on a user-keyed table that may hold client content.
+
+    Staff user U in client B wrote 'client B secret' and read it back in client A: a principal
+    key does not separate clients, so it counts only on a reviewed PRINCIPAL_TABLES relation.
+    """
+    scratch.execute(
+        text(
+            "CREATE TABLE shifde.zz_p"
+            " (id int PRIMARY KEY, user_id uuid, organization_id uuid, body text)"
+        )
+    )
+    scratch.execute(text("ALTER TABLE shifde.zz_p ENABLE ROW LEVEL SECURITY"))
+    scratch.execute(text("ALTER TABLE shifde.zz_p FORCE ROW LEVEL SECURITY"))
+    scratch.execute(
+        text(f"CREATE POLICY own_row ON shifde.zz_p USING ({OWN_ROW}) WITH CHECK ({OWN_ROW})")
+    )
+    (problem,) = rls_violations(scratch, set())
+    why = "keyed to shifde.current_principal_id() on a relation not listed in PRINCIPAL_TABLES"
+    assert problem == (
+        f"shifde.zz_p: policy own_row (ALL) USING {why}: ({OWN_ROW}),"
+        f" policy own_row (ALL) WITH CHECK {why}: ({OWN_ROW})"
+    ), problem
+    assert rls_violations(scratch, set(), principal_tables={"shifde.zz_p": "test"}) == []
+
+
+def test_reviewed_principal_tables() -> None:
+    assert set(PRINCIPAL_TABLES) == {
+        "shifde.sessions",
+        "shifde.local_credentials",
+        "shifde.user_identities",
+    }
+    assert all(reason.strip() for reason in PRINCIPAL_TABLES.values())
+
+
+def _seth_tables() -> dict[str, Any]:
+    tables: dict[str, Any] = json.loads(SETH_SNAPSHOT.read_text(encoding="utf-8"))["tables"]
+    return tables
+
+
+def test_principal_tables_are_principal_keyed_tables(owner_engine: Engine) -> None:
+    """A stale entry would silently approve a future client-content table that reuses the name."""
+    with owner_engine.connect() as c:
+        problems = principal_table_problems(
+            c, PRINCIPAL_TABLES, seth_tables=_seth_tables(), ported=load_lines(PORTED_FILE)
+        )
+    assert not problems, "stale PRINCIPAL_TABLES entries:\n" + "\n".join(problems)
+
+
+@pytest.mark.parametrize(
+    ("entry", "ported", "expected"),
+    [
+        # present and principal-keyed
+        ("shifde.zz_rls_probe", [], None),
+        # a SETH 3ba0e06 principal-keyed table not yet ported
+        ("shifde.sessions", [], None),
+        # ported but missing
+        ("shifde.sessions", ["sessions"], "listed in ported_tables.txt but missing"),
+        # neither in the database nor a SETH principal-keyed table
+        ("shifde.zz_gone", [], "not a table in the database"),
+        ("shifde.runs", [], "not a table in the database"),
+        ("public.sessions", [], "not a table in the database"),
+        # present, but tenant-keyed or without a principal-keyed policy
+        ("shifde.zz_rls_tenant", [], "has a tenant_id column"),
+        ("shifde.zz_rls_admin", [], "no permissive policy keyed to"),
+        ("shifde.zz_rls_view", [], "not a table"),
+        ("zz_rls_probe", [], "not schema-qualified"),
+    ],
+)
+def test_stale_principal_table_entry_is_reported(
+    scratch: Connection, entry: str, ported: list[str], expected: str | None
+) -> None:
+    _secured_table(scratch, tenant_column=False)
+    scratch.execute(text(f"CREATE POLICY p ON shifde.zz_rls_probe USING ({OWN_ROW})"))
+    _secured_table(scratch, "shifde.zz_rls_tenant")
+    scratch.execute(text(f"CREATE POLICY p ON shifde.zz_rls_tenant USING ({OWN_ROW})"))
+    _secured_table(scratch, "shifde.zz_rls_admin", tenant_column=False)
+    scratch.execute(
+        text("CREATE POLICY p ON shifde.zz_rls_admin USING (shifde.is_platform_admin_ctx())")
+    )
+    scratch.execute(text("CREATE VIEW shifde.zz_rls_view WITH (security_invoker) AS SELECT 1 AS x"))
+    problems = principal_table_problems(
+        scratch, {entry: "test"}, seth_tables=_seth_tables(), ported=ported
+    )
+    if expected is None:
+        assert problems == []
+    else:
+        (problem,) = problems
+        assert problem.startswith(f"{entry}: ") and expected in problem, problem
+
+
+def test_principal_table_entry_without_reason_is_reported(scratch: Connection) -> None:
+    _secured_table(scratch, tenant_column=False)
+    scratch.execute(text(f"CREATE POLICY p ON shifde.zz_rls_probe USING ({OWN_ROW})"))
+    problems = principal_table_problems(
+        scratch, {"shifde.zz_rls_probe": " "}, seth_tables=_seth_tables(), ported=[]
+    )
+    assert problems == ["shifde.zz_rls_probe: no reason"]
