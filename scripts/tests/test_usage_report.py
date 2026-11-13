@@ -105,6 +105,17 @@ class UsageReportTest(unittest.TestCase):
         self.assertIn("core", by_unit)
         self.assertIn("lead", by_unit)
 
+    def test_role_tag_overrides_general_purpose(self) -> None:
+        sub = self.projects / PREFIX / "sess1" / "subagents"
+        (sub / "agent-def.jsonl").write_text(_line("req-9", "m-sonnet", 1, 1))
+        (sub / "agent-def.meta.json").write_text(
+            json.dumps({"agentType": "general-purpose", "description": "[core] verify (verifier)"})
+        )
+        r = ur.build_report(self.projects, PREFIX, self.repo)
+        types = {g["agent_type"] for g in r["by_agent_type"]}
+        self.assertIn("verifier", types)
+        self.assertNotIn("general-purpose", types)
+
     def test_cost_from_prices(self) -> None:
         r = ur.build_report(self.projects, PREFIX, self.repo)
         by_model = {g["model"]: g for g in r["by_model"]}

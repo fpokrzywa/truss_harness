@@ -26,6 +26,11 @@ REPO = Path(__file__).resolve().parents[1]
 DEFAULT_PREFIX = "S--Development-2026-shi-work-agt-trus-harness"
 CLASSES = ("input", "output", "cache_write_5m", "cache_write_1h", "cache_read")
 UNIT_RE = re.compile(r"^\s*\[([^\]]+)\]\s*(\S+)?")
+ROLE_RE = re.compile(r"\(([a-z][a-z-]+)\)\s*$")
+ROLES = {
+    "scout", "module-builder", "module-builder-critical", "frontend-builder", "verifier",
+    "isolation-reviewer",
+}
 ROUND_VERBS = ("build", "verify", "fix", "review", "inventory")
 
 
@@ -71,7 +76,13 @@ def _agent_identity(jsonl: Path) -> tuple[str, str]:
         data = json.loads(meta.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return "unknown", ""
-    return str(data.get("agentType") or "unknown"), str(data.get("description") or "")
+    agent_type = str(data.get("agentType") or "unknown")
+    description = str(data.get("description") or "")
+    # Roles run as general-purpose (agent files load only at session start) carry "(role)".
+    m = ROLE_RE.search(description)
+    if m and m.group(1) in ROLES:
+        agent_type = m.group(1)
+    return agent_type, description
 
 
 def _unit_and_verb(agent_type: str, description: str) -> tuple[str, str]:
