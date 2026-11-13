@@ -467,6 +467,22 @@ CONTEXT_WRITERS = [
         ],
         {"function shifde.current_tenant_id(x integer)"},
     ),
+    # review 4, item 2: an aggregate whose transition function is set_config
+    (
+        [
+            "CREATE AGGREGATE shifde.zz_agg(text, boolean) (SFUNC = pg_catalog.set_config,"
+            " STYPE = text, INITCOND = 'app.platform_admin')"
+        ],
+        {"aggregate shifde.zz_agg(text, boolean)"},
+    ),
+    (
+        [
+            "CREATE AGGREGATE shifde.zz_agg(text) (SFUNC = pg_catalog.textcat, STYPE = text,"
+            " MSFUNC = pg_catalog.textcat, MINVFUNC = pg_catalog.textcat, MSTYPE = text,"
+            " MINITCOND = 'app.tenant_id')"
+        ],
+        {"aggregate shifde.zz_agg(text)"},
+    ),
 ]
 
 
@@ -502,6 +518,12 @@ def test_code_that_only_reads_the_context_through_the_helpers_passes(scratch: Co
         text(
             "CREATE FUNCTION shifde.zz_upd() RETURNS void LANGUAGE sql"
             " AS $$ UPDATE shifde.zz_ctx SET c = 'x' $$"
+        )
+    )
+    scratch.execute(
+        text(
+            "CREATE AGGREGATE shifde.zz_sum(int) (SFUNC = pg_catalog.int4pl, STYPE = int,"
+            " INITCOND = '0')"
         )
     )
     assert context_write_violations(scratch) == []

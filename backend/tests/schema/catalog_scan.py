@@ -16,6 +16,10 @@ can hand one client another client's rows for the rest of the transaction.
 * column defaults and generation expressions; domain defaults;
 * every constraint (CHECK, including domain CHECKs); index expressions and predicates; trigger
   definitions (the WHEN clause and the arguments); extended statistics expressions;
+* aggregates: the schema-qualified names of every support function (transition, final,
+  combine, serial, deserial and their moving-aggregate forms) and the initial states
+  (`agginitval`, `aggminitval`) -- `SFUNC = pg_catalog.set_config` with `INITCOND =
+  'app.platform_admin'` writes the context (isolation review 4, item 2);
 
 and reports each object whose text
 
@@ -63,6 +67,7 @@ ALL_KINDS = frozenset(
         "index",
         "trigger",
         "statistics",
+        "aggregate",
     }
 )
 
@@ -96,6 +101,21 @@ _FUNCTIONS = text(
 )
 
 _EXPRESSIONS: dict[str, str] = {
+    # An aggregate's pg_proc row has no body (`aggregate_dummy`): read its support functions
+    # (schema-qualified names) and initial states from pg_aggregate.
+    "aggregate": f"""SELECT n.nspname || '.' || p.proname
+                || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')',
+              pg_catalog.concat_ws(' ', a.agginitval, a.aggminitval,
+                (SELECT pg_catalog.string_agg(fn.pronamespace::pg_catalog.regnamespace::text
+                                              || '.' || fn.proname, ' ')
+                   FROM pg_catalog.pg_proc fn
+                  WHERE fn.oid IN (a.aggtransfn, a.aggfinalfn, a.aggcombinefn, a.aggserialfn,
+                                   a.aggdeserialfn, a.aggmtransfn, a.aggminvtransfn,
+                                   a.aggmfinalfn)))
+         FROM pg_catalog.pg_aggregate a
+         JOIN pg_catalog.pg_proc p ON p.oid = a.aggfnoid
+         JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+        WHERE {_system("n.nspname")}""",
     "view": f"""SELECT n.nspname || '.' || c.relname, pg_catalog.pg_get_viewdef(c.oid)
          FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
         WHERE c.relkind IN ('v', 'm') AND {_system("n.nspname")}""",
