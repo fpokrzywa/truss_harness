@@ -1,0 +1,4 @@
+# Tables ported from SETH 3ba0e06 (schema `shifde`), one per line, optionally `# <module>`.
+# tests/schema/test_schema_vs_seth.py checks each against backend/tests/schema/seth_3ba0e06.json:
+# a listed table missing from the database fails, and any difference not listed in
+# backend/tests/schema/deliberate_changes.yaml fails. Module ports add their tables here.
