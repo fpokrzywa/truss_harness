@@ -5,13 +5,13 @@ Tenant context (`app.tenant_id`, `app.principal_id`, `app.request_id`,
 with ``set_config(name, value, true)`` -- transaction-local, never session-level -- in a Session
 ``after_begin`` hook, so a pooled connection can never carry context into another transaction.
 
-`Database` also guards the pool (isolation review 1, items 4-6): it refuses to build on a role
-that could bypass row-level security (`shifde.core.dbrole.check_app_role`), and on every pool
-checkout it runs ``RESET ALL`` (dropping any session-level setting a previous user left behind)
-and then refuses a connection that still carries `app.tenant_id`, `app.principal_id` or
-`app.platform_admin` -- i.e. one preset by the role, the database, the connection options or the
-server configuration. A refused connection is discarded, so the refusal repeats until the preset
-is removed.
+`Database` also guards the pool (isolation review 1, items 4-6; review 2, item 8): it refuses to
+build on a role that could bypass row-level security (`shifde.core.dbrole.check_app_role`), and
+on every pool checkout it runs ``DISCARD ALL`` (dropping any session-level setting, temporary
+object, prepared statement, `SET ROLE` or `LISTEN` a previous user left behind) and then refuses
+a connection that still carries `app.tenant_id`, `app.principal_id` or `app.platform_admin` --
+i.e. one preset by the role, the database, the connection options or the server configuration.
+A refused connection is discarded, so the refusal repeats until the preset is removed.
 """
 
 from __future__ import annotations
@@ -126,12 +126,14 @@ def platform_admin_context(session: Session) -> Iterator[None]:
 def _clean_checkout(
     dbapi_connection: Any, connection_record: ConnectionPoolEntry, connection_proxy: object
 ) -> None:
-    """Pool `checkout` hook: reset session-level settings, then refuse a preset context.
+    """Pool `checkout` hook: discard session state, then refuse a preset context. SETH keeps no
+    session state across a checkout (advisory locks are transaction-level, LISTEN uses its own
+    connection), and psycopg clears its prepared-statement cache when it sees DISCARD ALL.
     Raising here makes SQLAlchemy invalidate (close) the connection."""
     autocommit = dbapi_connection.autocommit
     dbapi_connection.autocommit = True
     try:
-        dbapi_connection.execute("RESET ALL")
+        dbapi_connection.execute("DISCARD ALL")
     finally:
         dbapi_connection.autocommit = autocommit
     assert_no_preset_context(dbapi_connection)

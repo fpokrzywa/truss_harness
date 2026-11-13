@@ -444,6 +444,66 @@ def test_session_level_context_does_not_survive_checkin(app_url: str) -> None:
             ).one()
             assert row[1] in (None, "")
             assert row[2] == '"$user", public'
-            assert row[3] == "UTC"  # connection options survive RESET ALL
+            assert row[3] == "UTC"  # connection options survive DISCARD ALL
     finally:
         db.dispose()
+
+
+# --------------------------------------------------------------------------- isolation review 2
+def test_temporary_objects_do_not_survive_checkin(app_url: str) -> None:
+    """DISCARD ALL on checkout: a temp table (which could shadow a name) never reaches the next
+    user of the pooled connection."""
+    db = Database(app_url, pool_size=1, max_overflow=0)
+    try:
+        with db.engine.connect() as c:
+            pid = c.exec_driver_sql("SELECT pg_backend_pid()").scalar_one()
+            c.exec_driver_sql("CREATE TEMP TABLE zz_left_behind (x int)")
+            c.commit()
+        with db.session() as s:
+            row = s.execute(
+                text("SELECT pg_backend_pid(), to_regclass('pg_temp.zz_left_behind')")
+            ).one()
+            assert row[0] == pid  # same pooled connection
+            assert row[1] is None
+    finally:
+        db.dispose()
+
+
+def test_auto_prepared_statements_survive_discard(app_url: str) -> None:
+    """psycopg prepares a query after 5 runs; DISCARD ALL drops it server-side and psycopg must
+    notice (it does: it clears its cache on DISCARD ALL)."""
+    db = Database(app_url, pool_size=1, max_overflow=0)
+    try:
+        for _ in range(3):
+            with db.session() as s:
+                for i in range(8):
+                    assert (
+                        s.execute(text("SELECT CAST(:i AS int) + 1"), {"i": i}).scalar_one()
+                        == i + 1
+                    )
+    finally:
+        db.dispose()
+
+
+def test_create_on_the_database_is_refused(
+    make_role: MakeRole, admin: Engine, app_url: str
+) -> None:
+    """CREATE on the database lets the role create schemas (e.g. one named after itself, first on
+    the default `"$user"` search path) and trusted extensions."""
+    url = make_role("NOSUPERUSER NOBYPASSRLS")
+    database = make_url(app_url).database
+    with admin.connect() as c:
+        c.execute(text(f'GRANT CREATE ON DATABASE "{database}" TO {_role_of(url)}'))
+    with pytest.raises(UnsafeDatabaseRole, match="may create schemas in the database"):
+        _check(url)
+
+
+@pytest.mark.parametrize("predefined", ["pg_read_all_data", "pg_write_all_data", "pg_maintain"])
+def test_data_wide_predefined_roles_are_refused(
+    make_role: MakeRole, admin: Engine, predefined: str
+) -> None:
+    url = make_role("NOSUPERUSER NOBYPASSRLS")
+    with admin.connect() as c:
+        c.execute(text(f"GRANT {predefined} TO {_role_of(url)}"))
+    with pytest.raises(UnsafeDatabaseRole, match=f"member of role '{predefined}'"):
+        _check(url)

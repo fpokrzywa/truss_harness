@@ -4,7 +4,8 @@ Client isolation rests on PostgreSQL row-level security, which a privileged role
 superuser or a `BYPASSRLS` role ignores every policy; the owner of a table, schema, function
 or database can switch the policies off or rewrite them; a `CREATEROLE` role can grant itself
 such a role (PostgreSQL 15 and earlier) and a `REPLICATION` role can stream every row; a role that
-may `CREATE` in a schema can plant objects that shadow names other code resolves. The API (and
+may `CREATE` in a schema or the database can plant objects (or a schema named after itself, first
+on the default `"$user"` search path) that shadow names other code resolves. The API (and
 later the worker) must therefore run as `shifde_app`, which is none of these. `check_app_role`
 refuses any connection whose role -- or any role it is a member of, directly or indirectly, i.e.
 any role it could `SET ROLE` to -- is privileged in one of those ways.
@@ -37,6 +38,11 @@ SERVER_ACCESS_ROLES: tuple[str, ...] = (
 # (which can carry client data in literals). pg_monitor is a member of pg_read_all_stats.
 STATISTICS_ROLES: tuple[str, ...] = ("pg_read_all_stats", "pg_monitor")
 
+# Predefined roles with rights on every table: SELECT / INSERT, UPDATE, DELETE on all of them
+# (row-level security still applies, but every grant this codebase withholds is given), or
+# MAINTAIN (VACUUM, ANALYZE, REFRESH MATERIALIZED VIEW, LOCK, ...) on all of them.
+DATA_ROLES: tuple[str, ...] = ("pg_read_all_data", "pg_write_all_data", "pg_maintain")
+
 # The per-transaction context settings the row-level security helpers read (base_0001).
 CONTEXT_SETTINGS: tuple[str, ...] = ("app.tenant_id", "app.principal_id", "app.platform_admin")
 
@@ -67,6 +73,9 @@ _ROLE_SQL = text(
         r.rolcreaterole,
         r.rolname = ANY(:server_roles) AS server_access,
         r.rolname = ANY(:stats_roles) AS stats_access,
+        r.rolname = ANY(:data_roles) AS data_access,
+        pg_catalog.has_database_privilege(
+            r.oid, pg_catalog.current_database(), 'CREATE') AS create_database,
         (SELECT min(quote_ident(n.nspname) || '.' || quote_ident(c.relname))
            FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
           WHERE c.relowner = r.oid AND {_USER_SCHEMA.format(n="n")}) AS owned_relation,
@@ -130,11 +139,12 @@ def check_app_role(engine: Engine) -> None:
     Refused when the role, or any role it is a member of (directly or indirectly):
     is a superuser; has BYPASSRLS, REPLICATION or CREATEROLE; owns a relation, schema or function
     outside PostgreSQL's own schemas (this includes the `public` schema); may CREATE in such a
-    schema; owns the current database; or is one of the predefined server-file / server-program /
-    statistics roles. Also refused when a fresh connection already carries one of the
-    `CONTEXT_SETTINGS`, or `pg_db_role_setting` presets any `app.*` setting for this role or
-    database. Every reason found is reported; the message names roles, objects and setting
-    names only, never connection details or setting values."""
+    schema or in the database itself; owns the current database; or is one of the predefined
+    server-file / server-program / statistics / all-data / maintain roles. Also refused when a
+    fresh connection already carries one of the `CONTEXT_SETTINGS`, or `pg_db_role_setting`
+    presets any `app.*` setting for this role or database. Every reason found is reported; the
+    message names roles, objects and setting names only, never connection details or setting
+    values."""
     with engine.connect() as conn:
         # First statement on the connection: nothing has set a context yet.
         preset = preset_context(tuple(conn.execute(text(_CONTEXT_SQL)).one()))
@@ -143,6 +153,7 @@ def check_app_role(engine: Engine) -> None:
             {
                 "server_roles": list(SERVER_ACCESS_ROLES),
                 "stats_roles": list(STATISTICS_ROLES),
+                "data_roles": list(DATA_ROLES),
             },
         ).all()
         presets = conn.execute(_PRESET_SQL).all()
@@ -165,6 +176,10 @@ def check_app_role(engine: Engine) -> None:
             reasons.append(f"{who} grants server file/program access")
         if row.stats_access:
             reasons.append(f"{who} reads other sessions' statistics")
+        if row.data_access:
+            reasons.append(f"{who} has rights on every table")
+        if row.create_database:
+            reasons.append(f"{who} may create schemas in the database")
         if row.create_schema:
             reasons.append(f"{who} may create objects in schema {row.create_schema}")
         if row.owns_database:
