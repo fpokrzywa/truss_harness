@@ -249,6 +249,20 @@ class Cluster:
               PASSWORD '{pw["OWNER_PASSWORD"]}';
             ALTER ROLE {APP_ROLE} LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE
               NOREPLICATION PASSWORD '{pw["APP_PASSWORD"]}';
+            -- {APP_ROLE} is a member of no role: drop any membership granted before
+            -- (isolation review 1, item 13). GRANTED BY names each grantor (PostgreSQL 16+).
+            DO $$ DECLARE grant_row record; BEGIN
+              FOR grant_row IN
+                SELECT r.rolname AS granted, g.rolname AS grantor
+                  FROM pg_auth_members m
+                  JOIN pg_roles r ON r.oid = m.roleid
+                  JOIN pg_roles g ON g.oid = m.grantor
+                 WHERE m.member = '{APP_ROLE}'::regrole
+              LOOP
+                EXECUTE format('REVOKE %I FROM %I GRANTED BY %I CASCADE',
+                               grant_row.granted, '{APP_ROLE}', grant_row.grantor);
+              END LOOP;
+            END $$;
             """
         )
 

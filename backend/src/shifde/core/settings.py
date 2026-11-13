@@ -108,6 +108,10 @@ def format_validation_error(exc: ValueError) -> str:
     return "; ".join(lines) or "invalid configuration"
 
 
+class MigrationUrlMissing(RuntimeError):
+    """`SHIFDE_MIGRATION_DATABASE_URL` is required to run migrations and is not set."""
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="SHIFDE_",
@@ -282,7 +286,13 @@ class Settings(BaseSettings):
 
     @property
     def effective_migration_url(self) -> str:
-        return self.migration_database_url or self.database_url
+        """The schema owner's URL. Unlike SETH there is no fallback to `database_url`: migrations
+        never run as the application role (isolation review 1, item 13)."""
+        if not self.migration_database_url:
+            raise MigrationUrlMissing(
+                "SHIFDE_MIGRATION_DATABASE_URL is not set; migrations run only as the schema owner"
+            )
+        return self.migration_database_url
 
 
 def _ensure_dev_env_values(path: Path) -> None:

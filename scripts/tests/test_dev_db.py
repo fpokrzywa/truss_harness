@@ -88,3 +88,32 @@ class DevEnvTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EnsureRolesTests(unittest.TestCase):
+    """`ensure_roles` resets shifde_app's memberships (isolation review 1, item 13)."""
+
+    def _sql(self) -> str:
+        sent: list[str] = []
+        cluster = dev_db.Cluster.__new__(dev_db.Cluster)
+        cluster.passwords = lambda: {  # type: ignore[method-assign]
+            "SUPERUSER_PASSWORD": "s1",
+            "OWNER_PASSWORD": "o1",
+            "APP_PASSWORD": "a1",
+        }
+        cluster.psql = lambda sql, *a, **k: sent.append(sql) or ""  # type: ignore[method-assign]
+        cluster.ensure_roles()
+        return "\n".join(sent)
+
+    def test_revokes_every_membership_of_the_app_role(self) -> None:
+        sql = self._sql()
+        self.assertIn("FROM pg_auth_members", sql)
+        self.assertIn("m.member = 'shifde_app'::regrole", sql)
+        self.assertIn("REVOKE %I FROM %I GRANTED BY %I", sql)
+
+    def test_app_role_attributes_stay_unprivileged(self) -> None:
+        sql = self._sql()
+        self.assertIn(
+            "ALTER ROLE shifde_app LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE", sql
+        )
+        self.assertIn("NOREPLICATION", sql)
