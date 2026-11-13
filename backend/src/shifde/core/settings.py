@@ -9,15 +9,17 @@ from __future__ import annotations
 import ipaddress
 import os
 import secrets
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from dotenv import dotenv_values
 from pydantic import SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 
 from shifde.core.crypto import KeyRing
 
@@ -93,6 +95,14 @@ def resolve_secret_files(environ: Mapping[str, str]) -> dict[str, str]:
     return values
 
 
+def _mask_url(url: str) -> str:
+    """The URL with its password replaced by `***` (never raises)."""
+    try:
+        return make_url(url).render_as_string(hide_password=True)
+    except ArgumentError:
+        return "<unparseable url>"
+
+
 def format_validation_error(exc: ValueError) -> str:
     """Redacted rendering of a settings error: variable name and message only. pydantic's own
     string form embeds `input_value=...` (for model validators the whole input, secrets
@@ -132,7 +142,11 @@ class Settings(BaseSettings):
     auth_local_allow_in_production: bool = False
     login_rate_per_minute: int = 20  # per client IP (skipped for loopback / trusted proxies)
     login_rate_per_account_per_minute: int = 10  # per normalized email
+    # X-Forwarded-For is believed from these peers and from loopback (the same-host frontend proxy)
     trusted_proxies: Annotated[list[str], NoDecode] = []
+    max_request_body_bytes: int = 8 * 1024 * 1024  # global request-body cap, 0 = off (Item 5b)
+    db_connect_timeout_seconds: int = 10  # Item 18
+    db_statement_timeout_ms: int = 60_000  # Item 18; 0 = none
     session_idle_minutes: int = 30
     session_absolute_hours: int = 12
     allowed_origins: Annotated[list[str], NoDecode] = [
@@ -182,6 +196,15 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [part.strip().rstrip("/") for part in value.split(",") if part.strip()]
         return value
+
+    def __repr_args__(self) -> Iterator[tuple[str | None, Any]]:  # Any: pydantic's own signature
+        """`repr()` and `str()` show the database URLs without their passwords (ARCH m1);
+        `SecretStr` fields already mask themselves."""
+        for name, value in super().__repr_args__():
+            if name in ("database_url", "migration_database_url") and isinstance(value, str):
+                yield name, _mask_url(value)
+            else:
+                yield name, value
 
     @field_validator("trusted_proxies", mode="before")
     @classmethod
