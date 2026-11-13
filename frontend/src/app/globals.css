@@ -1,0 +1,225 @@
+@import 'tailwindcss';
+
+/* Fonts come from next/font (root layout), which serves them from this origin: no runtime CDN fetch. */
+@theme inline {
+  --font-sans: var(--font-cc-roboto), system-ui, 'Segoe UI', Arial, sans-serif;
+  --font-mono: var(--font-cc-roboto-mono), ui-monospace, Consolas, monospace;
+  --font-lora: var(--font-cc-lora), Georgia, serif;
+  --font-roboto: var(--font-sans);
+  --font-roboto-mono: var(--font-mono);
+}
+
+/* SHI brand tokens. Text on the dark bases must be shi-ink, shi-tint or shi-green: the rest miss 7:1.
+ * shi-mid-deep and shi-danger are the brand Mid Blue and Orange, darkened until white text reaches 7:1.
+ * Enforced by lib/command.test.ts. */
+@theme static {
+  --color-shi-slate: #253746;
+  --color-shi-grey: #333333;
+  --color-shi-mid: #1c64a5;
+  --color-shi-mid-deep: #18588f;
+  --color-shi-danger: #983804;
+  --color-shi-blue-slate: #3c6080;
+  --color-shi-light: #acb0bc;
+  --color-shi-tint: #d5d7dd;
+  --color-shi-ink: #ffffff;
+  --color-shi-green: #b1e001;
+  --color-shi-pink: #ff00c0;
+  --color-shi-orange: #ff6d15;
+}
+
+/*
+ * The whole console is themed here, not screen by screen: components keep their semantic Tailwind
+ * classes and each ramp is remapped to the SHI palette. Low steps are surfaces and borders, high
+ * steps are text, so a screen written for a light theme lands on AAA pairs on the dark one.
+ */
+@theme {
+  --color-slate-50: #253746;
+  --color-slate-100: #333333;
+  --color-slate-200: #3c6080;
+  --color-slate-300: #acb0bc;
+  --color-slate-400: #d5d7dd;
+  --color-slate-500: #d5d7dd;
+  --color-slate-600: #d5d7dd;
+  --color-slate-700: #e4e6ea;
+  --color-slate-800: #ffffff;
+  --color-slate-900: #ffffff;
+
+  --color-red-50: #4a2a1e;
+  --color-red-100: #5c3424;
+  --color-red-300: #ff6d15;
+  --color-red-600: #ff6d15;
+  --color-red-700: #ffd3bd;
+  --color-red-800: #ffd3bd;
+  --color-red-900: #ffd3bd;
+
+  --color-amber-50: #3f3524;
+  --color-amber-100: #57482a;
+  --color-amber-300: #ff6d15;
+  --color-amber-400: #ff6d15;
+  --color-amber-600: #ff6d15;
+  --color-amber-700: #ff6d15;
+  --color-amber-800: #ffe3b0;
+  --color-amber-900: #ffe3b0;
+
+  --color-green-50: #2a3a1c;
+  --color-green-300: #b1e001;
+  --color-green-600: #b1e001;
+  --color-green-700: #b1e001;
+  --color-green-800: #b1e001;
+  --color-green-900: #b1e001;
+
+  --color-blue-50: #1c3e5c;
+  --color-blue-200: #3c6080;
+  --color-blue-600: #6aa9e4;
+  --color-blue-700: #6aa9e4;
+  --color-blue-800: #bfdcf7;
+  --color-blue-900: #ffffff;
+  --color-blue-950: #ffffff;
+
+  --color-purple-50: #3d2a50;
+  --color-purple-600: #ff00c0;
+
+  --radius-sm: 2px;
+  --radius-md: 2px;
+  --radius-lg: 2px;
+  --radius-xl: 2px;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+    background-color: var(--color-shi-slate);
+  }
+  body {
+    @apply text-slate-900 antialiased;
+    /* Wireframe grid. Its alpha is low enough that green text still reaches 7:1 on a grid line. */
+    background-image:
+      linear-gradient(rgb(60 96 128 / 0.16) 1px, transparent 1px),
+      linear-gradient(90deg, rgb(60 96 128 / 0.16) 1px, transparent 1px);
+    background-size: 48px 48px;
+  }
+  h1 {
+    font-family: var(--font-lora);
+  }
+  a {
+    text-underline-offset: 3px;
+  }
+  ::placeholder {
+    color: var(--color-shi-tint);
+    opacity: 1;
+  }
+  dialog {
+    background-color: var(--color-shi-grey);
+    color: var(--color-shi-ink);
+  }
+  :focus-visible {
+    outline: 3px solid var(--color-shi-green);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium tracking-wide text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-600;
+  }
+  /* --brand-primary is set at runtime only when it has >=4.5:1 contrast with white text. */
+  .btn:hover:not(:disabled) {
+    border-color: var(--color-shi-ink);
+    background-color: var(--color-shi-slate);
+  }
+  .btn-primary {
+    color: var(--color-shi-ink);
+    border-color: var(--brand-primary, var(--color-shi-mid-deep));
+    background-color: var(--brand-primary, var(--color-shi-mid-deep));
+  }
+  .btn-primary:hover:not(:disabled) {
+    background-color: var(--brand-primary, var(--color-shi-mid-deep));
+    filter: brightness(0.88);
+  }
+  .btn-danger {
+    color: var(--color-shi-ink);
+    border-color: var(--color-shi-orange);
+    background-color: var(--color-shi-danger);
+  }
+  .btn-danger:hover:not(:disabled) {
+    background-color: var(--color-shi-danger);
+    filter: brightness(0.88);
+  }
+  .btn-primary:disabled,
+  .btn-danger:disabled {
+    border-color: var(--color-slate-200);
+    background-color: var(--color-slate-100);
+    color: var(--color-slate-600);
+  }
+  .input {
+    @apply block w-full rounded-md border border-slate-300 bg-slate-50 px-3 py-1.5 text-sm text-slate-900 disabled:bg-slate-100;
+  }
+  .label {
+    @apply mb-1 block text-sm font-medium text-slate-800;
+  }
+  .card {
+    @apply rounded-lg border border-slate-200 bg-slate-100 p-4;
+  }
+  .badge {
+    @apply inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium;
+  }
+  .th {
+    @apply px-3 py-2 text-left text-xs font-semibold tracking-wide text-slate-600 uppercase;
+  }
+  .td {
+    @apply px-3 py-2 text-sm text-slate-800;
+  }
+}
+
+/* Data-viz tokens (dataviz skill), validated against this surface. */
+.viz-root {
+  --surface-1: #333333;
+  --grid: #3c6080;
+  --text-primary: #ffffff;
+  --text-secondary: #d5d7dd;
+  --series-1: #ff00c0;
+  --series-2: #7fa000;
+  --series-3: #3c8fe0;
+  background: var(--surface-1);
+  color: var(--text-primary);
+}
+
+/* Unlayered on purpose: these beat Tailwind utilities that cannot be remapped by a token. */
+.bg-white {
+  background-color: var(--color-shi-grey);
+}
+dialog::backdrop {
+  background-color: rgb(0 0 0 / 0.6);
+}
+/* Page titles: command center headings carry .font-lora and set their own size. */
+h1:not(.font-lora) {
+  font-size: 2rem;
+  line-height: 1.2;
+  font-weight: 500;
+}
+
+/* Graph builders. Three classes to outrank React Flow's own `.react-flow.light` values. */
+.react-flow.react-flow.react-flow {
+  --xy-background-color-default: transparent;
+  --xy-background-pattern-color-default: #3c6080;
+  --xy-edge-stroke-default: #acb0bc;
+  --xy-edge-stroke-selected-default: #ff00c0;
+  --xy-connectionline-stroke-default: #ff00c0;
+  --xy-node-color-default: #ffffff;
+  --xy-node-background-color-default: #333333;
+  --xy-node-border-default: 1px solid #acb0bc;
+  --xy-node-boxshadow-selected-default: 0 0 0 2px #ff00c0;
+  --xy-handle-background-color-default: #b1e001;
+  --xy-handle-border-color-default: #253746;
+  --xy-edge-label-color-default: #ffffff;
+  --xy-edge-label-background-color-default: #333333;
+  --xy-controls-button-background-color-default: #333333;
+  --xy-controls-button-background-color-hover-default: #3c6080;
+  --xy-controls-button-color-default: #ffffff;
+  --xy-controls-button-color-hover-default: #ffffff;
+  --xy-controls-button-border-color-default: #acb0bc;
+  --xy-attribution-background-color-default: #333333;
+}
+.react-flow__attribution a {
+  color: #ffffff;
+}
