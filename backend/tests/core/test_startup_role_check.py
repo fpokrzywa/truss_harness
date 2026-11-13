@@ -99,6 +99,113 @@ def test_bypassrls_role_is_refused(make_role: MakeRole) -> None:
         _check(make_role("NOSUPERUSER BYPASSRLS"))
 
 
+def test_replication_role_is_refused(make_role: MakeRole) -> None:
+    with pytest.raises(UnsafeDatabaseRole, match="has REPLICATION"):
+        _check(make_role("NOSUPERUSER NOBYPASSRLS REPLICATION"))
+
+
+def test_createrole_role_is_refused(make_role: MakeRole) -> None:
+    with pytest.raises(UnsafeDatabaseRole, match="has CREATEROLE"):
+        _check(make_role("NOSUPERUSER NOBYPASSRLS CREATEROLE"))
+
+
+def test_member_of_replication_or_createrole_role_is_refused(
+    make_role: MakeRole, admin: Engine
+) -> None:
+    url = make_role("NOSUPERUSER NOBYPASSRLS NOINHERIT")
+    repl = make_role("NOSUPERUSER REPLICATION", login=False)
+    creator = make_role("NOSUPERUSER CREATEROLE", login=False)
+    with admin.connect() as c:
+        c.execute(text(f"GRANT {repl} TO {_role_of(url)}"))
+        c.execute(text(f"GRANT {creator} TO {_role_of(url)}"))
+    with pytest.raises(UnsafeDatabaseRole) as exc:
+        _check(url)
+    assert f"member of role '{repl}' has REPLICATION" in exc.value.reason
+    assert f"member of role '{creator}' has CREATEROLE" in exc.value.reason
+
+
+def test_statistics_reader_is_refused(make_role: MakeRole, admin: Engine) -> None:
+    """pg_monitor (a member of pg_read_all_stats) sees other sessions' query texts."""
+    url = make_role("NOSUPERUSER NOBYPASSRLS")
+    with admin.connect() as c:
+        c.execute(text(f"GRANT pg_monitor TO {_role_of(url)}"))
+    with pytest.raises(UnsafeDatabaseRole) as exc:
+        _check(url)
+    assert "member of role 'pg_read_all_stats' reads other sessions' statistics" in (
+        exc.value.reason
+    )
+    assert "member of role 'pg_monitor' reads other sessions' statistics" in exc.value.reason
+
+
+def test_create_on_a_schema_is_refused(make_role: MakeRole, admin: Engine) -> None:
+    """CREATE on a schema lets the role plant objects that shadow names other code resolves."""
+    url = make_role("NOSUPERUSER NOBYPASSRLS")
+    with admin.connect() as c:
+        c.execute(text(f"GRANT CREATE ON SCHEMA public TO {_role_of(url)}"))
+    try:
+        with pytest.raises(UnsafeDatabaseRole, match="may create objects in schema public"):
+            _check(url)
+    finally:
+        with admin.connect() as c:
+            c.execute(text(f"REVOKE CREATE ON SCHEMA public FROM {_role_of(url)}"))
+
+
+def test_create_granted_to_public_is_refused(make_role: MakeRole, admin: Engine) -> None:
+    url = make_role("NOSUPERUSER NOBYPASSRLS")
+    with admin.connect() as c:
+        c.execute(text("GRANT CREATE ON SCHEMA public TO PUBLIC"))
+    try:
+        with pytest.raises(UnsafeDatabaseRole, match="may create objects in schema public"):
+            _check(url)
+    finally:
+        with admin.connect() as c:
+            c.execute(text("REVOKE CREATE ON SCHEMA public FROM PUBLIC"))
+
+
+# --------------------------------------------------------------------------- preset context
+TENANT_X = "01900000-0000-7000-8000-0000000000aa"
+
+
+@pytest.mark.parametrize(
+    ("setting", "value"),
+    [
+        ("app.platform_admin", "on"),
+        ("app.tenant_id", TENANT_X),
+        ("app.principal_id", TENANT_X),
+    ],
+)
+def test_role_with_preset_context_is_refused(
+    make_role: MakeRole, admin: Engine, setting: str, value: str
+) -> None:
+    url = make_role("NOSUPERUSER NOBYPASSRLS")
+    with admin.connect() as c:
+        c.execute(text(f"ALTER ROLE {_role_of(url)} SET {setting} = '{value}'"))
+    with pytest.raises(UnsafeDatabaseRole) as exc:
+        _check(url)
+    assert f"{setting} is preset on a new connection" in exc.value.reason
+    assert f"ALTER ROLE ... SET {setting}" in exc.value.reason
+
+
+def test_database_with_preset_context_is_refused(admin: Engine, app_url: str) -> None:
+    database = make_url(app_url).database
+    with admin.connect() as c:
+        c.execute(text(f"ALTER DATABASE \"{database}\" SET app.tenant_id = '{TENANT_X}'"))
+    try:
+        with pytest.raises(UnsafeDatabaseRole) as exc:
+            _check(app_url)
+        assert "app.tenant_id is preset on a new connection" in exc.value.reason
+        assert "ALTER DATABASE ... SET app.tenant_id" in exc.value.reason
+    finally:
+        with admin.connect() as c:
+            c.execute(text(f'ALTER DATABASE "{database}" RESET app.tenant_id'))
+
+
+def test_url_options_with_preset_context_are_refused(app_url: str) -> None:
+    url = make_url(app_url).update_query_dict({"options": f"-c app.tenant_id={TENANT_X}"})
+    with pytest.raises(UnsafeDatabaseRole, match="app.tenant_id is preset on a new connection"):
+        _check(url.render_as_string(hide_password=False))
+
+
 def test_table_owner_is_refused(make_role: MakeRole, admin: Engine) -> None:
     url = make_role("NOSUPERUSER NOBYPASSRLS")
     role = _role_of(url)
