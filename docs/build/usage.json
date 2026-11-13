@@ -1,0 +1,146 @@
+{
+  "generated": "2026-11-13T19:59:07+00:00",
+  "note": "est_usd is an estimate at list price, not a bill",
+  "totals": {
+    "all": "all",
+    "input": 196,
+    "output": 224966,
+    "cache_write_5m": 446153,
+    "cache_write_1h": 490321,
+    "cache_read": 13166682,
+    "requests": 97,
+    "est_usd": 18.4629
+  },
+  "by_model": [
+    {
+      "model": "claude-fable-5-2",
+      "input": 130,
+      "output": 165127,
+      "cache_write_5m": 192433,
+      "cache_write_1h": 360967,
+      "cache_read": 9916478,
+      "requests": 65,
+      "est_usd": 16.2892
+    },
+    {
+      "model": "claude-opus-5-5",
+      "input": 42,
+      "output": 28783,
+      "cache_write_5m": 0,
+      "cache_write_1h": 129354,
+      "cache_read": 2543619,
+      "requests": 20,
+      "est_usd": 2.1194
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 24,
+      "output": 31056,
+      "cache_write_5m": 253720,
+      "cache_write_1h": 0,
+      "cache_read": 706585,
+      "requests": 12,
+      "est_usd": 0.0543
+    }
+  ],
+  "by_agent_type": [
+    {
+      "agent_type": "lead",
+      "input": 134,
+      "output": 155448,
+      "cache_write_5m": 0,
+      "cache_write_1h": 490321,
+      "cache_read": 10113596,
+      "requests": 66,
+      "est_usd": 14.4762
+    },
+    {
+      "agent_type": "general-purpose",
+      "input": 38,
+      "output": 38462,
+      "cache_write_5m": 192433,
+      "cache_write_1h": 0,
+      "cache_read": 2346501,
+      "requests": 19,
+      "est_usd": 3.9324
+    },
+    {
+      "agent_type": "claude-code-guide",
+      "input": 10,
+      "output": 10410,
+      "cache_write_5m": 189051,
+      "cache_write_1h": 0,
+      "cache_read": 674193,
+      "requests": 5,
+      "est_usd": 0.0356
+    },
+    {
+      "agent_type": "web-fetch",
+      "input": 14,
+      "output": 20646,
+      "cache_write_5m": 64669,
+      "cache_write_1h": 0,
+      "cache_read": 32392,
+      "requests": 7,
+      "est_usd": 0.0187
+    }
+  ],
+  "by_unit": [
+    {
+      "unit": "lead",
+      "input": 134,
+      "output": 155448,
+      "cache_write_5m": 0,
+      "cache_write_1h": 490321,
+      "cache_read": 10113596,
+      "requests": 66,
+      "est_usd": 14.4762
+    },
+    {
+      "unit": "unassigned",
+      "input": 62,
+      "output": 69518,
+      "cache_write_5m": 446153,
+      "cache_write_1h": 0,
+      "cache_read": 3053086,
+      "requests": 31,
+      "est_usd": 3.9867
+    }
+  ],
+  "by_sub_project": [
+    {
+      "sub_project": "lead",
+      "input": 134,
+      "output": 155448,
+      "cache_write_5m": 0,
+      "cache_write_1h": 490321,
+      "cache_read": 10113596,
+      "requests": 66,
+      "est_usd": 14.4762
+    },
+    {
+      "sub_project": "sp1",
+      "input": 62,
+      "output": 69518,
+      "cache_write_5m": 446153,
+      "cache_write_1h": 0,
+      "cache_read": 3053086,
+      "requests": 31,
+      "est_usd": 3.9867
+    }
+  ],
+  "by_day": [
+    {
+      "day": "2026-11-13",
+      "input": 196,
+      "output": 224966,
+      "cache_write_5m": 446153,
+      "cache_write_1h": 490321,
+      "cache_read": 13166682,
+      "requests": 97,
+      "est_usd": 18.4629
+    }
+  ],
+  "rounds_per_unit": [],
+  "unpriced_models": []
+}

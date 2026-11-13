@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(//s/Development_2026/shi_work/shi_enterprise_truss_harness/**)",
+      "Edit(//s/Development_2026/the_agent_factory/**)",
+      "Edit(//c/Users/FreddiePokrzywa/OneDrive - 3C Publish LLC/Documents/ChatGPT/SHIFDE SDK/**)",
+      "Read(//s/Development_2026/the_agent_factory/.env)",
+      "Read(//s/Development_2026/the_agent_factory/azure_key.txt)"
+    ]
+  }
+}

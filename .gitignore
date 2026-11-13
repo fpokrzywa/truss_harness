@@ -1,0 +1,21 @@
+# Local secrets and connection details: never committed
+.env.local
+.env*.local
+.devdata/
+
+# Local tool state
+.remember/
+.worktrees/
+factory/jobs/
+
+# Build outputs and environments
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+node_modules/
+.next/
+*.tsbuildinfo
+coverage/
