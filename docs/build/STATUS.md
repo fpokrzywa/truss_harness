@@ -12,7 +12,7 @@ Tokens per model: see `python scripts/usage_report.py` (by unit); the figure bel
 | plan + control files + agents + usage report | done | (this commit) | `python -m unittest discover -s scripts/tests`: 4 passed | lead only |
 | skeleton: backend, gates, CI | todo | | | |
 | skeleton: local DB, harness, baseline migration, schema tests, startup role check | todo | | | |
-| skeleton: frontend | todo | | | |
+| skeleton: frontend shell | done | cbeb976 (merge on main) | verifier PASS from clean checkout: scan-secrets 0 findings; pnpm lint/typecheck 0; pnpm test 157 passed; pnpm build 0; config byte-identical to SETH. File-to-area map: `docs/build/frontend-areas.md`. CI job pending in `docs/build/frontend-ci-job.yml` until ci.yml exists | sonnet (build + verify) |
 | hosted database setup | waiting on owner input | | Server is PostgreSQL 16.13 and refuses TLS (`sslmode=require`: "server does not support SSL"); design requires TLS. Database `truss_harness` is empty. Nothing created. See B-009. | lead only |
 | core | todo | | | |
 | adapters | todo | | | |
