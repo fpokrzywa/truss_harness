@@ -181,8 +181,8 @@ def price(v: RateVersion | None, usage: Usage, *, estimated: bool = False) -> Co
 
 
 def model_keys(session: Session, tenant_id: UUID, model_id: UUID) -> tuple[str, str] | None:
-    """(provider_key, model_key) of a registered model of the tenant: the provider's adapter key and the
-    model's own key, which is what a rate card names."""
+    """(provider_key, model_key) of a registered model of the tenant: the provider's adapter key
+    and the model's own key, which is what a rate card names."""
     row = session.execute(
         text(
             "SELECT p.adapter_key, m.model_key FROM shifde.models m "

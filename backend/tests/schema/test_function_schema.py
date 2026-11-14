@@ -15,7 +15,8 @@
   `SECURITY_DEFINER_ALLOWLIST` as `<schema>.<name>` with a reason (adding one needs isolation
   review), pin `search_path` without `public` or `"$user"` and with `pg_temp` listed last (left
   out, `pg_temp` is searched first), and grant EXECUTE to nobody but its owner and `shifde_app`
-  -- in particular not to PUBLIC.
+  -- in particular not to PUBLIC. An entry names the one zero-argument function of that name:
+  any overload of an allowlisted name is refused (review 1, item 10).
 * Nothing in the catalog writes the client context (`app.tenant_id`, `app.principal_id`,
   `app.platform_admin`): function bodies, SET clauses and argument defaults, views, policies,
   defaults, constraints, indexes, triggers and statistics in every non-system schema are scanned
@@ -125,12 +126,17 @@ def _search_path(config: list[str] | None) -> str | None:
 
 
 def definer_violations(conn: Connection, allowlist: dict[str, str]) -> list[str]:
+    """An allowlist entry names the one zero-argument function of that name (as the base helpers
+    do): any other function sharing the name, definer or not, is refused, so an overload cannot
+    inherit an entry (review 1, item 10)."""
     problems: list[str] = []
     for row in conn.execute(_FUNCTIONS):
+        where = f"{row.nspname}.{row.proname}"
+        if where in allowlist and row.args != "":
+            problems.append(f"{where}({row.args}): overload of an allowlisted function")
         if not row.prosecdef:
             continue
-        where = f"{row.nspname}.{row.proname}"
-        if where not in allowlist:
+        if where not in allowlist or row.args != "":
             problems.append(f"{where}: SECURITY DEFINER but not on the allowlist")
         path = _search_path(row.proconfig)
         if path is None:
@@ -225,6 +231,42 @@ def _definer(c: Connection, extra: str = "") -> None:
             f" {extra} AS $$ SELECT 1 $$"
         )
     )
+
+
+@pytest.fixture
+def real(owner_engine: Engine) -> Iterator[Connection]:
+    """Like `scratch` but leaves the real allowlisted definers in place."""
+    with owner_engine.connect() as c:
+        tx = c.begin()
+        try:
+            yield c
+        finally:
+            tx.rollback()
+
+
+@pytest.mark.parametrize("definer", [True, False])
+def test_overload_of_an_allowlisted_definer_is_reported(real: Connection, definer: bool) -> None:
+    """The allowlist was keyed by name: an overload of `rate_card_versions_guard` with a different
+    body (review 1, item 10) inherited its entry. Keyed by the one zero-argument function."""
+    assert definer_violations(real, SECURITY_DEFINER_ALLOWLIST) == []
+    real.execute(
+        text(
+            "CREATE FUNCTION shifde.rate_card_versions_guard(x int) RETURNS int LANGUAGE sql"
+            f" {'SECURITY DEFINER' if definer else ''} SET search_path = shifde, pg_catalog,"
+            " pg_temp AS $$ SELECT 1 $$"
+        )
+    )
+    real.execute(
+        text("REVOKE EXECUTE ON FUNCTION shifde.rate_card_versions_guard(int) FROM PUBLIC")
+    )
+    problems = definer_violations(real, SECURITY_DEFINER_ALLOWLIST)
+    assert "shifde.rate_card_versions_guard(x integer): overload of an allowlisted function" in (
+        problems
+    )
+    if definer:
+        assert "shifde.rate_card_versions_guard: SECURITY DEFINER but not on the allowlist" in (
+            problems
+        )
 
 
 def test_unlisted_security_definer_is_reported(scratch: Connection) -> None:
