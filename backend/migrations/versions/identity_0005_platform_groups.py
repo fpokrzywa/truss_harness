@@ -22,7 +22,9 @@ client only through role bindings stored in that client (DECISIONS B-928..B-935)
   in the current client (the `authz.GroupMembership` the PDP uses); empty without a client.
 * `shifde_sync_idp_groups(uuid, uuid, text[])` (definer): IdP group sync for an active
   installation IdP with `group_sync_mode = 'sync'`, for a person with an identity at that IdP,
-  into groups the platform administrator mapped to that IdP; it never creates a group.
+  into groups the platform administrator mapped to that IdP; it never creates a group and
+  refuses inside any client context (B-936: code running in client A must not enrol a person
+  into a group bound in B).
 * `check_role_binding()`: the group branch requires a platform group and the platform-
   administrator context (who may grant: the client-owner path is tenancy's); the scope branches
   are nested so a tenant-scope binding no longer plans the `workspaces`/`projects` queries
@@ -72,7 +74,8 @@ FUNCTIONS: dict[str, str] = {
    LANGUAGE plpgsql VOLATILE {_LOCKED} AS
    $$ DECLARE v_count integer;
       BEGIN
-        IF p_names IS NULL OR pg_catalog.cardinality(p_names) > 200
+        IF shifde.current_tenant_id() IS NOT NULL
+           OR p_names IS NULL OR pg_catalog.cardinality(p_names) > 200
            OR NOT EXISTS (SELECT 1 FROM shifde.idp_configs c
                           WHERE c.id = p_idp AND c.tenant_id IS NULL AND c.status = 'active'
                             AND c.group_sync_mode = 'sync')

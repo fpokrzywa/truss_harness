@@ -368,7 +368,7 @@
 - table: group_members
   path: [policies, own_row]
   reason: >-
-    A staff member reads their own membership rows with no client context only (PRINCIPAL_TABLES entry, B-928); the PDP reads memberships through shifde_active_group_ids(uuid), limited to groups bound in the current client (B-929).
+    A staff member reads their own membership rows with no client context only (exact-text REVIEWED_EXPRESSIONS entry, not a PRINCIPAL_TABLES entry: a membership is a grant, B-928, B-936); the PDP reads memberships through shifde_active_group_ids(uuid), limited to groups bound in the current client (B-929).
   migration: identity_0005
 
 - table: idp_configs

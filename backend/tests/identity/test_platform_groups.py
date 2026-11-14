@@ -252,6 +252,52 @@ def test_a_client_context_cannot_create_change_fill_enumerate_or_bind_platform_g
         assert found is not None and found.name == group_name(owner_session, group)
 
 
+def test_a_staff_member_cannot_write_group_memberships_with_or_without_a_client(
+    world: World, app_db: Database, owner_session: Session
+) -> None:
+    """Identity isolation review 5, item 1 (B-936): a `group_members` row is a grant. As
+    `shifde_app`, with no client context and then with B's, a staff member cannot join a group
+    bound in B, put a colleague into their own group, or move or drop a membership."""
+    staff, colleague = _staff(owner_session, "fde"), _staff(owner_session, "b-fde")
+    mine = _staff_group(app_db, staff, [world.a.tenant])
+    bs = _staff_group(app_db, colleague, [world.b.tenant])
+    insert = "INSERT INTO shifde.group_members (group_id, user_id, source) VALUES (:g, :u, :s)"
+    for tenant in (None, world.b.tenant):
+        for group, person in ((bs, staff), (mine, colleague)):
+            for source in ("manual", "idp_sync"):
+                with (
+                    app_session(app_db, tenant, staff) as s,
+                    pytest.raises(DBAPIError, match="row-level security"),
+                ):
+                    assert s.execute(text("SELECT current_user")).scalar_one() == "shifde_app"
+                    s.execute(text(insert), {"g": group, "u": person, "s": source})
+        for update in (
+            "UPDATE shifde.group_members SET group_id = :bs WHERE user_id = :me",
+            "UPDATE shifde.group_members SET user_id = :me WHERE group_id = :bs",
+        ):
+            with (
+                app_session(app_db, tenant, staff) as s,
+                pytest.raises(DBAPIError, match="permission denied for table group_members"),
+            ):
+                s.execute(text(update), {"bs": bs, "me": staff})
+        with app_session(app_db, tenant, staff) as s:
+            assert s.execute(text("SELECT current_user")).scalar_one() == "shifde_app"
+            for delete in (
+                "DELETE FROM shifde.group_members WHERE user_id = :me",
+                "DELETE FROM shifde.group_members WHERE group_id = :bs",
+                "DELETE FROM shifde.group_members",
+            ):
+                assert s.execute(text(delete), {"bs": bs, "me": staff}).rowcount == 0
+            s.commit()
+    with admin_session(app_db, None) as s:
+        assert authz.member_user_ids(s, mine) == {staff: "manual"}
+        assert authz.member_user_ids(s, bs) == {colleague: "manual"}
+    with app_session(app_db, world.b.tenant) as s:
+        assert authz.platform_group_membership(s, tenant_id=world.b.tenant, user_id=staff) == (
+            frozenset()
+        )
+
+
 def test_the_platform_administrator_manages_and_binds_groups(
     world: World, app_db: Database, owner_session: Session
 ) -> None:
@@ -361,6 +407,44 @@ def test_the_sync_definer_refuses_client_idps_idps_without_sync_and_strangers(
                 authz.sync_idp_groups(s, idp, person, names)
     with app_session(app_db, None) as s:
         assert authz.sync_idp_groups(s, inst, staff, []) == 0
+
+
+def test_the_sync_definer_refuses_inside_a_client_context(
+    world: World, app_db: Database, owner_session: Session
+) -> None:
+    """Identity isolation review 5, item 2 (B-936): sync runs only with no client context, so
+    code inside client A (say a later resync passing request names) cannot enrol a person into
+    a group bound in B, nor drop their synced memberships; the same call outside works."""
+    inst, iss = _sync_idp(owner_session, "inst")
+    staff = _staff(owner_session, "fde")
+    oidc_flow.owner_identity(owner_session, staff, inst, iss, "fde")
+    owner_session.commit()
+    with admin_session(app_db, None) as s:
+        eng = _group(s, "inst-eng", idp=inst, external="Eng")
+        s.commit()
+    with admin_session(app_db, world.b.tenant) as s:
+        _bind_group(s, world.b.tenant, eng)
+        s.commit()
+    for names in (["Eng"], []):
+        for principal in (staff, None):
+            with (
+                app_session(app_db, world.a.tenant, principal) as s,
+                pytest.raises(DBAPIError, match="group sync refused"),
+            ):
+                authz.sync_idp_groups(s, inst, staff, names)
+        with (
+            admin_session(app_db, world.a.tenant) as s,
+            pytest.raises(DBAPIError, match="group sync refused"),
+        ):
+            authz.sync_idp_groups(s, inst, staff, names)
+        with admin_session(app_db, None) as s:
+            assert authz.member_user_ids(s, eng) == ({staff: "idp_sync"} if not names else {})
+        if names:  # control: the same call with no client context enrols the person
+            with app_session(app_db, None) as s:
+                assert authz.sync_idp_groups(s, inst, staff, names) == 1
+                s.commit()
+    with app_session(app_db, world.b.tenant) as s:
+        assert authz.platform_group_membership(s, tenant_id=world.b.tenant, user_id=staff) == {eng}
 
 
 def test_synced_groups_are_keyed_by_idp_and_sync_touches_only_that_idps_memberships(

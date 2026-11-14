@@ -165,12 +165,8 @@ PRINCIPAL_TABLES: dict[str, str] = {
     "shifde.user_identities": f"{_IDENTITY_STATE}: a person's identity-provider subjects",
     # identity_0002 (B-911): not a SETH table; failed-login counters per (person, source)
     "shifde.login_lockouts": f"{_IDENTITY_STATE}: a person's failed-login counters per source",
-    # identity_0005 (B-928): SHI-wide groups are platform-level; a staff member reads their own
-    # membership rows, and only outside any client context (`current_tenant_id() IS NULL`)
-    "shifde.group_members": (
-        "a staff member's own SHI-wide group memberships (platform-level, no tenant_id; design "
-        "5.3), readable only with no client context; never client content"
-    ),
+    # Not `shifde.group_members` (identity isolation review 5, item 1; B-936): a row there is a
+    # grant, so its policies are pinned by exact text in REVIEWED_EXPRESSIONS instead.
 }
 
 # (relation, policy, command, "PERMISSIVE" | "RESTRICTIVE", roles, "USING" | "WITH CHECK")
@@ -221,6 +217,18 @@ REVIEWED_EXPRESSIONS: dict[ReviewedKey, str] = {
         "shifde.group_members gm\n  WHERE ((gm.group_id = groups.id) AND (gm.user_id = "
         "shifde.current_principal_id())))))"
     ),
+    # A staff member reads their own membership rows, only with no client context. Pinned by
+    # exact text, not by a PRINCIPAL_TABLES entry (identity isolation review 5, item 1; B-936):
+    # a row here is a grant and `shifde_app` may INSERT, so a principal key must never approve
+    # a write or a widened read on this table; any change to this policy needs isolation review.
+    (
+        "shifde.group_members",
+        "own_row",
+        "SELECT",
+        "PERMISSIVE",
+        ("public",),
+        "USING",
+    ): "((user_id = shifde.current_principal_id()) AND (shifde.current_tenant_id() IS NULL))",
 }
 
 _HELPER = r"shifde\.current_(?:tenant|principal)_id\(\)"
@@ -1212,9 +1220,30 @@ def test_reviewed_principal_tables() -> None:
         "shifde.local_credentials",
         "shifde.user_identities",
         "shifde.login_lockouts",
-        "shifde.group_members",  # identity_0005 (B-928)
     }
+    # identity isolation review 5, item 1 (B-936): a group membership is a grant
+    assert "shifde.group_members" not in PRINCIPAL_TABLES
     assert all(reason.strip() for reason in PRINCIPAL_TABLES.values())
+
+
+def test_a_widened_group_members_policy_is_reported(scratch: Connection) -> None:
+    """Identity isolation review 5, item 1: a `group_members` row is a grant, not per-person
+    state, and `shifde_app` may INSERT it. A principal key alone must not approve a policy
+    there: a self-join policy (staff member, no client context) or an `own_row` widened to
+    every context is reported, so a staff member cannot join a group bound in another client.
+    """
+    self_join = f"{OWN_ROW} AND shifde.current_tenant_id() IS NULL"
+    scratch.execute(
+        text(f"CREATE POLICY self_join ON shifde.group_members FOR INSERT WITH CHECK ({self_join})")
+    )
+    scratch.execute(text(f"ALTER POLICY own_row ON shifde.group_members USING ({OWN_ROW})"))
+    unlisted = "keyed to shifde.current_principal_id() on a relation not listed in PRINCIPAL_TABLES"
+    assert rls_violations(scratch, set()) == [
+        "shifde.group_members:"
+        f" policy own_row (SELECT) USING differs from its reviewed text: ({OWN_ROW}),"
+        f" policy self_join (INSERT) WITH CHECK {unlisted}:"
+        f" (({OWN_ROW}) AND (shifde.current_tenant_id() IS NULL))"
+    ]
 
 
 def _seth_tables() -> dict[str, Any]:

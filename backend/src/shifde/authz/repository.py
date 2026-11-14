@@ -545,8 +545,9 @@ def sync_idp_groups(
 ) -> int:
     """Make the person's `idp_sync` memberships of groups mapped to this installation IdP equal
     `names` (`shifde_sync_idp_groups`, B-932); never creates a group. Returns the number of
-    synced memberships. Raises (insufficient_privilege) unless the IdP is an active installation
-    IdP with sync on and the person has an identity there."""
+    synced memberships. Raises (insufficient_privilege) inside any client context and unless
+    the IdP is an active installation IdP with sync on and the person has an identity there
+    (B-936)."""
     return int(
         session.execute(
             text("SELECT shifde.shifde_sync_idp_groups(:i, :u, CAST(:n AS text[]))"),
