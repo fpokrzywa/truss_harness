@@ -81,6 +81,8 @@ Each later module's brief must include its section here. Strike an item (move it
 | ontology | `authz.subject_ids_covering(..., group_membership=)` takes the same seam as `new_pdp`; pass identity's membership once groups are platform-level | authz (B-403) |
 | every port | The permission catalog and system role grants are complete in `authz_0001` (SETH final, B-402): do not re-insert SETH's p04-p08 permission rows | authz |
 | every port | `Database` has psycopg auto-prepare off (B-404); an engine built outside `Database` that also runs `DISCARD ALL` needs the same | authz (core fix) |
+| admin, tenancy | Role create/update refuses `PLATFORM_ONLY_ACTIONS` keys with 422 before the insert (the `authz_0002` CHECK otherwise surfaces as a 500), with a test | authz review 2 item 4 |
+| tenancy | `grant_role` / `check_role_binding` refuse binding the `platform_administrator` system template in a client (or hide it from client `list_roles`) | authz review 2 item 5 |
 | every writer of a NULL-tenant audit event | Only the actions in `audit.service.INSTALLATION_ACTIONS` may be recorded with `tenant_id=None` (B-701); a new installation-level action is added there, with a reason. Writers: identity (`identity.login.failed` unknown account, `identity.setup_token.rejected`), connections (`egress.default.updated`), installation/cli (`installation.profile.applied`) | audit (B-701) |
 | runtime, models_admin | Item 15 (known defect): tool-invocation audit and `model.invoked` run/workspace/project context | audit |
 | cli | Item 20 (known defect): no retention purge for `audit_events` (it is append-only: a purge needs a deliberate owner-run path that keeps the chain verifiable) | audit |
@@ -89,6 +91,9 @@ Each later module's brief must include its section here. Strike an item (move it
 | admin | Port SETH `admin/providers.py` secret routes to the B-802/B-803 API: `get_secret(session, id, tenant_id=scope.tenant_id)`, `SecretMeta` instead of the ORM `Secret` in `_secret_out`; audit `secret.created`/`secret.rotated`/`secret.disabled` there (SETH writes them in admin, not in secrets); route cross-client tests for list/get/create/rotate/disable | secrets |
 | connections, identity | `SecretProvider.resolve_system(ref, purpose, tenant_id=...)` now needs the owning tenant (connection row's `tenant_id`; `idp.tenant_id`, `None` for an installation IdP inside `platform_admin_context`) (B-802). It does no PDP check: C2 (repointing a connection must not send a secret without `secret:use`) is fixed and pinned in connections; `SecretProvider.resolve` (principal path) is pinned here | secrets |
 | cli | `rewrap_all` (KEK rotation) runs as the owner (BYPASSRLS); under `shifde_app` it sees no other client's rows and rewraps nothing: the CLI command must use the migration URL | secrets |
+| core (before identity/tenancy) | `core/db.py:_update`: lowering the context (`set_platform_admin(False)`, `set_tenant(None)`, tenant switch) in an aborted transaction raises and leaves `session.info` at the old, higher value, re-applied by `after_begin`; fail closed on exception (`platform_admin = old and new`, tenant/principal None unless unchanged), with parametrized tests | audit review 2 item 1 |
+| core/audit | `audit.service._may_lock_chain` decides from `session.info`, not the database: after a rolled-back savepoint that set another tenant it queues on B's chain lock; decide in one statement (`shifde.current_tenant_id() = :t OR NOT row_security_active(...)`), savepoint-mismatch test (same root as the savepoint-desync row) | audit review 2 item 2 |
+| identity | `PRE_TENANT_ACTIONS` NULL-tenant writes also require `get_context(session).tenant_id is None`, with a test | audit review 2 item 3 |
 
 ## Done
 

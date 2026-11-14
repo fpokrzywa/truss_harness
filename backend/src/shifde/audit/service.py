@@ -18,19 +18,21 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Collection, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any  # Any: audit `details` is a redacted free-form JSON document
 from uuid import UUID
 
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from shifde.audit import repository
 from shifde.audit.models import AuditEvent
 from shifde.core.clock import utcnow
 from shifde.core.context import RequestContext
-from shifde.core.db import forget_platform_admin, get_context, set_platform_admin
+from shifde.core.db import get_context, restore_platform_admin, set_platform_admin
 from shifde.core.errors import ValidationFailed
 from shifde.core.ids import uuid7
 from shifde.core.redaction import scrub
@@ -53,13 +55,17 @@ CATEGORY_PREFIXES: dict[str, tuple[str, ...]] = {
 
 # Installation-level actions: events with no client (tenant_id NULL). The table's INSERT policy
 # lets a NULL-tenant row in only under the platform-administrator context (B-701), and `record`
-# sets that context for the one insert, and only for these actions. Add an action here only if it
-# can happen with no client: identity events before a client is known, and installation-wide
-# configuration written by a platform administrator or the install tooling.
-INSTALLATION_ACTIONS: frozenset[str] = frozenset(
+# sets that context for the one insert. Two kinds, because the caller's own state differs:
+# - pre-tenant identity events happen before any client or administrator is known, so `record`
+#   raises the flag on its own for them;
+# - installation-wide configuration is written only by a platform administrator or the install
+#   tooling: the caller must already hold the platform-administrator context, or `record` refuses.
+# Add an action only if it can happen with no client.
+PRE_TENANT_ACTIONS: frozenset[str] = frozenset(
+    {"identity.login.failed", "identity.setup_token.rejected"}
+)
+ADMIN_INSTALLATION_ACTIONS: frozenset[str] = frozenset(
     {
-        "identity.login.failed",
-        "identity.setup_token.rejected",
         "egress.default.updated",
         "installation.profile.applied",
         # an installation-level secret (tenant_id NULL, e.g. an installation IdP client secret)
@@ -68,6 +74,7 @@ INSTALLATION_ACTIONS: frozenset[str] = frozenset(
         "secret.resolved",
     }
 )
+INSTALLATION_ACTIONS: frozenset[str] = PRE_TENANT_ACTIONS | ADMIN_INSTALLATION_ACTIONS
 
 
 class NotInstallationAction(ValueError):
@@ -77,16 +84,35 @@ class NotInstallationAction(ValueError):
 
 @contextmanager
 def _installation_write(session: Session) -> Iterator[None]:
-    """Hold the platform-administrator context for one insert and restore the caller's state."""
+    """Hold the platform-administrator context for one insert and restore the caller's state.
+
+    The Session's context is restored first and unconditionally; the database setting is then
+    restored only if the transaction can still take a statement. After a failed statement the
+    rollback discards the transaction-local setting anyway, and a second error here would hide
+    the original one (B-702)."""
     was = get_context(session).platform_admin
-    set_platform_admin(session, True)
     try:
+        set_platform_admin(session, True)
         yield
     finally:
+        restore_platform_admin(session, was)
         if session.is_active:
-            set_platform_admin(session, was)
-        elif not was:  # a failed statement: the rollback discards the transaction-local setting
-            forget_platform_admin(session)
+            with suppress(SQLAlchemyError):
+                set_platform_admin(session, was)
+
+
+def _may_lock_chain(session: Session, tenant_id: UUID) -> bool:
+    """Take the tenant's chain lock only for the session's own tenant, or when row-level security
+    does not apply to the session (the schema owner's maintenance sessions). Otherwise another
+    client could hold or time a tenant's lock before RLS refuses its insert (B-701). A refused
+    session skips the lock and the chain read, and the insert is then refused by RLS with the
+    same 42501 as any other cross-client write."""
+    ctx_tenant = get_context(session).tenant_id
+    if ctx_tenant is not None:
+        return ctx_tenant == tenant_id
+    return not session.execute(
+        text("SELECT row_security_active('shifde.audit_events')")
+    ).scalar_one()
 
 
 @dataclass(frozen=True)
@@ -153,8 +179,12 @@ def record(
     details: Mapping[str, Any] | None = None,
 ) -> None:
     """Append one audit event. `tenant_id=None` marks an installation-level event, allowed only
-    for the actions in `INSTALLATION_ACTIONS` (otherwise `NotInstallationAction`)."""
-    if tenant_id is None and action not in INSTALLATION_ACTIONS:
+    for the pre-tenant identity actions, and for the installation-configuration actions only when
+    the caller is already a platform administrator (otherwise `NotInstallationAction`)."""
+    if tenant_id is None and not (
+        action in PRE_TENANT_ACTIONS
+        or (action in ADMIN_INSTALLATION_ACTIONS and get_context(session).platform_admin)
+    ):
         raise NotInstallationAction(action)
     principal = ctx.principal
     actor_type = "user" if actor_id else "anonymous"
@@ -178,11 +208,13 @@ def record(
 
     chain_seq: int | None = None
     prev_hash: bytes | None = None
-    if tenant_id is not None:
+    if tenant_id is not None and _may_lock_chain(session, tenant_id):
         repository.lock_chain(session, tenant_id)
         head = repository.chain_head(session, tenant_id)
         chain_seq = 1 if head is None else head[0] + 1
         prev_hash = None if head is None else head[1]
+    elif tenant_id is not None:
+        chain_seq = 1  # refused by RLS at the insert below; no lock, no chain read
     values: dict[str, Any] = {
         "id": uuid7(),
         "tenant_id": tenant_id,

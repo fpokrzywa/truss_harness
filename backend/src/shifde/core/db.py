@@ -79,10 +79,12 @@ def get_context(session: Session) -> DbContext:
 
 def _update(session: Session, **changes: object) -> None:
     ctx = replace(get_context(session), **changes)  # type: ignore[arg-type]
-    session.info[_CTX_KEY] = ctx
     # Apply immediately to the current (or newly begun) transaction; later transactions on
-    # this Session re-apply from `session.info` via the after_begin hook.
+    # this Session re-apply from `session.info` via the after_begin hook. The statement runs
+    # first: if it fails (aborted transaction, lost connection) `session.info` must not change,
+    # or a context the database never accepted would be applied to every later transaction (B-702).
     session.execute(_APPLY_SQL, _params(ctx))
+    session.info[_CTX_KEY] = ctx
 
 
 def init_context(session: Session, request_id: str | None) -> None:
@@ -113,10 +115,16 @@ def forget_platform_admin(session: Session) -> None:
     session.info[_CTX_KEY] = replace(get_context(session), platform_admin=False)
 
 
+def restore_platform_admin(session: Session, enabled: bool) -> None:
+    """Put the flag on the Session's context back to a previously read value without touching the
+    database (the next transaction applies the context again)."""
+    session.info[_CTX_KEY] = replace(get_context(session), platform_admin=enabled)
+
+
 @contextmanager
 def platform_admin_context(session: Session) -> Iterator[None]:
-    set_platform_admin(session, True)
     try:
+        set_platform_admin(session, True)
         yield
     finally:
         # Always forget the flag for later transactions. Only touch the database if the
