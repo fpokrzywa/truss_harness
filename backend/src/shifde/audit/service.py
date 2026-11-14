@@ -101,18 +101,21 @@ def _installation_write(session: Session) -> Iterator[None]:
                 set_platform_admin(session, was)
 
 
+_MAY_LOCK_SQL = text(
+    "SELECT CASE WHEN shifde.current_tenant_id() IS NOT NULL"
+    " THEN shifde.current_tenant_id() = CAST(:t AS uuid)"
+    " ELSE NOT pg_catalog.row_security_active('shifde.audit_events') END"
+)
+
+
 def _may_lock_chain(session: Session, tenant_id: UUID) -> bool:
     """Take the tenant's chain lock only for the session's own tenant, or when row-level security
     does not apply to the session (the schema owner's maintenance sessions). Otherwise another
     client could hold or time a tenant's lock before RLS refuses its insert (B-701). A refused
     session skips the lock and the chain read, and the insert is then refused by RLS with the
-    same 42501 as any other cross-client write."""
-    ctx_tenant = get_context(session).tenant_id
-    if ctx_tenant is not None:
-        return ctx_tenant == tenant_id
-    return not session.execute(
-        text("SELECT row_security_active('shifde.audit_events')")
-    ).scalar_one()
+    same 42501 as any other cross-client write. The database decides, in one statement (B-703),
+    not `session.info`, which a rolled-back savepoint can leave out of step."""
+    return bool(session.execute(_MAY_LOCK_SQL, {"t": str(tenant_id)}).scalar_one())
 
 
 @dataclass(frozen=True)

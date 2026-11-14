@@ -9,7 +9,7 @@ surface other modules call, so the service is tested here too."""
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from uuid import UUID
 
 import pytest
@@ -256,6 +256,44 @@ def test_a_client_cannot_stall_another_clients_chain_before_being_refused(
         repository.lock_chain(holder, world.b)
         with _as(app_db, world.a if with_context else None) as s:
             s.execute(text("SET LOCAL lock_timeout = '500ms'"))
+            with pytest.raises(DBAPIError) as err:
+                audit.record(s, RequestContext(request_id="x"), action="test.x", tenant_id=world.b)
+            assert _sqlstate(err) == "42501"
+            s.rollback()
+        holder.rollback()
+
+
+def test_a_rolled_back_savepoint_that_set_another_client_does_not_reach_its_chain_lock(
+    app_db: Database, owner_db: Database, world: World
+) -> None:
+    """B-703: the lock decision reads the database, not `session.info`. A's session sets B inside
+    a savepoint that is then rolled back; recording for B is refused at once (42501), not queued
+    on B's chain lock (55P03 here would mean A reached the lock)."""
+    with owner_db.session() as holder:
+        repository.lock_chain(holder, world.b)
+        with _as(app_db, world.a) as s:
+            s.execute(text("SET LOCAL lock_timeout = '500ms'"))
+            sp = s.begin_nested()
+            set_tenant(s, world.b)
+            sp.rollback()
+            assert get_context(s).tenant_id == world.a
+            with pytest.raises(DBAPIError) as err:
+                audit.record(s, RequestContext(request_id="x"), action="test.x", tenant_id=world.b)
+            assert _sqlstate(err) == "42501"
+            s.rollback()
+        holder.rollback()
+
+
+def test_a_session_whose_context_lags_the_database_does_not_reach_the_chain_lock(
+    app_db: Database, owner_db: Database, world: World
+) -> None:
+    """The lock decision does not trust `session.info` even if it names the target tenant: here
+    the database says A while the Session's context says B."""
+    with owner_db.session() as holder:
+        repository.lock_chain(holder, world.b)
+        with _as(app_db, world.a) as s:
+            s.execute(text("SET LOCAL lock_timeout = '500ms'"))
+            s.info["shifde_ctx"] = replace(get_context(s), tenant_id=world.b)
             with pytest.raises(DBAPIError) as err:
                 audit.record(s, RequestContext(request_id="x"), action="test.x", tenant_id=world.b)
             assert _sqlstate(err) == "42501"
