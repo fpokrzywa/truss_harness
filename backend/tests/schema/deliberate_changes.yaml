@@ -60,3 +60,44 @@
   path: [constraints, usage_events_cost_kind_check]
   reason: "cost_kind admits 'estimated': a cost priced from token counts the platform estimated because the provider reported none (findings Item 11, DECISIONS B-602); SETH stored such usage as 0 tokens labelled calculated"
   migration: ledger_0001
+- table: roles
+  path: [constraints, roles_tenant_id_fkey]
+  reason: >-
+    Foreign key to shifde.tenants, a table of the later tenancy port; added by tenancy's migration (plan per-module recipe step 3, DECISIONS B-402, carry_forward.md), which removes this entry.
+  migration: authz_0001
+
+- table: role_permissions
+  path: [constraints, role_permissions_tenant_id_fkey]
+  reason: >-
+    Foreign key to shifde.tenants, a table of the later tenancy port; added by tenancy's migration (plan per-module recipe step 3, DECISIONS B-402, carry_forward.md), which removes this entry.
+  migration: authz_0001
+
+- table: role_bindings
+  path: [constraints, role_bindings_tenant_id_fkey]
+  reason: >-
+    Foreign key to shifde.tenants, a table of the later tenancy port; added by tenancy's migration (plan per-module recipe step 3, DECISIONS B-402, carry_forward.md), which removes this entry.
+  migration: authz_0001
+
+- table: groups
+  path: [constraints, groups_tenant_id_fkey]
+  reason: >-
+    Foreign key to shifde.tenants, a table of the later tenancy port; added by tenancy's migration (plan per-module recipe step 3, DECISIONS B-402, carry_forward.md), which removes this entry.
+  migration: authz_0001
+
+- table: groups
+  path: [constraints, groups_idp_config_id_fkey]
+  reason: >-
+    Foreign key to shifde.idp_configs, a table of the later identity port; added by identity's migration (plan per-module recipe step 3, DECISIONS B-402, carry_forward.md), which removes this entry.
+  migration: authz_0001
+
+- table: group_members
+  path: [constraints, fk_group_members__membership]
+  reason: >-
+    Foreign key to shifde.memberships, a table of the later identity port; added by identity's migration (plan per-module recipe step 3, DECISIONS B-402, carry_forward.md), which removes this entry.
+  migration: authz_0001
+
+- table: policy_decisions
+  path: [constraints, policy_decisions_tenant_id_fkey]
+  reason: >-
+    Foreign key to shifde.tenants, a table of the later tenancy port; added by tenancy's migration (plan per-module recipe step 3, DECISIONS B-402, carry_forward.md), which removes this entry.
+  migration: authz_0001

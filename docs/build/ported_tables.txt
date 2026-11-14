@@ -11,3 +11,10 @@ budgets  # ledger
 budget_reservations  # ledger
 budget_alerts  # ledger
 quotas  # ledger
+permissions  # authz
+roles  # authz
+role_permissions  # authz
+role_bindings  # authz
+groups  # authz
+group_members  # authz
+policy_decisions  # authz
