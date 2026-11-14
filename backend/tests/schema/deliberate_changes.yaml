@@ -136,3 +136,8 @@
   path: [policies, write_own]
   reason: "ARCH m7 (B-701): SETH's INSERT check admitted tenant_id NULL for any caller; a NULL-tenant row now needs the platform-administrator context"
   migration: audit_0001
+- table: role_permissions
+  path: [constraints, ck_role_permissions__no_platform_only_in_client_role]
+  reason: >-
+    A client role (tenant_id NOT NULL) cannot hold a platform-only permission (platform:admin): it comes only from users.is_platform_admin, never from a role. SETH let a client put it into its own role and the PDP then reported it from effective_permissions / missing_permissions / visible_scopes. Authz isolation review 1, follow-up 1; DECISIONS B-406. System templates (tenant_id NULL) are unaffected.
+  migration: authz_0002
