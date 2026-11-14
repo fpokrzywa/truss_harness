@@ -35,3 +35,4 @@ tenants  # tenancy
 workspaces  # tenancy
 projects  # tenancy
 installation_settings  # tenancy
+vendors  # vendors

@@ -91,6 +91,10 @@ ADMIN_INSTALLATION_ACTIONS: frozenset[str] = frozenset(
         # resolved by `secrets.service.SecretProvider.resolve_system` (B-805); its row is visible
         # only under the platform-administrator context, so only that path reaches this action
         "secret.resolved",
+        # the global vendor catalog (tenant_id NULL rows) is changed only by the platform
+        # administrator (`vendors.service`, `platform:admin`); no client is the subject (B-1304)
+        "vendor.created",
+        "vendor.updated",
     }
 )
 INSTALLATION_ACTIONS: frozenset[str] = PRE_TENANT_ACTIONS | ADMIN_INSTALLATION_ACTIONS
