@@ -19,3 +19,5 @@ groups  # authz
 group_members  # authz
 policy_decisions  # authz
 audit_events  # audit
+secrets  # secrets
+secret_access_log  # secrets
