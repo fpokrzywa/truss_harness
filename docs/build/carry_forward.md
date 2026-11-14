@@ -115,6 +115,9 @@ Each later module's brief must include its section here. Strike an item (move it
 | tenancy | `shifde_active_group_ids(uuid)`: require `p_user = current_principal_id()` once the worker principal is settled | identity review 5 item 4 |
 | sub-project 3 (Entra) | `check_idp_group_scope()` runs with caller rights; IdP group membership changes only at next sign-in | identity review 5 item 5 |
 | identity | Flaky `_same_failure` (`tests/identity/test_cross_client.py:766`) compares raw Set-Cookie incl. `Expires`: compare parsed cookies without `Expires` or freeze the clock (assertion strength unchanged) | identity review 6 item 3 |
+| tenancy (part 2) | Tenancy review 1 items 1-4, 7: RESTRICTIVE FOR INSERT on `tenants` (platform admin only; slug squatting and `uq_tenants__slug` oracle); drop the `my_memberships` stub in `tests/identity/harness.py` and rerun route tests, plus a member with no binding sees no client; `shifde_my_memberships` role join also matches `r.tenant_id`; org listing checks `principal.is_platform_admin` (not only the flag) and omits client-written `settings`/`description`, fix the `ADMIN_FLAG_CATALOGS` reason; session pin check covers the `sessions_active_tenant_id_fkey` existence signal | tenancy review 1 |
+| ledger, runtime | `ledger/enforcement.py:140-145` `unknown_cost_policy` falls back to allow_unmeasured when the tenant row is not visible: refuse instead | tenancy review 1 item 5 |
+| admin | `installation_settings.updated_by` readable by every client (`read_all`): keep out of client shapes or record in the `global_tables.txt` reason; `secrets.service.create_secret` maps every integrity error (incl. the scope trigger) to a name conflict | tenancy review 1 item 6; tenancy builder |
 
 ## Done
 

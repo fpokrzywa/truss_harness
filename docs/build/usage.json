@@ -1,26 +1,26 @@
 {
-  "generated": "2026-11-14T10:01:59+00:00",
+  "generated": "2026-11-14T11:34:37+00:00",
   "note": "est_usd is an estimate at list price, not a bill",
   "totals": {
     "all": "all",
-    "input": 4602,
-    "output": 2499829,
-    "cache_write_5m": 7210375,
-    "cache_write_1h": 1672056,
-    "cache_read": 287561892,
-    "requests": 2267,
-    "est_usd": 149.1855
+    "input": 5000,
+    "output": 2668198,
+    "cache_write_5m": 7618543,
+    "cache_write_1h": 2002861,
+    "cache_read": 319889578,
+    "requests": 2457,
+    "est_usd": 163.7073
   },
   "by_model": [
     {
       "model": "claude-opus-5-5",
-      "input": 3666,
-      "output": 1846372,
-      "cache_write_5m": 4874948,
-      "cache_write_1h": 1254135,
-      "cache_read": 235681095,
-      "requests": 1800,
-      "est_usd": 118.4861
+      "input": 4064,
+      "output": 2014741,
+      "cache_write_5m": 5283116,
+      "cache_write_1h": 1584940,
+      "cache_read": 268008781,
+      "requests": 1990,
+      "est_usd": 133.0079
     },
     {
       "model": "claude-fable-5-2",
@@ -56,33 +56,33 @@
   "by_agent_type": [
     {
       "agent_type": "module-builder-critical",
-      "input": 1934,
-      "output": 1047621,
-      "cache_write_5m": 2989653,
+      "input": 2190,
+      "output": 1166144,
+      "cache_write_5m": 3273685,
       "cache_write_1h": 0,
-      "cache_read": 138482080,
-      "requests": 954,
-      "est_usd": 63.6048
+      "cache_read": 160939809,
+      "requests": 1082,
+      "est_usd": 71.888
     },
     {
       "agent_type": "lead",
-      "input": 946,
-      "output": 480612,
+      "input": 1010,
+      "output": 499114,
       "cache_write_5m": 0,
-      "cache_write_1h": 1672056,
-      "cache_read": 84571676,
-      "requests": 457,
-      "est_usd": 46.5653
+      "cache_write_1h": 2002861,
+      "cache_read": 91381572,
+      "requests": 480,
+      "est_usd": 50.944
     },
     {
       "agent_type": "isolation-reviewer",
-      "input": 908,
-      "output": 483870,
-      "cache_write_5m": 1885295,
+      "input": 986,
+      "output": 515214,
+      "cache_write_5m": 2009431,
       "cache_write_1h": 0,
-      "cache_read": 23880052,
-      "requests": 450,
-      "est_usd": 23.8835
+      "cache_read": 26940113,
+      "requests": 489,
+      "est_usd": 25.7434
     },
     {
       "agent_type": "module-builder",
@@ -158,13 +158,13 @@
   "by_unit": [
     {
       "unit": "lead",
-      "input": 946,
-      "output": 480612,
+      "input": 1010,
+      "output": 499114,
       "cache_write_5m": 0,
-      "cache_write_1h": 1672056,
-      "cache_read": 84571676,
-      "requests": 457,
-      "est_usd": 46.5653
+      "cache_write_1h": 2002861,
+      "cache_read": 91381572,
+      "requests": 480,
+      "est_usd": 50.944
     },
     {
       "unit": "identity",
@@ -185,6 +185,16 @@
       "cache_read": 42401470,
       "requests": 366,
       "est_usd": 26.606
+    },
+    {
+      "unit": "tenancy",
+      "input": 334,
+      "output": 149867,
+      "cache_write_5m": 408168,
+      "cache_write_1h": 0,
+      "cache_read": 25517790,
+      "requests": 167,
+      "est_usd": 10.1431
     },
     {
       "unit": "authz",
@@ -290,35 +300,35 @@
   "by_sub_project": [
     {
       "sub_project": "sp1",
-      "input": 3656,
-      "output": 2019217,
-      "cache_write_5m": 7210375,
+      "input": 3990,
+      "output": 2169084,
+      "cache_write_5m": 7618543,
       "cache_write_1h": 0,
-      "cache_read": 202990216,
-      "requests": 1810,
-      "est_usd": 102.6202
+      "cache_read": 228508006,
+      "requests": 1977,
+      "est_usd": 112.7633
     },
     {
       "sub_project": "lead",
-      "input": 946,
-      "output": 480612,
+      "input": 1010,
+      "output": 499114,
       "cache_write_5m": 0,
-      "cache_write_1h": 1672056,
-      "cache_read": 84571676,
-      "requests": 457,
-      "est_usd": 46.5653
+      "cache_write_1h": 2002861,
+      "cache_read": 91381572,
+      "requests": 480,
+      "est_usd": 50.944
     }
   ],
   "by_day": [
     {
       "day": "2026-11-14",
-      "input": 3112,
-      "output": 1479124,
-      "cache_write_5m": 4338933,
-      "cache_write_1h": 548980,
-      "cache_read": 190286482,
-      "requests": 1533,
-      "est_usd": 84.9053
+      "input": 3510,
+      "output": 1647493,
+      "cache_write_5m": 4747101,
+      "cache_write_1h": 879785,
+      "cache_read": 222614168,
+      "requests": 1723,
+      "est_usd": 99.4271
     },
     {
       "day": "2026-11-13",
@@ -430,6 +440,15 @@
       "review": 1,
       "inventory": 0,
       "other": 5
+    },
+    {
+      "unit": "tenancy",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 1
     }
   ],
   "unpriced_models": []

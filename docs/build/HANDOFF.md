@@ -18,17 +18,17 @@ Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md`, then this file. Sessi
 
 Identity decisions are B-901..B-936. **`identity` is done.** Reviews are in `docs/build/reviews/`.
 
-Main is at the commit carrying this handoff, with 824 backend tests. The last clean-checkout gate run of main's code was `gates.py --ref identity` at `b62d03b`: 8/8, 824 passed (an earlier run hit the `_same_failure` timing flake, recorded in `carry_forward.md`). Later commits change docs only. The front end is unchanged since `c925793` (13/13 then).
+Main is at the commit carrying this handoff, with 867 backend tests (tenancy part 1 merged after the session resumed; gates 8/8 at `07556f2`). The last clean-checkout gate run of main's code was `gates.py --ref identity` at `b62d03b`: 8/8, 824 passed (an earlier run hit the `_same_failure` timing flake, recorded in `carry_forward.md`). Later commits change docs only. The front end is unchanged since `c925793` (13/13 then).
 
 Also recorded:
 - S-002, an owner instruction relayed by the supervising session: use the local cluster for everything, including the two-org proof. The hosted database stays "waiting on owner input" but is deferred, not a blocker.
 
 ## The exact next step
 
-**`tenancy`** (plan Task 10; opus `module-builder-critical`; split into 2-3 parts per B-013, e.g. data layer + FKs on every earlier table, then service + visibility + who-may-grant, then routes + cross-client tests). Create a worktree from main (`git worktree add .worktrees/tenancy -b tenancy main`, then `python scripts/dev_db.py env` in it). Every brief must carry tenancy's rows from `carry_forward.md` (there are many) and the review items they came from.
+**`tenancy` part 2** (plan Task 10; opus `module-builder-critical`; worktree `.worktrees/tenancy`, branch `tenancy`, whose part 1 `07556f2` is merged to main as a fast-forward; database `shifde_tenancy`). Part 1 (data layer, deferred FKs, B-116 hardening, `shifde_my_memberships`) is merged and reviewed (`reviews/tenancy-isolation-review-1.md`). Part 2 = `tenancy/service.py`, `api.py`, `dependencies.py`, `schemas.py`: who may grant (platform admin or the client's owner; platform-admin self-add audited and shown to the owner), organization visibility from bindings incl. groups, the session pin check against current bindings and client status (Item 12), `shifde_revoke_user_sessions` scope, routes and route cross-client tests (non-vacuous: own object 200 first). Its brief must carry every carry_forward row still owned by tenancy (part 2), including the new tenancy review 1 row, and identity review 3 items 2-3 and 5. Part 1's builder used 288k tokens: split part 2 into service then routes.
 
 **Then, in the plan's layer order:**
-1. `tenancy` (the exact next step above): opus, split into about 2-3 parts (B-013). Its carry_forward rows are many; read them all. They include:
+1. `tenancy` part 2 (the exact next step above). Its carry_forward rows are many; read them all. They include:
    - `tenants` FKs on every earlier table;
    - B-116 items 7/9/10;
    - the grant sweep;
