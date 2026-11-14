@@ -1,6 +1,6 @@
 # Handoff — 2026-11-13, end of session 2 (lead), updated after the ledger merge
 
-Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md`, then this file. Session 2 handed off at 281k lead tokens (charter §10), between units, with no agent running.
+Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md`, then this file. Session 2 handed off at 302,593 lead tokens (charter §10: at or above 300,000), between units, with no agent running and no merge half done. (An earlier handoff at 281k was premature and was resumed.)
 
 ## Finished in session 2
 
