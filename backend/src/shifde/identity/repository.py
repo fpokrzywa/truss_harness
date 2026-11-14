@@ -116,6 +116,82 @@ def my_memberships(session: Session) -> list[MembershipRow]:
     ]
 
 
+def my_membership_tenants(session: Session) -> list[UUID]:
+    """Tenant ids of the acting person's own active memberships (needs the principal context;
+    narrow definer `shifde_my_membership_tenants`, identity_0002)."""
+    return list(
+        session.execute(text("SELECT * FROM shifde.shifde_my_membership_tenants()")).scalars()
+    )
+
+
+@dataclass(frozen=True)
+class SourceLock:
+    failed_attempts: int
+    locked_until: datetime | None
+
+
+def lock_login_source(session: Session, user_id: UUID, source_hash: bytes) -> SourceLock | None:
+    """`SELECT ... FOR UPDATE` on the person's failed-login counter for one source (B-911; needs
+    the principal context: `login_lockouts` is own_row)."""
+    row = session.execute(
+        text(
+            "SELECT failed_attempts, locked_until FROM shifde.login_lockouts "
+            "WHERE user_id = :u AND source_hash = :s FOR UPDATE"
+        ),
+        {"u": user_id, "s": source_hash},
+    ).first()
+    return SourceLock(row[0], row[1]) if row else None
+
+
+def record_source_failure(
+    session: Session,
+    user_id: UUID,
+    source_hash: bytes,
+    *,
+    now: datetime,
+    threshold: int,
+    base_seconds: int,
+    max_seconds: int,
+) -> None:
+    """Count one failure for (person, source) and set an exponential lock at the threshold, in one
+    statement (same rule as `record_login_failure`, keyed per source)."""
+    session.execute(
+        text(
+            "INSERT INTO shifde.login_lockouts AS l "
+            "(user_id, source_hash, failed_attempts, locked_until, updated_at) "
+            "VALUES (:user_id, :source, 1, CASE WHEN 1 >= :threshold THEN "
+            ":now + make_interval(secs => CAST(:base AS double precision)) END, :now) "
+            "ON CONFLICT ON CONSTRAINT pk_login_lockouts DO UPDATE SET "
+            "failed_attempts = l.failed_attempts + 1, updated_at = :now, "
+            "locked_until = CASE "
+            "WHEN l.locked_until IS NOT NULL AND l.locked_until > :now THEN l.locked_until "
+            "WHEN l.failed_attempts + 1 >= :threshold THEN :now + make_interval(secs => LEAST("
+            "CAST(:base AS double precision) * "
+            "power(2, LEAST(l.failed_attempts + 1 - :threshold, 30)), "
+            "CAST(:max AS double precision))) "
+            "ELSE l.locked_until END"
+        ),
+        {
+            "now": now,
+            "threshold": threshold,
+            "base": base_seconds,
+            "max": max_seconds,
+            "user_id": user_id,
+            "source": source_hash,
+        },
+    )
+
+
+def reset_login_source(session: Session, user_id: UUID, source_hash: bytes, now: datetime) -> None:
+    session.execute(
+        text(
+            "UPDATE shifde.login_lockouts SET failed_attempts = 0, locked_until = NULL, "
+            "updated_at = :now WHERE user_id = :u AND source_hash = :s"
+        ),
+        {"u": user_id, "s": source_hash, "now": now},
+    )
+
+
 def lock_credentials(session: Session, user_id: UUID) -> LoginRow | None:
     """`SELECT ... FOR UPDATE` on the user's credential row (needs principal context set)."""
     row = session.execute(
@@ -342,7 +418,15 @@ def insert_setup_token(session: Session, values: dict[str, Any]) -> None:
     session.execute(insert(SetupToken).values(**values))
 
 
+class OwnerOnly(RuntimeError):
+    """An owner-only maintenance query was run where row-level security applies."""
+
+
 def platform_admin_exists(session: Session) -> bool:
+    """Owner / CLI only (identity review 1 item 5): under `shifde_app` row-level security hides
+    other people's rows, so the count would fail open (False); refuse instead."""
+    if session.scalar(text("SELECT pg_catalog.row_security_active('shifde.users')")):
+        raise OwnerOnly("platform_admin_exists needs the schema owner's maintenance session")
     return bool(
         session.scalar(select(func.count()).select_from(User).where(User.is_platform_admin))
     )

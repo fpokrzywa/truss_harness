@@ -27,6 +27,7 @@ from tests.conftest import CLEAN_TABLES
 
 # children first is not needed: the cleanup also truncates every table that references these
 for _table in (
+    "login_lockouts",
     "user_identities",
     "api_keys",
     "service_accounts",

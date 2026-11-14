@@ -9,9 +9,13 @@ of A naming B's object. Also the authz binding trigger's subject branches that n
 identity's tables (carry_forward: "Authz binding cross-client tests must match the trigger's
 specific messages").
 
-Identity part 1 has no routes: the login, session and API-key routes arrive with part 2, OIDC
-with part 3, member and IdP administration with tenancy/admin; their cross-client tests arrive
-with them (docs/build/carry_forward.md).
+Identity part 2a (service, definers; B-909..B-914) adds: no client context inserts a membership
+or mints an invitation or setup credential (review 1 item 1); a session pinned to a client the
+person has no active membership in does not resolve, and a pinned session is never an
+administrator's (item 4); suspension reaches only the caller's client; login counters are the
+person's own. Identity has no routes yet: the login, session and API-key routes arrive with part
+2b, OIDC with part 3, member and IdP administration with tenancy/admin; their cross-client tests
+arrive with them (docs/build/carry_forward.md).
 """
 
 from __future__ import annotations
@@ -27,8 +31,9 @@ from sqlalchemy.orm import Session
 
 from shifde.core.clock import utcnow
 from shifde.core.db import Database
+from shifde.core.errors import Forbidden
 from shifde.core.ids import uuid7
-from shifde.identity import repository
+from shifde.identity import repository, service
 from tests.identity.conftest import World, app_session
 
 ROW_SECURITY = "row-level security|row level security"
@@ -372,3 +377,181 @@ def test_binding_own_subject_passes_the_subject_check_and_fails_closed_until_ten
     with pytest.raises(DBAPIError, match='relation "shifde.workspaces" does not exist'):
         _bind(a_session, world.a.tenant, subject_type, subject)
     a_session.rollback()
+
+
+# ------------------------------------------------------------------ identity part 2a (B-909..)
+INSUFFICIENT = "insufficient_privilege|InsufficientPrivilege|invitation refused"
+
+
+def _owner_person(owner: Session, email: str) -> UUID:
+    uid = uuid7()
+    owner.execute(
+        text("INSERT INTO shifde.users (id, primary_email, display_name) VALUES (:i, :e, :e)"),
+        {"i": uid, "e": email},
+    )
+    return uid
+
+
+@pytest.mark.parametrize("target", ["b_member", "both", "fresh"])
+def test_a_cannot_add_another_clients_member_or_any_person_to_itself(
+    world: World, app_db: Database, owner_session: Session, target: str
+) -> None:
+    """Review 1 item 1 (MUST): client A's context could insert a membership for B's member (then
+    read their e-mail through users_select and, with SETH's invite definer, mint their first
+    credential). Only the platform administrator inserts memberships now."""
+    fresh = _owner_person(owner_session, "fresh@shi.test")
+    owner_session.commit()
+    person = {"b_member": world.b.member, "both": world.both, "fresh": fresh}[target]
+    with app_session(app_db, world.a.tenant, world.a.member) as s:
+        if target != "both":  # `both` is already A's member: the unique key would answer first
+            _refused(
+                s,
+                "INSERT INTO shifde.memberships (id, tenant_id, user_id) VALUES (:id, :t, :u)",
+                {"id": uuid7(), "t": world.a.tenant, "u": person},
+            )
+        with pytest.raises(Forbidden):
+            service.add_member(s, tenant_id=world.a.tenant, user_id=person)
+        assert repository.find_user_by_email(s, "member@b.test") is None
+    count = owner_session.execute(
+        text("SELECT count(*) FROM shifde.memberships WHERE tenant_id = :t AND user_id = :u"),
+        {"t": world.a.tenant, "u": person},
+    ).scalar_one()
+    assert count == (1 if target == "both" else 0)
+
+
+@pytest.mark.parametrize("target", ["b_member", "fresh_member_of_a"])
+def test_a_cannot_mint_an_invite_or_setup_credential_for_a_person(
+    world: World, app_db: Database, owner_session: Session, target: str
+) -> None:
+    """Review 1 item 1: invitation and setup credentials are not minted on the strength of a
+    membership row. A client context is refused through the service, the definer and raw SQL,
+    even for a person with no credential who is a member of A."""
+    fresh = _owner_person(owner_session, "fresh@shi.test")
+    owner_session.execute(
+        text("INSERT INTO shifde.memberships (id, tenant_id, user_id) VALUES (:id, :t, :u)"),
+        {"id": uuid7(), "t": world.a.tenant, "u": fresh},
+    )
+    owner_session.commit()
+    person = world.b.member if target == "b_member" else fresh
+    expires = utcnow() + timedelta(hours=1)
+    with app_session(app_db, world.a.tenant, world.a.member) as s:
+        with pytest.raises(Forbidden):
+            service.create_invite_token(s, person)
+        with pytest.raises(DBAPIError, match=INSUFFICIENT):
+            repository.create_invite_token(s, person, b"forged-invite", expires)
+        s.rollback()
+        _refused(
+            s,
+            "INSERT INTO shifde.setup_tokens (id, user_id, token_hash, purpose, expires_at) "
+            "VALUES (:id, :u, 'forged', 'bootstrap', :e)",
+            {"id": uuid7(), "u": person, "e": expires},
+            match="permission denied",
+        )
+    tokens = owner_session.execute(
+        text("SELECT count(*) FROM shifde.setup_tokens WHERE user_id = :u"), {"u": person}
+    ).scalar_one()
+    assert tokens == 0
+
+
+def test_a_session_pinned_to_another_client_does_not_resolve(
+    world: World, app_db: Database
+) -> None:
+    """Review 1 item 4 / B-116 review 5 item 3: `sessions` is own_row, so a person can insert a
+    session of their own pinned to any client id; `shifde_resolve_session` returns nothing for a
+    pin the person has no active membership in (A's member pinned to B)."""
+    now = utcnow()
+    with app_session(app_db, None, world.a.member) as s:
+        repository.insert_session(
+            s,
+            {
+                "id": uuid7(),
+                "session_hash": b"pinned-to-b",
+                "user_id": world.a.member,
+                "active_tenant_id": world.b.tenant,
+                "csrf_hash": b"csrf",
+                "idle_expires_at": now + timedelta(hours=1),
+                "absolute_expires_at": now + timedelta(hours=8),
+            },
+        )
+        s.commit()
+    with app_session(app_db, None) as s:
+        assert repository.resolve_session(s, b"pinned-to-b") is None
+        own = repository.resolve_session(s, world.a.session_hash)
+        assert own is not None and own.user_id == world.a.member
+
+
+def test_a_cannot_revoke_b_members_sessions(world: World, app_db: Database) -> None:
+    with app_session(app_db, world.a.tenant, world.a.member) as s:
+        with pytest.raises(DBAPIError, match="not a member of the current tenant"):
+            repository.revoke_user_sessions(s, world.b.member)
+        s.rollback()
+    with app_session(app_db, None) as s:
+        row = repository.resolve_session(s, world.b.session_hash)
+        assert row is not None and row.revoked_at is None
+
+
+def test_resolve_session_never_reports_admin_on_a_pinned_session(
+    world: World, app_db: Database, owner_session: Session
+) -> None:
+    owner_session.execute(
+        text("UPDATE shifde.users SET is_platform_admin = true WHERE id = :u"), {"u": world.both}
+    )
+    now = utcnow()
+    for tenant, digest in ((world.a.tenant, b"admin-pinned"), (None, b"admin-free")):
+        owner_session.execute(
+            text(
+                "INSERT INTO shifde.sessions (id, session_hash, user_id, active_tenant_id, "
+                "csrf_hash, idle_expires_at, absolute_expires_at) VALUES (:id, :h, :u, :t, 'c', "
+                ":i, :a)"
+            ),
+            {
+                "id": uuid7(),
+                "h": digest,
+                "u": world.both,
+                "t": tenant,
+                "i": now + timedelta(hours=1),
+                "a": now + timedelta(hours=8),
+            },
+        )
+    owner_session.commit()
+    with app_session(app_db, None) as s:
+        pinned = repository.resolve_session(s, b"admin-pinned")
+        free = repository.resolve_session(s, b"admin-free")
+    assert pinned is not None and pinned.is_platform_admin is False
+    assert free is not None and free.is_platform_admin is True
+
+
+def test_my_membership_tenants_lists_only_the_callers_own(world: World, app_db: Database) -> None:
+    with app_session(app_db, world.a.tenant, world.a.member) as s:
+        assert repository.my_membership_tenants(s) == [world.a.tenant]
+    with app_session(app_db, None, world.both) as s:
+        assert set(repository.my_membership_tenants(s)) == {world.a.tenant, world.b.tenant}
+    with app_session(app_db, None) as s:
+        assert repository.my_membership_tenants(s) == []
+
+
+def test_login_lockouts_are_private_to_their_person(
+    world: World, app_db: Database, owner_session: Session
+) -> None:
+    owner_session.execute(
+        text(
+            "INSERT INTO shifde.login_lockouts (user_id, source_hash, failed_attempts) "
+            "VALUES (:u, 'src', 3)"
+        ),
+        {"u": world.b.member},
+    )
+    owner_session.commit()
+    with app_session(app_db, world.b.tenant, world.a.member) as s:
+        assert s.execute(text("SELECT count(*) FROM shifde.login_lockouts")).scalar_one() == 0
+        repository.reset_login_source(s, world.b.member, b"src", utcnow())
+        s.commit()
+        _refused(
+            s,
+            "INSERT INTO shifde.login_lockouts (user_id, source_hash) VALUES (:u, 'x')",
+            {"u": world.b.member},
+        )
+    stored = owner_session.execute(
+        text("SELECT failed_attempts FROM shifde.login_lockouts WHERE user_id = :u"),
+        {"u": world.b.member},
+    ).scalar_one()
+    assert stored == 3

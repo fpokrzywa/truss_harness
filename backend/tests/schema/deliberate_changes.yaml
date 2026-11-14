@@ -238,3 +238,9 @@
   reason: >-
     constraints bypass row-level security: a client's IdP configuration must name a secret of the same client, (tenant_id, client_secret_ref_id) -> secrets (tenant_id, id) (B-116 item 9). SETH's plain idp_configs_client_secret_ref_id_fkey is kept for installation IdPs (tenant_id NULL), which the composite key does not check. DECISIONS B-903.
   migration: identity_0001
+
+- table: memberships
+  path: [policies, insert_by_platform_admin]
+  reason: >-
+    Identity review 1 item 1 (MUST): SETH let any client context insert a membership for any person (tenant_isolation only), after which users_select showed that client the person's e-mail and the invitation definer trusted the row. The RESTRICTIVE INSERT policy admits a membership only under the platform-administrator context. DECISIONS B-910.
+  migration: identity_0002

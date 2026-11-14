@@ -12,11 +12,14 @@
   earlier in a caller's `search_path` can stand in for them.
 * A SECURITY DEFINER function runs as its owner; owned by `shifde_owner` (BYPASSRLS) it ignores
   every policy. Each one, in any non-system schema (`public` included), must be listed in
-  `SECURITY_DEFINER_ALLOWLIST` as `<schema>.<name>` with a reason (adding one needs isolation
-  review), pin `search_path` without `public` or `"$user"` and with `pg_temp` listed last (left
-  out, `pg_temp` is searched first), and grant EXECUTE to nobody but its owner and `shifde_app`
-  -- in particular not to PUBLIC. An entry names the one zero-argument function of that name:
-  any overload of an allowlisted name is refused (review 1, item 10).
+  `SECURITY_DEFINER_ALLOWLIST` with a reason (adding one needs isolation review), pin
+  `search_path` without `public` or `"$user"` and with `pg_temp` listed last (left out,
+  `pg_temp` is searched first), and grant EXECUTE to nobody but its owner and `shifde_app`
+  -- in particular not to PUBLIC. An entry is keyed by its full signature: `<schema>.<name>`
+  names the one zero-argument function of that name, `<schema>.<name>(<argument types>)` (types
+  as `pg_catalog.oidvectortypes` prints them) exactly that function. Any other function sharing
+  an allowlisted name, definer or not, is refused, so an overload cannot inherit an entry
+  (review 1, item 10; B-610), and an entry that names no SECURITY DEFINER function is stale.
 * Nothing in the catalog writes the client context (`app.tenant_id`, `app.principal_id`,
   `app.platform_admin`): function bodies, SET clauses and argument defaults, views, policies,
   defaults, constraints, indexes, triggers and statistics in every non-system schema are scanned
@@ -41,8 +44,48 @@ from tests.schema.catalog_scan import (
 
 APP_ROLE = "shifde_app"
 
-# <schema>.<name> -> why it must run with its owner's rights. Adding one needs isolation review.
+# <schema>.<name> (the zero-argument function) or <schema>.<name>(<argument types>) -> why it must
+# run with its owner's rights. Adding one needs isolation review.
+_IDENTITY_DEFINER = (
+    "identity_0002 (B-909): owned by shifde_owner, search_path pg_catalog, pg_temp, every object "
+    "schema-qualified, EXECUTE for shifde_app only, writes no app.* setting"
+)
 SECURITY_DEFINER_ALLOWLIST: dict[str, str] = {
+    "shifde.shifde_resolve_local_login(text)": (
+        f"{_IDENTITY_DEFINER}. Pre-tenant login lookup: users and local_credentials are not "
+        "readable before the principal is known. Returns the one account of the normalised e-mail "
+        "(hash, counters, status); the caller verifies the password."
+    ),
+    "shifde.shifde_resolve_session(bytea)": (
+        f"{_IDENTITY_DEFINER}. Pre-tenant session lookup by cookie hash (sessions are own_row). "
+        "Never reports platform administrator on a session pinned to a client, and returns no "
+        "row for a pinned session without an active membership in that client (review 1 item 4)."
+    ),
+    "shifde.shifde_revoke_session(bytea)": (
+        f"{_IDENTITY_DEFINER}. Login rotation revokes the presented session by cookie hash "
+        "before the principal is set; it only sets revoked_at (never un-revokes)."
+    ),
+    "shifde.shifde_revoke_user_sessions(uuid)": (
+        f"{_IDENTITY_DEFINER}. Suspending a member revokes that person's sessions (own_row "
+        "rows of another person); refused unless the person is a member of the caller's current "
+        "client, and touches only unpinned sessions and sessions pinned to that client."
+    ),
+    "shifde.shifde_create_invite_token(uuid, bytea, timestamp with time zone)": (
+        f"{_IDENTITY_DEFINER}. The only app path that writes setup_tokens (no app grants). "
+        "Trusts no membership row (review 1 item 1): platform administrator context and principal "
+        "required, target an active non-administrator with no credential and no identity, "
+        "expiry within 73 hours; one generic error."
+    ),
+    "shifde.shifde_redeem_setup_token(bytea, text, integer)": (
+        f"{_IDENTITY_DEFINER}. Atomic single-use redemption of a setup token by its hash "
+        "(setup_tokens is closed to the app); an invitation is refused for a person who already "
+        "has a credential or identity. Writes only the token's own person's credential."
+    ),
+    "shifde.shifde_my_membership_tenants": (
+        f"{_IDENTITY_DEFINER}. No arguments: the active membership tenant ids of "
+        "current_principal_id() only (memberships are tenant-keyed, so a person cannot list "
+        "their own clients before a client is chosen); used for the login audit fan-out."
+    ),
     "shifde.rate_card_versions_guard": (
         "ledger (B-601): the BEFORE INSERT guard of rate_card_versions closes the open-ended "
         "predecessor of a new version (UPDATE effective_to), which the application role may not "
@@ -96,6 +139,7 @@ BASE_HELPERS: dict[str, dict[str, str | None]] = {
 _FUNCTIONS = text(
     r"""SELECT n.nspname, p.oid, p.proname, p.prosecdef, p.provolatile, l.lanname AS lang,
               pg_catalog.pg_get_function_identity_arguments(p.oid) AS args,
+              pg_catalog.oidvectortypes(p.proargtypes) AS argtypes,
               pg_catalog.format_type(p.prorettype, NULL) AS rettype,
               pg_catalog.pg_get_userbyid(p.proowner) AS owner, p.proconfig, p.prosrc,
               p.proacl IS NULL AS default_acl,
@@ -125,18 +169,30 @@ def _search_path(config: list[str] | None) -> str | None:
     return None
 
 
+def _signature(where: str, argtypes: str) -> str:
+    """The allowlist key of a function: `<schema>.<name>` with no arguments, else
+    `<schema>.<name>(<argument types>)`."""
+    return where if argtypes == "" else f"{where}({argtypes})"
+
+
+def _allowlisted_names(allowlist: dict[str, str]) -> set[str]:
+    return {key.partition("(")[0] for key in allowlist}
+
+
 def definer_violations(conn: Connection, allowlist: dict[str, str]) -> list[str]:
-    """An allowlist entry names the one zero-argument function of that name (as the base helpers
-    do): any other function sharing the name, definer or not, is refused, so an overload cannot
-    inherit an entry (review 1, item 10)."""
+    """An allowlist entry names exactly one function by full signature (`<schema>.<name>` is the
+    zero-argument one, as the base helpers): any other function sharing an allowlisted name,
+    definer or not, is refused, so an overload cannot inherit an entry (review 1, item 10)."""
     problems: list[str] = []
+    names = _allowlisted_names(allowlist)
     for row in conn.execute(_FUNCTIONS):
         where = f"{row.nspname}.{row.proname}"
-        if where in allowlist and row.args != "":
+        listed = _signature(where, row.argtypes) in allowlist
+        if where in names and not listed:
             problems.append(f"{where}({row.args}): overload of an allowlisted function")
         if not row.prosecdef:
             continue
-        if where not in allowlist or row.args != "":
+        if not listed:
             problems.append(f"{where}: SECURITY DEFINER but not on the allowlist")
         path = _search_path(row.proconfig)
         if path is None:
@@ -208,6 +264,43 @@ def test_allowlist_entries_have_reasons() -> None:
     assert all(reason.strip() for reason in SECURITY_DEFINER_ALLOWLIST.values())
 
 
+def stale_allowlist_entries(conn: Connection, allowlist: dict[str, str]) -> list[str]:
+    """Entries that name no SECURITY DEFINER function in the database under test."""
+    found = {
+        _signature(f"{row.nspname}.{row.proname}", row.argtypes)
+        for row in conn.execute(_FUNCTIONS)
+        if row.prosecdef
+    }
+    return sorted(set(allowlist) - found)
+
+
+def test_allowlist_has_no_stale_entries(owner_engine: Engine) -> None:
+    with owner_engine.connect() as c:
+        assert stale_allowlist_entries(c, SECURITY_DEFINER_ALLOWLIST) == []
+
+
+def test_identity_definers_are_on_the_allowlist_by_signature(owner_engine: Engine) -> None:
+    """identity_0002 (B-909): each identity definer is listed under its full signature."""
+    with owner_engine.connect() as c:
+        rows = [
+            row
+            for row in c.execute(_FUNCTIONS)
+            if row.prosecdef and row.proname.startswith("shifde_")
+        ]
+    keys = {_signature(f"{row.nspname}.{row.proname}", row.argtypes) for row in rows}
+    assert keys == {
+        "shifde.shifde_resolve_local_login(text)",
+        "shifde.shifde_resolve_session(bytea)",
+        "shifde.shifde_revoke_session(bytea)",
+        "shifde.shifde_revoke_user_sessions(uuid)",
+        "shifde.shifde_create_invite_token(uuid, bytea, timestamp with time zone)",
+        "shifde.shifde_redeem_setup_token(bytea, text, integer)",
+        "shifde.shifde_my_membership_tenants",
+    }
+    assert all(row.owner == "shifde_owner" for row in rows)
+    assert all(_search_path(row.proconfig) == "pg_catalog, pg_temp" for row in rows)
+
+
 # --------------------------------------------------------------------------- probes
 @pytest.fixture
 def scratch(owner_engine: Engine) -> Iterator[Connection]:
@@ -217,8 +310,9 @@ def scratch(owner_engine: Engine) -> Iterator[Connection]:
         try:
             # The probes assert the exact violation list of one scratch function: the real,
             # allowlisted definers (B-601) are dropped inside this rolled-back transaction.
-            for name in SECURITY_DEFINER_ALLOWLIST:
-                c.execute(text(f"DROP FUNCTION {name}() CASCADE"))
+            for key in SECURITY_DEFINER_ALLOWLIST:
+                signature = key if "(" in key else f"{key}()"
+                c.execute(text(f"DROP FUNCTION {signature} CASCADE"))
             yield c
         finally:
             tx.rollback()
@@ -305,6 +399,62 @@ def test_locked_down_security_definer_passes(scratch: Connection) -> None:
     scratch.execute(text("REVOKE EXECUTE ON FUNCTION shifde.zz_definer() FROM PUBLIC"))
     scratch.execute(text(f"GRANT EXECUTE ON FUNCTION shifde.zz_definer() TO {APP_ROLE}"))
     assert definer_violations(scratch, {"shifde.zz_definer": "probe"}) == []
+
+
+def _definer_with_args(c: Connection, args: str, *, definer: bool = True) -> None:
+    c.execute(
+        text(
+            f"CREATE FUNCTION shifde.zz_definer({args}) RETURNS int LANGUAGE sql"
+            f" {'SECURITY DEFINER' if definer else ''}"
+            " SET search_path = pg_catalog, pg_temp AS $$ SELECT 1 $$"
+        )
+    )
+    c.execute(text(f"REVOKE EXECUTE ON FUNCTION shifde.zz_definer({args}) FROM PUBLIC"))
+
+
+def test_signature_keyed_entry_admits_exactly_that_signature(scratch: Connection) -> None:
+    _definer_with_args(scratch, "a uuid, b bytea")
+    assert definer_violations(scratch, {"shifde.zz_definer(uuid, bytea)": "probe"}) == []
+    # the same name keyed for no arguments, or for other types, does not admit it
+    for key in ("shifde.zz_definer", "shifde.zz_definer(bytea, uuid)"):
+        assert definer_violations(scratch, {key: "probe"}) == [
+            "shifde.zz_definer(a uuid, b bytea): overload of an allowlisted function",
+            "shifde.zz_definer: SECURITY DEFINER but not on the allowlist",
+        ]
+
+
+@pytest.mark.parametrize("definer", [True, False])
+def test_overload_of_a_signature_keyed_definer_is_reported(
+    scratch: Connection, definer: bool
+) -> None:
+    """B-610 holds for signature-keyed entries: another function of the name is refused."""
+    _definer_with_args(scratch, "a uuid")
+    _definer_with_args(scratch, "a uuid, b int", definer=definer)
+    problems = definer_violations(scratch, {"shifde.zz_definer(uuid)": "probe"})
+    assert "shifde.zz_definer(a uuid, b integer): overload of an allowlisted function" in problems
+    assert ("shifde.zz_definer: SECURITY DEFINER but not on the allowlist" in problems) is definer
+    assert len(problems) == (2 if definer else 1)
+
+
+def test_signature_keyed_entry_still_needs_the_lockdown(scratch: Connection) -> None:
+    scratch.execute(
+        text(
+            "CREATE FUNCTION shifde.zz_definer(a uuid) RETURNS int LANGUAGE sql SECURITY DEFINER"
+            " AS $$ SELECT 1 $$"
+        )
+    )
+    assert definer_violations(scratch, {"shifde.zz_definer(uuid)": "probe"}) == [
+        "shifde.zz_definer: search_path not pinned",
+        "shifde.zz_definer: EXECUTE granted to PUBLIC",
+    ]
+
+
+def test_stale_allowlist_entry_is_reported(scratch: Connection) -> None:
+    _definer_with_args(scratch, "a uuid")
+    stale = stale_allowlist_entries(
+        scratch, {"shifde.zz_definer(uuid)": "probe", "shifde.zz_definer(text)": "probe"}
+    )
+    assert stale == ["shifde.zz_definer(text)"]
 
 
 def test_baseline_helper_turned_definer_is_reported(scratch: Connection) -> None:

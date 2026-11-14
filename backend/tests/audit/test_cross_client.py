@@ -140,8 +140,15 @@ def test_the_service_writes_a_global_row_only_for_an_installation_action(
     app_db: Database, world: World
 ) -> None:
     ctx = RequestContext(request_id="svc")
-    with _as(app_db, world.a) as s:
+    # a pre-tenant action is filed globally only from a session with no client context (audit
+    # review 2 item 3, B-912): the no-context write succeeds and leaves no admin flag behind
+    with _as(app_db, None) as s:
         audit.record(s, ctx, action="identity.login.failed", tenant_id=None, outcome="failure")
+        s.commit()
+        assert s.execute(text("SELECT shifde.is_platform_admin_ctx()")).scalar_one() is False
+    with _as(app_db, world.a) as s:
+        with pytest.raises(audit.NotInstallationAction):
+            audit.record(s, ctx, action="identity.login.failed", tenant_id=None, outcome="failure")
         with pytest.raises(audit.NotInstallationAction):
             audit.record(s, ctx, action="test.forged", tenant_id=None)
         # the write left the context as it was: the client still cannot write a raw global row
@@ -216,7 +223,7 @@ def test_an_insert_that_fails_reports_its_own_error(app_db: Database, world: Wor
             )  # fmt: skip
         assert _sqlstate(err) == "23514"
         s.rollback()
-    with _as(app_db, world.a) as s:
+    with _as(app_db, None) as s:  # pre-tenant actions need a session with no client (B-912)
         with pytest.raises(DBAPIError) as err:
             audit.record(
                 s, RequestContext(request_id="x"), action="identity.login.failed",
@@ -299,3 +306,25 @@ def test_a_session_whose_context_lags_the_database_does_not_reach_the_chain_lock
             assert _sqlstate(err) == "42501"
             s.rollback()
         holder.rollback()
+
+
+@pytest.mark.parametrize(
+    "action",
+    sorted(audit.PRE_TENANT_ACTIONS),
+)
+def test_a_pre_tenant_action_is_refused_from_a_client_context(
+    app_db: Database, world: World, action: str
+) -> None:
+    """Audit review 2 item 3 (carry_forward, B-912): code running in client A cannot file a
+    global (tenant NULL) row under a pre-tenant action; nothing is written."""
+    with _as(app_db, world.a) as s:
+        before = _ids(s)
+        with pytest.raises(audit.NotInstallationAction):
+            audit.record(s, RequestContext(request_id="x"), action=action, tenant_id=None)
+        assert get_context(s).platform_admin is False
+        s.commit()
+    with _as(app_db, None) as s:
+        audit.record(s, RequestContext(request_id="x"), action=action, tenant_id=None)
+        s.commit()
+    with _as(app_db, world.a) as s:
+        assert _ids(s) == before  # A sees only its own rows; the global row is not A's

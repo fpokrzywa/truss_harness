@@ -163,6 +163,8 @@ PRINCIPAL_TABLES: dict[str, str] = {
     "shifde.sessions": f"{_IDENTITY_STATE}: a person's login sessions",
     "shifde.local_credentials": f"{_IDENTITY_STATE}: a person's password and MFA state",
     "shifde.user_identities": f"{_IDENTITY_STATE}: a person's identity-provider subjects",
+    # identity_0002 (B-911): not a SETH table; failed-login counters per (person, source)
+    "shifde.login_lockouts": f"{_IDENTITY_STATE}: a person's failed-login counters per source",
 }
 
 # (relation, policy, command, "PERMISSIVE" | "RESTRICTIVE", roles, "USING" | "WITH CHECK")
@@ -1178,6 +1180,7 @@ def test_reviewed_principal_tables() -> None:
         "shifde.sessions",
         "shifde.local_credentials",
         "shifde.user_identities",
+        "shifde.login_lockouts",
     }
     assert all(reason.strip() for reason in PRINCIPAL_TABLES.values())
 

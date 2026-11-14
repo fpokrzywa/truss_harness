@@ -61,8 +61,18 @@ CATEGORY_PREFIXES: dict[str, tuple[str, ...]] = {
 # - installation-wide configuration is written only by a platform administrator or the install
 #   tooling: the caller must already hold the platform-administrator context, or `record` refuses.
 # Add an action only if it can happen with no client.
+# A pre-tenant action is recorded with tenant_id NULL only from a session with no client
+# context (audit review 2 item 3): code running inside a client cannot file a global row.
+# The last three are a person's own sign-in events when the person belongs to no client yet
+# (e.g. a platform administrator); with memberships they go to each client (B-912).
 PRE_TENANT_ACTIONS: frozenset[str] = frozenset(
-    {"identity.login.failed", "identity.setup_token.rejected"}
+    {
+        "identity.login.failed",
+        "identity.setup_token.rejected",
+        "identity.login.succeeded",
+        "identity.logout",
+        "identity.setup_token.redeemed",
+    }
 )
 ADMIN_INSTALLATION_ACTIONS: frozenset[str] = frozenset(
     {
@@ -106,6 +116,15 @@ _MAY_LOCK_SQL = text(
     " THEN shifde.current_tenant_id() = CAST(:t AS uuid)"
     " ELSE NOT pg_catalog.row_security_active('shifde.audit_events') END"
 )
+
+
+_NO_CLIENT_SQL = text("SELECT shifde.current_tenant_id() IS NULL")
+
+
+def _has_no_client_context(session: Session) -> bool:
+    """A pre-tenant event is filed globally only from a session with no client context (audit
+    review 2 item 3, B-912). Read from the database (B-703), not `session.info`."""
+    return bool(session.execute(_NO_CLIENT_SQL).scalar_one())
 
 
 def _may_lock_chain(session: Session, tenant_id: UUID) -> bool:
@@ -182,13 +201,15 @@ def record(
     details: Mapping[str, Any] | None = None,
 ) -> None:
     """Append one audit event. `tenant_id=None` marks an installation-level event, allowed only
-    for the pre-tenant identity actions, and for the installation-configuration actions only when
-    the caller is already a platform administrator (otherwise `NotInstallationAction`)."""
-    if tenant_id is None and not (
-        action in PRE_TENANT_ACTIONS
-        or (action in ADMIN_INSTALLATION_ACTIONS and get_context(session).platform_admin)
-    ):
-        raise NotInstallationAction(action)
+    for the pre-tenant identity actions from a session with no client context, and for the
+    installation-configuration actions only when the caller is already a platform
+    administrator (otherwise `NotInstallationAction`)."""
+    if tenant_id is None:
+        if action in PRE_TENANT_ACTIONS:
+            if not _has_no_client_context(session):
+                raise NotInstallationAction(action)
+        elif not (action in ADMIN_INSTALLATION_ACTIONS and get_context(session).platform_admin):
+            raise NotInstallationAction(action)
     principal = ctx.principal
     actor_type = "user" if actor_id else "anonymous"
     if actor_id is None and principal is not None:
