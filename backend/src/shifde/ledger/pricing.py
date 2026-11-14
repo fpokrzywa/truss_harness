@@ -170,11 +170,14 @@ def calculate(v: RateVersion, usage: Usage) -> Decimal:
     return amount.quantize(QUANT)
 
 
-def price(v: RateVersion | None, usage: Usage) -> Costed:
-    """`calculated` cost from a rate version, or `unmeasured` when no rate was in force."""
+def price(v: RateVersion | None, usage: Usage, *, estimated: bool = False) -> Costed:
+    """`calculated` cost from a rate version (`estimated` when the token counts are the
+    platform's own estimate, the provider having reported none), or `unmeasured` when no rate was
+    in force."""
     if v is None:
         return UNMEASURED
-    return Costed("calculated", calculate(v, usage), v.currency, v.id, snapshot(v))
+    kind = "estimated" if estimated else "calculated"
+    return Costed(kind, calculate(v, usage), v.currency, v.id, snapshot(v))
 
 
 def model_keys(session: Session, model_id: UUID) -> tuple[str, str] | None:

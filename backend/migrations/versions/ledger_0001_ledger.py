@@ -17,7 +17,9 @@ until then. Foreign keys among the ledger's own tables are kept.
 Deliberate difference from SETH (DECISIONS B-601): the rate card guard no longer signals the
 immutability trigger with `set_config('shifde.ratecard_close', ...)` (the catalog scan refuses any
 `set_config`); the immutability trigger recognises the guard's own nested UPDATE by
-`pg_trigger_depth() > 1`. The guard pins `search_path = shifde, pg_catalog, pg_temp`.
+`pg_trigger_depth() > 1`. The guard pins `search_path = shifde, pg_catalog, pg_temp`. Also
+B-602: `usage_events.cost_kind` admits `estimated` (a cost priced from token counts the platform
+estimated because the provider reported none; R3 Item 11).
 
 Rollback: drops the eight tables (data-destructive); back up first.
 """
@@ -236,7 +238,8 @@ def upgrade() -> None:
             corrects_event_id uuid,
             CONSTRAINT uq_usage_events__key UNIQUE (tenant_id, event_key),
             CONSTRAINT usage_events_cost_kind_check CHECK
-                (cost_kind IN ('provider_reported', 'calculated', 'estimated_infra', 'unmeasured')),
+                (cost_kind IN ('provider_reported', 'calculated', 'estimated', 'estimated_infra',
+                 'unmeasured')),
             CONSTRAINT ck_usage_events__cost CHECK
                 ((cost_kind = 'unmeasured') = (cost_amount IS NULL) AND
                  (cost_amount IS NULL OR currency IS NOT NULL))

@@ -25,10 +25,13 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from shifde.core.clock import utcnow
+from shifde.core.db import Database, set_tenant
 from shifde.core.ids import uuid7
-from shifde.ledger import pricing
+from shifde.ledger import estimate, pricing
 
-COST_KINDS = ("provider_reported", "calculated", "estimated_infra", "unmeasured")
+# `estimated`: priced from token counts the platform estimated because the provider reported none
+# (Item 11); `calculated` is only for counts the provider reported.
+COST_KINDS = ("provider_reported", "calculated", "estimated", "estimated_infra", "unmeasured")
 # Only these event types are PRICEABLE by a rate card (model usage). Other events (tool calls,
 # ontology queries, pipeline nodes) carry no cost; they are not counted as "unmeasured".
 PRICEABLE = ("model_call", "prompt_test")
@@ -46,6 +49,11 @@ DIMS = (
     "workspace_id", "project_id", "principal_id", "agent_id", "prompt_id", "model_id",
     "pipeline_id", "orchestration_id", "build_ref", "rate_card_version_id",
 )  # fmt: skip
+
+
+class UsageNotReported(ValueError):
+    """A succeeded model call was offered without token counts. The ledger never stores a missing
+    count as 0: estimate it (`estimate.resolve_usage`, `record_model_call`) and label it so."""
 
 
 def j(value: Any) -> str:  # Any: JSON document
@@ -120,14 +128,16 @@ def price_model_usage(
     at: datetime | None = None,
     provider_reported_cost: Decimal | None = None,
     provider_reported_currency: str | None = None,
+    estimated: bool = False,
 ) -> tuple[pricing.Costed, str | None, str | None]:
     """(cost, provider_key, model_key) of one model call. A provider-reported amount wins; the
-    calculated rate (if any) is then still kept as the snapshot for comparison."""
+    calculated rate (if any) is then still kept as the snapshot for comparison. `estimated`: the
+    token counts are the platform's estimate (priced as kind `estimated`, not `calculated`)."""
     keys = pricing.model_keys(session, model_id) if model_id is not None else None
     version = (
         pricing.resolve(session, tenant_id, keys[0], keys[1], at or utcnow()) if keys else None
     )
-    calculated = pricing.price(version, usage)
+    calculated = pricing.price(version, usage, estimated=estimated)
     if provider_reported_cost is not None:
         currency = provider_reported_currency or calculated.currency
         if currency is None:
@@ -153,6 +163,15 @@ def record(session: Session, values: Mapping[str, Any]) -> EventResult:  # Any: 
     v["currency"] = costed.currency
     v["rate_card_version_id"] = costed.rate_card_version_id
     v.setdefault("occurred_at", utcnow())
+    if (
+        v.get("event_type") in PRICEABLE
+        and v.get("status", "succeeded") == "succeeded"
+        and (v.get("input_tokens") is None or v.get("output_tokens") is None)
+    ):
+        raise UsageNotReported(
+            "a succeeded model call needs input and output token counts; estimate what the "
+            "provider did not report (ledger.record_model_call) instead of storing 0"
+        )
     for numeric in ("input_tokens", "output_tokens", "cached_read_tokens", "cached_write_tokens"):
         v[numeric] = v.get(numeric) or 0
     if v.get("call_count") is None:
@@ -179,6 +198,87 @@ def record(session: Session, values: Mapping[str, Any]) -> EventResult:  # Any: 
         return EventResult(False, event_id, costed)
     _bump_rollup(session, v)
     return EventResult(True, event_id, costed)
+
+
+def record_model_call(
+    session: Session,
+    values: Mapping[str, Any],  # Any: column values
+    *,
+    reported: estimate.ReportedUsage | None,
+    estimated_input: int,
+    estimated_output: int,
+    provider_reported_cost: Decimal | None = None,
+    provider_reported_currency: str | None = None,
+    at: datetime | None = None,
+) -> EventResult:
+    """Record one model call whose provider usage may be missing (Item 11). Counts the provider
+    reported are stored as reported; each one it did not report is stored as the caller's
+    estimate (never 0) and the event is priced as `estimated`, not `calculated`. What the provider
+    said is kept in `provider_reported_usage`. `values` carries the event columns except the token
+    counts, cost and `provider_reported_usage`."""
+    resolved = estimate.resolve_usage(
+        reported, estimated_input=estimated_input, estimated_output=estimated_output
+    )
+    v: dict[str, Any] = dict(values)  # Any: column values
+    usage = pricing.Usage(
+        input_tokens=resolved.input_tokens,
+        output_tokens=resolved.output_tokens,
+        calls=1 if v.get("status", "succeeded") == "succeeded" else 0,
+        duration_ms=v.get("duration_ms"),
+    )
+    costed, provider_key, model_key = price_model_usage(
+        session,
+        v["tenant_id"],
+        v.get("model_id"),
+        usage,
+        at=at,
+        provider_reported_cost=provider_reported_cost,
+        provider_reported_currency=provider_reported_currency,
+        estimated=resolved.estimated,
+    )
+    v["input_tokens"] = resolved.input_tokens
+    v["output_tokens"] = resolved.output_tokens
+    v["costed"] = costed
+    v["provider_reported_usage"] = resolved.as_json()
+    if provider_key is not None:
+        v.setdefault("provider_key", provider_key)
+        v.setdefault("model_key", model_key)
+    return record(session, v)
+
+
+def record_model_call_durably(
+    db: Database,
+    tenant_id: UUID,
+    values: Mapping[str, Any],  # Any: column values
+    *,
+    reported: estimate.ReportedUsage | None,
+    estimated_input: int,
+    estimated_output: int,
+    provider_reported_cost: Decimal | None = None,
+    provider_reported_currency: str | None = None,
+) -> EventResult:
+    """`record_model_call` in its own short transaction, committed before returning: call it the
+    moment the provider has answered, so the usage row exists even when the caller's transaction
+    never commits (a crash, a lost worker). The caller's later `record` of the same `event_key`
+    inserts nothing and changes no rollup, so the call is counted once.
+
+    Call it while the caller's own transaction holds no uncommitted ledger writes (the rollup row
+    of the same dimensions would be locked by it): a lock wait beyond five seconds fails instead
+    of hanging."""
+    with db.session() as s:
+        set_tenant(s, tenant_id)
+        s.execute(text("SET LOCAL lock_timeout = '5s'"))
+        result = record_model_call(
+            s,
+            values,
+            reported=reported,
+            estimated_input=estimated_input,
+            estimated_output=estimated_output,
+            provider_reported_cost=provider_reported_cost,
+            provider_reported_currency=provider_reported_currency,
+        )
+        s.commit()
+        return result
 
 
 def _bump_rollup(session: Session, v: Mapping[str, Any]) -> None:  # Any: column values

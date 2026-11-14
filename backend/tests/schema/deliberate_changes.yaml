@@ -55,3 +55,8 @@
   path: [constraints, fk_budget_reservations__run]
   reason: "foreign key to shifde.runs, a table of the runtime module that is not ported yet; the runtime migration adds it (docs/build/carry_forward.md)"
   migration: ledger_0001
+
+- table: usage_events
+  path: [constraints, usage_events_cost_kind_check]
+  reason: "cost_kind admits 'estimated': a cost priced from token counts the platform estimated because the provider reported none (findings Item 11, DECISIONS B-602); SETH stored such usage as 0 tokens labelled calculated"
+  migration: ledger_0001

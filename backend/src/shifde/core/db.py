@@ -134,7 +134,8 @@ def _clean_checkout(
 ) -> None:
     """Pool `checkout` hook: discard session state, then refuse a preset context. SETH keeps no
     session state across a checkout (advisory locks are transaction-level, LISTEN uses its own
-    connection), and psycopg clears its prepared-statement cache when it sees DISCARD ALL.
+    connection); psycopg never prepares statements here (`prepare_threshold=None`, B-603), because
+    its cache could outlive the server-side statements DISCARD ALL drops.
     Raising here makes SQLAlchemy invalidate (close) the connection."""
     autocommit = dbapi_connection.autocommit
     dbapi_connection.autocommit = True
@@ -171,7 +172,13 @@ class Database:
             pool_pre_ping=True,
             pool_size=pool_size,
             max_overflow=max_overflow,
-            connect_args={"options": options, "connect_timeout": connect_timeout},
+            connect_args={
+                "options": options,
+                "connect_timeout": connect_timeout,
+                # The checkout hook's DISCARD ALL drops server-side prepared statements but
+                # psycopg's cache outlived it after a commit: never prepare (DECISIONS B-603).
+                "prepare_threshold": None,
+            },
         )
         event.listen(self.engine, "checkout", _clean_checkout)
         self._factory = sessionmaker(self.engine, expire_on_commit=False)

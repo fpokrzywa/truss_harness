@@ -16,8 +16,8 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from shifde.core.clock import utcnow
-from shifde.ledger import budgeting, pricing
+from shifde.ledger import budgeting
+from shifde.ledger import estimate as call_estimate
 from shifde.ledger.budgeting import effective_limit, period_name, period_start
 
 
@@ -54,6 +54,9 @@ class Evaluation:
     has_quotas: bool
     est_cost: Decimal | None
     est_currency: str | None
+    # Tokens the caller must hold for the call: never below the call's input + output ceiling
+    # (Item 9: a smaller hold let a hard budget overshoot). Store this, not the caller's figure.
+    hold_tokens: int = 0
 
 
 def scope_match(alias: str) -> str:
@@ -145,16 +148,10 @@ def estimate_cost(
 ) -> tuple[Decimal | None, str | None]:
     if detail is None or detail.model_id is None:
         return None, None
-    keys = pricing.model_keys(session, detail.model_id)
-    if keys is None:
-        return None, None
-    version = pricing.resolve(session, scope.tenant_id, keys[0], keys[1], utcnow())
-    if version is None:
-        return None, None
-    usage = pricing.Usage(
-        input_tokens=detail.est_input_tokens, output_tokens=detail.est_output_tokens, calls=1
+    cost = call_estimate.call_cost(
+        session, scope.tenant_id, detail.model_id, detail.est_input_tokens, detail.est_output_tokens
     )
-    return pricing.calculate(version, usage), version.currency
+    return (None, None) if cost is None else (cost.amount, cost.currency)
 
 
 def evaluate(
@@ -195,6 +192,8 @@ def evaluate(
             )
     rules.sort(key=lambda r: str(r["id"]))
     est_cost, est_currency = estimate_cost(session, scope, detail)
+    ceiling = 0 if detail is None else detail.est_input_tokens + detail.est_output_tokens
+    hold = max(estimate, ceiling)
     applicable: list[UUID] = []
     for b in rules:
         is_quota = b["id"] in quota_ids
@@ -217,7 +216,7 @@ def evaluate(
                 continue
             request = est_cost
         else:
-            request = Decimal(estimate)
+            request = Decimal(hold)
         used, held = used_and_held(session, b, scope, metric=metric, since=since)
         if hard and used + held + request > limit:
             unit = "cost" if metric == "cost" else "token"
@@ -228,4 +227,4 @@ def evaluate(
             )
         if not is_quota:
             applicable.append(b["id"])
-    return Evaluation(applicable, bool(quota_ids), est_cost, est_currency)
+    return Evaluation(applicable, bool(quota_ids), est_cost, est_currency, hold)
