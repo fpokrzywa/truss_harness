@@ -21,3 +21,12 @@ policy_decisions  # authz
 audit_events  # audit
 secrets  # secrets
 secret_access_log  # secrets
+users  # identity
+memberships  # identity
+local_credentials  # identity
+sessions  # identity
+setup_tokens  # identity
+service_accounts  # identity
+api_keys  # identity
+user_identities  # identity
+idp_configs  # identity

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from functools import lru_cache
 from pathlib import Path
 
@@ -39,9 +40,32 @@ def code_head() -> str:
 
 @lru_cache
 def code_heads() -> frozenset[str]:
-    """Every head of the migration graph shipped with this code. Each module has its own Alembic
-    branch (DECISIONS B-004), so the graph has several heads once modules are ported; upgrades
-    run `alembic upgrade heads`."""
+    """The revisions `alembic_version` holds once the database is at every head of the migration
+    graph shipped with this code. Each module has its own Alembic branch (DECISIONS B-004), so the
+    graph has several heads once modules are ported; upgrades run `alembic upgrade heads`.
+
+    A head that another revision names in `depends_on` (identity_0001 depends on secrets_0001)
+    is an ancestor of that revision, and Alembic leaves it out of `alembic_version`; such a head
+    is left out here too (DECISIONS B-906)."""
     cfg = Config()
     cfg.set_main_option("script_location", str(migrations_dir()))
-    return frozenset(ScriptDirectory.from_config(cfg).get_heads())
+    script = ScriptDirectory.from_config(cfg)
+    heads = set(script.get_heads())
+    reached: set[str] = set()
+    pending = list(heads)
+    while pending:
+        revision = script.get_revision(pending.pop())
+        if revision is None:
+            continue
+        for parent in (*_names(revision.down_revision), *_names(revision.dependencies)):
+            parent_rev = script.get_revision(parent)  # a dependency may name a branch label
+            if parent_rev is not None and parent_rev.revision not in reached:
+                reached.add(parent_rev.revision)
+                pending.append(parent_rev.revision)
+    return frozenset(heads - reached)
+
+
+def _names(value: str | Sequence[str] | None) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    return (value,) if isinstance(value, str) else tuple(value)

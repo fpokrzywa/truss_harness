@@ -170,7 +170,25 @@ PRINCIPAL_TABLES: dict[str, str] = {
 # express it. The command is SELECT, INSERT, UPDATE, DELETE or ALL; roles are sorted, `public`
 # for PUBLIC. Adding an entry needs isolation review.
 ReviewedKey = tuple[str, str, str, str, tuple[str, ...], str]
-REVIEWED_EXPRESSIONS: dict[ReviewedKey, str] = {}
+REVIEWED_EXPRESSIONS: dict[ReviewedKey, str] = {
+    # identity_0001 (DECISIONS B-901): `users` is the staff directory (one row per person, no
+    # tenant_id). A person reads their own row; the platform administrator reads every row
+    # (platform catalog, B-116 item 10); a client context reads the users who are members of
+    # that client. The EXISTS runs as the invoker, so `memberships`' own tenant_isolation policy
+    # applies to it as well as the explicit `m.tenant_id = current_tenant_id()`.
+    (
+        "shifde.users",
+        "users_select",
+        "SELECT",
+        "PERMISSIVE",
+        ("public",),
+        "USING",
+    ): (
+        "((id = shifde.current_principal_id()) OR shifde.is_platform_admin_ctx() OR (EXISTS "
+        "( SELECT 1\n   FROM shifde.memberships m\n  WHERE ((m.user_id = users.id) AND "
+        "(m.tenant_id = shifde.current_tenant_id())))))"
+    ),
+}
 
 _HELPER = r"shifde\.current_(?:tenant|principal)_id\(\)"
 _IDENT = r"[a-z_][a-z0-9_$]*"
@@ -471,7 +489,9 @@ def principal_table_problems(
     An entry must name a table (`r` or `p`) in the database under test that has no `tenant_id`
     column and a permissive policy keyed to `shifde.current_principal_id()`. A table not in the
     database passes only while it is a SETH 3ba0e06 principal-keyed table in schema `shifde`
-    that is not yet listed in `ported_tables.txt`.
+    that is not yet listed in `ported_tables.txt`. A table present under a SETH 3ba0e06 name must
+    be listed in `ported_tables.txt`: a stand-in (say a non-SETH `shifde.sessions` with `own_row`)
+    does not inherit SETH's reviewed entry.
     """
     # Pin the search path for pg_get_expr (transaction-local; the caller's transaction ends it).
     conn.execute(text("SELECT pg_catalog.set_config('search_path', 'pg_catalog', true)"))
@@ -501,7 +521,10 @@ def principal_table_problems(
                 )
             continue
         kind, tenant_column, principal_policy = row
-        if kind not in ("r", "p"):
+        if schema == "shifde" and table in seth_tables and table not in ported:
+            # a table under a SETH name that its port has not listed (carry_forward: identity)
+            problems.append(f"{entry}: present but not listed in ported_tables.txt")
+        elif kind not in ("r", "p"):
             problems.append(f"{entry}: not a table (relkind {kind})")
         elif tenant_column:
             problems.append(f"{entry}: has a tenant_id column (principal keys do not count there)")
@@ -702,7 +725,9 @@ PRINCIPAL_FORMS = [
     "id = 1 AND shifde.current_principal_id() = user_id",
     "NOT (user_id IS DISTINCT FROM shifde.current_principal_id())",
 ]
-PROBE_IS_A_PRINCIPAL_TABLE = {"shifde.zz_rls_probe": "test: per-person state"}
+# The probes add to the reviewed lists rather than replace them, so the real tables in the
+# database under test (identity's principal tables, `users`) keep their own entries.
+PROBE_IS_A_PRINCIPAL_TABLE = {**PRINCIPAL_TABLES, "shifde.zz_rls_probe": "test: per-person state"}
 
 
 @pytest.mark.parametrize("expr", PRINCIPAL_FORMS)
@@ -777,8 +802,9 @@ def test_reviewed_expression_passes_only_with_its_exact_text(scratch: Connection
         )
     ).scalar_one()
     key: ReviewedKey = ("shifde.zz_rls_probe", "p", "SELECT", "PERMISSIVE", ("public",), "USING")
-    assert rls_violations(scratch, set(), reviewed={key: printed}) == []
-    (problem,) = rls_violations(scratch, set(), reviewed={key: printed.replace("o.id", "o.id + 0")})
+    assert rls_violations(scratch, set(), reviewed={**REVIEWED_EXPRESSIONS, key: printed}) == []
+    changed = {**REVIEWED_EXPRESSIONS, key: printed.replace("o.id", "o.id + 0")}
+    (problem,) = rls_violations(scratch, set(), reviewed=changed)
     assert "policy p (SELECT) USING differs from its reviewed text" in problem
 
 
@@ -831,8 +857,7 @@ def test_table_specific_key_column_passes_on_its_table_only(
     for table in ("zz_rls_probe", "zz_rls_other"):
         scratch.execute(text(f"CREATE POLICY p ON shifde.{table} FOR SELECT USING ({using})"))
     keys = {
-        "shifde.current_tenant_id()": frozenset({"tenant_id", "shifde.zz_rls_probe.ref"}),
-        "shifde.current_principal_id()": frozenset({"user_id", "shifde.zz_rls_probe.ref"}),
+        helper: columns | {"shifde.zz_rls_probe.ref"} for helper, columns in KEY_COLUMNS.items()
     }
     (problem,) = rls_violations(scratch, set(), key_columns=keys)
     assert problem.startswith("shifde.zz_rls_other: policy p (SELECT) USING not built"), problem
@@ -1049,6 +1074,11 @@ def _probe_key(
     return ("shifde.zz_rls_probe", "p", cmd, kind, roles, clause)
 
 
+def _with_real(probe: Mapping[ReviewedKey, str]) -> dict[ReviewedKey, str]:
+    """The real reviewed entries plus the probe's (the probes add, never replace)."""
+    return {**REVIEWED_EXPRESSIONS, **probe}
+
+
 def test_reviewed_expression_is_keyed_by_command_and_roles(scratch: Connection) -> None:
     """Review 3, item 6: text reviewed for one command or role does not cover another."""
     _secured_table(scratch)
@@ -1062,19 +1092,19 @@ def test_reviewed_expression_is_keyed_by_command_and_roles(scratch: Connection) 
             " WHERE polrelid = 'shifde.zz_rls_probe'::regclass AND polname = 'p'"
         )
     ).scalar_one()
-    assert rls_violations(scratch, set(), reviewed={_probe_key("USING"): printed}) == []
+    assert rls_violations(scratch, set(), reviewed=_with_real({_probe_key("USING"): printed})) == []
     for other in (
         _probe_key("USING", cmd="ALL"),
         _probe_key("USING", kind="RESTRICTIVE"),
         _probe_key("USING", roles=("shifde_app",)),
     ):
-        (problem,) = rls_violations(scratch, set(), reviewed={other: printed})
+        (problem,) = rls_violations(scratch, set(), reviewed=_with_real({other: printed}))
         assert "not built from recognised" in problem, problem
     scratch.execute(text("ALTER POLICY p ON shifde.zz_rls_probe TO shifde_app"))
-    (problem,) = rls_violations(scratch, set(), reviewed={_probe_key("USING"): printed})
+    (problem,) = rls_violations(scratch, set(), reviewed=_with_real({_probe_key("USING"): printed}))
     assert "not built from recognised" in problem, problem
     reviewed = {_probe_key("USING", roles=("shifde_app",)): printed}
-    assert rls_violations(scratch, set(), reviewed=reviewed) == []
+    assert rls_violations(scratch, set(), reviewed=_with_real(reviewed)) == []
 
 
 @pytest.mark.parametrize(
@@ -1116,7 +1146,8 @@ def test_unlisted_principal_keyed_table_is_reported(scratch: Connection) -> None
         f"shifde.zz_p: policy own_row (ALL) USING {why}: ({OWN_ROW}),"
         f" policy own_row (ALL) WITH CHECK {why}: ({OWN_ROW})"
     ), problem
-    assert rls_violations(scratch, set(), principal_tables={"shifde.zz_p": "test"}) == []
+    listed = {**PRINCIPAL_TABLES, "shifde.zz_p": "test"}
+    assert rls_violations(scratch, set(), principal_tables=listed) == []
 
 
 @pytest.mark.parametrize(
@@ -1170,10 +1201,18 @@ def test_principal_tables_are_principal_keyed_tables(owner_engine: Engine) -> No
     [
         # present and principal-keyed
         ("shifde.zz_rls_probe", [], None),
-        # a SETH 3ba0e06 principal-keyed table not yet ported
-        ("shifde.sessions", [], None),
-        # ported but missing
-        ("shifde.sessions", ["sessions"], "listed in ported_tables.txt but missing"),
+        # identity's ported principal table
+        ("shifde.sessions", ["sessions"], None),
+        # a stand-in under a SETH name that ported_tables.txt does not list
+        ("shifde.sessions", [], "present but not listed in ported_tables.txt"),
+        # a SETH 3ba0e06 principal-keyed table not yet ported (dropped below)
+        ("shifde.local_credentials", [], None),
+        # ported but missing (dropped below)
+        (
+            "shifde.local_credentials",
+            ["local_credentials"],
+            "listed in ported_tables.txt but missing",
+        ),
         # neither in the database nor a SETH principal-keyed table
         ("shifde.zz_gone", [], "not a table in the database"),
         ("shifde.runs", [], "not a table in the database"),
@@ -1197,6 +1236,8 @@ def test_stale_principal_table_entry_is_reported(
         text("CREATE POLICY p ON shifde.zz_rls_admin USING (shifde.is_platform_admin_ctx())")
     )
     scratch.execute(text("CREATE VIEW shifde.zz_rls_view WITH (security_invoker) AS SELECT 1 AS x"))
+    if entry == "shifde.local_credentials":  # as before its port (the rollback restores it)
+        scratch.execute(text("DROP TABLE shifde.local_credentials CASCADE"))
     problems = principal_table_problems(
         scratch, {entry: "test"}, seth_tables=_seth_tables(), ported=ported
     )

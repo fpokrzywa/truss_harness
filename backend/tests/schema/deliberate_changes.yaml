@@ -84,16 +84,10 @@
     Foreign key to shifde.tenants, a table of the later tenancy port; added by tenancy's migration (plan per-module recipe step 3, DECISIONS B-402, carry_forward.md), which removes this entry.
   migration: authz_0001
 
-- table: groups
-  path: [constraints, groups_idp_config_id_fkey]
-  reason: >-
-    Foreign key to shifde.idp_configs, a table of the later identity port; added by identity's migration (plan per-module recipe step 3, DECISIONS B-402, carry_forward.md), which removes this entry.
-  migration: authz_0001
-
 - table: group_members
   path: [constraints, fk_group_members__membership]
   reason: >-
-    Foreign key to shifde.memberships, a table of the later identity port; added by identity's migration (plan per-module recipe step 3, DECISIONS B-402, carry_forward.md), which removes this entry.
+    Foreign key to shifde.memberships (identity). Not added by identity_0001: identity part 3 makes groups platform-level (design 5.3), so whether group members stay keyed to a client's memberships is decided there (DECISIONS B-402, B-905, carry_forward.md); part 3 adds or removes the key and this entry.
   migration: authz_0001
 
 - table: policy_decisions
@@ -166,3 +160,81 @@
   path: [constraints, fk_secret_access_log__secret]
   reason: "constraints bypass row-level security: an access-log row must name a secret of its own tenant, (tenant_id, secret_id) -> secrets (tenant_id, id) (B-116 item 9, B-801). SETH's plain secret_access_log_secret_id_fkey is kept for installation-level rows (tenant_id NULL), which the composite key does not check."
   migration: secrets_0001
+
+- table: memberships
+  path: [constraints, memberships_tenant_id_fkey]
+  reason: >-
+    foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)
+  migration: identity_0001
+
+- table: sessions
+  path: [constraints, sessions_active_tenant_id_fkey]
+  reason: >-
+    foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md); the pin itself must be checked against the user's current bindings on every request (B-116 review 5 item 3)
+  migration: identity_0001
+
+- table: setup_tokens
+  path: [constraints, setup_tokens_tenant_id_fkey]
+  reason: >-
+    foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)
+  migration: identity_0001
+
+- table: service_accounts
+  path: [constraints, service_accounts_tenant_id_fkey]
+  reason: >-
+    foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)
+  migration: identity_0001
+
+- table: api_keys
+  path: [constraints, api_keys_tenant_id_fkey]
+  reason: >-
+    foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)
+  migration: identity_0001
+
+- table: idp_configs
+  path: [constraints, idp_configs_tenant_id_fkey]
+  reason: >-
+    foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)
+  migration: identity_0001
+
+- table: users
+  path: [policies, users_insert, with_check]
+  reason: >-
+    SETH's `OR shifde.current_tenant_id() IS NOT NULL` let any client context create a platform-wide staff account (users exist once and reach clients through bindings, design 5.3): a client could squat a colleague's e-mail and later be handed access elsewhere. The rejected form (B-112) is replaced by the platform-administrator flag; a person still creates only themself (JIT sign-in). DECISIONS B-901.
+  migration: identity_0001
+
+- table: setup_tokens
+  path: [policies, no_app_access]
+  reason: >-
+    SETH has no policy on setup_tokens (default deny: no app grants, owner and SECURITY DEFINER functions only). The RLS schema test requires a policy, so the same default deny is stated as a RESTRICTIVE USING (false) WITH CHECK (false) policy. DECISIONS B-902.
+  migration: identity_0001
+
+- table: api_keys
+  path: [constraints, api_keys_rotated_from_id_fkey]
+  reason: >-
+    replaced by the composite fk_api_keys__rotated_from: constraints bypass row-level security, and SETH's plain key let a client's key name another client's key as its predecessor (B-116 item 9). tenant_id is NOT NULL, so the composite key checks every row. DECISIONS B-903.
+  migration: identity_0001
+
+- table: api_keys
+  path: [constraints, fk_api_keys__rotated_from]
+  reason: >-
+    constraints bypass row-level security: a rotated key's predecessor must be a key of the same client, (tenant_id, rotated_from_id) -> api_keys (tenant_id, id) (B-116 item 9). DECISIONS B-903.
+  migration: identity_0001
+
+- table: api_keys
+  path: [constraints, uq_api_keys__tenant_id_id]
+  reason: >-
+    target of the composite fk_api_keys__rotated_from (B-116 item 9). DECISIONS B-903.
+  migration: identity_0001
+
+- table: api_keys
+  path: [indexes, uq_api_keys__tenant_id_id]
+  reason: >-
+    index of uq_api_keys__tenant_id_id (B-116 item 9). DECISIONS B-903.
+  migration: identity_0001
+
+- table: idp_configs
+  path: [constraints, fk_idp_configs__client_secret]
+  reason: >-
+    constraints bypass row-level security: a client's IdP configuration must name a secret of the same client, (tenant_id, client_secret_ref_id) -> secrets (tenant_id, id) (B-116 item 9). SETH's plain idp_configs_client_secret_ref_id_fkey is kept for installation IdPs (tenant_id NULL), which the composite key does not check. DECISIONS B-903.
+  migration: identity_0001
