@@ -182,6 +182,20 @@ def record_source_failure(
     )
 
 
+def account_recent_failures(session: Session, user_id: UUID, since: datetime) -> int:
+    """Failures counted for the person across every source whose counter moved since `since`
+    (the account-wide ceiling, identity review 2 item 3; needs the principal context)."""
+    return int(
+        session.execute(
+            text(
+                "SELECT COALESCE(SUM(failed_attempts), 0) FROM shifde.login_lockouts "
+                "WHERE user_id = :u AND updated_at > :since"
+            ),
+            {"u": user_id, "since": since},
+        ).scalar_one()
+    )
+
+
 def reset_login_source(session: Session, user_id: UUID, source_hash: bytes, now: datetime) -> None:
     session.execute(
         text(

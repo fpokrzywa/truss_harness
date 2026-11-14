@@ -22,7 +22,13 @@ from shifde.audit import service as audit
 from shifde.audit.models import AuditEvent
 from shifde.core.clock import utcnow
 from shifde.core.context import RequestContext
-from shifde.core.db import Database, get_context, set_platform_admin, set_tenant
+from shifde.core.db import (
+    Database,
+    get_context,
+    set_platform_admin,
+    set_principal,
+    set_tenant,
+)
 from shifde.core.ids import uuid7
 
 INSERT = (
@@ -324,7 +330,36 @@ def test_a_pre_tenant_action_is_refused_from_a_client_context(
         assert get_context(s).platform_admin is False
         s.commit()
     with _as(app_db, None) as s:
-        audit.record(s, RequestContext(request_id="x"), action=action, tenant_id=None)
+        actor = None
+        if action in audit.SELF_ACTIONS:  # a person's own event: the acting person (item 5)
+            actor = uuid7()
+            set_principal(s, actor)
+        audit.record(
+            s, RequestContext(request_id="x"), action=action, tenant_id=None, actor_id=actor
+        )
         s.commit()
     with _as(app_db, world.a) as s:
         assert _ids(s) == before  # A sees only its own rows; the global row is not A's
+
+
+@pytest.mark.parametrize("action", sorted(audit.SELF_ACTIONS))
+@pytest.mark.parametrize("principal", [False, True])
+def test_a_global_sign_in_event_names_only_the_acting_person(
+    app_db: Database, action: str, principal: bool
+) -> None:
+    """Identity review 2 item 5: with no client context, a person's own sign-in event (login
+    succeeded, logout, setup token redeemed) is filed globally only with
+    `actor_id = current_principal_id()`: no actor, or anyone else, is refused and nothing is
+    written."""
+    someone_else = uuid7()
+    with _as(app_db, None) as s:
+        if principal:
+            set_principal(s, uuid7())
+        before = _ids(s)
+        for actor in (None, someone_else):
+            with pytest.raises(audit.NotInstallationAction):
+                audit.record(
+                    s, RequestContext(request_id="x"), action=action, tenant_id=None, actor_id=actor
+                )
+        s.commit()
+        assert _ids(s) == before

@@ -1,0 +1,153 @@
+"""A minimal FastAPI app for the identity routes (identity part 2b, B-920).
+
+The `app` port mounts `identity.api.router`; until then these tests build the app from the router
+and the dependencies, connected as `shifde_app`, with `reject_basic_auth` and `check_origin` as
+the app factory will add them (SETH 3ba0e06 `app.py`). The probe routes stand in for the admin and
+client routes that will sit behind `require_auth`: they read and change identity rows of the
+`{org}` in the path through the repository, relying only on the context the dependencies set.
+
+`shifde_my_memberships` (SETH; reads `tenants`) moves to tenancy, so `stub_memberships` replaces
+`service.my_memberships` with the caller's own active membership tenants from the reviewed
+definer `shifde_my_membership_tenants` (carry_forward: drop the stub when tenancy lands).
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import Any  # Any: JSON response bodies of the probe routes
+from uuid import UUID
+
+import pytest
+from fastapi import APIRouter, Depends, FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from shifde.core.clock import utcnow
+from shifde.core.db import Database
+from shifde.core.deps import SessionDep, check_origin, reject_basic_auth
+from shifde.core.errors import NotFound
+from shifde.core.features import FeatureRegistry
+from shifde.core.ids import uuid7
+from shifde.core.problem import install_error_handlers
+from shifde.core.ratelimit import SlidingWindowLimiter
+from shifde.core.settings import Settings
+from shifde.identity import api, repository, service
+from shifde.identity.dependencies import AuthDep, require_auth
+from shifde.identity.passwords import PasswordService
+
+ORIGIN = "http://127.0.0.1:3710"
+PASSWORD = "correct horse battery staple"
+COOKIE = "__Host-shifde_session"
+
+probe = APIRouter(prefix="/api/v1/probe", tags=["probe"])
+
+
+@probe.get("/whoami")
+def whoami(auth: AuthDep, session: SessionDep) -> dict[str, Any]:
+    p = auth.principal
+    current = session.execute(text("SELECT shifde.current_tenant_id()")).scalar_one()
+    return {
+        "principal_id": str(p.principal_id),
+        "principal_type": p.principal_type,
+        "credential": p.credential,
+        "tenant_id": str(p.tenant_id) if p.tenant_id else None,
+        "db_tenant_id": str(current) if current else None,
+    }
+
+
+@probe.get("/orgs/{org}/service-accounts/{sa_id}")
+def get_service_account(
+    org: UUID, sa_id: UUID, auth: AuthDep, session: SessionDep
+) -> dict[str, str]:
+    sa = repository.get_service_account(session, org, sa_id)
+    if sa is None:
+        raise NotFound("service account not found")
+    return {"id": str(sa.id), "name": sa.name}
+
+
+@probe.get("/orgs/{org}/api-keys")
+def list_api_keys(org: UUID, auth: AuthDep, session: SessionDep) -> list[str]:
+    rows = repository.list_api_keys(
+        session, tenant_id=org, principal_type=None, principal_id=None, after=None, limit=100
+    )
+    return [str(r.id) for r in rows]
+
+
+@probe.delete("/orgs/{org}/api-keys/{key_id}", status_code=204)
+def revoke_api_key(org: UUID, key_id: UUID, auth: AuthDep, session: SessionDep) -> None:
+    # the service rule (carry_forward): load the row in the caller's client before the mutator
+    if repository.get_api_key(session, org, key_id) is None:
+        raise NotFound("API key not found")
+    repository.revoke_api_key(session, key_id, auth.principal.principal_id, utcnow())
+    session.commit()
+
+
+def make_app(settings: Settings) -> FastAPI:
+    app = FastAPI(openapi_url="/api/openapi.json")
+    install_error_handlers(app)
+    db = Database(settings.database_url)
+    app.state.settings = settings
+    app.state.db = db
+    app.state.passwords = PasswordService(fast=True)
+    app.state.login_ip_limiter = SlidingWindowLimiter(settings.login_rate_per_minute)
+    app.state.login_account_limiter = SlidingWindowLimiter(
+        settings.login_rate_per_account_per_minute
+    )
+    app.state.api_key_failure_limiter = SlidingWindowLimiter(
+        settings.api_key_failures_per_minute, message="too many failed API key attempts"
+    )
+    app.state.features = FeatureRegistry()
+    guards = [Depends(reject_basic_auth), Depends(check_origin)]
+    app.include_router(api.router, dependencies=guards)
+    app.include_router(probe, dependencies=[*guards, Depends(require_auth)])
+    return app
+
+
+def _own_memberships(session: Session) -> list[service.MembershipRow]:
+    return [
+        service.MembershipRow(tenant_id=t, slug=str(t), name=str(t), status="active", role_names=[])
+        for t in repository.my_membership_tenants(session)
+    ]
+
+
+def stub_memberships(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fixture body (`tests/identity/conftest.py`)."""
+    monkeypatch.setattr(service, "my_memberships", _own_memberships)
+
+
+@contextmanager
+def client_for(settings: Settings, **kwargs: Any) -> Iterator[TestClient]:  # Any: options
+    app = make_app(settings)
+    try:
+        with TestClient(
+            app, base_url="https://testserver", headers={"Origin": ORIGIN}, **kwargs
+        ) as c:
+            yield c
+    finally:
+        app.state.db.dispose()
+
+
+def person(owner: Session, email: str, *, admin: bool = False) -> UUID:
+    """A person with a local password (fast hash), committed."""
+    uid = uuid7()
+    owner.execute(
+        text(
+            "INSERT INTO shifde.users (id, primary_email, display_name, is_platform_admin) "
+            "VALUES (:id, :e, :e, :a)"
+        ),
+        {"id": uid, "e": email, "a": admin},
+    )
+    owner.execute(
+        text("INSERT INTO shifde.local_credentials (user_id, password_hash) VALUES (:u, :h)"),
+        {"u": uid, "h": PasswordService(fast=True).hash(PASSWORD)},
+    )
+    owner.commit()
+    return uid
+
+
+def login(client: TestClient, email: str, password: str = PASSWORD) -> dict[str, str]:
+    r = client.post("/api/auth/local/login", json={"email": email, "password": password})
+    assert r.status_code == 200, r.text
+    return {"X-CSRF-Token": r.json()["csrf_token"]}

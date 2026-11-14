@@ -13,18 +13,26 @@ Identity part 2a (service, definers; B-909..B-914) adds: no client context inser
 or mints an invitation or setup credential (review 1 item 1); a session pinned to a client the
 person has no active membership in does not resolve, and a pinned session is never an
 administrator's (item 4); suspension reaches only the caller's client; login counters are the
-person's own. Identity has no routes yet: the login, session and API-key routes arrive with part
-2b, OIDC with part 3, member and IdP administration with tenancy/admin; their cross-client tests
-arrive with them (docs/build/carry_forward.md).
+person's own.
+
+Identity part 2b (B-915..B-920) adds the routes of `identity.api` over the minimal app of
+`tests/identity/harness.py`: every route is listed in `ROUTE_TESTS` (a new route without a
+cross-client test fails `test_every_identity_route_has_a_cross_client_test`); a person of A sees
+and changes only their own session and A's memberships; A's session or A's API key asking for B's
+object by id gets the answer of a missing id, and B's objects are absent from A's lists;
+`shifde_resolve_api_key` resolves a key only with a principal of the key's own client. OIDC routes
+arrive with part 3, member and IdP administration with tenancy/admin (docs/build/carry_forward.md).
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 from datetime import timedelta
+from typing import Any  # Any: JSON response bodies
 from uuid import UUID
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
@@ -33,8 +41,11 @@ from shifde.core.clock import utcnow
 from shifde.core.db import Database
 from shifde.core.errors import Forbidden
 from shifde.core.ids import uuid7
-from shifde.identity import repository, service
-from tests.identity.conftest import World, app_session
+from shifde.core.settings import Settings
+from shifde.identity import api as identity_api
+from shifde.identity import apikeys, repository, service
+from tests.identity.conftest import World, app_session, owner_membership, owner_user
+from tests.identity.harness import PASSWORD, client_for, login, person
 
 ROW_SECURITY = "row-level security|row level security"
 
@@ -555,3 +566,167 @@ def test_login_lockouts_are_private_to_their_person(
         {"u": world.b.member},
     ).scalar_one()
     assert stored == 3
+
+
+# ------------------------------------------------------------------ routes (identity part 2b)
+ROUTE_TESTS = {
+    ("GET", "/api/auth/config"): "test_auth_config_lists_no_clients_idp",
+    ("POST", "/api/auth/local/login"): "test_login_shows_and_audits_only_the_persons_own_clients",
+    ("GET", "/api/auth/session"): "test_a_session_shows_only_its_own_person_and_clients",
+    ("POST", "/api/auth/logout"): "test_logout_ends_only_the_callers_own_session",
+    ("POST", "/api/auth/setup/redeem"): "test_redeeming_a_token_signs_in_only_its_own_person",
+}
+
+
+def test_every_identity_route_has_a_cross_client_test() -> None:
+    routes = {
+        (method, route.path)
+        for route in identity_api.router.routes
+        for method in getattr(route, "methods", set())
+    }
+    assert routes == set(ROUTE_TESTS)
+    assert all(name in globals() for name in ROUTE_TESTS.values())
+
+
+@pytest.fixture
+def people(owner_session: Session, world: World) -> tuple[str, str]:
+    """A person with a password in A only and one in B only (e-mails)."""
+    a, b = "route-a@a.test", "route-b@b.test"
+    owner_membership(owner_session, world.a.tenant, person(owner_session, a))
+    owner_membership(owner_session, world.b.tenant, person(owner_session, b))
+    owner_session.commit()
+    return a, b
+
+
+def _org_ids(body: dict[str, Any]) -> set[str]:  # Any: JSON response body
+    return {m["org"]["id"] for m in body["memberships"]}
+
+
+def test_auth_config_lists_no_clients_idp(auth_client: TestClient, world: World) -> None:
+    providers = auth_client.get("/api/auth/config").json()["oidc_providers"]
+    assert [p["id"] for p in providers] == [str(world.installation_idp)]
+
+
+def test_login_shows_and_audits_only_the_persons_own_clients(
+    auth_client: TestClient, world: World, people: tuple[str, str], owner_session: Session
+) -> None:
+    a, _ = people
+    r = auth_client.post("/api/auth/local/login", json={"email": a, "password": PASSWORD})
+    assert r.status_code == 200 and _org_ids(r.json()) == {str(world.a.tenant)}
+    failed = auth_client.post("/api/auth/local/login", json={"email": a, "password": "wrong"})
+    assert failed.status_code == 401
+    rows = owner_session.execute(
+        text("SELECT action, tenant_id FROM shifde.audit_events WHERE action LIKE 'identity.%'")
+    ).all()
+    assert rows and all(t == world.a.tenant for _, t in rows)  # nothing in B, nothing global
+
+
+def test_a_session_shows_only_its_own_person_and_clients(
+    settings: Settings, world: World, people: tuple[str, str], stub_memberships: None
+) -> None:
+    a, b = people
+    with client_for(settings) as ca, client_for(settings) as cb:
+        login(ca, a)
+        login(cb, b)
+        sa, sb = ca.get("/api/auth/session").json(), cb.get("/api/auth/session").json()
+    assert sa["user"]["email"] == a and _org_ids(sa) == {str(world.a.tenant)}
+    assert sb["user"]["email"] == b and _org_ids(sb) == {str(world.b.tenant)}
+
+
+def test_logout_ends_only_the_callers_own_session(
+    settings: Settings, world: World, people: tuple[str, str], stub_memberships: None
+) -> None:
+    a, b = people
+    with client_for(settings) as ca, client_for(settings) as cb:
+        headers = login(ca, a)
+        login(cb, b)
+        assert ca.post("/api/auth/logout", headers=headers).status_code == 204
+        assert ca.get("/api/v1/probe/whoami").status_code == 401
+        assert cb.get("/api/v1/probe/whoami").status_code == 200
+
+
+def test_redeeming_a_token_signs_in_only_its_own_person(
+    auth_client: TestClient, world: World, owner_session: Session
+) -> None:
+    newcomer = owner_user(owner_session, "newcomer@a.test")
+    owner_membership(owner_session, world.a.tenant, newcomer)
+    token, _ = service.create_setup_token(owner_session, newcomer)
+    owner_session.commit()
+    body = {"token": token, "password": "a long new password 1"}
+    r = auth_client.post("/api/auth/setup/redeem", json=body)
+    assert r.status_code == 200, r.text
+    assert r.json()["user"]["id"] == str(newcomer)
+    assert _org_ids(r.json()) == {str(world.a.tenant)}
+    assert auth_client.post("/api/auth/setup/redeem", json=body).status_code == 401  # single use
+    hashes = owner_session.execute(
+        text("SELECT password_hash FROM shifde.local_credentials WHERE user_id IN (:a, :b)"),
+        {"a": world.a.member, "b": world.b.member},
+    ).scalars()
+    assert sorted(hashes) == ["hash-a", "hash-b"]  # nobody else's credential was written
+
+
+def _mint(app_db: Database, settings: Settings, tenant: UUID, sa: UUID) -> str:
+    s = app_session(app_db, tenant)
+    try:
+        _, full = apikeys.mint(
+            s,
+            settings,
+            tenant_id=tenant,
+            name="probe",
+            principal_type="service_account",
+            principal_id=sa,
+            scopes=["read"],
+            resource_scope=None,
+            expires_at=utcnow() + timedelta(days=1),
+            created_by=None,
+        )
+        s.commit()
+        return full
+    finally:
+        s.close()
+
+
+@pytest.mark.parametrize("credential", ["session", "api_key"])
+def test_a_cannot_reach_bs_objects_by_id_or_list(
+    settings: Settings,
+    world: World,
+    people: tuple[str, str],
+    app_db: Database,
+    owner_session: Session,
+    stub_memberships: None,
+    credential: str,
+) -> None:
+    """Behind `require_auth` (A's session or A's API key): B's service account and API key by id
+    are answered exactly like a missing id (GET and DELETE, under B's org and under A's), B's keys
+    are absent from the lists, and B's key stays unrevoked."""
+    a, _ = people
+    key = _mint(app_db, settings, world.a.tenant, world.a.service_account)
+    base = "/api/v1/probe/orgs"
+    with client_for(settings) as c:
+        if credential == "session":
+            headers = login(c, a)
+        else:
+            headers = {"Authorization": f"Bearer {key}"}
+            who = c.get("/api/v1/probe/whoami", headers=headers).json()
+            assert who["tenant_id"] == who["db_tenant_id"] == str(world.a.tenant)
+        own_sa = f"{base}/{world.a.tenant}/service-accounts/{world.a.service_account}"
+        assert c.get(own_sa, headers=headers).status_code == (
+            200 if credential == "api_key" else 404  # a session sets no client context
+        )
+        for org in (world.b.tenant, world.a.tenant):
+            foreign = c.get(
+                f"{base}/{org}/service-accounts/{world.b.service_account}", headers=headers
+            )
+            missing = c.get(f"{base}/{org}/service-accounts/{uuid7()}", headers=headers)
+            assert foreign.status_code == missing.status_code == 404
+            assert foreign.json()["detail"] == missing.json()["detail"]
+            gone = c.delete(f"{base}/{org}/api-keys/{world.b.api_key}", headers=headers)
+            nothing = c.delete(f"{base}/{org}/api-keys/{uuid7()}", headers=headers)
+            assert gone.status_code == nothing.status_code == 404
+            assert gone.json()["detail"] == nothing.json()["detail"]
+        listed = c.get(f"{base}/{world.b.tenant}/api-keys", headers=headers)
+        assert listed.status_code == 200 and listed.json() == []
+    revoked = owner_session.execute(
+        text("SELECT revoked_at FROM shifde.api_keys WHERE id = :i"), {"i": world.b.api_key}
+    ).scalar_one()
+    assert revoked is None

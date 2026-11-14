@@ -6,8 +6,11 @@ fallback source; real environment variables always win. Other environments never
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import ipaddress
 import os
+import re
 import secrets
 from collections.abc import Callable, Iterator, Mapping
 from functools import lru_cache
@@ -43,6 +46,7 @@ def _ephemeral(name: str, make: Callable[[], str]) -> str:
 # 0.0.0.0/1 + 128.0.0.0/1, ::/0, ...) trusts a large part of the Internet. 10.0.0.0/8 and the
 # IPv6 unique-local range fc00::/7 are the widest legitimate private ranges.
 _MIN_PROXY_PREFIX = {4: 8, 6: 7}
+_PEPPER_ID = re.compile(r"[A-Za-z0-9_-]{1,16}")
 
 
 def _new_pepper() -> str:
@@ -55,6 +59,7 @@ SECRET_FIELDS: tuple[str, ...] = (
     "database_url",  # carries the application role password
     "migration_database_url",  # carries the owner role password
     "api_key_pepper",
+    "api_key_retired_peppers",  # earlier peppers, still accepted for keys minted under them
     "secret_keys",  # the KEK ring
     "metrics_token",
 )
@@ -158,6 +163,12 @@ class Settings(BaseSettings):
     # Secrets (SECURITY_MODEL 2.4 / 5). Required outside development/test; in development they
     # are generated once into .devdata/dev.env, in tests they are ephemeral per process.
     api_key_pepper: SecretStr | None = None
+    # Pepper rotation (findings Item 4, B-916): new keys are hashed with `api_key_pepper` under
+    # `api_key_pepper_id`; keys minted under an earlier pepper still verify while that pepper is
+    # listed here as `<id>:<pepper>[,<id>:<pepper>...]`.
+    api_key_pepper_id: str = "p1"
+    api_key_retired_peppers: SecretStr | None = None
+    api_key_failures_per_minute: int = 30  # failed bearer attempts per client address (Item 5b)
     secret_keys: SecretStr | None = None
     api_key_max_days: int = 365
     public_base_url: str | None = None  # OIDC redirect base; default: first allowed origin
@@ -264,6 +275,7 @@ class Settings(BaseSettings):
             self.api_key_pepper = SecretStr(_ephemeral("api_key_pepper", _new_pepper))
         elif len(self.api_key_pepper.get_secret_value()) < 32:
             raise ValueError("SHIFDE_API_KEY_PEPPER must be at least 32 characters")
+        _ = self.pepper_ring  # parse now: fail fast on a malformed pepper ring
         if not self.secret_keys or not self.secret_keys.get_secret_value():
             if not generated:
                 raise ValueError("SHIFDE_SECRET_KEYS is required outside development/test")
@@ -298,6 +310,37 @@ class Settings(BaseSettings):
     def pepper(self) -> bytes:
         assert self.api_key_pepper is not None  # guaranteed by the validator
         return self.api_key_pepper.get_secret_value().encode()
+
+    @property
+    def pepper_ring(self) -> dict[str, bytes]:
+        """Pepper id -> pepper: the current one (`api_key_pepper_id`) and the retired ones."""
+        if not _PEPPER_ID.fullmatch(self.api_key_pepper_id):
+            raise ValueError("SHIFDE_API_KEY_PEPPER_ID must be 1-16 letters, digits, '-' or '_'")
+        ring = {self.api_key_pepper_id: self.pepper}
+        retired = self.api_key_retired_peppers
+        raw = retired.get_secret_value() if retired else ""
+        for part in (p.strip() for p in raw.split(",")):
+            if not part:
+                continue
+            pid, sep, value = part.partition(":")
+            if not sep or not _PEPPER_ID.fullmatch(pid) or pid in ring:
+                raise ValueError(
+                    "SHIFDE_API_KEY_RETIRED_PEPPERS entries are <id>:<pepper> with distinct ids, "
+                    "none equal to SHIFDE_API_KEY_PEPPER_ID"
+                )
+            if len(value) < 32:
+                raise ValueError("every retired API-key pepper must be at least 32 characters")
+            ring[pid] = value.encode()
+        return ring
+
+    @property
+    def pkce_key(self) -> bytes:
+        """Key for OIDC PKCE verifiers (findings Item 4): derived from the active secret KEK with
+        its own label, never from the API-key pepper (rotating one must not touch the other)."""
+        ring = self.keyring
+        return hmac.new(
+            ring.kek(ring.active_id), b"shifde-oidc-pkce-key-v1", hashlib.sha256
+        ).digest()
 
     @property
     def key_env_label(self) -> str:

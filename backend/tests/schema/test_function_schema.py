@@ -33,7 +33,7 @@ import re
 from collections.abc import Iterator
 
 import pytest
-from sqlalchemy import Connection, text
+from sqlalchemy import Connection, create_engine, text
 from sqlalchemy.engine import Engine
 
 from tests.schema.catalog_scan import (
@@ -43,6 +43,7 @@ from tests.schema.catalog_scan import (
 )
 
 APP_ROLE = "shifde_app"
+OWNER_ROLE = "shifde_owner"
 
 # <schema>.<name> (the zero-argument function) or <schema>.<name>(<argument types>) -> why it must
 # run with its owner's rights. Adding one needs isolation review.
@@ -85,6 +86,14 @@ SECURITY_DEFINER_ALLOWLIST: dict[str, str] = {
         f"{_IDENTITY_DEFINER}. No arguments: the active membership tenant ids of "
         "current_principal_id() only (memberships are tenant-keyed, so a person cannot list "
         "their own clients before a client is chosen); used for the login audit fan-out."
+    ),
+    "shifde.shifde_resolve_api_key(text)": (
+        "identity_0003 (B-915): owned by shifde_owner, search_path pg_catalog, pg_temp, every "
+        "object schema-qualified, EXECUTE for shifde_app only, writes no app.* setting. "
+        "Pre-tenant bearer lookup by the key's public prefix (api_keys is tenant-keyed). The "
+        "client comes from the key row only, and a row is returned only when the key's principal "
+        "belongs to that client (a service account of the client or a person with a membership "
+        "there; review 1 item 4). The caller verifies the secret against key_hash."
     ),
     "shifde.rate_card_versions_guard": (
         "ledger (B-601): the BEFORE INSERT guard of rate_card_versions closes the open-ended "
@@ -201,6 +210,8 @@ def definer_violations(conn: Connection, allowlist: dict[str, str]) -> list[str]
             problems.append(f"{where}: search_path {path} includes public or $user")
         elif [p.strip().strip('"') for p in path.split(",")][-1] != "pg_temp":
             problems.append(f"{where}: search_path {path} must list pg_temp last")
+        if row.owner != OWNER_ROLE:  # review 2 item 6: a definer runs with its owner's rights
+            problems.append(f"{where}: owned by {row.owner}, not {OWNER_ROLE}")
         executors = ["PUBLIC"] if row.default_acl else list(row.executors)
         extra = [e for e in executors if e not in (row.owner, APP_ROLE)]
         if extra:
@@ -280,7 +291,8 @@ def test_allowlist_has_no_stale_entries(owner_engine: Engine) -> None:
 
 
 def test_identity_definers_are_on_the_allowlist_by_signature(owner_engine: Engine) -> None:
-    """identity_0002 (B-909): each identity definer is listed under its full signature."""
+    """identity_0002/0003 (B-909, B-915): each identity definer is listed under its full
+    signature."""
     with owner_engine.connect() as c:
         rows = [
             row
@@ -296,6 +308,7 @@ def test_identity_definers_are_on_the_allowlist_by_signature(owner_engine: Engin
         "shifde.shifde_create_invite_token(uuid, bytea, timestamp with time zone)",
         "shifde.shifde_redeem_setup_token(bytea, text, integer)",
         "shifde.shifde_my_membership_tenants",
+        "shifde.shifde_resolve_api_key(text)",
     }
     assert all(row.owner == "shifde_owner" for row in rows)
     assert all(_search_path(row.proconfig) == "pg_catalog, pg_temp" for row in rows)
@@ -399,6 +412,27 @@ def test_locked_down_security_definer_passes(scratch: Connection) -> None:
     scratch.execute(text("REVOKE EXECUTE ON FUNCTION shifde.zz_definer() FROM PUBLIC"))
     scratch.execute(text(f"GRANT EXECUTE ON FUNCTION shifde.zz_definer() TO {APP_ROLE}"))
     assert definer_violations(scratch, {"shifde.zz_definer": "probe"}) == []
+
+
+def test_allowlisted_definer_owned_by_another_role_is_reported(worker_admin_url: str) -> None:
+    """Review 2 item 6: every allowlisted definer must be owned by `shifde_owner` (a definer runs
+    with its owner's rights). Probed as the cluster administrator in a rolled-back transaction:
+    the schema owner cannot give a function away."""
+    engine = create_engine(worker_admin_url)
+    try:
+        with engine.connect() as c:
+            tx = c.begin()
+            try:
+                assert definer_violations(c, SECURITY_DEFINER_ALLOWLIST) == []
+                c.execute(
+                    text(f"ALTER FUNCTION shifde.shifde_resolve_api_key(text) OWNER TO {APP_ROLE}")
+                )
+                problems = definer_violations(c, SECURITY_DEFINER_ALLOWLIST)
+            finally:
+                tx.rollback()
+    finally:
+        engine.dispose()
+    assert problems == [f"shifde.shifde_resolve_api_key: owned by {APP_ROLE}, not {OWNER_ROLE}"]
 
 
 def _definer_with_args(c: Connection, args: str, *, definer: bool = True) -> None:

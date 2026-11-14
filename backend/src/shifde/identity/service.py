@@ -20,12 +20,13 @@ import hashlib
 import hmac
 import secrets
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any  # Any: column value dicts for pass-through inserts
 from uuid import UUID
 
-from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from shifde.audit import service as audit
@@ -42,6 +43,7 @@ from shifde.core.errors import (
     ValidationFailed,
 )
 from shifde.core.ids import uuid7
+from shifde.core.ratelimit import source_key
 from shifde.core.settings import Settings
 from shifde.identity import repository
 from shifde.identity.models import ApiKey, IdpConfig, Membership, ServiceAccount
@@ -79,11 +81,20 @@ LOCKOUT_MAX = timedelta(hours=24)
 TOUCH_INTERVAL = timedelta(minutes=1)
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 SETUP_TOKEN_TTL = timedelta(hours=1)
+# Account-wide ceiling over every source (identity review 2 item 3, B-918): rotating addresses
+# no longer gives unlimited guesses. High on purpose: reaching it takes ten sources each locked
+# by their own threshold, so it is not the e-mail-only victim lockout of SEC Minor-1.
+ACCOUNT_CEILING = 100
+ACCOUNT_WINDOW = timedelta(hours=1)
+# The subject of an unknown account's lookups: no person has this id, so the same statements run
+# and find nothing (identity review 2 item 4, B-918).
+_NOBODY = UUID(int=0)
 
 
 def _source_hash(client_ip: str | None) -> bytes:
-    """The lockout key's source part (B-911): the resolved client address, hashed."""
-    return hashlib.sha256(b"shifde-login-source-v1:" + (client_ip or "").encode()).digest()
+    """The lockout key's source part (B-911): the resolved client address, hashed; an IPv6
+    address counts as its /64 (identity review 2 item 3, B-918)."""
+    return hashlib.sha256(b"shifde-login-source-v1:" + source_key(client_ip).encode()).digest()
 
 
 def _require_platform_admin(session: Session, what: str) -> None:
@@ -173,34 +184,76 @@ def login_local(
     password: str,
     previous_token: str | None,
 ) -> LoginResult:
-    """Verify credentials and open a new session (rotating any presented session)."""
+    """Verify credentials and open a new session (rotating any presented session).
+
+    On any failure the person and client context are cleared before the error leaves (identity
+    review 2 item 2): the submitted e-mail's person must not stay the principal of the Session."""
     if not settings.auth_local_enabled:
         raise AuthDisabled("local authentication is disabled")
+    try:
+        return _login_local(
+            session,
+            settings,
+            passwords,
+            ctx,
+            email=email,
+            password=password,
+            previous_token=previous_token,
+        )
+    except BaseException:
+        _clear_context(session)
+        raise
+
+
+def _clear_context(session: Session) -> None:
+    """Drop the principal and client context. A refused statement still lowers the Session's
+    context (B-703), so each is attempted on its own and its error does not hide the original."""
+    with suppress(SQLAlchemyError):
+        db.set_principal(session, None)
+    with suppress(SQLAlchemyError):
+        db.set_tenant(session, None)
+
+
+def _login_local(
+    session: Session,
+    settings: Settings,
+    passwords: PasswordService,
+    ctx: RequestContext,
+    *,
+    email: str,
+    password: str,
+    previous_token: str | None,
+) -> LoginResult:
     normalized = normalize_email(email)
     source = _source_hash(ctx.client_ip)
     row = repository.resolve_local_login(session, normalized)
-    source_locked_until: datetime | None = None
-    if row is not None:
-        # Serialize attempts per account: take the credential row lock *before* verifying, and
-        # decide `locked` from the locked rows, so parallel attempts queue up and nothing (not
-        # even a correct password) is checked once the threshold has been reached.
-        db.set_principal(session, row.user_id)
-        creds = repository.lock_credentials(session, row.user_id)
-        if creds is not None:
-            row = replace(
-                row,
-                password_hash=creds.password_hash,
-                failed_attempts=creds.failed_attempts,
-                locked_until=creds.locked_until,
-            )
-        # SEC Minor-1 (B-911): failures are counted per (person, source address), so failures
-        # from one source do not lock the person out from another. The account-wide columns are
-        # no longer raised by login (an operator may still set them; they are honoured).
-        source_lock = repository.lock_login_source(session, row.user_id, source)
-        source_locked_until = source_lock.locked_until if source_lock else None
+    # Serialize attempts per account: take the credential row lock *before* verifying, and decide
+    # `locked` from the locked rows, so parallel attempts queue up and nothing (not even a correct
+    # password) is checked once the threshold has been reached. An unknown account runs the same
+    # statements against an id no person has (review 2 item 4).
+    subject = row.user_id if row is not None else _NOBODY
+    db.set_principal(session, subject)
+    creds = repository.lock_credentials(session, subject)
+    # SEC Minor-1 (B-911): failures are counted per (person, source address), so failures from
+    # one source do not lock the person out from another; the account-wide ceiling (B-918)
+    # bounds the sum over all sources. The account-wide columns are no longer raised by login
+    # (an operator may still set them; they are honoured).
+    source_lock = repository.lock_login_source(session, subject, source)
     now = utcnow()  # after any lock wait
-    locked = row is not None and any(
-        until is not None and until > now for until in (row.locked_until, source_locked_until)
+    recent = repository.account_recent_failures(session, subject, now - ACCOUNT_WINDOW)
+    if row is not None and creds is not None:
+        row = replace(
+            row,
+            password_hash=creds.password_hash,
+            failed_attempts=creds.failed_attempts,
+            locked_until=creds.locked_until,
+        )
+    source_locked_until = source_lock.locked_until if source_lock else None
+    locked = row is not None and (
+        recent >= ACCOUNT_CEILING
+        or any(
+            until is not None and until > now for until in (row.locked_until, source_locked_until)
+        )
     )
     active = row is not None and row.user_status == "active"
     # Always run a verify (against a dummy hash when unknown) to equalise timing. When the
@@ -209,7 +262,6 @@ def login_local(
 
     if row is None or not password_ok or locked or not active:
         if row is not None:
-            db.set_principal(session, row.user_id)
             repository.record_source_failure(
                 session,
                 row.user_id,
@@ -230,6 +282,10 @@ def login_local(
                 details={"reason": reason},
             )
         else:
+            # the counterparts of the known path's counter write and membership lookup
+            repository.reset_login_source(session, subject, source, now)
+            repository.my_membership_tenants(session)
+            db.set_principal(session, None)
             db.set_tenant(session, None)  # a pre-tenant event is filed with no client context
             audit.record(
                 session,
@@ -240,6 +296,7 @@ def login_local(
                 auth_method="local",
                 details={"reason": "unknown_account"},
             )
+            db.set_tenant(session, ctx.tenant_id)  # as `_audit_for_user` restores the caller's
         session.commit()  # persist the counter and audit row; the caller then raises 401
         raise InvalidCredentials("invalid email or password")
 

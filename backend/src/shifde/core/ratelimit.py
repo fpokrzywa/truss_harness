@@ -45,6 +45,31 @@ class SlidingWindowLimiter:
                 for k in [k for k, v in self._hits.items() if not v or now - v[-1] >= self._window]:
                     del self._hits[k]
 
+    def exceeded(self, key: str) -> bool:
+        """True if `key` is at its limit in the current window; records nothing (a caller that
+        counts only failures checks this first, so a success cannot slip past a full window)."""
+        if self._limit <= 0:
+            return False
+        now = self._clock()
+        with self._lock:
+            hits = self._hits.get(key)
+            live = sum(1 for t in hits if now - t < self._window) if hits else 0
+            return live >= self._limit
+
+
+def source_key(client_ip: str | None) -> str:
+    """The rate-limit / lockout key of a client address: an IPv6 address is grouped by its /64
+    (one subscriber usually holds a whole /64, so rotating within it must not reset a counter,
+    identity review 2 item 3); IPv4 and unparseable values are used as they are."""
+    if not client_ip:
+        return ""
+    addr = _parse_ip(client_ip)
+    if isinstance(addr, ipaddress.IPv6Address):
+        if addr.ipv4_mapped is not None:
+            return str(addr.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{addr}/64", strict=False))
+    return str(addr) if addr is not None else client_ip
+
 
 def ip_limit_applies(client_ip: str | None, trusted_proxies: list[str]) -> bool:
     """Per-IP limiting only makes sense for a real remote address: not for loopback or a

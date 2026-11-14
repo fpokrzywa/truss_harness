@@ -72,7 +72,16 @@ PRE_TENANT_ACTIONS: frozenset[str] = frozenset(
         "identity.login.succeeded",
         "identity.logout",
         "identity.setup_token.redeemed",
+        # a bearer credential whose secret did not verify: no client is proven (findings Item 5c,
+        # B-917); a verified but revoked/expired key is filed in the key's own client instead
+        "identity.api_key.rejected",
     }
+)
+# A person's own sign-in events: filed globally only with the acting person as the actor, read
+# from the database (`current_principal_id()`), so no-context code cannot file one for anyone
+# else (identity review 2 item 5).
+SELF_ACTIONS: frozenset[str] = frozenset(
+    {"identity.login.succeeded", "identity.logout", "identity.setup_token.redeemed"}
 )
 ADMIN_INSTALLATION_ACTIONS: frozenset[str] = frozenset(
     {
@@ -118,6 +127,7 @@ _MAY_LOCK_SQL = text(
 )
 
 
+_PRINCIPAL_SQL = text("SELECT shifde.current_principal_id()")
 _NO_CLIENT_SQL = text("SELECT shifde.current_tenant_id() IS NULL")
 
 
@@ -125,6 +135,14 @@ def _has_no_client_context(session: Session) -> bool:
     """A pre-tenant event is filed globally only from a session with no client context (audit
     review 2 item 3, B-912). Read from the database (B-703), not `session.info`."""
     return bool(session.execute(_NO_CLIENT_SQL).scalar_one())
+
+
+def _is_acting_principal(session: Session, actor_id: UUID | None) -> bool:
+    """`actor_id` is the database's `current_principal_id()` (B-703: not `session.info`)."""
+    if actor_id is None:
+        return False
+    current = session.execute(_PRINCIPAL_SQL).scalar_one()
+    return bool(current == actor_id)
 
 
 def _may_lock_chain(session: Session, tenant_id: UUID) -> bool:
@@ -208,6 +226,12 @@ def record(
         if action in PRE_TENANT_ACTIONS:
             if not _has_no_client_context(session):
                 raise NotInstallationAction(action)
+            if action in SELF_ACTIONS:
+                effective = actor_id
+                if effective is None and ctx.principal is not None:
+                    effective = ctx.principal.principal_id
+                if not _is_acting_principal(session, effective):
+                    raise NotInstallationAction(action)
         elif not (action in ADMIN_INSTALLATION_ACTIONS and get_context(session).platform_admin):
             raise NotInstallationAction(action)
     principal = ctx.principal

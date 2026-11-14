@@ -17,13 +17,16 @@ from datetime import timedelta
 from uuid import UUID
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from shifde.core.clock import utcnow
 from shifde.core.db import Database, set_principal, set_tenant
 from shifde.core.ids import uuid7
+from shifde.core.settings import Settings
 from tests.conftest import CLEAN_TABLES
+from tests.identity import harness
 
 # children first is not needed: the cleanup also truncates every table that references these
 for _table in (
@@ -39,6 +42,7 @@ for _table in (
     "users",
     "secret_access_log",
     "secrets",
+    "audit_events",  # login, logout and rejected-credential rows (TRUNCATE, as tests/audit does)
 ):
     if _table not in CLEAN_TABLES:
         CLEAN_TABLES.append(_table)
@@ -62,6 +66,19 @@ class World:
     b: Client
     both: UUID  # a person who is a member of A and of B
     installation_idp: UUID  # tenant_id NULL
+
+
+@pytest.fixture
+def stub_memberships(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`service.my_memberships` from the caller's own membership tenants (harness, B-920)."""
+    harness.stub_memberships(monkeypatch)
+
+
+@pytest.fixture
+def auth_client(settings: Settings, stub_memberships: None) -> Iterator[TestClient]:
+    """The identity routes and probe routes as `shifde_app` (`tests/identity/harness.py`)."""
+    with harness.client_for(settings) as c:
+        yield c
 
 
 @pytest.fixture
