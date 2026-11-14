@@ -48,7 +48,7 @@ The last clean-checkout gate run was `gates.py --ref connections --workers 6` at
    5. `app`/`cli`/`main` (mount every router; the deferred SETH tests listed in `carry_forward.md`)
    6. the two-org proof (local cluster, S-002)
    7. the remaining front-end areas
-   8. fill STATUS "Known defects" from `docs/build/findings.md`
+   8. update STATUS "Known defects" (filled in session 4) as modules close findings
    9. the factory install (charter §6)
 
 **Front-end areas follow routes, not modules (B-1107).** Most SETH screens call `/api/v1/orgs/{org}/...` routes that only exist once admin, tenancy and the rest are mounted by `app`. Port the remaining front-end areas after `app`, or after each admin part, against routes that exist.
@@ -61,7 +61,7 @@ The last clean-checkout gate run was `gates.py --ref connections --workers 6` at
 | `installation`, `fe-areas-1`, `tenancy`, `tenancy-fixtures`, `vendors`, `admin`, `connections` (origin) | Merged. Worktrees removed. `admin` can be reused for parts 2-3 (`git worktree add .worktrees/admin admin`, then `git merge main`) |
 | `.worktrees/verify`, `verify2`, `verify3` | Detached checkouts used by `gates.py --name`. The lead uses `verify`; builders use `verify2` or `verify3` |
 | `.worktrees/fe-areas-1`, `.worktrees/secrets`, `.worktrees/skeleton` | Leftover directories Windows would not delete (locked `node_modules`); git no longer tracks them. Delete them by hand |
-| `observe/` (untracked, main checkout) | **Not created by this build.** It appeared at 08:37 and holds a usage dashboard (`server.py`, `dashboard.html`); it probably belongs to the supervising process. Do not commit it, delete it or `git add -A` at the root. Commit with explicit paths (`git add docs/build ...`). It is why `git status` shows one untracked entry |
+| `observe/` (untracked, main checkout) | **Not created by this build.** It appeared at 08:37 and holds a usage dashboard (`server.py`, `dashboard.html`); it probably belongs to the supervising process. Do not commit or delete it. It is listed in the local-only `.git/info/exclude` (not committed), so `git status` is clean; remove that line if the owner wants it tracked |
 | Local cluster | PostgreSQL 17 on 127.0.0.1:55450, running. Leftover `shifde_<worktree>`, `shifde_review` and `shifdet_*` databases are harmless |
 | Scratch directories outside the repo | `S:/tmp_identity_scratch` and `S:/tmp_identity_tools` (from session 3). Delete them by hand |
 | Background agents | None running |

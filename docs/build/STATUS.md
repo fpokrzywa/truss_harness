@@ -44,7 +44,31 @@ In scope for sub-project 1: C1, C2, batch R2 (ported code), R3 cost items (budge
 
 ### Known defects (major findings left open after sub-project 1)
 
-(filled in as modules land)
+Source: `docs/build/findings.md` ("known defect" rows). State as of session 4 (main `7c36f81`); each becomes a factory issue after sub-project 1 (charter 7). Not final until `runtime`, `build`, `governance`, `ontology`, `models_admin` and `app` land, which may close or narrow some.
+
+| Finding | Summary | Owner | State now |
+|---|---|---|---|
+| Item 12 (REQ F-02) | Archived workspace/project still accepts runs | runtime | connections half fixed (B-1509); runs half open |
+| Item 12 (REQ F-03) | Orgs cannot be suspended; archived org principals still log in | tenancy, identity | archived client refused at the session pin (tenancy 2a, B-1008..B-1014); `suspended` client status needs a decision (carry_forward) |
+| Item 13 (J-M2) | Admin cannot read run output in prod; `capture_content` has no setter | runtime, tenancy | open (runtime not ported) |
+| Item 14 (REQ F-12) | Capture off only hides on read; content still stored | runtime, models_admin | open |
+| Item 15 (REQ F-06) | No tool-invocation audit; `model.invoked` lacks run/workspace/project | runtime, models_admin, audit | open |
+| Item 16 (REQ F-13) | No per-tool approval flag; `audit_level` unused; `allowed_agent_ids` skipped for pipelines | build, runtime | open |
+| Item 16 (REQ F-09) | REST adapter lacks OAuth2 client credentials | adapters | open |
+| Item 18 (J-M4) | DB down: `/api/ready` slow to 503 | core, observability | core connect/statement timeouts fixed (B-203); readiness check with app |
+| Item 19 (ARCH M3) | Wedged worker never recovered | runtime, core | open |
+| Item 20 (ARCH M4; REQ F-11) | No retention purge/maintenance; partitions absent; `run_artifacts` undeletable | cli, audit, ledger, runtime | open |
+| Item 21 (ARCH M2) | API runs adapters inline (connections, models, ontology) | app, connections, models_admin, ontology | open (connections ported inline as in SETH) |
+| Item 22 (REQ F-17) | No SAST, coverage gate, OpenAPI diff | repo infra | CI added by the skeleton; the rest open |
+| Item 22 (REQ F-21) | No repeatable browser E2E suite | frontend | open |
+| Item 22 (REQ F-16) | API latency and harness overhead never measured | new harness | open |
+| Item 23 (REQ F-23) | Traceability matrix unreliable | docs | open |
+| ARCH M11 | Classification x provider-trust egress control and `data:export` not implemented | runtime, ontology, models_admin, governance | open |
+| REQ F-08 | RLS is tenant-only; PRD requires workspace and project | authz, tenancy | open (workspace/project scoping enforced in the PDP and services, not RLS) |
+| REQ F-10 | Approval rules skip pipeline runs; no data-export or target-env rule | runtime, governance | open |
+| REQ F-22 | No real IdP sign-in tested | identity | open: fake IdP only; Entra in sub-project 3 (waiting on owner input) |
+
+Also open from reviews (minor, tracked in `carry_forward.md`): SEC Minor-3 (no secret delete path), the connections review 2 C2 race (next unit), the IdP-sync self-add (before OIDC is mounted).
 
 ## Waiting on owner input
 
