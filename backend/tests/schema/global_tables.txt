@@ -6,3 +6,4 @@
 #   <table>  # <why it holds no client-owned data>
 #
 # Adding a line needs isolation review (docs/build/CHARTER.md section 3).
+adapter_conformance_runs  # platform-wide conformance evidence per adapter kind (key, version, suite, outcome, checks); no tenant_id or principal column, append-only, SELECT-only for shifde_app, written by the owner CLI

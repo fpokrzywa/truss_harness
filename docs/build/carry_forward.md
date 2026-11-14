@@ -7,11 +7,18 @@ Each later module's brief must include its section here. Strike an item (move it
 | SETH test (3ba0e06 `backend/tests/`) | What it covers | Moves with | Deferred by |
 |---|---|---|---|
 | `test_core.py::test_log_redaction_masks_secrets` | log redaction | observability | core |
-| `test_p3_egress.py` | EgressGuard / SSRF (core.egress, core.ssrf) | adapters (`testservers`) | core |
 | `test_p6_units.py` (cron tests) | core.cron | build/runtime | core |
 | `test_hardening.py`, `test_hardening2.py` (limiter, IP, proxy) | core.ratelimit, deps | app/identity | core |
 | `test_p5_core.py` (safeexpr) | core.safeexpr | runtime | core |
 | `test_p9_config.py` (settings, configtools) | core.settings, core.configtools | cli | core |
+| `test_p3_adapters.py` (postgres suite on the sample database, 3 `shifde-admin adapters verify`/`dev-sample-data` CLI tests, sample database test, `user_identities` idp test) | adapters CLI verify, sample data, identity schema | cli (sample data, CLI); identity (`user_identities` test) | adapters |
+| `test_p3_review.py` (all but the 6 adapters-only tests moved to `tests/adapters/test_p3_review_adapters.py`) | connections, models invoke, postgres caps on the sample database | connections / models_admin / cli (`sample_db_url`) | adapters |
+| `test_p3_connections.py`, `test_p3_models.py` | connection and model-provider services and routes | connections, models_admin | adapters |
+| `test_p4_review1.py::test_path_encoding_helpers`, `::test_side_effects_are_never_retried_at_runtime` | `build.tool_runtime` over the REST adapter | build | adapters |
+| `test_r1_round3.py::test_a_tool_argument_with_a_space_still_reaches_the_target` | `build.tool_runtime.fill_path` + `join_url` | build | adapters |
+| `test_r1_round4.py::test_a_malformed_base_url_is_a_config_error_not_a_crash` | `runtime.steps.classify_tool_failure` on an adapter config failure | runtime | adapters |
+| `test_p7_units.py` (all but `test_postgres_adapter_compiles_filter_groups_and_offset_with_quoted_identifiers`) | ontology compiler | ontology | adapters |
+| `test_p4_review2.py`, `test_p4_tools.py`, `test_p5_approvals.py`, `test_p5_reliability.py`, `test_p5_review.py`, `test_p6_*.py`, `test_p7_exec.py`, `test_p7_query.py`, `test_p8_cost.py`, `test_p8_observability.py`, `test_r1_critic.py` (all but 3 moved), `test_r1_host_change.py`, `test_r1_round2.py` / `test_r1_round3.py` / `test_r1_round4.py` (the rest), `test_r1_unknown_outcome.py` | use `shifde.adapters.testservers` or adapters through runtime/build/app fixtures | the module each one tests; the servers come from `tests/_support/servers.py` (rest_server, mcp_server, oai_server) | adapters |
 
 ## Wiring and fixes owed
 
@@ -33,6 +40,9 @@ Each later module's brief must include its section here. Strike an item (move it
 | vendors, cli | Conformance `checks.detail` can carry a client DB's table names/SQL if `SHIFDE_SAMPLE_DATABASE_URL` points at one, and SETH `vendors/service.py:66-90` returns it to every client: refuse non-sample URLs in the CLI or drop `detail` from the client API | adapters review 1 |
 | vendors, connections | `ExecContext.tenant_id` (`adapters/base.py:116`) must carry the organization | adapters review 1 |
 | observability | Readiness uses `core.health.migration_state` (multi-head, B-111/B-203) | core |
+| runtime, ledger, models_admin | Item 9 (R3): send a `max_tokens` the budget covers on every model call (`runtime/steps.py`, `models_admin/service.py`); adapters now refuse a non-positive or non-integer `max_tokens` and send what they are given | adapters (Item 9) |
+| runtime, ledger | Item 11 (R3): `adapters.base.Usage` fields are `int | None` (None = provider did not report, never 0) plus `cached_input_tokens` and `.reported`; the runtime must estimate unreported usage and label it estimated, not calculated, and the ledger must write the row even if the run crashes after the provider answered | adapters (Item 11, ARCH m13) |
+| runtime (worker), cli | Entry points: `shifde-worker` and `shifde-admin` (with `adapters verify`) are re-added by their ports (B-101) | adapters |
 | ports of SETH policies on B-112's list | Settle each rejected SETH policy (USING (true) tables → `global_tables.txt` with reason, or tenant-keyed) under isolation review | skeleton |
 
 ## Done

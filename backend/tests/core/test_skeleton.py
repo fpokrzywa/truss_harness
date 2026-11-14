@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from alembic import command
+from alembic.script import ScriptDirectory
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
@@ -21,7 +22,11 @@ def test_worker_database_is_at_every_code_head(owner_engine: Engine) -> None:
     with owner_engine.connect() as c:
         versions = set(c.execute(text("SELECT version_num FROM shifde.alembic_version")).scalars())
     assert versions == set(code_heads())
-    assert "base_0001" in versions
+    # `alembic_version` holds only the heads, so base_0001 itself drops out once a module branch
+    # exists; what must hold is that every head descends from it (DECISIONS B-303).
+    script = ScriptDirectory.from_config(alembic_config(str(owner_engine.url)))
+    for head in versions:
+        assert "base_0001" in {r.revision for r in script.iterate_revisions(head, "base")}
 
 
 def test_app_role_reads_context_helpers(app_engine: Engine) -> None:
