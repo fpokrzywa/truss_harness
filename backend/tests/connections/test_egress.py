@@ -54,13 +54,13 @@ def test_a_connection_guard_uses_only_its_own_clients_policies(
         own = egress.build_guard(sess, runtime, a, pair.a.policy).layers
         theirs = egress.build_guard(sess, runtime, a, pair.b.policy).layers
         installation = egress.build_guard(sess, runtime, a, pair.installation_policy).layers
-        # the key names B while the context is A's: B's rows stay invisible
-        b_keyed = egress.build_guard(sess, runtime, b, pair.b.policy).layers
+        # the key names B while the context is A's: refused outright (review 1 item 1)
+        with pytest.raises(RuntimeError, match="own client's context"):
+            egress.build_guard(sess, runtime, b, pair.b.policy)
     assert len(no_policy) == 1  # installation default only: B's client default is not A's
     assert own == (*no_policy, _row(app_db, a, pair.a.policy))
     assert theirs == (*no_policy, DENY_ALL)  # a dangling or foreign reference denies everything
     assert installation == (*no_policy, DENY_ALL)
-    assert b_keyed == (*no_policy, DENY_ALL)
     with app_session(app_db, b) as sess:
         b_layers = egress.build_guard(sess, runtime, b, None).layers
     assert b_layers == (*no_policy, _row(app_db, b, b_default))
@@ -87,3 +87,22 @@ def test_rule_values_are_validated_and_normalised() -> None:
     ):
         with pytest.raises(ValidationFailed):
             egress._rule_values(s.EgressRules.model_validate(bad))
+
+
+def test_a_guard_is_built_only_in_its_own_clients_context(
+    settings: Settings, app_db: Database, owner_db: Database, pair: Pair
+) -> None:
+    """Connections review 1 item 1: with no client context, or another client's, RLS would hide
+    the client's own restrictive default and the guard would silently leave it out."""
+    a = pair.a.tenant
+    with owner_db.session() as o:
+        a_default = owner_policy(o, a, is_default=True)
+        o.commit()
+    runtime = _runtime(settings)
+    with app_session(app_db, a) as sess:  # own context first: A's default is a layer
+        own = egress.build_guard(sess, runtime, a, None).layers
+    assert own[-1] == _row(app_db, a, a_default) and len(own) == 2
+    with app_session(app_db, None) as sess, pytest.raises(RuntimeError):
+        egress.build_guard(sess, runtime, a, None)
+    with app_session(app_db, pair.b.tenant) as sess, pytest.raises(RuntimeError):
+        egress.build_guard(sess, runtime, a, None)

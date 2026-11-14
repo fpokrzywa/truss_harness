@@ -140,6 +140,21 @@ def test_the_service_key_holds_without_row_level_security(
     assert repository.get_egress_policy(o, pair.b.policy, tenant_id=a) is None
     assert repository.get_egress_policy(o, pair.b.policy, tenant_id=None) is None
     assert repository.get_default_policy(o, a) is None
+    # own rows first (review 1 item 2): the same calls keyed to A change A's rows
+    ac = ids["a"]["connection"]
+    own = repository.update_connection(o, ac, None, {"name": f"own-{ac.hex}"}, tenant_id=a)
+    assert own is not None and own["name"] == f"own-{ac.hex}"
+    own_pol = repository.update_egress_policy(
+        o, pair.a.policy, None, {"name": f"own-{pair.a.policy.hex}"}, tenant_id=a
+    )
+    assert own_pol is not None and own_pol["name"] == f"own-{pair.a.policy.hex}"
+    repository.record_test_outcome(
+        o, ac, tenant_id=a, at=_now(o), health_status="healthy", status=None
+    )
+    own_health = o.execute(
+        text("SELECT health_status FROM shifde.connections WHERE id = :i"), {"i": ac}
+    ).scalar_one()
+    assert own_health == "healthy"
     assert repository.update_connection(o, bc, None, {"name": "taken"}, tenant_id=a) is None
     assert (
         repository.update_egress_policy(o, pair.b.policy, None, {"name": "x"}, tenant_id=a) is None
@@ -209,8 +224,21 @@ def test_a_cannot_update_or_delete_bs_rows(
 ) -> None:
     ids = _seed(app_db, pair)
     a, b = pair.a.tenant, pair.b.tenant
-    bc = ids["b"]["connection"]
+    bc, ac = ids["b"]["connection"], ids["a"]["connection"]
     with app_session(app_db, a) as s:
+        # own rows first (review 1 item 2): A's update, test outcome and policy change land
+        own = repository.update_connection(s, ac, None, {"name": f"own-{ac.hex}"}, tenant_id=a)
+        assert own is not None and own["name"] == f"own-{ac.hex}" and own["row_version"] == 2
+        repository.record_test_outcome(
+            s, ac, tenant_id=a, at=_now(s), health_status="unhealthy", status="disabled"
+        )
+        own_row = repository.get_connection(s, ac, tenant_id=a)
+        assert own_row is not None
+        assert (own_row["status"], own_row["health_status"]) == ("disabled", "unhealthy")
+        own_pol = repository.update_egress_policy(
+            s, pair.a.policy, None, {"allow_private": True}, tenant_id=a
+        )
+        assert own_pol is not None and own_pol["allow_private"] is True
         for tenant in (a, b):
             assert (
                 repository.update_connection(s, bc, None, {"name": "x"}, tenant_id=tenant) is None

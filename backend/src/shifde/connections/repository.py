@@ -305,6 +305,12 @@ def get_egress_policy(session: Session, policy_id: UUID, *, tenant_id: UUID | No
     )
 
 
+def context_tenant_id(session: Session) -> UUID | None:
+    """The client of the session's transaction as the database sees it (`app.tenant_id`)."""
+    value = session.execute(text("SELECT shifde.current_tenant_id()")).scalar_one()
+    return None if value is None else UUID(str(value))
+
+
 def get_default_policy(session: Session, tenant_id: UUID | None) -> Row | None:
     return (
         session.execute(

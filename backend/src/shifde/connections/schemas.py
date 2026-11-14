@@ -34,6 +34,8 @@ class ConnectionCreate(BaseModel):
     secret_id: UUID | None = None
     egress_policy_id: UUID | None = None
     access_mode: AccessMode = "read"
+    # design 5.3 (B-1507): required true when a secret is bound to a read connection
+    read_only_confirmed: bool | None = None
 
 
 class ConnectionPatch(BaseModel):
@@ -45,6 +47,8 @@ class ConnectionPatch(BaseModel):
     secret_id: UUID | None = None
     egress_policy_id: UUID | None = None
     access_mode: AccessMode | None = None
+    # design 5.3 (B-1507): re-confirmed when a new secret, or read mode, is set with a secret bound
+    read_only_confirmed: bool | None = None
     row_version: int | None = None
 
 

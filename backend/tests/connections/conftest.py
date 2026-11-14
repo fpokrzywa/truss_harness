@@ -15,17 +15,38 @@ from typing import Any  # Any: SQL parameter values
 from uuid import UUID
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from shifde.adapters.testservers import RestTestServer
 from shifde.core.clock import utcnow
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
+from shifde.core.settings import Settings
+from tests.conftest import CLEAN_TABLES
+from tests.connections.routes import REST_TOKEN, SECRET_PREFIX, connections_client
 from tests.tenancy.conftest import Client, World, world
+from tests.tenancy.routes import People, make_people
 
 __all__ = ["world"]
 
-SECRET_PREFIX = "conn-test-"
+# the route tests (part 2) sign people in and resolve secrets: sessions, audit rows and the
+# append-only secret access log are truncated before each test (`tests/conftest.py:clean_data`)
+for _table in (
+    "secret_access_log",
+    "secrets",
+    "login_lockouts",
+    "user_identities",
+    "sessions",
+    "local_credentials",
+    "memberships",
+    "idp_configs",
+    "users",
+    "audit_events",
+):
+    if _table not in CLEAN_TABLES:
+        CLEAN_TABLES.append(_table)
 
 
 @dataclass(frozen=True)
@@ -150,7 +171,15 @@ def _clean(owner_db: Database) -> None:
         s.execute(text("DELETE FROM shifde.connections"))
         s.execute(text("DELETE FROM shifde.egress_policies WHERE tenant_id IS NOT NULL"))
         s.execute(text("DELETE FROM shifde.vendors WHERE created_by IS NOT NULL"))
-        s.execute(text("DELETE FROM shifde.secrets WHERE name LIKE :p"), {"p": f"{SECRET_PREFIX}%"})
+        # a secret a route test resolved has append-only access-log rows: it stays until the
+        # next test's TRUNCATE (`secret_access_log` and `secrets` are in CLEAN_TABLES)
+        s.execute(
+            text(
+                "DELETE FROM shifde.secrets s WHERE s.name LIKE :p AND NOT EXISTS "
+                "(SELECT 1 FROM shifde.secret_access_log l WHERE l.secret_id = s.id)"
+            ),
+            {"p": f"{SECRET_PREFIX}%"},
+        )
         s.commit()
 
 
@@ -183,3 +212,29 @@ def pair(owner_db: Database, world: World) -> Pair:
         ).scalar_one()
         o.commit()
     return Pair(sides[0], sides[1], installation_secret, installation_policy, global_vendor)
+
+
+@pytest.fixture
+def rest_server() -> Iterator[RestTestServer]:
+    """SETH's local REST target that accepts `REST_TOKEN`."""
+    with RestTestServer(token=REST_TOKEN) as server:
+        yield server
+
+
+@pytest.fixture
+def evil() -> Iterator[RestTestServer]:
+    """A second listener that accepts the same token: a delivery there proves the secret left."""
+    with RestTestServer(token=REST_TOKEN) as server:
+        yield server
+
+
+@pytest.fixture
+def client(settings: Settings) -> Iterator[TestClient]:
+    with connections_client(settings) as c:
+        yield c
+
+
+@pytest.fixture
+def people(owner_db: Database, world: World) -> People:
+    with owner_db.session() as owner:
+        return make_people(owner, world)

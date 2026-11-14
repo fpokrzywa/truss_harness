@@ -106,6 +106,12 @@ def build_guard(
     tenant_id: UUID,
     connection_policy_id: UUID | None,
 ) -> EgressGuard:
+    """The effective guard of a connection of `tenant_id`. The session must be in that client's
+    context (connections review 1 item 1): under another or no client, row-level security would
+    hide the client's own default policy and silently leave it out, so this refuses instead."""
+    current = repository.context_tenant_id(session)
+    if current is None or current != tenant_id:
+        raise RuntimeError("an egress guard is built only in its own client's context")
     installation = repository.get_default_policy(session, None)
     layers = [
         installation_layer(
