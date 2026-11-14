@@ -253,7 +253,30 @@ def clean_data(request: pytest.FixtureRequest) -> None:
         return
     engine: Engine = request.getfixturevalue("owner_engine")
     with engine.begin() as c:
-        c.execute(text("TRUNCATE " + ", ".join(f"shifde.{t}" for t in CLEAN_TABLES)))
+        tables = _with_referencing_tables(c, CLEAN_TABLES)
+        c.execute(text("TRUNCATE " + ", ".join(f"shifde.{t}" for t in tables)))
+
+
+_REFERENCING = text(
+    """SELECT DISTINCT src.relname
+         FROM pg_catalog.pg_constraint k
+         JOIN pg_catalog.pg_class src ON src.oid = k.conrelid
+         JOIN pg_catalog.pg_class dst ON dst.oid = k.confrelid
+         JOIN pg_catalog.pg_namespace n ON n.oid = src.relnamespace
+        WHERE k.contype = 'f' AND n.nspname = 'shifde'
+          AND dst.relname = ANY(:tables) AND src.relname <> ALL(:tables)"""
+)
+
+
+def _with_referencing_tables(c: Connection, tables: list[str]) -> list[str]:
+    """`tables` plus every `shifde` table whose foreign keys reach them (TRUNCATE refuses a table
+    another table references unless both are truncated). A module's tests then clean up whatever
+    later modules' tables point at its rows (e.g. identity's `idp_configs` -> `secrets` when only
+    the secrets tests run), without each module listing the others."""
+    result = list(tables)
+    while extra := sorted(c.execute(_REFERENCING, {"tables": result}).scalars()):
+        result += extra
+    return result
 
 
 # --------------------------------------------------------------------------- app fixtures
