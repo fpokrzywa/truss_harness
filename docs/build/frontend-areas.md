@@ -1,6 +1,6 @@
 # Front-end areas
 
-Map of every file tracked under SETH `frontend/` at commit `3ba0e06` (389 files) to exactly one area. `shell` is built in `frontend/` now; the other areas are ported one per backend module after that module's API merges. `installation` is not ported in sub-project 1.
+Map of every file tracked under SETH `frontend/` at commit `3ba0e06` (389 files) to exactly one area. `shell` is built in `frontend/` now; the other areas are ported one per backend module after that module's API merges. `installation` is ported without branding (B-1101).
 
 ## How areas were assigned
 
@@ -115,15 +115,15 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 
 | File | Status | Notes |
 |---|---|---|
-| `src/app/(app)/o/[org]/govern/audit/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/govern/layout.tsx` | later |  |
-| `src/app/(app)/o/[org]/security/audit/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/security/layout.tsx` | later |  |
-| `src/components/security/AuditExplorer.test.tsx` | later |  |
-| `src/components/security/AuditView.test.tsx` | later |  |
-| `src/components/security/AuditView.tsx` | later |  |
-| `src/lib/api/security-endpoints.ts` | later | as security-types; `myPermissions` is already in the shell endpoints. |
-| `src/lib/api/security-types.ts` | later | spans identity, authz, secrets and audit; audit|authz tie broken alphabetically. Split by area when ported. |
+| `src/app/(app)/o/[org]/govern/audit/page.tsx` | later | blocked: audit has no API in the unified backend (events and `verify` are org routes `/api/v1/orgs/{org}/audit...`, owner: tenancy part 2 / `app` port); `security-*` files also span authz and identity |
+| `src/app/(app)/o/[org]/govern/layout.tsx` | later | blocked: audit has no API in the unified backend (events and `verify` are org routes `/api/v1/orgs/{org}/audit...`, owner: tenancy part 2 / `app` port); `security-*` files also span authz and identity |
+| `src/app/(app)/o/[org]/security/audit/page.tsx` | later | blocked: audit has no API in the unified backend (events and `verify` are org routes `/api/v1/orgs/{org}/audit...`, owner: tenancy part 2 / `app` port); `security-*` files also span authz and identity |
+| `src/app/(app)/o/[org]/security/layout.tsx` | later | blocked: audit has no API in the unified backend (events and `verify` are org routes `/api/v1/orgs/{org}/audit...`, owner: tenancy part 2 / `app` port); `security-*` files also span authz and identity |
+| `src/components/security/AuditExplorer.test.tsx` | later | blocked: audit has no API in the unified backend (events and `verify` are org routes `/api/v1/orgs/{org}/audit...`, owner: tenancy part 2 / `app` port); `security-*` files also span authz and identity |
+| `src/components/security/AuditView.test.tsx` | later | blocked: audit has no API in the unified backend (events and `verify` are org routes `/api/v1/orgs/{org}/audit...`, owner: tenancy part 2 / `app` port); `security-*` files also span authz and identity |
+| `src/components/security/AuditView.tsx` | later | blocked: audit has no API in the unified backend (events and `verify` are org routes `/api/v1/orgs/{org}/audit...`, owner: tenancy part 2 / `app` port); `security-*` files also span authz and identity |
+| `src/lib/api/security-endpoints.ts` | later | as security-types; `myPermissions` is already in the shell endpoints.; blocked: audit has no API in the unified backend (events and `verify` are org routes `/api/v1/orgs/{org}/audit...`, owner: tenancy part 2 / `app` port); `security-*` files also span authz and identity |
+| `src/lib/api/security-types.ts` | later | spans identity, authz, secrets and audit; audit|authz tie broken alphabetically. Split by area when ported.; blocked: audit has no API in the unified backend (events and `verify` are org routes `/api/v1/orgs/{org}/audit...`, owner: tenancy part 2 / `app` port); `security-*` files also span authz and identity |
 
 ## authz
 
@@ -153,12 +153,12 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 
 | File | Status | Notes |
 |---|---|---|
-| `src/app/(app)/o/[org]/govern/performance/page.tsx` | later | UNSURE: execution performance; the view lives in `GovernanceViews`. |
-| `src/app/(app)/platform/status/page.tsx` | later | UNSURE: as PlatformStatusView. |
-| `src/components/PlatformStatusView.test.tsx` | later |  |
-| `src/components/PlatformStatusView.tsx` | later | UNSURE: platform status page; no area named for it, observability chosen. |
-| `src/components/governance/TelemetryPanel.test.tsx` | later |  |
-| `src/components/governance/TelemetryPanel.tsx` | later | UNSURE: telemetry shown on platform status. |
+| `src/app/(app)/o/[org]/govern/performance/page.tsx` | later | UNSURE: execution performance; the view lives in `GovernanceViews`.; blocked: `GET /api/v1/platform/status` does not exist (observability exposes only `/api/health`, `/api/ready`, `/api/metrics`); the page also needs ledger/governance `governance-types` and `lib/governance` (owner: ledger) |
+| `src/app/(app)/platform/status/page.tsx` | later | UNSURE: as PlatformStatusView.; blocked: `GET /api/v1/platform/status` does not exist (observability exposes only `/api/health`, `/api/ready`, `/api/metrics`); the page also needs ledger/governance `governance-types` and `lib/governance` (owner: ledger) |
+| `src/components/PlatformStatusView.test.tsx` | later | blocked: `GET /api/v1/platform/status` does not exist (observability exposes only `/api/health`, `/api/ready`, `/api/metrics`); the page also needs ledger/governance `governance-types` and `lib/governance` (owner: ledger) |
+| `src/components/PlatformStatusView.tsx` | later | UNSURE: platform status page; no area named for it, observability chosen.; blocked: `GET /api/v1/platform/status` does not exist (observability exposes only `/api/health`, `/api/ready`, `/api/metrics`); the page also needs ledger/governance `governance-types` and `lib/governance` (owner: ledger) |
+| `src/components/governance/TelemetryPanel.test.tsx` | later | blocked: `GET /api/v1/platform/status` does not exist (observability exposes only `/api/health`, `/api/ready`, `/api/metrics`); the page also needs ledger/governance `governance-types` and `lib/governance` (owner: ledger) |
+| `src/components/governance/TelemetryPanel.tsx` | later | UNSURE: telemetry shown on platform status.; blocked: `GET /api/v1/platform/status` does not exist (observability exposes only `/api/health`, `/api/ready`, `/api/metrics`); the page also needs ledger/governance `governance-types` and `lib/governance` (owner: ledger) |
 
 ## ledger
 
@@ -187,37 +187,37 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 
 | File | Status | Notes |
 |---|---|---|
-| `src/app/(app)/o/[org]/security/secrets/page.tsx` | later |  |
-| `src/components/security/SecretsView.test.tsx` | later |  |
-| `src/components/security/SecretsView.tsx` | later |  |
+| `src/app/(app)/o/[org]/security/secrets/page.tsx` | later | blocked: secrets has no API in the unified backend (org routes `/api/v1/orgs/{org}/secrets`, owner: tenancy part 2 / `app` port) |
+| `src/components/security/SecretsView.test.tsx` | later | blocked: secrets has no API in the unified backend (org routes `/api/v1/orgs/{org}/secrets`, owner: tenancy part 2 / `app` port) |
+| `src/components/security/SecretsView.tsx` | later | blocked: secrets has no API in the unified backend (org routes `/api/v1/orgs/{org}/secrets`, owner: tenancy part 2 / `app` port) |
 
 ## identity
 
 | File | Status | Notes |
 |---|---|---|
-| `src/app/(app)/o/[org]/security/api-keys/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/security/idps/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/security/service-accounts/[id]/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/security/service-accounts/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/security/users/page.tsx` | later |  |
-| `src/app/(app)/platform/idps/page.tsx` | later |  |
-| `src/app/login/page.tsx` | later |  |
-| `src/app/setup/page.tsx` | later | UNSURE: as SetupForm. |
-| `src/components/LoginForm.oidc.test.tsx` | later |  |
-| `src/components/LoginForm.test.tsx` | later |  |
-| `src/components/LoginForm.tsx` | later |  |
-| `src/components/SetupForm.test.tsx` | later |  |
-| `src/components/SetupForm.tsx` | later | UNSURE: first-admin setup redeem; identity (calls `redeemSetup`). |
-| `src/components/admin/SecretOnce.tsx` | later |  |
-| `src/components/security/ApiKeysPanel.test.tsx` | later |  |
-| `src/components/security/ApiKeysPanel.tsx` | later |  |
-| `src/components/security/ApiKeysView.tsx` | later |  |
-| `src/components/security/IdpsView.test.tsx` | later |  |
-| `src/components/security/IdpsView.tsx` | later |  |
-| `src/components/security/ServiceAccountsView.tsx` | later |  |
-| `src/components/security/UsersView.test.tsx` | later |  |
-| `src/components/security/UsersView.tsx` | later |  |
-| `src/lib/oidc.ts` | later |  |
+| `src/app/(app)/o/[org]/security/api-keys/page.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
+| `src/app/(app)/o/[org]/security/idps/page.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
+| `src/app/(app)/o/[org]/security/service-accounts/[id]/page.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
+| `src/app/(app)/o/[org]/security/service-accounts/page.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
+| `src/app/(app)/o/[org]/security/users/page.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
+| `src/app/(app)/platform/idps/page.tsx` | later | needs `/api/v1/platform/idps`, which the unified backend does not have yet (owner: identity part 3 admin routes / `app` port) |
+| `src/app/login/page.tsx` | ported |  |
+| `src/app/setup/page.tsx` | ported |  |
+| `src/components/LoginForm.oidc.test.tsx` | ported |  |
+| `src/components/LoginForm.test.tsx` | ported | one test added: no branding call, fixed heading |
+| `src/components/LoginForm.tsx` | ported, modified | `useBranding` removed: heading uses `DEFAULT_PRODUCT_NAME`; no logo, login message or support link; no call to `/api/installation/branding` (B-1101) |
+| `src/components/SetupForm.test.tsx` | ported |  |
+| `src/components/SetupForm.tsx` | ported | UNSURE: first-admin setup redeem; identity (calls `redeemSetup`). |
+| `src/components/admin/SecretOnce.tsx` | ported | no importer until `ApiKeysPanel` lands |
+| `src/components/security/ApiKeysPanel.test.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
+| `src/components/security/ApiKeysPanel.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
+| `src/components/security/ApiKeysView.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
+| `src/components/security/IdpsView.test.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
+| `src/components/security/IdpsView.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
+| `src/components/security/ServiceAccountsView.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
+| `src/components/security/UsersView.test.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
+| `src/components/security/UsersView.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
+| `src/lib/oidc.ts` | ported |  |
 
 ## tenancy
 
@@ -237,18 +237,18 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 | `src/components/ScopeListView.tsx` | later |  |
 | `src/components/WorkspacesView.tsx` | later |  |
 
-## installation (not ported in sub-project 1)
+## installation
 
 | File | Status | Notes |
 |---|---|---|
-| `src/app/(app)/platform/settings/page.tsx` | not ported |  |
-| `src/components/BrandingApplier.test.tsx` | not ported |  |
-| `src/components/BrandingApplier.tsx` | not ported | as branding.ts. |
-| `src/components/PlatformSettingsView.test.tsx` | not ported |  |
-| `src/components/PlatformSettingsView.tsx` | not ported | platform settings; installation. |
-| `src/lib/branding-hooks.ts` | not ported | as branding.ts. |
-| `src/lib/branding.test.ts` | not ported |  |
-| `src/lib/branding.ts` | not ported | runtime branding; installation is not ported in sub-project 1. |
+| `src/app/(app)/platform/settings/page.tsx` | ported |  |
+| `src/components/BrandingApplier.test.tsx` | not ported | runtime branding: `/api/installation/branding` and `/branding/logo` dropped by the unified backend (B-1101); the login page and `AppBrand` use `lib/product.ts` |
+| `src/components/BrandingApplier.tsx` | not ported | runtime branding: `/api/installation/branding` and `/branding/logo` dropped by the unified backend (B-1101); the login page and `AppBrand` use `lib/product.ts` |
+| `src/components/PlatformSettingsView.test.tsx` | ported, modified | assertions on the dropped fields replaced: note, profile name and "No profile applied", retention enforcement, section status labels and the security profile wording now assert absence; the other tests are unchanged |
+| `src/components/PlatformSettingsView.tsx` | ported, modified | sections and text driven by `profile`, `retention`, `governance_defaults`, `section_status` and the "managed by the installation profile" note removed (B-1101, B-1102, carry_forward); `isApplied`, `RECORDED_ONLY_TEXT`, `retentionEnforcementText` removed |
+| `src/lib/branding-hooks.ts` | not ported | runtime branding: `/api/installation/branding` and `/branding/logo` dropped by the unified backend (B-1101); the login page and `AppBrand` use `lib/product.ts` |
+| `src/lib/branding.test.ts` | not ported | runtime branding: `/api/installation/branding` and `/branding/logo` dropped by the unified backend (B-1101); the login page and `AppBrand` use `lib/product.ts` |
+| `src/lib/branding.ts` | not ported | runtime branding: `/api/installation/branding` and `/branding/logo` dropped by the unified backend (B-1101); the login page and `AppBrand` use `lib/product.ts` |
 
 ## vendors
 

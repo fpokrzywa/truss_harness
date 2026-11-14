@@ -101,34 +101,20 @@ export interface Readiness {
   checks?: Record<string, string>;
 }
 
-/** "applied": the platform acts on the values. "stored": recorded by the profile only. */
-export type SectionStatus = 'applied' | 'stored';
-
-export type InstallationSection =
-  | 'branding'
-  | 'approved_vendors'
-  | 'feature_flags'
-  | 'security'
-  | 'retention'
-  | 'limits'
-  | 'governance_defaults'
-  | 'identity_providers'
-  | 'connections'
-  | 'model_providers';
-
-/** `GET /api/v1/platform/installation` (PHASE_9_CONTRACT section 6). Sections may be `{}`/absent. */
+/**
+ * `GET /api/v1/platform/installation`. The unified backend drops `profile`, `retention`,
+ * `governance_defaults` and `section_status` (B-1101, B-1102); they are not declared here.
+ * `workers` is `null` until the runtime module exists (B-1105).
+ */
 export interface PlatformInstallation {
-  /** Absent or missing keys must be treated as "stored" (safe default). */
-  section_status?: Partial<Record<InstallationSection, SectionStatus>>;
   version: string;
   env: string;
   deployment_mode: string;
   migration: { current: string | null; expected_head: string | null; ok: boolean };
-  profile: { name: string; version: string; applied_at: string; checksum?: string } | null;
   feature_flags?: Record<string, boolean>;
   auth?: {
     local_enabled?: boolean;
-    oidc_providers?: { name: string; issuer_host: string }[];
+    oidc_providers?: { name: string; issuer_host: string | null }[];
   };
   security?: {
     session_idle_minutes?: number;
@@ -136,19 +122,16 @@ export interface PlatformInstallation {
     api_key_max_days?: number;
     egress_default_allow_private?: boolean;
   };
-  retention?: {
-    audit_days?: number;
-    run_artifacts_days?: number;
-    enforcement?: string;
-  };
   limits?: {
     max_run_seconds?: number;
     max_tool_calls?: number;
     inline_output_max_bytes?: number;
   };
-  governance_defaults?: Record<string, unknown>;
   workers?: { name: string; last_seen_at: string; status: 'alive' | 'stale' }[] | null;
 }
+
+/** `POST /api/auth/setup/redeem`: a session, or a pending OIDC link. */
+export type SetupRedeemResult = Session | { status: 'pending_oidc_link' };
 
 // Shell-owned copies of two authz types. The shell needs them for permission-aware navigation
 // (`usePermissions`) and for the shared test fixtures; SETH kept them in `security-types.ts`

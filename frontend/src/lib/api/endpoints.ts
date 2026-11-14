@@ -6,9 +6,11 @@ import type {
   ListResponse,
   MyPermissions,
   Org,
+  PlatformInstallation,
   Project,
   Readiness,
   Session,
+  SetupRedeemResult,
   Workspace,
 } from './types';
 
@@ -39,6 +41,21 @@ export function createEndpoints(client: ApiClient = defaultClient) {
       });
       client.setCsrfToken(undefined);
     },
+
+    redeemSetup: async (token: string, password?: string): Promise<SetupRedeemResult> => {
+      const result = await client.request<SetupRedeemResult>('/api/auth/setup/redeem', {
+        method: 'POST',
+        body: password === undefined ? { token } : { token, password },
+        redirectOnUnauthorized: false,
+        csrf: false, // no session yet
+      });
+      if ('csrf_token' in result) client.setCsrfToken(result.csrf_token);
+      return result;
+    },
+
+    // /api/installation/branding is not ported (B-1101): the UI has no runtime branding.
+    platformInstallation: () =>
+      client.request<PlatformInstallation>('/api/v1/platform/installation'),
 
     listOrgs: (all = false) =>
       client.request<ListResponse<Org>>('/api/v1/orgs', {

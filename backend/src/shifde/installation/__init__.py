@@ -1,1 +1,1 @@
-"""Not yet ported from SETH 3ba0e06; see docs/build/STATUS.md."""
+"""Minimal installation port: the platform-administrator overview (B-1101..B-1106)."""
