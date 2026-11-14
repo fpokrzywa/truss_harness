@@ -4,10 +4,23 @@ pooled connection, and the connection stays the unprivileged application role.""
 
 from __future__ import annotations
 
+from typing import Any
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from shifde.core.db import Database, get_context, set_tenant
+from shifde.core.db import (
+    Database,
+    get_context,
+    platform_admin_context,
+    set_platform_admin,
+    set_principal,
+    set_tenant,
+)
+from shifde.core.deps import SessionDep
 from shifde.core.ids import uuid7
+from shifde.core.settings import Settings
 
 CURRENT = text(
     "SELECT shifde.current_tenant_id(), shifde.current_principal_id(),"
@@ -47,5 +60,59 @@ def test_a_rolled_back_transaction_leaves_no_tenant_behind(app_url: str) -> None
             s.rollback()
         with db.session() as s:
             assert s.execute(CURRENT).one()[0] is None
+    finally:
+        db.dispose()
+
+
+def test_principal_and_platform_admin_do_not_survive_into_the_next_transaction(
+    app_url: str,
+) -> None:
+    db = Database(app_url, pool_size=1, max_overflow=0)
+    try:
+        with db.session() as s:
+            set_tenant(s, uuid7())
+            set_principal(s, uuid7())
+            with platform_admin_context(s):
+                row = s.execute(CURRENT).one()
+                assert row[0] is not None and row[1] is not None and row[2] is True
+            set_platform_admin(s, True)  # left on when the transaction ends
+            s.commit()
+        with db.session() as s:
+            row = s.execute(CURRENT).one()
+            assert row[0] is None and row[1] is None and row[2] is False
+    finally:
+        db.dispose()
+
+
+def test_two_requests_through_get_session_on_one_connection_do_not_leak_context(
+    app_url: str,
+) -> None:
+    db = Database(app_url, pool_size=1, max_overflow=0)
+    app = FastAPI()
+    app.state.db = db
+    kwargs: dict[str, Any] = {"_env_file": None, "database_url": "postgresql+psycopg://x"}
+    app.state.settings = Settings(env="test", **kwargs)
+    pids: list[int] = []
+
+    @app.post("/a")
+    def a(session: SessionDep) -> dict[str, bool]:
+        set_tenant(session, uuid7())
+        set_principal(session, uuid7())
+        set_platform_admin(session, True)
+        pids.append(session.execute(text("SELECT pg_backend_pid()")).scalar_one())
+        return {"ok": True}
+
+    @app.get("/b")
+    def b(session: SessionDep) -> dict[str, Any]:
+        pids.append(session.execute(text("SELECT pg_backend_pid()")).scalar_one())
+        row = session.execute(CURRENT).one()
+        return {"t": row[0], "p": row[1], "a": row[2], "u": row[3]}
+
+    try:
+        with TestClient(app) as c:
+            assert c.post("/a").status_code == 200
+            out = c.get("/b").json()
+        assert pids[0] == pids[1]
+        assert out == {"t": None, "p": None, "a": False, "u": "shifde_app"}
     finally:
         db.dispose()

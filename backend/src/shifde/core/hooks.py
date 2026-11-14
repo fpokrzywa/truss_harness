@@ -7,6 +7,8 @@ from collections.abc import Callable
 import structlog
 from sqlalchemy.orm import Session
 
+from shifde.core.db import forget_platform_admin
+
 CLOSE_HOOKS_KEY = "shifde_close_hooks"
 log = structlog.get_logger("shifde.hooks")
 
@@ -23,6 +25,8 @@ def run_close_hooks(session: Session) -> None:
     if not hooks:
         return
     session.rollback()  # discard request leftovers; hooks use a fresh transaction
+    # Hooks record denials; they never act as platform admin, whatever the request had set.
+    forget_platform_admin(session)
     for hook in hooks:
         try:
             hook(session)

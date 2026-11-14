@@ -107,6 +107,12 @@ def set_platform_admin(session: Session, enabled: bool) -> None:
     _update(session, platform_admin=enabled)
 
 
+def forget_platform_admin(session: Session) -> None:
+    """Drop the flag from the Session's context without touching the database (the next
+    transaction applies the context again)."""
+    session.info[_CTX_KEY] = replace(get_context(session), platform_admin=False)
+
+
 @contextmanager
 def platform_admin_context(session: Session) -> Iterator[None]:
     set_platform_admin(session, True)
