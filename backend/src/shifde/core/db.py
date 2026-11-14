@@ -107,6 +107,12 @@ def set_platform_admin(session: Session, enabled: bool) -> None:
     _update(session, platform_admin=enabled)
 
 
+def forget_platform_admin(session: Session) -> None:
+    """Drop the flag from the Session's context without touching the database (the next
+    transaction applies the context again)."""
+    session.info[_CTX_KEY] = replace(get_context(session), platform_admin=False)
+
+
 @contextmanager
 def platform_admin_context(session: Session) -> Iterator[None]:
     set_platform_admin(session, True)
@@ -149,15 +155,23 @@ class Database:
         pool_size: int = 5,
         max_overflow: int = 5,
         verify_role: bool = True,
+        connect_timeout: int = 10,
+        statement_timeout_ms: int = 0,
     ) -> None:
         """`verify_role=False` only for the schema owner's own tooling (migrations, test
-        fixtures); everything that serves requests or runs jobs keeps the default."""
+        fixtures); everything that serves requests or runs jobs keeps the default.
+        `connect_timeout` (seconds, libpq) bounds a connection attempt to an unreachable server and
+        `statement_timeout_ms` (0 = none) the run time of any one statement (audit Item 18); both
+        are startup parameters, so they survive the checkout `DISCARD ALL`."""
+        options = "-c timezone=UTC"  # timestamps are always UTC
+        if statement_timeout_ms > 0:
+            options += f" -c statement_timeout={int(statement_timeout_ms)}"
         self.engine: Engine = create_engine(
             url,
             pool_pre_ping=True,
             pool_size=pool_size,
             max_overflow=max_overflow,
-            connect_args={"options": "-c timezone=UTC"},  # timestamps are always UTC
+            connect_args={"options": options, "connect_timeout": connect_timeout},
         )
         event.listen(self.engine, "checkout", _clean_checkout)
         self._factory = sessionmaker(self.engine, expire_on_commit=False)
@@ -173,6 +187,12 @@ class Database:
 
     def dispose(self) -> None:
         self.engine.dispose()
+
+
+def read_db_revisions(session: Session) -> frozenset[str]:
+    """Every revision stamped in the database (one per migration branch head, DECISIONS B-004)."""
+    rows = session.execute(text(f"SELECT version_num FROM {SCHEMA}.alembic_version")).scalars()
+    return frozenset(str(r) for r in rows)
 
 
 def read_db_revision(session: Session) -> str | None:
