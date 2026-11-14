@@ -6,7 +6,6 @@ Each later module's brief must include its section here. Strike an item (move it
 
 | SETH test (3ba0e06 `backend/tests/`) | What it covers | Moves with | Deferred by |
 |---|---|---|---|
-| `test_core.py::test_log_redaction_masks_secrets` | log redaction | observability | core |
 | `test_p6_units.py` (cron tests) | core.cron | build/runtime | core |
 | `test_hardening.py`, `test_hardening2.py` (limiter, IP, proxy) | core.ratelimit, deps | app/identity | core |
 | `test_p5_core.py` (safeexpr) | core.safeexpr | runtime | core |
@@ -18,7 +17,8 @@ Each later module's brief must include its section here. Strike an item (move it
 | `test_r1_round3.py::test_a_tool_argument_with_a_space_still_reaches_the_target` | `build.tool_runtime.fill_path` + `join_url` | build | adapters |
 | `test_r1_round4.py::test_a_malformed_base_url_is_a_config_error_not_a_crash` | `runtime.steps.classify_tool_failure` on an adapter config failure | runtime | adapters |
 | `test_p7_units.py` (all but `test_postgres_adapter_compiles_filter_groups_and_offset_with_quoted_identifiers`) | ontology compiler | ontology | adapters |
-| `test_p4_review2.py`, `test_p4_tools.py`, `test_p5_approvals.py`, `test_p5_reliability.py`, `test_p5_review.py`, `test_p6_*.py`, `test_p7_exec.py`, `test_p7_query.py`, `test_p8_cost.py`, `test_p8_observability.py`, `test_r1_critic.py` (all but 3 moved), `test_r1_host_change.py`, `test_r1_round2.py` / `test_r1_round3.py` / `test_r1_round4.py` (the rest), `test_r1_unknown_outcome.py` | use `shifde.adapters.testservers` or adapters through runtime/build/app fixtures | the module each one tests; the servers come from `tests/_support/servers.py` (rest_server, mcp_server, oai_server) | adapters |
+| `test_p4_review2.py`, `test_p4_tools.py`, `test_p5_approvals.py`, `test_p5_reliability.py`, `test_p5_review.py`, `test_p6_*.py`, `test_p7_exec.py`, `test_p7_query.py`, `test_p8_cost.py`, `test_r1_critic.py` (all but 3 moved), `test_r1_host_change.py`, `test_r1_round2.py` / `test_r1_round3.py` / `test_r1_round4.py` (the rest), `test_r1_unknown_outcome.py` | use `shifde.adapters.testservers` or adapters through runtime/build/app fixtures | the module each one tests; the servers come from `tests/_support/servers.py` (rest_server, mcp_server, oai_server) | adapters |
+| `test_p8_observability.py`, the 7 tests that need the app or the database (not moved): `test_trace_ids_propagate_from_the_api_request_through_the_job_to_the_worker_and_adapter`, `test_logs_are_correlated_and_never_carry_prompts_replies_or_secrets`, `test_metrics_need_the_bearer_token_or_a_loopback_client`, `test_metrics_expose_route_templates_queue_and_outcomes_and_leak_nothing` (these four need the app's `/api/metrics` mount, the worker and priced adapter stacks), `test_the_ops_stats_function_returns_only_aggregates` (needs governance's `shifde_ops_stats` migration), `test_performance_reports_percentiles_and_error_rates_by_agent_and_model` and `test_platform_health_details_are_for_platform_admins_only` (routes `/orgs/{org}/observability/performance` and `/platform/health-details` are in SETH `governance/api.py`) | app and runtime (first four); governance (last three) | observability |
 
 ## Wiring and fixes owed
 
@@ -39,7 +39,9 @@ Each later module's brief must include its section here. Strike an item (move it
 | every port using `core.sqlutil` | Same response for not-found and version mismatch | core review 1 item 5 |
 | vendors, cli | Conformance `checks.detail` can carry a client DB's table names/SQL if `SHIFDE_SAMPLE_DATABASE_URL` points at one, and SETH `vendors/service.py:66-90` returns it to every client: refuse non-sample URLs in the CLI or drop `detail` from the client API | adapters review 1 |
 | vendors, connections | `ExecContext.tenant_id` (`adapters/base.py:116`) must carry the organization | adapters review 1 |
-| observability | Readiness uses `core.health.migration_state` (multi-head, B-111/B-203) | core |
+| observability | Readiness uses `core.health.migration_state` (multi-head, B-111/B-203). The ported `api.py` already does; no test pins it until the app mounts the router | core |
+| app | Mount `shifde.observability.api.router` (`/api/health`, `/api/ready`, `/api/metrics`), add `RequestIdMiddleware`, call `configure_logging` and `tracing.configure_from_settings` at startup (B-501). Not wired by the observability port | observability (B-501) |
+| governance | Migration `shifde_ops_stats(int)` (SETH p08_0001 `OPS_STATS`, grant to `shifde_app`): observability's `/api/metrics` ops gauges call it and report "unavailable" until it exists (B-501) | observability (B-501) |
 | runtime, ledger, models_admin | Item 9 (R3): send a `max_tokens` the budget covers on every model call (`runtime/steps.py`, `models_admin/service.py`); adapters now refuse a non-positive or non-integer `max_tokens` and send what they are given | adapters (Item 9) |
 | runtime, ledger | Item 11 (R3): `adapters.base.Usage` fields are `int | None` (None = provider did not report, never 0) plus `cached_input_tokens` and `.reported`; the runtime must estimate unreported usage and label it estimated, not calculated, and the ledger must write the row even if the run crashes after the provider answered | adapters (Item 11, ARCH m13) |
 | runtime (worker), cli | Entry points: `shifde-worker` and `shifde-admin` (with `adapters verify`) are re-added by their ports (B-101) | adapters |
@@ -47,4 +49,4 @@ Each later module's brief must include its section here. Strike an item (move it
 
 ## Done
 
-(none yet)
+- observability: `test_core.py::test_log_redaction_masks_secrets` moved to `tests/observability/test_log_redaction.py` (passes). The readiness obligation stays open in the Wiring table until a test covers the mounted route.
