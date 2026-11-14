@@ -1,6 +1,6 @@
 # Handoff — 2026-11-14, end of session 3 (lead)
 
-Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md`, then this file. Session 3 handed off at or above 300k lead tokens (charter §10), between units, with no agent running and no merge half done. (An earlier handoff at ~280k was premature and was resumed to finish identity.)
+Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md`, then this file. Session 3 handed off at about 296-300k lead tokens (`scripts/context_size.py` read 295,826 after the identity merge), between units, with no agent running and no merge half done: the next unit (tenancy, several builder and review rounds) cannot fit in what is left before the 300k line of charter §10. (An earlier handoff at ~280k was premature and was resumed to finish identity.)
 
 ## Finished in session 3
 
