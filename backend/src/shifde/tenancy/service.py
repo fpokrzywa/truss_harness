@@ -804,9 +804,12 @@ def _record_self_add(
     *,
     tenant_id: UUID,
     details: dict[str, Any],  # Any: audit details document
+    administrator_id: UUID | None = None,
 ) -> None:
     """`tenancy.platform_admin.self_added` in that client's own audit log, which its owner reads
-    (B-1012); never in another client."""
+    (B-1012); never in another client. The target is `administrator_id` (default: the acting
+    principal); another administrator is named by id only (B-1407)."""
+    target = principal.user_id if administrator_id is None else administrator_id
     audit.record(
         session,
         ctx,
@@ -814,10 +817,48 @@ def _record_self_add(
         tenant_id=tenant_id,
         actor_id=principal.user_id,
         target_type="user",
-        target_id=principal.user_id,
-        target_label=f"user:{principal.email}",
+        target_id=target,
+        target_label=f"user:{principal.email}" if target == principal.user_id else None,
         details=details,
     )
+
+
+def _record_group_self_adds(
+    session: Session,
+    ctx: RequestContext,
+    principal: Principal,
+    *,
+    tenant_id: UUID,
+    group_id: UUID,
+    details: dict[str, Any],  # Any: audit details document
+    only: Iterable[UUID] | None = None,
+    skip: Iterable[UUID] = (),
+) -> list[UUID]:
+    """A self-add in `tenant_id` for each platform administrator in `group_id` (admin isolation
+    review 1 finding 1, B-1407): a group binding taking effect, or an administrator joining a
+    group bound there, gives them the client. The administrators are read through
+    `shifde_bound_group_admin_ids` (only for a group bound in the current client); the database's
+    client must be `tenant_id` (B-703), else nothing is written and `Forbidden` is raised.
+    `only` limits the records to those ids (the people just added), `skip` leaves out ids
+    already recorded by the caller. Returns the ids recorded."""
+    if repository.current_tenant_id(session) != tenant_id:
+        raise Forbidden(GROUP_BINDING_REFUSED)
+    wanted = None if only is None else set(only)
+    left_out = set(skip)
+    recorded: list[UUID] = []
+    for admin_id in repository.bound_group_admin_ids(session, group_id):
+        if admin_id in left_out or (wanted is not None and admin_id not in wanted):
+            continue
+        _record_self_add(
+            session,
+            ctx,
+            principal,
+            tenant_id=tenant_id,
+            details={**details, "through_group_id": str(group_id)},
+            administrator_id=admin_id,
+        )
+        recorded.append(admin_id)
+    return recorded
 
 
 def _insert_group_binding(
@@ -948,6 +989,21 @@ def bind_group(
                 binding_id, group_id, role_id, scope_type, scope_id, by_platform_administrator=False
             ),
         )
+    # every platform administrator in the group reaches this client through the binding (B-1407)
+    _record_group_self_adds(
+        session,
+        scope.ctx,
+        principal,
+        tenant_id=scope.tenant_id,
+        group_id=group_id,
+        details={
+            **_group_self_add_details(
+                binding_id, group_id, role_id, scope_type, scope_id, by_platform_administrator=False
+            ),
+            "group_membership": "member",
+        },
+        skip=(principal.user_id,) if by_admin else (),
+    )
     _commit(session, "role binding")
     return binding_id
 
@@ -1014,14 +1070,16 @@ def bind_group_as_platform_admin(
                 scope_id=scope_id,
                 by_platform_administrator=True,
             )
-            if principal.user_id in authz.member_user_ids(session, group_id):
-                # the administrator is in the group: adding it adds them (review 2 item 3)
-                _record_self_add(
-                    session,
-                    ctx,
-                    principal,
-                    tenant_id=tenant_id,
-                    details=_group_self_add_details(
+            # each administrator in the group, the caller included, reaches the client through
+            # the binding (review 2 item 3, B-1017; admin isolation review 1 finding 1, B-1407)
+            _record_group_self_adds(
+                session,
+                ctx,
+                principal,
+                tenant_id=tenant_id,
+                group_id=group_id,
+                details={
+                    **_group_self_add_details(
                         binding_id,
                         group_id,
                         role_id,
@@ -1029,7 +1087,9 @@ def bind_group_as_platform_admin(
                         scope_id,
                         by_platform_administrator=True,
                     ),
-                )
+                    "group_membership": "member",
+                },
+            )
             session.flush()
         _commit(session, "role binding")
     except BaseException:
@@ -1038,3 +1098,58 @@ def bind_group_as_platform_admin(
         raise
     db.set_tenant(session, None)
     return binding_id
+
+
+# ------------------------------------------------------------------ admin layer (platform groups)
+def require_platform_admin(session: Session, principal: Principal) -> None:
+    """The platform-administrator check of this module, for admin's platform routes: a person on
+    a session not pinned to a client whose PDP grants `platform:admin` (B-1011)."""
+    _require_platform_admin(session, principal)
+
+
+def record_group_self_adds(
+    session: Session,
+    ctx: RequestContext,
+    principal: Principal,
+    *,
+    tenant_id: UUID,
+    group_id: UUID,
+    added: Iterable[UUID],
+    details: dict[str, Any],  # Any: audit details document
+) -> list[UUID]:
+    """`tenancy.platform_admin.self_added` in `tenant_id` only (B-1012) for each platform
+    administrator among `added` who is now in `group_id`, bound there (B-1407); the caller has
+    set that client's context. Admin records platform administrators joining a group."""
+    return _record_group_self_adds(
+        session, ctx, principal, tenant_id=tenant_id, group_id=group_id, details=details, only=added
+    )
+
+
+def clients_binding_group(session: Session, group_id: UUID) -> list[UUID]:
+    """Ids of the clients where `group_id` holds a live role binding, for the platform
+    administrator's group audit (admin part 1, DECISIONS B-1403). Platform-administrator context
+    only. Each client is asked in its own context through `shifde_bound_groups` (a client's
+    bindings are invisible to the bare flag); the client context is cleared afterwards, also on
+    failure."""
+    if not db.get_context(session).platform_admin:
+        raise Forbidden("this is a platform administrator action")
+    found: list[UUID] = []
+    after: UUID | None = None
+    try:
+        while True:
+            db.set_tenant(session, None)
+            batch = repository.list_tenants(session, include_archived=True, after=after, limit=200)
+            for tenant in batch:
+                db.set_tenant(session, tenant.id)
+                if any(g.id == group_id for g in authz.bound_groups(session)):
+                    found.append(tenant.id)
+            if len(batch) < 200:
+                break
+            after = batch[-1].id
+    except BaseException:
+        # never raise over the original error: on an aborted transaction only the Session's
+        # context is cleared, as `platform_admin_context` does (admin review 1 item 4, B-1410)
+        db.forget_tenant(session)
+        raise
+    db.set_tenant(session, None)
+    return found

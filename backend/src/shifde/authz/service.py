@@ -75,6 +75,7 @@ __all__ = [
     "list_groups",
     "list_permissions",
     "list_roles",
+    "may_name_owner",
     "member_counts",
     "member_user_ids",
     "new_pdp",
@@ -230,3 +231,4 @@ member_user_ids = repository.member_user_ids
 add_group_members = repository.add_group_members
 remove_group_members = repository.remove_group_members
 idp_synced_group_ids_of_user = repository.idp_synced_group_ids_of_user
+may_name_owner = repository.may_name_owner

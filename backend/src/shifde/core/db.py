@@ -184,6 +184,18 @@ def forget_platform_admin(session: Session) -> None:
     session.info[_CTX_KEY] = replace(get_context(session), platform_admin=False)
 
 
+def forget_tenant(session: Session) -> None:
+    """Clear the client on a failure path without ever raising over the original error: the
+    Session's context drops the client at once (the next transaction applies the context
+    again); the database is told only while the transaction is usable, as
+    `platform_admin_context` does (after a failed statement PostgreSQL rejects further commands,
+    and the rollback that follows discards the transaction-local setting anyway). B-1410."""
+    session.info[_CTX_KEY] = replace(get_context(session), tenant_id=None)
+    if session.is_active:
+        with suppress(SQLAlchemyError):
+            session.execute(_APPLY_SQL, _params(get_context(session)))
+
+
 def restore_platform_admin(session: Session, enabled: bool) -> None:
     """Put the flag on the Session's context back to a previously read value without touching the
     database (the next transaction applies the context again)."""

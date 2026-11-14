@@ -154,6 +154,16 @@ SECURITY_DEFINER_ALLOWLIST: dict[str, str] = {
         "active membership, live direct tenant_administrator binding at organization scope); "
         "false, never NULL, otherwise, so it answers nothing about another client."
     ),
+    "shifde.shifde_bound_group_admin_ids(uuid)": (
+        "tenancy_0004 (B-1407, admin isolation review 1 finding 1): owned by shifde_owner, "
+        "search_path pg_catalog, pg_temp, every object schema-qualified, EXECUTE for shifde_app "
+        "only, writes no app.* setting. Ids only (no e-mail, name or other member) of the "
+        "platform administrators in p_group, and only when p_group holds a role binding in "
+        "current_tenant_id(); empty without a client and for a group not bound there. Tenancy "
+        "records each as a self-add in that client when a group binding takes effect or an "
+        "administrator joins a bound group, which is exactly what that client's owner is shown "
+        "(B-1012), so it answers nothing about another client."
+    ),
     "shifde.shifde_bound_groups": (
         f"{_GROUP_DEFINER}. No arguments: id and name only of the platform groups holding a role "
         "binding in current_tenant_id() (groups are platform-level and a client context reads "
@@ -372,8 +382,8 @@ def test_allowlist_has_no_stale_entries(owner_engine: Engine) -> None:
 
 
 def test_identity_definers_are_on_the_allowlist_by_signature(owner_engine: Engine) -> None:
-    """identity_0002..0005 (B-909, B-915, B-922, B-928) and tenancy_0001..0003 (B-1006, B-1010,
-    B-1016): each identity and tenancy definer is listed under its full signature."""
+    """identity_0002..0005 (B-909, B-915, B-922, B-928) and tenancy_0001..0004 (B-1006, B-1010,
+    B-1016, B-1407): each identity and tenancy definer is listed under its full signature."""
     with owner_engine.connect() as c:
         rows = [
             row
@@ -401,6 +411,7 @@ def test_identity_definers_are_on_the_allowlist_by_signature(owner_engine: Engin
         "shifde.shifde_my_memberships",
         "shifde.shifde_may_bind_group(uuid, uuid)",
         "shifde.shifde_is_client_owner(uuid)",
+        "shifde.shifde_bound_group_admin_ids(uuid)",
     }
     assert all(row.owner == "shifde_owner" for row in rows)
     assert all(_search_path(row.proconfig) == "pg_catalog, pg_temp" for row in rows)

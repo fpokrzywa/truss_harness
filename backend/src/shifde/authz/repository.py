@@ -8,7 +8,20 @@ from datetime import datetime
 from typing import Any  # Any: column value dicts for INSERT/UPDATE
 from uuid import UUID
 
-from sqlalchemy import ColumnElement, delete, func, insert, or_, select, text, update
+from sqlalchemy import (
+    ColumnElement,
+    column,
+    delete,
+    exists,
+    func,
+    insert,
+    literal,
+    or_,
+    select,
+    table,
+    text,
+    update,
+)
 from sqlalchemy.orm import Session
 
 from shifde.authz.models import (
@@ -42,13 +55,35 @@ class PermissionRow:
 
 
 # ------------------------------------------------------------------ grants (PDP)
+# `shifde.memberships` belongs to identity (a higher layer): named here as a bare table so the
+# PDP can require an active membership without importing identity's models. Read under RLS.
+_MEMBERSHIPS = table(
+    "memberships", column("tenant_id"), column("user_id"), column("status"), schema="shifde"
+)
+
+
 def _subject(
     principal_type: str, principal_id: UUID, group_ids: Collection[UUID]
 ) -> ColumnElement[bool]:
-    """Bindings held by the principal: directly, or (users only) through one of `group_ids`."""
+    """Bindings held by the principal: directly, or (users only) through one of `group_ids`.
+    A person's direct bindings count only while their membership in the binding's client is
+    active (tenancy review 3 item 1, B-1018, DECISIONS B-1405): the visibility rule of
+    `shifde_my_memberships`, so a PDP built without `resolve_org` (admin, runtime) grants a
+    suspended member nothing. Group grants are already filtered the same way by
+    `shifde_active_group_ids`."""
     subject: ColumnElement[bool] = (RoleBinding.subject_type == principal_type) & (
         RoleBinding.subject_id == principal_id
     )
+    if principal_type == "user":
+        subject = subject & exists(
+            select(literal(1))
+            .select_from(_MEMBERSHIPS)
+            .where(
+                _MEMBERSHIPS.c.tenant_id == RoleBinding.tenant_id,
+                _MEMBERSHIPS.c.user_id == principal_id,
+                _MEMBERSHIPS.c.status == "active",
+            )
+        )
     if principal_type == "user" and group_ids:
         subject = or_(
             subject,
