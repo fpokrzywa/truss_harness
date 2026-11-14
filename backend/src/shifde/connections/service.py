@@ -131,13 +131,17 @@ class ConnectionService:
             raise NotFound("connection not found") from exc
 
     @staticmethod
-    def _expected_version(sent: int | None, row: Mapping[str, Any]) -> int:
-        """The version the write is conditional on: the caller's, else the one this request read.
-        Every check runs against the row as read, so the write lands only if that row is still
-        current; a concurrent change (a secret bound, a definition moved) answers 409 instead of
-        being overwritten by a decision taken on stale data (connections review 2 item 1, B-1511).
-        """
-        return sent if sent is not None else int(row["row_version"])
+    def _checked_version(sent: int | None, row: Mapping[str, Any]) -> int:
+        """The version the write is conditional on: always the one this request read, because
+        every check (host change and `secret:use`, read-only confirmation, activation freshness)
+        runs on that row. A caller's `row_version` that differs from it is refused here, before any
+        check; a concurrent change committed after the read makes the conditional write miss, so
+        both answer 409 instead of writing a decision taken on another row (connections review 2
+        item 1, isolation review 3; B-1511, B-1515)."""
+        read = int(row["row_version"])
+        if sent is not None and sent != read:
+            raise Conflict("row_version mismatch: the connection was modified; reload and retry")
+        return read
 
     def _active_tenant(self) -> None:
         if self.sc.tenant_status != "active":
@@ -453,6 +457,7 @@ class ConnectionService:
         row = self._get_row(connection_id)
         self._require("connection:manage", row)
         self._active_tenant()
+        expected = self._checked_version(body.row_version, row)
         if row["status"] == "retired":
             raise Conflict("a retired connection cannot be modified")
         sent = body.model_fields_set - {"row_version", "read_only_confirmed"}
@@ -514,7 +519,7 @@ class ConnectionService:
             updated = repository.update_connection(
                 self._session,
                 connection_id,
-                self._expected_version(body.row_version, row),
+                expected,
                 values,
                 tenant_id=self.sc.tenant_id,
             )
@@ -541,6 +546,7 @@ class ConnectionService:
         row = self._get_row(connection_id)
         self._require("connection:manage", row)
         self._active_tenant()
+        expected = self._checked_version(body.row_version, row)
         current, target = row["status"], body.status
         if target == current:
             return self._out(row)
@@ -566,7 +572,7 @@ class ConnectionService:
         updated = repository.update_connection(
             self._session,
             connection_id,
-            self._expected_version(body.row_version, row),
+            expected,
             values,
             tenant_id=self.sc.tenant_id,
         )

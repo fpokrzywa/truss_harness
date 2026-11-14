@@ -116,8 +116,8 @@ Each later module's brief must include its section here. Strike an item (move it
 
 ## Done
 
-- connections follow-up (connections review 2 items 1-3, B-1511..B-1513):
-  - connections; item 1 (the C2 race): `update` and `set_status` write only if the row is unchanged since they read it. They send the caller's `row_version`, or the version they read, and answer 409 otherwise. Done: `tests/connections/test_host_change.py::test_a_secret_bound_between_the_managers_read_and_write_stops_the_repoint`, `::test_a_definition_changed_between_the_read_and_write_of_an_activation_is_not_activated`
+- connections follow-up (connections review 2 items 1-3, B-1511..B-1513, B-1515):
+  - connections; item 1 (the C2 race): `update` and `set_status` write only if the row is unchanged since they read it. The write is always conditioned on the version they read, and a caller's `row_version` that differs from it gets 409 before any check (B-1515, isolation review 3). Done (each with variants `[none]` and `[after_concurrent_write]`): `tests/connections/test_host_change.py::test_a_secret_bound_between_the_managers_read_and_write_stops_the_repoint`, `::test_a_definition_changed_between_the_read_and_write_of_an_activation_is_not_activated`
   - connections; item 2: a connection in a workspace the caller cannot read gets the same 404 "connection not found" as an unknown id on every route. Done: `tests/connections/test_routes_cross_workspace.py::test_a_connection_in_an_unreadable_workspace_answers_like_an_unknown_id`
   - connections; item 3: B's connection has its own listener, and no request reaches it during A's calls. Done: `tests/connections/test_routes_cross_client.py::test_a_cannot_reach_bs_connection`
 - admin part 1 fix round 1 (admin isolation review 1, B-1407..B-1410):

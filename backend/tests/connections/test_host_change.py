@@ -305,8 +305,18 @@ def _write_after_read(
     return fired
 
 
+# the caller sends no `row_version`, or the version the concurrent write produced (R+1, read
+# after it): either way this request's checks ran on R, so its write must not land
+SENT_VERSIONS = ["none", "after_concurrent_write"]
+
+
+def _sent(mode: str, read: int) -> dict[str, int]:
+    return {} if mode == "none" else {"row_version": read + 1}
+
+
+@pytest.mark.parametrize("sent", SENT_VERSIONS)
 def test_a_secret_bound_between_the_managers_read_and_write_stops_the_repoint(
-    setup: Setup, evil: RestTestServer, monkeypatch: pytest.MonkeyPatch
+    setup: Setup, evil: RestTestServer, monkeypatch: pytest.MonkeyPatch, sent: str
 ) -> None:
     """A manager without `secret:use` repoints a secretless connection (no `row_version` sent)
     while the owner binds a secret between the manager's read and write: the manager's host-change
@@ -326,7 +336,10 @@ def test_a_secret_bound_between_the_managers_read_and_write_stops_the_repoint(
     r = c.patch(
         f"{A}/connections/{pid}",
         headers=hm,
-        json={"config": {"base_url": evil.base_url, "health_path": "/health"}},
+        json={
+            "config": {"base_url": evil.base_url, "health_path": "/health"},
+            **_sent(sent, plain["row_version"]),
+        },
     )
     assert fired, "the concurrent bind did not run between the read and the write"
     monkeypatch.undo()
@@ -337,8 +350,9 @@ def test_a_secret_bound_between_the_managers_read_and_write_stops_the_repoint(
     assert evil.requests == [] and _deliveries(evil) == 0
 
 
+@pytest.mark.parametrize("sent", SENT_VERSIONS)
 def test_a_definition_changed_between_the_read_and_write_of_an_activation_is_not_activated(
-    setup: Setup, evil: RestTestServer, monkeypatch: pytest.MonkeyPatch
+    setup: Setup, evil: RestTestServer, monkeypatch: pytest.MonkeyPatch, sent: str
 ) -> None:
     """`set_status` without `row_version`: the passing test matched the definition it read; a
     repoint committed before its write leaves a definition nobody tested, which stays a draft."""
@@ -347,6 +361,7 @@ def test_a_definition_changed_between_the_read_and_write_of_an_activation_is_not
     pid = str(plain["id"])
     tested = c.post(f"{A}/connections/{pid}/test", headers=admin)
     assert tested.status_code == 200 and tested.json()["outcome"] == "pass", tested.text
+    read = setup.row(admin, pid)["row_version"]  # R: after the test recorded its outcome
     fired = _write_after_read(
         monkeypatch,
         setup.owner_db,
@@ -355,7 +370,11 @@ def test_a_definition_changed_between_the_read_and_write_of_an_activation_is_not
         "config = CAST(:c AS jsonb), last_tested_at = NULL, health_status = 'unknown'",
         {"c": json.dumps({"base_url": evil.base_url, "health_path": "/health"})},
     )
-    r = c.post(f"{A}/connections/{pid}/status", headers=admin, json={"status": "active"})
+    r = c.post(
+        f"{A}/connections/{pid}/status",
+        headers=admin,
+        json={"status": "active", **_sent(sent, read)},
+    )
     assert fired, "the concurrent change did not run between the read and the write"
     monkeypatch.undo()
     assert r.status_code == 409, r.text
