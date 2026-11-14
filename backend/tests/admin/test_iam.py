@@ -32,7 +32,7 @@ from shifde.tenancy import repository as tenancy_repository
 from tests.admin.conftest import admin_client
 from tests.admin.test_cross_client import _bind_group, _system_role, _uid
 from tests.identity.harness import login
-from tests.tenancy.conftest import World, app_session
+from tests.tenancy.conftest import World, app_session, owner_person
 from tests.tenancy.routes import People
 
 
@@ -100,33 +100,90 @@ def test_group_changes_are_audited_in_each_bound_client_and_a_self_add_is_shown_
     with admin_client(settings) as c:
         headers = login(c, people.platform)
         group = c.get(f"/api/v1/platform/groups/{a.group}").json()
-        put = {"user_ids": [str(a.staff), str(admin_id)], "row_version": group["row_version"]}
+        # B's member joins too: A must not learn who that is (review 1 follow-up 2, B-1408)
+        joining = [str(a.staff), str(admin_id), str(b.member)]
+        put = {"user_ids": joining, "row_version": group["row_version"]}
         r = c.put(f"/api/v1/platform/groups/{a.group}/members", json=put, headers=headers)
         assert r.status_code == 200, r.text
+    changed = _events(owner_session, "identity.group.members_changed", a.group)
+    assert sorted(str(t) for t, _ in changed) == sorted(["None", str(a.tenant), str(b.tenant)])
+    for tenant, details in changed:
+        blob = json.dumps(details)
+        if tenant is None:  # the installation log keeps the ids
+            # the staff member was already in it
+            assert details["added"] == sorted([str(admin_id), str(b.member)])
+            continue
+        assert "added" not in details and "removed" not in details
+        assert (details["added_count"], details["removed_count"]) == (2, 0)
+        assert str(admin_id) not in blob and str(b.member) not in blob and str(a.staff) not in blob
+        other = b if tenant == a.tenant else a
+        assert str(other.tenant) not in blob and other.slug not in blob
+    self_added = _events(owner_session, "tenancy.platform_admin.self_added", a.group)
+    assert sorted(str(t) for t, _ in self_added) == sorted([str(a.tenant), str(b.tenant)])
+    assert all(d["through_group_id"] == str(a.group) for _, d in self_added)
+
+
+def _self_adds(owner: Session, group: UUID) -> list[tuple[UUID | None, str]]:
+    rows = owner.execute(
+        text(
+            "SELECT tenant_id, target_id FROM shifde.audit_events WHERE action = :a "
+            "AND details->>'through_group_id' = :g ORDER BY occurred_at"
+        ),
+        {"a": "tenancy.platform_admin.self_added", "g": str(group)},
+    ).all()
+    return [(r[0], r[1]) for r in rows]
+
+
+def test_administrator_joins_first_then_owner_binds_in_a_and_a_shows_the_self_add(
+    settings: Settings, world: World, people: People, owner_session: Session
+) -> None:
+    """Admin isolation review 1 finding 1 (B-1407). Replaces the `lonely` group assertion of
+    the test above, which pinned the gap: joining a group bound nowhere is still no self-add,
+    but once A's owner binds it, A's log has the self-add, naming no other client; another
+    administrator added later to the bound group is a self-add in A as well."""
+    a, b = world.a, world.b
+    viewer = _system_role(owner_session, "viewer")
+    admin_id = _uid(owner_session, people.platform)
+    other_admin = owner_person(owner_session, "admin2")
+    owner_session.execute(
+        text("UPDATE shifde.users SET is_platform_admin = true WHERE id = :u"), {"u": other_admin}
+    )
+    owner_session.commit()
+    with admin_client(settings) as c:
+        headers = login(c, people.platform)
         lonely = c.post(
             "/api/v1/platform/groups",
-            json={"slug": f"l-{uuid7().hex[-12:]}", "name": "L"},
+            json={"slug": f"l-{uuid7().hex[-12:]}", "name": "Support"},
             headers=headers,
         ).json()
         put = {"user_ids": [str(admin_id)], "row_version": lonely["row_version"]}
         r = c.put(f"/api/v1/platform/groups/{lonely['id']}/members", json=put, headers=headers)
         assert r.status_code == 200
-    changed = _events(owner_session, "identity.group.members_changed", a.group)
-    assert sorted(str(t) for t, _ in changed) == sorted(["None", str(a.tenant), str(b.tenant)])
-    for tenant, details in changed:
-        assert details["added"] == [str(admin_id)]  # the staff member was already in it
-        if tenant is not None:
-            other = b if tenant == a.tenant else a
-            blob = json.dumps(details)
-            assert str(other.tenant) not in blob and other.slug not in blob
-    self_added = _events(owner_session, "tenancy.platform_admin.self_added", a.group)
-    assert sorted(str(t) for t, _ in self_added) == sorted([str(a.tenant), str(b.tenant)])
-    assert all(d["through_group_id"] == str(a.group) for _, d in self_added)
     lonely_id = UUID(lonely["id"])
     assert [t for t, _ in _events(owner_session, "identity.group.members_changed", lonely_id)] == [
         None
     ]
-    assert _events(owner_session, "tenancy.platform_admin.self_added", lonely_id) == []
+    assert _self_adds(owner_session, lonely_id) == []  # bound nowhere yet
+    with admin_client(settings) as c:
+        headers = login(c, people.owner_a)
+        assert _bind_group(c, headers, a.slug, a.tenant, lonely_id, viewer).status_code == 201
+    assert _self_adds(owner_session, lonely_id) == [(a.tenant, str(admin_id))]
+    [(_, details)] = _events(owner_session, "tenancy.platform_admin.self_added", lonely_id)
+    blob = json.dumps(details)
+    assert str(b.tenant) not in blob and b.slug not in blob
+    with admin_client(settings) as c:  # the administrator now holds A's viewer grants
+        headers = login(c, people.platform)
+        r = c.get(f"/api/v1/orgs/{a.slug}/me/permissions", headers=headers)
+        assert r.status_code == 200, r.text
+        version = c.get(f"/api/v1/platform/groups/{lonely_id}").json()["row_version"]
+        put = {"user_ids": [str(admin_id), str(other_admin)], "row_version": version}
+        r = c.put(f"/api/v1/platform/groups/{lonely_id}/members", json=put, headers=headers)
+        assert r.status_code == 200, r.text
+    assert _self_adds(owner_session, lonely_id) == [
+        (a.tenant, str(admin_id)),
+        (a.tenant, str(other_admin)),
+    ]
+    assert all(t != b.tenant for t, _ in _self_adds(owner_session, lonely_id))
 
 
 def test_disabling_a_group_is_audited_in_its_clients_and_ends_its_grants(

@@ -21,7 +21,7 @@ from shifde.audit import repository
 from shifde.audit import service as audit
 from shifde.core.clock import utcnow
 from shifde.core.context import Principal, RequestContext
-from shifde.core.db import Database, get_context, set_platform_admin
+from shifde.core.db import Database, get_context, set_platform_admin, set_tenant
 from shifde.core.errors import ValidationFailed
 from shifde.core.ids import uuid7
 
@@ -267,6 +267,25 @@ def test_the_installation_write_restores_the_callers_admin_flag(app_db: Database
         set_platform_admin(s, True)
         _record(s, None, "egress.default.updated")
         assert get_context(s).platform_admin  # an outer administrator context survives
+        s.rollback()
+
+
+@pytest.mark.parametrize("action", ["egress.default.updated", "identity.group.updated"])
+def test_an_installation_configuration_event_is_refused_while_a_client_is_set(
+    app_db: Database, action: str
+) -> None:
+    """Admin isolation review 1 item 3, vendors review 1 follow-up 2 (B-1409): the flag alone is
+    not enough; with a client context set, read from the database, no NULL-tenant row."""
+    assert action in audit.ADMIN_INSTALLATION_ACTIONS
+    with app_db.session() as s:
+        set_platform_admin(s, True)
+        set_tenant(s, uuid7())
+        with pytest.raises(audit.NotInstallationAction):
+            _record(s, None, action)
+        s.rollback()
+    with app_db.session() as s:  # the same call with no client is accepted
+        set_platform_admin(s, True)
+        _record(s, None, action)
         s.rollback()
 
 

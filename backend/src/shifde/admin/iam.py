@@ -855,11 +855,14 @@ def _record_group_change(
     action: str,
     details: dict[str, Any],
     *,
-    self_added: bool = False,
+    client_details: dict[str, Any] | None = None,
+    joined: Collection[UUID] = (),
 ) -> None:
     """The change at installation level, then in each client where the group is bound, never
-    naming another client (identity review 5 item 3, DECISIONS B-1403). A platform administrator
-    joining a group bound in a client is a self-add there, shown to its owner (B-1012)."""
+    naming another client (identity review 5 item 3, DECISIONS B-1403); a client's row carries
+    `client_details` when given (no person outside it, B-1408). Each platform administrator in
+    `joined` reaching a client through the group is a self-add there, shown to its owner
+    (B-1012, B-1407)."""
     audit.record(
         session,
         ctx,
@@ -880,19 +883,20 @@ def _record_group_change(
             target_type="group",
             target_id=group.id,
             target_label=f"group:{group.name}",
-            details={"group_name": group.name, **details},
+            details={
+                "group_name": group.name,
+                **(details if client_details is None else client_details),
+            },
         )
-        if self_added:
-            tenancy.record_self_add(
+        if joined:
+            tenancy.record_group_self_adds(
                 session,
                 ctx,
                 principal,
                 tenant_id=tenant_id,
-                details={
-                    "through_group_id": str(group.id),
-                    "group_membership": "added",
-                    "by_platform_administrator": True,
-                },
+                group_id=group.id,
+                added=joined,
+                details={"group_membership": "added", "by_platform_administrator": True},
             )
     db.set_tenant(session, None)
 
@@ -1035,7 +1039,13 @@ def replace_platform_group_members(
                     "added": sorted(str(u) for u in added),
                     "removed": sorted(str(u) for u in removed),
                 },
-                self_added=principal.user_id in added,
+                # a client is told counts only: the people may belong to other clients (B-1408)
+                client_details={
+                    "group_id": str(group.id),
+                    "added_count": len(added),
+                    "removed_count": len(removed),
+                },
+                joined=added,
             )
             session.flush()
             out = _group_detail(session, updated)

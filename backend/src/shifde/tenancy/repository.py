@@ -268,3 +268,19 @@ def actor_is_platform_admin(session: Session, user_id: UUID) -> bool:
             {"u": user_id},
         ).scalar_one()
     )
+
+
+def current_tenant_id(session: Session) -> UUID | None:
+    """The client the database holds for this transaction (B-703: never `session.info`)."""
+    value = session.execute(text("SELECT shifde.current_tenant_id()")).scalar_one()
+    return value if value is None else UUID(str(value))
+
+
+def bound_group_admin_ids(session: Session, group_id: UUID) -> list[UUID]:
+    """Ids of the platform administrators who are members of `group_id`, only when the group
+    holds a role binding in the current client (`shifde_bound_group_admin_ids`, tenancy_0004,
+    DECISIONS B-1407); empty otherwise."""
+    rows = session.execute(
+        text("SELECT shifde.shifde_bound_group_admin_ids(:g)"), {"g": group_id}
+    ).scalars()
+    return [UUID(str(r)) for r in rows]

@@ -14,6 +14,7 @@ from collections.abc import Iterator
 from typing import NoReturn
 from uuid import UUID
 
+import psycopg
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
@@ -309,3 +310,112 @@ def test_failures_after_the_client_context_is_set_clear_it(
     )
     assert _visible(app_db, admin) == set()
     assert _visible(app_db, world.a.staff) == set()
+
+
+# ------------------------------------------------------------------ admin isolation review 1
+def _self_adds(owner: Session, tenant: UUID) -> list[tuple[UUID, dict[str, object]]]:
+    rows = owner.execute(
+        text(
+            "SELECT target_id, details FROM shifde.audit_events "
+            "WHERE tenant_id = :t AND action = :a"
+        ),
+        {"t": tenant, "a": SELF_ADDED},
+    )
+    return [(UUID(r[0]), dict(r[1] or {})) for r in rows]
+
+
+def test_an_owner_binding_a_group_records_a_self_add_for_each_administrator_in_it(
+    world: World, app_db: Database, owner_session: Session
+) -> None:
+    """Finding 1 (a), owner path: administrators who joined the group before it was bound reach
+    A through the owner's binding; A's log shows each of them, B's shows nothing (B-1407)."""
+    first, second = _admin(owner_session), _admin(owner_session)
+    for admin in (first, second):
+        _join_group(owner_session, world.a.group, admin)
+    _owner_of(owner_session, world.a.tenant, world.a.member)
+    viewer = _role_id(owner_session, "viewer")
+    with app_session(app_db, world.a.tenant, world.a.member) as s:
+        service.bind_group(
+            _scope(s, world.a.tenant, _p(world.a.member)),
+            group_id=world.a.group,
+            role_id=viewer,
+            scope_type="tenant",
+            scope_id=world.a.tenant,
+        )
+    recorded = _self_adds(owner_session, world.a.tenant)
+    assert sorted(t for t, _ in recorded) == sorted([first, second])
+    for _, details in recorded:
+        assert details["through_group_id"] == str(world.a.group)
+        assert details["group_membership"] == "member"
+        assert details["by_platform_administrator"] is False
+        assert str(world.b.tenant) not in str(details) and world.b.slug not in str(details)
+    assert _self_adds(owner_session, world.b.tenant) == []
+    with app_session(app_db, world.a.tenant, world.a.member) as s:  # A's owner reads them
+        n = s.execute(
+            text("SELECT count(*) FROM shifde.audit_events WHERE action = :a"), {"a": SELF_ADDED}
+        ).scalar_one()
+    assert n == 2
+
+
+def test_a_platform_administrator_binding_records_every_administrator_in_the_group(
+    world: World, app_db: Database, owner_session: Session
+) -> None:
+    """Finding 1 (a), platform-administrator path: the caller and another administrator in the
+    group are each a self-add in A only (B-1407)."""
+    caller, other = _admin(owner_session), _admin(owner_session)
+    for admin in (caller, other):
+        _join_group(owner_session, world.a.group, admin)
+    viewer = _role_id(owner_session, "viewer")
+    with app_session(app_db, None, caller) as s:
+        service.bind_group_as_platform_admin(
+            s,
+            CTX,
+            _p(caller, admin=True),
+            tenant_id=world.a.tenant,
+            group_id=world.a.group,
+            role_id=viewer,
+            scope_type="tenant",
+            scope_id=world.a.tenant,
+        )
+    recorded = _self_adds(owner_session, world.a.tenant)
+    assert sorted(t for t, _ in recorded) == sorted([caller, other])
+    assert all(d["by_platform_administrator"] is True for _, d in recorded)
+    assert all(str(world.b.tenant) not in str(d) for _, d in recorded)
+    assert _self_adds(owner_session, world.b.tenant) == []
+
+
+def test_the_group_administrator_definer_answers_only_for_a_group_bound_in_the_current_client(
+    world: World, app_db: Database, owner_session: Session
+) -> None:
+    admin = _admin(owner_session)
+    _join_group(owner_session, world.b.group, admin)
+    _bind_group(owner_session, world.b.tenant, world.b.group)
+    owner_session.commit()
+    sql = text("SELECT shifde.shifde_bound_group_admin_ids(:g)")
+    with app_session(app_db, world.a.tenant, world.a.member) as s:  # B's group, bound in B only
+        assert s.execute(sql, {"g": world.b.group}).scalars().all() == []
+    with app_session(app_db, None, admin) as s:  # no client
+        assert s.execute(sql, {"g": world.b.group}).scalars().all() == []
+    with app_session(app_db, world.b.tenant, world.b.member) as s:
+        assert s.execute(sql, {"g": world.b.group}).scalars().all() == [admin]
+
+
+def test_listing_the_clients_of_a_group_keeps_the_original_error_on_an_aborted_transaction(
+    world: World, app_db: Database, owner_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review 1 item 4 (B-1410): clearing the client after a failed statement must not raise
+    `InFailedSqlTransaction` over the error that aborted the transaction."""
+    admin = _admin(owner_session)
+
+    def failing(session: Session) -> NoReturn:
+        session.execute(text("SELECT 1 / 0"))
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(authz, "bound_groups", failing)
+    with app_session(app_db, None, admin) as s:
+        with pytest.raises(DBAPIError) as raised, db.platform_admin_context(s):
+            service.clients_binding_group(s, world.a.group)
+        assert isinstance(raised.value.orig, psycopg.errors.DivisionByZero)
+        assert db.get_context(s).tenant_id is None
+        s.rollback()
+        assert s.execute(text("SELECT shifde.current_tenant_id()")).scalar_one() is None

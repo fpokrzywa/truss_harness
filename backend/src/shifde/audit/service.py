@@ -231,7 +231,8 @@ def record(
     """Append one audit event. `tenant_id=None` marks an installation-level event, allowed only
     for the pre-tenant identity actions from a session with no client context, and for the
     installation-configuration actions only when the caller is already a platform
-    administrator (otherwise `NotInstallationAction`)."""
+    administrator and no client context is set, read from the database (B-703, B-1409;
+    otherwise `NotInstallationAction`)."""
     if tenant_id is None:
         if action in PRE_TENANT_ACTIONS:
             if not _has_no_client_context(session):
@@ -242,7 +243,11 @@ def record(
                     effective = ctx.principal.principal_id
                 if not _is_acting_principal(session, effective):
                     raise NotInstallationAction(action)
-        elif not (action in ADMIN_INSTALLATION_ACTIONS and get_context(session).platform_admin):
+        elif not (
+            action in ADMIN_INSTALLATION_ACTIONS
+            and get_context(session).platform_admin
+            and _has_no_client_context(session)  # B-1409: never while a client is set
+        ):
             raise NotInstallationAction(action)
     principal = ctx.principal
     actor_type = "user" if actor_id else "anonymous"

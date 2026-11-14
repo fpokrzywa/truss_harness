@@ -248,7 +248,14 @@ def test_installation_configuration_events_need_a_platform_administrator(
         with pytest.raises(audit.NotInstallationAction):
             audit.record(s, ctx, action=action, tenant_id=None)
         s.rollback()
+    # the flag with a client set is refused too (admin review 1 item 3, vendors review 1
+    # follow-up 2, B-1409): an installation row is written only with no client context
     with _as(app_db, world.a) as s:
+        set_platform_admin(s, True)
+        with pytest.raises(audit.NotInstallationAction):
+            audit.record(s, ctx, action=action, tenant_id=None)
+        s.rollback()
+    with _as(app_db, None) as s:
         set_platform_admin(s, True)
         audit.record(s, ctx, action=action, tenant_id=None)
         assert get_context(s).platform_admin  # the administrator's own context survives
