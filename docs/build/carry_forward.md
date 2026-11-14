@@ -30,6 +30,8 @@ Each later module's brief must include its section here. Strike an item (move it
 | app | Loopback trust for `X-Forwarded-For`: frontend proxy appends/overwrites with a test; setting to disable loopback trust in production | core review 1 item 4 |
 | app | `X-Request-ID`: validate format/length or always generate server-side (it feeds `app.request_id` and audit correlation) | core review 1 item 6 |
 | every port using `core.sqlutil` | Same response for not-found and version mismatch | core review 1 item 5 |
+| vendors, cli | Conformance `checks.detail` can carry a client DB's table names/SQL if `SHIFDE_SAMPLE_DATABASE_URL` points at one, and SETH `vendors/service.py:66-90` returns it to every client: refuse non-sample URLs in the CLI or drop `detail` from the client API | adapters review 1 |
+| vendors, connections | `ExecContext.tenant_id` (`adapters/base.py:116`) must carry the organization | adapters review 1 |
 | observability | Readiness uses `core.health.migration_state` (multi-head, B-111/B-203) | core |
 | ports of SETH policies on B-112's list | Settle each rejected SETH policy (USING (true) tables → `global_tables.txt` with reason, or tenant-keyed) under isolation review | skeleton |
 
