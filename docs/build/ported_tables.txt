@@ -3,3 +3,11 @@
 # a listed table missing from the database fails, and any difference not listed in
 # backend/tests/schema/deliberate_changes.yaml fails. Module ports add their tables here.
 adapter_conformance_runs  # adapters
+usage_events  # ledger
+usage_rollups_daily  # ledger
+rate_cards  # ledger
+rate_card_versions  # ledger
+budgets  # ledger
+budget_reservations  # ledger
+budget_alerts  # ledger
+quotas  # ledger

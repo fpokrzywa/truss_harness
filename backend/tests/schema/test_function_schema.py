@@ -41,7 +41,17 @@ from tests.schema.catalog_scan import (
 APP_ROLE = "shifde_app"
 
 # <schema>.<name> -> why it must run with its owner's rights. Adding one needs isolation review.
-SECURITY_DEFINER_ALLOWLIST: dict[str, str] = {}
+SECURITY_DEFINER_ALLOWLIST: dict[str, str] = {
+    "shifde.rate_card_versions_guard": (
+        "ledger (B-601): the BEFORE INSERT guard of rate_card_versions closes the open-ended "
+        "predecessor of a new version (UPDATE effective_to), which the application role may not "
+        "do (INSERT/SELECT grants only; the immutability trigger refuses every other update). It "
+        "runs as the owner, reads and updates only rows of the NEW row's own rate_card_id after "
+        "checking that the card belongs to NEW.tenant_id (the insert policy already pins that to "
+        "the caller's tenant or, for global cards, the platform admin), pins search_path "
+        "(shifde, pg_catalog, pg_temp), and is executable by the owner only."
+    ),
+}
 
 _CONTEXT = {"provolatile": "s", "lang": "sql", "rettype": None}
 BASE_HELPERS: dict[str, dict[str, str | None]] = {
@@ -197,6 +207,10 @@ def scratch(owner_engine: Engine) -> Iterator[Connection]:
     with owner_engine.connect() as c:
         tx = c.begin()
         try:
+            # The probes assert the exact violation list of one scratch function: the real,
+            # allowlisted definers (B-601) are dropped inside this rolled-back transaction.
+            for name in SECURITY_DEFINER_ALLOWLIST:
+                c.execute(text(f"DROP FUNCTION {name}() CASCADE"))
             yield c
         finally:
             tx.rollback()

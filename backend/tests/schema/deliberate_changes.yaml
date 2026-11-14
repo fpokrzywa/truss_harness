@@ -9,4 +9,49 @@
 #     migration: <revision id that makes the change>
 #
 # An entry whose path does not actually differ from SETH fails the test (remove it).
-[]
+
+
+- table: usage_events
+  path: [constraints, usage_events_tenant_id_fkey]
+  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
+  migration: ledger_0001
+
+- table: usage_rollups_daily
+  path: [constraints, usage_rollups_daily_tenant_id_fkey]
+  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
+  migration: ledger_0001
+
+- table: rate_cards
+  path: [constraints, rate_cards_tenant_id_fkey]
+  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
+  migration: ledger_0001
+
+- table: rate_card_versions
+  path: [constraints, rate_card_versions_tenant_id_fkey]
+  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
+  migration: ledger_0001
+
+- table: budgets
+  path: [constraints, budgets_tenant_id_fkey]
+  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
+  migration: ledger_0001
+
+- table: budget_reservations
+  path: [constraints, budget_reservations_tenant_id_fkey]
+  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
+  migration: ledger_0001
+
+- table: budget_alerts
+  path: [constraints, budget_alerts_tenant_id_fkey]
+  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
+  migration: ledger_0001
+
+- table: quotas
+  path: [constraints, quotas_tenant_id_fkey]
+  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
+  migration: ledger_0001
+
+- table: budget_reservations
+  path: [constraints, fk_budget_reservations__run]
+  reason: "foreign key to shifde.runs, a table of the runtime module that is not ported yet; the runtime migration adds it (docs/build/carry_forward.md)"
+  migration: ledger_0001
