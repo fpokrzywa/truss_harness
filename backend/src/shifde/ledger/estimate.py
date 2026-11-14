@@ -79,7 +79,7 @@ def call_cost(
     (unknown, never 0)."""
     if model_id is None:
         return None
-    keys = pricing.model_keys(session, model_id)
+    keys = pricing.model_keys(session, tenant_id, model_id)
     if keys is None:
         return None
     version = pricing.resolve(session, tenant_id, keys[0], keys[1], at or utcnow())

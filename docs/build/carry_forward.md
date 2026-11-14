@@ -67,6 +67,7 @@ Each later module's brief must include its section here. Strike an item (move it
 | cli | Item 20 (known defect): no retention purge for `usage_events`, `usage_rollups_daily`, `budget_reservations`; `governance_seed.record_build_op` and the SETH dev seed of rate cards come with cli | ledger |
 | cli | The dev seed of rate cards (SETH) writes global versions: it must run with the platform-admin context (`set_platform_admin`), because `rate_card_versions_guard` refuses a NULL-tenant version otherwise (B-606) | ledger |
 | governance | The alert insert (`ON CONFLICT DO NOTHING`) must include `tenant_id` in its conflict target `(tenant_id, budget_id, period_start, threshold)` and supply the budget's own tenant id (B-607) | ledger |
+| build | `ledger/usage.py:_fill_attribution` looks up `shifde.artifact_versions` by `id AND tenant_id` (B-609); add a probe in `tests/ledger/test_tenant_filters.py` with the real table once ported | ledger |
 | isolation review | `rate_card_versions_guard` is SECURITY DEFINER (allowlisted, B-601) and `write_own` lets the platform administrator write global rate cards: review both | ledger |
 | ports of SETH policies on B-112's list | Settle each rejected SETH policy (USING (true) tables → `global_tables.txt` with reason, or tenant-keyed) under isolation review | skeleton |
 | tenancy | Add `tenant_id` -> `tenants (id)` FKs on `roles`, `role_permissions`, `role_bindings`, `groups`, `policy_decisions` (SETH names `<table>_tenant_id_fkey`) and remove their `deliberate_changes.yaml` entries | authz (B-402) |

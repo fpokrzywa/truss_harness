@@ -104,15 +104,20 @@ def _fill_attribution(session: Session, v: dict[str, Any]) -> None:  # Any: colu
     """Derive the artifact-level dimensions (prompt / pipeline / workflow) from the run tree."""
     if v.get("prompt_id") is None and v.get("prompt_version_id") is not None:
         row = session.execute(
-            text("SELECT artifact_id FROM shifde.artifact_versions WHERE id = :id"),
-            {"id": v["prompt_version_id"]},
+            text(
+                "SELECT artifact_id FROM shifde.artifact_versions WHERE id = :id AND tenant_id = :t"
+            ),
+            {"id": v["prompt_version_id"], "t": v["tenant_id"]},
         ).first()
         v["prompt_id"] = row[0] if row else None
     root = v.get("root_run_id")
     if root is not None and (v.get("pipeline_id") is None or v.get("orchestration_id") is None):
         row = session.execute(
-            text("SELECT pipeline_id, orchestration_id FROM shifde.runs WHERE id = :id"),
-            {"id": root},
+            text(
+                "SELECT pipeline_id, orchestration_id FROM shifde.runs "
+                "WHERE id = :id AND tenant_id = :t"
+            ),
+            {"id": root, "t": v["tenant_id"]},
         ).first()
         if row:
             v["pipeline_id"] = v.get("pipeline_id") or row[0]
@@ -133,7 +138,7 @@ def price_model_usage(
     """(cost, provider_key, model_key) of one model call. A provider-reported amount wins; the
     calculated rate (if any) is then still kept as the snapshot for comparison. `estimated`: the
     token counts are the platform's estimate (priced as kind `estimated`, not `calculated`)."""
-    keys = pricing.model_keys(session, model_id) if model_id is not None else None
+    keys = pricing.model_keys(session, tenant_id, model_id) if model_id is not None else None
     version = (
         pricing.resolve(session, tenant_id, keys[0], keys[1], at or utcnow()) if keys else None
     )

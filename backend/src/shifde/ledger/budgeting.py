@@ -106,8 +106,8 @@ def _held_sql(
         select = "COALESCE(sum(res.amount), 0)"
     return (
         f"SELECT {select} FROM shifde.budget_reservations res "
-        "JOIN shifde.runs r ON r.id = res.run_id "
-        "JOIN shifde.runs rr ON rr.id = r.root_run_id "
+        "JOIN shifde.runs r ON r.id = res.run_id AND r.tenant_id = res.tenant_id "
+        "JOIN shifde.runs rr ON rr.id = r.root_run_id AND rr.tenant_id = res.tenant_id "
         f"WHERE {' AND '.join(where)}",
         params,
     )

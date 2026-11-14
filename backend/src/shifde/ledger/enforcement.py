@@ -105,7 +105,8 @@ def budgets_in_scope(session: Session, scope: BudgetScope) -> list[dict[str, Any
             "SELECT b.id, b.tenant_id, b.scope_type, b.scope_id, b.period, b.metric, "
             "b.limit_tokens, b.limit_runs, b.amount, b.currency, b.enforcement, b.on_exceed, "
             "b.alert_thresholds FROM shifde.budgets b "
-            f"WHERE b.status = 'active' AND {scope_match('b')} ORDER BY b.id"
+            f"WHERE b.tenant_id = :tenant AND b.status = 'active' AND {scope_match('b')} "
+            "ORDER BY b.id"
         ),
         scope_params(scope),
     ).mappings()
@@ -127,7 +128,8 @@ def quotas_in_scope(session: Session, scope: BudgetScope) -> list[dict[str, Any]
     rows = session.execute(
         text(
             "SELECT q.id, q.scope_type, q.scope_id, q.metric, q.limit_value "
-            f"FROM shifde.quotas q WHERE q.status = 'active' AND {scope_match('q')} "
+            f"FROM shifde.quotas q WHERE q.tenant_id = :tenant AND q.status = 'active' "
+            f"AND {scope_match('q')} "
             "ORDER BY q.id"
         ),
         scope_params(scope),

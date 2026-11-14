@@ -180,15 +180,15 @@ def price(v: RateVersion | None, usage: Usage, *, estimated: bool = False) -> Co
     return Costed(kind, calculate(v, usage), v.currency, v.id, snapshot(v))
 
 
-def model_keys(session: Session, model_id: UUID) -> tuple[str, str] | None:
-    """(provider_key, model_key) of a registered model: the provider's adapter key and the
+def model_keys(session: Session, tenant_id: UUID, model_id: UUID) -> tuple[str, str] | None:
+    """(provider_key, model_key) of a registered model of the tenant: the provider's adapter key and the
     model's own key, which is what a rate card names."""
     row = session.execute(
         text(
             "SELECT p.adapter_key, m.model_key FROM shifde.models m "
             "JOIN shifde.model_providers p ON p.id = m.provider_id AND p.tenant_id = m.tenant_id "
-            "WHERE m.id = :id"
+            "WHERE m.id = :id AND m.tenant_id = :t"
         ),
-        {"id": model_id},
+        {"id": model_id, "t": tenant_id},
     ).first()
     return (str(row[0]), str(row[1])) if row else None
