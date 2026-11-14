@@ -26,7 +26,7 @@ from shifde.core.clock import utcnow
 from shifde.core.context import Principal
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
-from tests.authz.conftest import owner_insert_bindings, owner_insert_group
+from tests.authz.conftest import owner_insert_group, seed_bindings
 
 
 @dataclass
@@ -66,7 +66,7 @@ def test_a_group_binding_grants_its_members_only_at_the_bound_scope(
     a, _ = orgs
     member, outsider = uuid7(), uuid7()
     group = owner_insert_group(owner_session, "fdes", [member])
-    [bid] = owner_insert_bindings(
+    [bid] = seed_bindings(
         seed_engine,
         [
             {
@@ -118,7 +118,7 @@ def test_disabled_group_and_expired_group_binding_grant_nothing(
     member = uuid7()
     disabled = owner_insert_group(owner_session, "off", [member], status="disabled")
     expired = owner_insert_group(owner_session, "old", [member])
-    owner_insert_bindings(
+    seed_bindings(
         seed_engine,
         [
             {
@@ -150,7 +150,7 @@ def test_disabled_group_and_expired_group_binding_grant_nothing(
 # ------------------------------------------------------------------ SHI-wide groups (seam)
 def _bind_shi_group(seed: Engine, group: UUID, a: Org, b: Org) -> None:
     """One SHI-wide group, bound as Developer on a project of A and as Viewer on a workspace of B."""
-    owner_insert_bindings(
+    seed_bindings(
         seed,
         [
             {

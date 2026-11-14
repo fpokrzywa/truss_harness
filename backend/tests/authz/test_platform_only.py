@@ -34,7 +34,7 @@ from shifde.core.db import Database
 from shifde.core.errors import Forbidden
 from shifde.core.ids import uuid7
 from tests._support.tenants import add_tenants
-from tests.authz.conftest import owner_insert_bindings
+from tests.authz.conftest import owner_insert_bindings, seed_bindings
 
 WHO = text("SELECT current_user")
 CHECK_NAME = "ck_role_permissions__no_platform_only_in_client_role"
@@ -144,11 +144,37 @@ def _assert_no_platform_only(pdp: PDP, tenant: UUID, ws: UUID, proj: UUID) -> No
         assert pdp.visible_scopes(action) == ScopeFilter()
 
 
+@pytest.mark.parametrize("scope", ["tenant", "workspace", "project"])
+def test_the_binding_trigger_refuses_the_platform_administrator_template_in_a_client(
+    seed_engine: Engine, scope: str
+) -> None:
+    """Since tenancy_0002 (B-1010) `check_role_binding()` refuses the template in any client,
+    for every scope and for the schema owner: with the triggers active the row cannot be built,
+    which is why the PDP tests below write it with row triggers off (DECISIONS B-1201)."""
+    tenant, uid = uuid7(), uuid7()
+    scope_id = tenant if scope == "tenant" else uuid7()
+    with pytest.raises(IntegrityError, match="role is not available to this tenant"):
+        seed_bindings(
+            seed_engine,
+            [
+                {
+                    "tenant_id": tenant,
+                    "subject_id": uid,
+                    "role_key": "platform_administrator",
+                    "scope_type": scope,
+                    "scope_id": scope_id,
+                }
+            ],
+        )
+
+
 def test_a_binding_to_the_platform_administrator_template_grants_nothing_platform_only(
     s: Session, seed_engine: Engine
 ) -> None:
     """The shared template holds `platform:admin` with tenant_id NULL, so the check does not
-    stop a client binding it; the PDP must still never report it for a non-admin."""
+    stop a client binding it; the PDP must still never report it for a non-admin. The trigger
+    now refuses such a row (test above), so it is written with row triggers off: the one
+    `owner_insert_bindings` case here (B-1201), the PDP filter being the layer under test."""
     tenant, ws, proj, uid = uuid7(), uuid7(), uuid7(), uuid7()
     owner_insert_bindings(
         seed_engine,
@@ -209,6 +235,7 @@ def test_a_client_role_holding_platform_admin_from_before_the_check_grants_nothi
 def test_the_platform_admin_flag_still_grants_platform_admin_and_nothing_else(
     s: Session, seed_engine: Engine
 ) -> None:
+    # Template row written with row triggers off, as above (B-1201).
     tenant, ws, proj, uid = uuid7(), uuid7(), uuid7(), uuid7()
     owner_insert_bindings(
         seed_engine,

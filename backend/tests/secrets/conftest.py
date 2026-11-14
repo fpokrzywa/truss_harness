@@ -2,8 +2,9 @@
 
 Two clients (A, B), each with a user bound to `tenant_administrator` (holds `secret:use`), plus
 users bound to `auditor` (`secret:read`, no `secret:use`) and to nothing. Until identity and
-tenancy are ported there are no users, memberships or workspaces: ids are fresh and bindings go
-in through `tests.authz.conftest.owner_insert_bindings` (row triggers off for that transaction).
+tenancy are ported there is no seeded world: ids are fresh, and bindings go in through
+`tests.authz.conftest.seed_bindings`, which creates each person (with a membership) first and
+inserts with the row triggers active.
 
 `secret_access_log` is append-only (row triggers refuse UPDATE/DELETE) but the per-test cleanup
 TRUNCATEs as the owner, which row triggers do not see, so both tables are registered.
@@ -28,7 +29,7 @@ from shifde.core.db import Database, set_principal, set_tenant
 from shifde.core.ids import uuid7
 from shifde.secrets.service import SecretProvider
 from tests._support.tenants import add_tenants
-from tests.authz.conftest import owner_insert_bindings
+from tests.authz.conftest import seed_bindings
 from tests.conftest import CLEAN_TABLES
 
 for _table in ("secret_access_log", "secrets", "audit_events"):
@@ -72,7 +73,7 @@ def _client(seed: Engine) -> Client:
     tenant, admin, auditor, nobody = uuid7(), uuid7(), uuid7(), uuid7()
     with seed.begin() as c:
         add_tenants(c, tenant)
-    owner_insert_bindings(
+    seed_bindings(
         seed,
         [
             {
