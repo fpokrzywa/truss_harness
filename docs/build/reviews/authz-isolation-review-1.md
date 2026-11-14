@@ -1,0 +1,13 @@
+# Authz: isolation review, round 1
+
+Branch `authz` at `0ccc34c` vs base `d256dd2`. Reviewer: isolation-reviewer (opus), 2026-11-13. **Verdict: APPROVED** (0 blocking, 5 follow-up). `tests/schema tests/core tests/authz -n 8`: 278 passed. Probes as `shifde_app`, rolled back.
+
+Fine: `test_startup_role_check.py` only adds `test_many_checkouts_of_one_pooled_connection_keep_working`; `CLEAN_TABLES` only adds tables; PDP/service assertions run on `app_db` asserting `current_user = 'shifde_app'`; the superuser shortcut only inserts bindings consistent within one client. `db.py` safeguards unchanged. All 7 tables forced RLS, owned by `shifde_owner`; SELECT-only `permissions` (static seed, no client content); column-limited UPDATE on roles/groups; no SECURITY DEFINER. Refused by probe: NULL-tenant or `is_system` role writes, system row/grant changes, `tenant_id` changes, B's decisions, binding B's role, members in B's group (composite FK); `app.platform_admin=on` opened nothing. Binding INSERT fails closed until `memberships` exists. PDP diff vs SETH is only the group seam; grants filtered by `role_bindings.tenant_id`, cached per single-tenant PDP; admin flag grants only `platform:admin`.
+
+## Follow-up
+
+1. `src/shifde/authz/pdp.py:293,305` and `missing_permissions`: a client may put `platform:admin` into its own custom role (DB allows it); for a non-admin bound to it, `effective_permissions` returns `{'platform:admin'}`, `missing_permissions` returns `set()`, `visible_scopes` reports tenant-wide (`authorize` still refuses). Any later consumer trusting these turns a client role into installation-wide admin (SETH guarded only in `admin/iam.py:96,350`). Fix: drop `PLATFORM_ONLY_ACTIONS` from grants in `_load`; DB check on `role_permissions`: `tenant_id IS NULL OR permission_key <> 'platform:admin'`. Owner: authz/admin, **before any consumer of these functions lands**.
+2. `tests/authz/test_cross_client.py:341,400`: binding cases use bare `pytest.raises(DBAPIError)` and pass on "memberships does not exist"; the trigger's group/user/service-account/scope branches are never exercised. Match the specific trigger messages once the tables exist. Owner: identity, tenancy.
+3. `authz_0001...py:675` (missing membership FK): A can add any user id (incl. B's member) to A's group; grants only inside A. FK closes it. Owner: identity.
+4. Global primary keys on groups/roles/role_bindings: a duplicate-key error confirms another client's UUID exists. Low risk (uuid7). Owner: tenancy.
+5. `tests/core/test_startup_role_check.py:490`: with `prepare_threshold=None`, `test_auto_prepared_statements_survive_discard` no longer exercises prepared statements; the new test pins the regression. Owner: core.

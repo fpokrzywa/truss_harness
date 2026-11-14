@@ -39,6 +39,9 @@ Each later module's brief must include its section here. Strike an item (move it
 | every port using `core.sqlutil` | Same response for not-found and version mismatch | core review 1 item 5 |
 | vendors, cli | Conformance `checks.detail` can carry a client DB's table names/SQL if `SHIFDE_SAMPLE_DATABASE_URL` points at one, and SETH `vendors/service.py:66-90` returns it to every client: refuse non-sample URLs in the CLI or drop `detail` from the client API | adapters review 1 |
 | vendors, connections | `ExecContext.tenant_id` (`adapters/base.py:116`) must carry the organization | adapters review 1 |
+| authz, admin | **Before any consumer of `effective_permissions`/`missing_permissions`/`visible_scopes` lands:** drop `PLATFORM_ONLY_ACTIONS` from grants in `pdp._load`, and add a DB check on `role_permissions` (`tenant_id IS NULL OR permission_key <> 'platform:admin'`), with tests | authz review 1 item 1 |
+| identity, tenancy | Authz binding cross-client tests must match the trigger's specific messages (not bare `DBAPIError`) and exercise group/user/service-account/scope branches once `memberships` exists | authz review 1 item 2 |
+| tenancy | Global PKs on groups/roles/role_bindings leak existence of another client's UUID via duplicate-key error (low risk) | authz review 1 item 4 |
 | observability | Readiness uses `core.health.migration_state` (multi-head, B-111/B-203). The ported `api.py` already does; no test pins it until the app mounts the router | core |
 | app | Mount `shifde.observability.api.router` (`/api/health`, `/api/ready`, `/api/metrics`), add `RequestIdMiddleware`, call `configure_logging` and `tracing.configure_from_settings` at startup (B-501). Not wired by the observability port | observability (B-501) |
 | governance | Migration `shifde_ops_stats(int)` (SETH p08_0001 `OPS_STATS`, grant to `shifde_app`): observability's `/api/metrics` ops gauges call it and report "unavailable" until it exists (B-501) | observability (B-501) |
