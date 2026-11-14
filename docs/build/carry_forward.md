@@ -47,7 +47,6 @@ Each later module's brief must include its section here. Strike an item (move it
 | every port using `core.sqlutil` | Same response for not-found and version mismatch | core review 1 item 5 |
 | vendors, cli | Conformance `checks.detail` can carry a client DB's table names/SQL if `SHIFDE_SAMPLE_DATABASE_URL` points at one, and SETH `vendors/service.py:66-90` returns it to every client: refuse non-sample URLs in the CLI or drop `detail` from the client API | adapters review 1 |
 | vendors, connections | `ExecContext.tenant_id` (`adapters/base.py:116`) must carry the organization | adapters review 1 |
-| authz, admin | **Before any consumer of `effective_permissions`/`missing_permissions`/`visible_scopes` lands:** drop `PLATFORM_ONLY_ACTIONS` from grants in `pdp._load`, and add a DB check on `role_permissions` (`tenant_id IS NULL OR permission_key <> 'platform:admin'`), with tests | authz review 1 item 1 |
 | identity, tenancy | Authz binding cross-client tests must match the trigger's specific messages (not bare `DBAPIError`) and exercise group/user/service-account/scope branches once `memberships` exists | authz review 1 item 2 |
 | tenancy | Global PKs on groups/roles/role_bindings leak existence of another client's UUID via duplicate-key error (low risk) | authz review 1 item 4 |
 | ledger, governance | `rate_card_versions_guard`: move the advisory lock after the card-ownership `NOT EXISTS` check (timing signal on another client's card id) | ledger review 2 item 7 |
@@ -82,4 +81,5 @@ Each later module's brief must include its section here. Strike an item (move it
 
 ## Done
 
+- authz, admin (authz review 1 item 1, B-406): `pdp._load` drops `PLATFORM_ONLY_ACTIONS` from grants loaded through role bindings; `authz_0002` adds `ck_role_permissions__no_platform_only_in_client_role` (`tenant_id IS NULL OR permission_key NOT IN ('platform:admin')`). Tests in `tests/authz/test_platform_only.py`: `test_a_client_role_cannot_hold_a_platform_only_permission_as_shifde_app`, `test_the_schema_owner_cannot_put_a_platform_only_permission_in_a_client_role`, `test_the_check_is_validated_and_system_templates_keep_platform_admin`, `test_a_binding_to_the_platform_administrator_template_grants_nothing_platform_only`, `test_a_client_role_holding_platform_admin_from_before_the_check_grants_nothing`, `test_the_platform_admin_flag_still_grants_platform_admin_and_nothing_else`, `test_a_client_a_role_cannot_make_a_non_admin_platform_admin_in_client_b`.
 - observability: `test_core.py::test_log_redaction_masks_secrets` moved to `tests/observability/test_log_redaction.py` (passes). The readiness obligation stays open in the Wiring table until a test covers the mounted route.

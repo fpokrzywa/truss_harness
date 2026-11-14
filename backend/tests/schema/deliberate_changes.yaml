@@ -131,3 +131,9 @@
   path: [triggers, trg_usage_events_version_scope]
   reason: "the foreign key to rate_card_versions accepts (and so confirms) another client's version id; this trigger requires a global version or one of the event's own tenant. Isolation review 1, item 3, B-608."
   migration: ledger_0001
+
+- table: role_permissions
+  path: [constraints, ck_role_permissions__no_platform_only_in_client_role]
+  reason: >-
+    A client role (tenant_id NOT NULL) cannot hold a platform-only permission (platform:admin): it comes only from users.is_platform_admin, never from a role. SETH let a client put it into its own role and the PDP then reported it from effective_permissions / missing_permissions / visible_scopes. Authz isolation review 1, follow-up 1; DECISIONS B-406. System templates (tenant_id NULL) are unaffected.
+  migration: authz_0002

@@ -4,7 +4,12 @@ Default deny. A permission is granted iff the principal (a user, or a service ac
 non-expired role binding -- directly or through an active group -- at a scope covering the resource
 (tenant > workspace > project > resource), whose role contains the permission. API-key principals
 are additionally masked: effective permission = grants INTERSECT key scopes INTERSECT resource
-scope. ``platform:admin`` requires ``users.is_platform_admin`` and is never granted to a key.
+scope. ``platform:admin`` (every key in ``PLATFORM_ONLY_ACTIONS``) requires
+``users.is_platform_admin`` and is never granted to a key, nor by any role binding: grants loaded
+through bindings drop platform-only permissions, so every query below agrees with ``authorize``,
+and ``visible_scopes`` of a platform-only action is empty for everyone (it is not a client scope;
+DECISIONS B-406). The database also refuses a platform-only permission in a client role
+(``authz_0002``).
 
 Grants are loaded lazily, once per PDP instance (i.e. once per request); decisions are never cached
 across requests. Denials on resources the caller cannot see surface as 404 (no existence oracle);
@@ -177,6 +182,11 @@ class PDP:
                     group_ids=groups,
                     now=utcnow(),
                 )
+                # Platform-only actions come only from the admin flag, never from a role: a
+                # client role (or a binding to the shared platform_administrator template) must
+                # not surface them through effective_permissions / missing_permissions /
+                # visible_scopes / ancestor_workspace_ids (DECISIONS B-406).
+                grants = [g for g in grants if g.permission_key not in PLATFORM_ONLY_ACTIONS]
                 scopes = self._principal.key_scopes
                 if scopes is not None:  # API-key permission mask
                     grants = [g for g in grants if g.permission_key in scopes]
