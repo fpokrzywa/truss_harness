@@ -503,6 +503,27 @@ def test_auto_prepared_statements_survive_discard(app_url: str) -> None:
         db.dispose()
 
 
+def test_many_checkouts_of_one_pooled_connection_keep_working(app_url: str) -> None:
+    """Regression (DECISIONS B-404): psycopg auto-prepares a statement on its sixth run, the
+    checkout's own `DISCARD ALL` included; that prepared statement then deallocated itself, and
+    the next checkout of the connection failed with 'prepared statement "_pg3_0" does not exist'.
+    psycopg notices DISCARD ALL only while it holds statements it prepared, so its cache could go
+    stale either way. Each commit releases the connection; the next statement checks it out."""
+    db = Database(app_url, pool_size=1, max_overflow=0)
+    try:
+        with db.session() as s:
+            for n in range(12):
+                assert s.execute(text("SELECT CAST(:n AS int)"), {"n": n}).scalar_one() == n
+                s.commit()
+        for n in range(12):
+            with db.session() as s:
+                for i in range(7):
+                    got = s.execute(text("SELECT CAST(:i AS int) + :n"), {"i": i, "n": n})
+                    assert got.scalar_one() == i + n
+    finally:
+        db.dispose()
+
+
 def test_create_on_the_database_is_refused(
     make_role: MakeRole, admin: Engine, app_url: str
 ) -> None:

@@ -44,7 +44,13 @@ _RUN_KEY = "shifde_test_run"
 
 # Tables wiped (as owner, so row-level security does not apply) before every test that uses the
 # database. Module ports append their tenant-data tables here; seed catalogs stay.
-CLEAN_TABLES: list[str] = []
+CLEAN_TABLES: list[str] = [
+    # authz (tenant-owned rows; custom roles stay: tests key them to fresh tenant ids)
+    "role_bindings",
+    "group_members",
+    "groups",
+    "policy_decisions",
+]
 
 
 # --------------------------------------------------------------------------- run identity
