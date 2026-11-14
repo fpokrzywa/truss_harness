@@ -18,3 +18,4 @@ role_bindings  # authz
 groups  # authz
 group_members  # authz
 policy_decisions  # authz
+audit_events  # audit

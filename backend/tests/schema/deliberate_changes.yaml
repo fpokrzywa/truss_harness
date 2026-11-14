@@ -131,3 +131,8 @@
   path: [triggers, trg_usage_events_version_scope]
   reason: "the foreign key to rate_card_versions accepts (and so confirms) another client's version id; this trigger requires a global version or one of the event's own tenant. Isolation review 1, item 3, B-608."
   migration: ledger_0001
+
+- table: audit_events
+  path: [policies, write_own]
+  reason: "ARCH m7 (B-701): SETH's INSERT check admitted tenant_id NULL for any caller; a NULL-tenant row now needs the platform-administrator context"
+  migration: audit_0001

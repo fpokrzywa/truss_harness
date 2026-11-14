@@ -1,0 +1,156 @@
+"""Cross-client isolation of the audit log, as `shifde_app`: client A's context cannot read B's
+events or the global (installation-level) ones, cannot write for B, and cannot write a global
+row (ARCH m7: SETH's `write_own` admitted `tenant_id IS NULL` to every client). With no tenant
+context nothing is visible.
+
+The module has no routes yet (they arrive with app and governance); `audit.service` is the
+surface other modules call, so the service is tested here too."""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from dataclasses import dataclass
+from uuid import UUID
+
+import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.orm import Session
+
+from shifde.audit import service as audit
+from shifde.core.context import RequestContext
+from shifde.core.db import Database, set_platform_admin, set_tenant
+from shifde.core.ids import uuid7
+
+INSERT = (
+    "INSERT INTO shifde.audit_events (id, tenant_id, actor_type, action, outcome) "
+    "VALUES (gen_random_uuid(), {tenant}, 'user', 'test.forged', 'success')"
+)
+
+
+@dataclass
+class World:
+    a: UUID
+    b: UUID
+    global_id: UUID
+    a_id: UUID
+    b_id: UUID
+
+
+@pytest.fixture
+def world(owner_db: Database) -> Iterator[World]:
+    a, b = uuid7(), uuid7()
+    ctx = RequestContext(request_id="seed")
+    with owner_db.session() as s:
+        audit.record(s, ctx, action="test.a", tenant_id=a)
+        audit.record(s, ctx, action="test.b", tenant_id=b)
+        audit.record(s, ctx, action="identity.login.failed", outcome="failure", tenant_id=None)
+        ids = {r[0]: r[1] for r in s.execute(text("SELECT action, id FROM shifde.audit_events"))}
+        s.commit()
+    yield World(a, b, ids["identity.login.failed"], ids["test.a"], ids["test.b"])
+
+
+def _as(db: Database, tenant: UUID | None) -> Session:
+    s = db.session()
+    if tenant is not None:
+        set_tenant(s, tenant)
+    assert s.execute(text("SELECT current_user")).scalar_one() == "shifde_app"
+    return s
+
+
+def _ids(s: Session) -> set[UUID]:
+    return {r[0] for r in s.execute(text("SELECT id FROM shifde.audit_events"))}
+
+
+def _sqlstate(err: pytest.ExceptionInfo[DBAPIError]) -> str | None:
+    return getattr(err.value.orig, "sqlstate", None)
+
+
+def test_a_client_sees_only_its_own_events(app_db: Database, world: World) -> None:
+    with _as(app_db, world.a) as s:
+        assert _ids(s) == {world.a_id}
+        rows = audit.list_events(
+            s,
+            tenant_id=world.b,
+            category=None,
+            actor=None,
+            action=None,
+            occurred_from=None,
+            occurred_to=None,
+            before=None,
+            limit=50,
+        )
+        assert rows == []
+        assert audit.verify_chain(s, world.b) == audit.VerifyResult(True, 0)
+        s.rollback()
+    with _as(app_db, world.b) as s:
+        assert _ids(s) == {world.b_id}
+        s.rollback()
+
+
+def test_the_global_events_need_the_platform_administrator_context(
+    app_db: Database, world: World
+) -> None:
+    with _as(app_db, world.a) as s:
+        assert world.global_id not in _ids(s)
+        set_platform_admin(s, True)
+        assert world.global_id in _ids(s)
+        assert world.b_id not in _ids(s)
+        s.rollback()
+
+
+def test_without_a_tenant_context_nothing_is_visible(app_db: Database, world: World) -> None:
+    with _as(app_db, None) as s:
+        assert _ids(s) == set()
+        s.rollback()
+
+
+@pytest.mark.parametrize("tenant", [":other", "NULL"], ids=["another-client", "global-row"])
+def test_a_client_cannot_insert_for_another_client_or_a_global_row(
+    app_db: Database, world: World, tenant: str
+) -> None:
+    """Fails on SETH's policy (`tenant_id = current OR tenant_id IS NULL`) for the global row."""
+    with _as(app_db, world.a) as s:
+        with pytest.raises(DBAPIError) as err:
+            s.execute(text(INSERT.format(tenant=tenant)), {"other": world.b})
+        assert _sqlstate(err) == "42501"  # row-level security
+        s.rollback()
+
+
+def test_a_client_can_insert_its_own_row_and_not_change_or_delete_any(
+    app_db: Database, world: World
+) -> None:
+    with _as(app_db, world.a) as s:
+        s.execute(text(INSERT.format(tenant=":me")), {"me": world.a})
+        for sql in (
+            "UPDATE shifde.audit_events SET action = 'x'",
+            "DELETE FROM shifde.audit_events",
+            "TRUNCATE shifde.audit_events",
+        ):
+            with pytest.raises(DBAPIError) as err, s.begin_nested():
+                s.execute(text(sql))
+            assert _sqlstate(err) == "42501", sql  # no privilege
+        s.rollback()
+
+
+def test_the_service_writes_a_global_row_only_for_an_installation_action(
+    app_db: Database, world: World
+) -> None:
+    ctx = RequestContext(request_id="svc")
+    with _as(app_db, world.a) as s:
+        audit.record(s, ctx, action="identity.login.failed", tenant_id=None, outcome="failure")
+        with pytest.raises(audit.NotInstallationAction):
+            audit.record(s, ctx, action="test.forged", tenant_id=None)
+        # the write left the context as it was: the client still cannot write a raw global row
+        with pytest.raises(DBAPIError) as err, s.begin_nested():
+            s.execute(text(INSERT.format(tenant="NULL")))
+        assert _sqlstate(err) == "42501"
+        s.rollback()
+
+
+def test_the_service_cannot_write_for_another_client(app_db: Database, world: World) -> None:
+    with _as(app_db, world.a) as s:
+        with pytest.raises(DBAPIError) as err:
+            audit.record(s, RequestContext(request_id="x"), action="test.x", tenant_id=world.b)
+        assert _sqlstate(err) == "42501"
+        s.rollback()
