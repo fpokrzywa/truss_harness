@@ -91,6 +91,12 @@ ADMIN_INSTALLATION_ACTIONS: frozenset[str] = frozenset(
         # resolved by `secrets.service.SecretProvider.resolve_system` (B-805); its row is visible
         # only under the platform-administrator context, so only that path reaches this action
         "secret.resolved",
+        # platform groups (design 5.3, admin part 1, DECISIONS B-1402): created, changed and
+        # filled by the platform administrator with no client context; each change is also
+        # recorded in every client where the group is bound
+        "identity.group.created",
+        "identity.group.updated",
+        "identity.group.members_changed",
     }
 )
 INSTALLATION_ACTIONS: frozenset[str] = PRE_TENANT_ACTIONS | ADMIN_INSTALLATION_ACTIONS

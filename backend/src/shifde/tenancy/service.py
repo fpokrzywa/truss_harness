@@ -1038,3 +1038,48 @@ def bind_group_as_platform_admin(
         raise
     db.set_tenant(session, None)
     return binding_id
+
+
+# ------------------------------------------------------------------ admin layer (platform groups)
+def require_platform_admin(session: Session, principal: Principal) -> None:
+    """The platform-administrator check of this module, for admin's platform routes: a person on
+    a session not pinned to a client whose PDP grants `platform:admin` (B-1011)."""
+    _require_platform_admin(session, principal)
+
+
+def record_self_add(
+    session: Session,
+    ctx: RequestContext,
+    principal: Principal,
+    *,
+    tenant_id: UUID,
+    details: dict[str, Any],  # Any: audit details document
+) -> None:
+    """`tenancy.platform_admin.self_added` in `tenant_id` only (B-1012); the caller has set that
+    client's context. Admin records a platform administrator joining a group bound there."""
+    _record_self_add(session, ctx, principal, tenant_id=tenant_id, details=details)
+
+
+def clients_binding_group(session: Session, group_id: UUID) -> list[UUID]:
+    """Ids of the clients where `group_id` holds a live role binding, for the platform
+    administrator's group audit (admin part 1, DECISIONS B-1403). Platform-administrator context
+    only. Each client is asked in its own context through `shifde_bound_groups` (a client's
+    bindings are invisible to the bare flag); the client context is cleared afterwards, also on
+    failure."""
+    if not db.get_context(session).platform_admin:
+        raise Forbidden("this is a platform administrator action")
+    found: list[UUID] = []
+    after: UUID | None = None
+    try:
+        while True:
+            db.set_tenant(session, None)
+            batch = repository.list_tenants(session, include_archived=True, after=after, limit=200)
+            for tenant in batch:
+                db.set_tenant(session, tenant.id)
+                if any(g.id == group_id for g in authz.bound_groups(session)):
+                    found.append(tenant.id)
+            if len(batch) < 200:
+                return found
+            after = batch[-1].id
+    finally:
+        db.set_tenant(session, None)
