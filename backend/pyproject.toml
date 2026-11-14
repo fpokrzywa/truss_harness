@@ -24,8 +24,19 @@ dependencies = [
 
 [project.scripts]
 shifde-api = "shifde.main:run"
-# shifde-admin (shifde.cli.main:app), shifde-worker (shifde.runtime.worker:run) and the
-# "shifde.adapters" entry points are re-added by the module ports that bring them (DECISIONS B-101).
+# shifde-admin (shifde.cli.main:app) and shifde-worker (shifde.runtime.worker:run) are re-added by their ports
+# (DECISIONS B-101); the "shifde.adapters" entry points below came back with the adapters port.
+
+[project.entry-points."shifde.adapters"]
+rest_http = "shifde.adapters.rest_http:RestHttpAdapter"
+mcp_http = "shifde.adapters.mcp_http:McpHttpAdapter"
+postgres = "shifde.adapters.postgres:PostgresAdapter"
+fake = "shifde.adapters.model_providers:FakeProvider"
+openai_compatible = "shifde.adapters.model_providers:OpenAICompatibleProvider"
+anthropic = "shifde.adapters.model_providers:AnthropicProvider"
+databricks = "shifde.adapters.planned:DatabricksPlanned"
+snowflake = "shifde.adapters.planned:SnowflakePlanned"
+fabric = "shifde.adapters.planned:FabricPlanned"
 
 [dependency-groups]
 dev = [

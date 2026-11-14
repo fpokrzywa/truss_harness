@@ -552,10 +552,17 @@ def test_global_tables_exist_and_have_reasons(owner_engine: Engine) -> None:
 # --------------------------------------------------------------------------- probes
 @pytest.fixture
 def scratch(owner_engine: Engine) -> Iterator[Connection]:
-    """An owner connection inside a transaction that is always rolled back."""
+    """An owner connection inside a transaction that is always rolled back.
+
+    The probes assert the exact list of problems, so the tables in `global_tables.txt` (reviewed
+    separately by `test_database_has_no_rls_violations`) are dropped inside the transaction first;
+    the rollback restores them (DECISIONS B-302).
+    """
     with owner_engine.connect() as c:
         tx = c.begin()
         try:
+            for name in sorted(global_tables()):
+                c.execute(text(f"DROP TABLE IF EXISTS shifde.{name} CASCADE"))
             yield c
         finally:
             tx.rollback()

@@ -224,13 +224,32 @@ def test_table_owner_is_refused(make_role: MakeRole, admin: Engine) -> None:
             c.execute(text("DROP TABLE IF EXISTS shifde.zz_owned_probe"))
 
 
-def test_schema_owner_role_shifde_owner_is_refused(owner_url: str) -> None:
+def _first_owned_relation(admin: Engine, role: str) -> str:
+    """The relation `check_app_role` names for `role`: the smallest `schema.name` among its
+    relations (tables, indexes, sequences) in non-system schemas. It is `shifde.alembic_version`
+    only while no module has a table sorting before it (DECISIONS B-303)."""
+    with admin.connect() as c:
+        return str(
+            c.execute(
+                text(
+                    "SELECT min(quote_ident(n.nspname) || '.' || quote_ident(c.relname)) "
+                    "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+                    "JOIN pg_roles r ON r.oid = c.relowner "
+                    "WHERE r.rolname = :role AND n.nspname NOT IN ('pg_catalog', "
+                    "'information_schema') AND n.nspname !~ '^pg_(toast|temp)'"
+                ),
+                {"role": role},
+            ).scalar_one()
+        )
+
+
+def test_schema_owner_role_shifde_owner_is_refused(owner_url: str, admin: Engine) -> None:
     with pytest.raises(UnsafeDatabaseRole) as exc:
         _check(owner_url)
     reason = exc.value.reason
     assert "owns the database" in reason
     assert "owns schema shifde" in reason
-    assert "owns relation shifde.alembic_version" in reason
+    assert f"owns relation {_first_owned_relation(admin, 'shifde_owner')}" in reason
 
 
 def test_function_owner_is_refused(make_role: MakeRole, admin: Engine) -> None:
@@ -269,9 +288,8 @@ def test_member_of_owner_role_is_refused(make_role: MakeRole, admin: Engine) -> 
         c.execute(text(f"GRANT shifde_owner TO {_role_of(url)}"))
     with pytest.raises(UnsafeDatabaseRole) as exc:
         _check(url)
-    assert "member of role 'shifde_owner' owns relation shifde.alembic_version" in (
-        exc.value.reason
-    )
+    expected = _first_owned_relation(admin, "shifde_owner")
+    assert f"member of role 'shifde_owner' owns relation {expected}" in exc.value.reason
 
 
 def test_indirect_member_of_table_owner_is_refused(make_role: MakeRole, admin: Engine) -> None:
