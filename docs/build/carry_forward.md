@@ -108,6 +108,8 @@ Each later module's brief must include its section here. Strike an item (move it
 | runtime | `GET /api/v1/platform/status` (`platform_status`, `_worker_status`, `PlatformStatusOut` and its parts) with the `workers` table, and SETH `test_api_tenancy.py::test_platform_status`: platform administrator only (SEC Minor-2), worker health window (J m2) | tenancy part 2a (B-1013), part 2b (B-1020) |
 | ledger, runtime | `ledger/enforcement.py:140-145` `unknown_cost_policy` falls back to allow_unmeasured when the tenant row is not visible: refuse instead | tenancy review 1 item 5 |
 | admin | `installation_settings.updated_by` readable by every client (`read_all`): keep out of client shapes or record in the `global_tables.txt` reason; `secrets.service.create_secret` maps every integrity error (incl. the scope trigger) to a name conflict | tenancy review 1 item 6; tenancy builder |
+| authz, admin, runtime | Tenancy review 3 item 1: `authz/repository.py` `load_grants`/`bound_roles` grant direct user bindings when the membership is not active (B-1018); require an active membership for `subject_type='user'`, with a test, before any PDP entry point that bypasses `tenancy.dependencies.resolve_org` (admin, runtime) lands | tenancy review 3 |
+| tenancy (follow-up, with app) | Tenancy review 3 items 2-4: route tests for a personal API key asking for B, group-only staff 404 after suspension, unpinned platform admin on `/orgs/{a}` and its workspaces; `_require_some_grant` once in `resolve_org` so `dashboard`/`update_org`/`list_members` hide a client with no grant like `get_org`; `self_added` and `authz.group.bound` audit details agree on `by_platform_administrator` | tenancy review 3 |
 
 ## Done
 
