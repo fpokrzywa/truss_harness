@@ -154,6 +154,28 @@ END
 $$"""
 
 
+# An event's rate card version is a global version or one of the event's own tenant (isolation
+# review 1, item 3): the foreign key alone accepted, and so confirmed, another tenant's version
+# id. SECURITY INVOKER on purpose: it adds nothing the caller could not see, and names the tenant
+# explicitly so it also holds for the owner. 23503 is the foreign key's own code, so the answer
+# for another tenant's version equals the answer for one that does not exist.
+EVENT_VERSION_SCOPE = """CREATE FUNCTION shifde.usage_events_version_scope() RETURNS trigger
+LANGUAGE plpgsql AS
+$$
+BEGIN
+  IF NEW.rate_card_version_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM shifde.rate_card_versions v
+    WHERE v.id = NEW.rate_card_version_id
+      AND (v.tenant_id IS NULL OR v.tenant_id = NEW.tenant_id)
+  ) THEN
+    RAISE EXCEPTION 'rate card version is not visible to the event''s tenant'
+      USING ERRCODE = '23503';
+  END IF;
+  RETURN NEW;
+END
+$$"""
+
+
 def upgrade() -> None:
     _run(
         # ------------------------------------------------------------------ rate cards
@@ -257,6 +279,11 @@ def upgrade() -> None:
         "CREATE INDEX ix_usage_events__run ON shifde.usage_events (tenant_id, root_run_id)",
         "CREATE TRIGGER trg_usage_events_append_only BEFORE UPDATE OR DELETE "
         "ON shifde.usage_events FOR EACH ROW EXECUTE FUNCTION shifde.reject_mutation()",
+        EVENT_VERSION_SCOPE,
+        "REVOKE ALL ON FUNCTION shifde.usage_events_version_scope() FROM PUBLIC",
+        "GRANT EXECUTE ON FUNCTION shifde.usage_events_version_scope() TO shifde_app",
+        "CREATE TRIGGER trg_usage_events_version_scope BEFORE INSERT ON shifde.usage_events "
+        "FOR EACH ROW EXECUTE FUNCTION shifde.usage_events_version_scope()",
         *_tenant_table("usage_events"),
         "GRANT SELECT, INSERT ON shifde.usage_events TO shifde_app",
         "CREATE INDEX ix_usage_events__type_at ON shifde.usage_events "
@@ -406,4 +433,5 @@ def downgrade() -> None:
         *[f"DROP TABLE shifde.{t}" for t in TABLES],
         "DROP FUNCTION shifde.rate_card_versions_guard()",
         "DROP FUNCTION shifde.rate_card_versions_immutable()",
+        "DROP FUNCTION shifde.usage_events_version_scope()",
     )

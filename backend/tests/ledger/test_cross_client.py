@@ -364,3 +364,49 @@ def test_a_budget_id_is_unique_within_its_tenant_for_the_alert_foreign_key(
             )
         ).one()
         assert n == 1
+
+
+# ---- isolation review 1, item 3: an event's rate_card_version_id is a global version or one of
+# the event's own tenant; the foreign key alone accepted (and so confirmed) another tenant's.
+def _event_with_version(s: Session, tenant: UUID, version: UUID) -> None:
+    s.execute(
+        text(
+            "INSERT INTO shifde.usage_events (id, tenant_id, event_key, event_type, "
+            "rate_card_version_id) VALUES (:i, :t, :k, 'tool_call', :v)"
+        ),
+        {"i": uuid7(), "t": tenant, "k": f"rv-{uuid7()}", "v": version},
+    )
+
+
+def test_an_event_cannot_name_another_tenants_rate_card_version(
+    app_db: Database, world: World
+) -> None:
+    with _as(app_db, world.a) as s:
+        with pytest.raises(DBAPIError) as err:
+            _event_with_version(s, world.a, world.version_b)
+        assert getattr(err.value.orig, "sqlstate", None) == "23503"
+        s.rollback()
+        with pytest.raises(DBAPIError) as err2:  # the answer for a version that does not exist
+            _event_with_version(s, world.a, uuid7())
+        assert getattr(err2.value.orig, "sqlstate", None) == "23503"
+        s.rollback()
+
+
+def test_an_event_may_name_a_global_or_its_own_tenants_rate_card_version(
+    app_db: Database, world: World
+) -> None:
+    with _as(app_db, world.a) as s:
+        _event_with_version(s, world.a, world.global_version)
+        _event_with_version(s, world.a, world.version_a)
+        s.rollback()
+
+
+def test_the_owner_cannot_attach_another_tenants_version_either(
+    owner_db: Database, world: World
+) -> None:
+    """The check names the tenant explicitly: it does not lean on row-level security."""
+    with owner_db.session() as s:
+        with pytest.raises(DBAPIError) as err:
+            _event_with_version(s, world.a, world.version_b)
+        assert getattr(err.value.orig, "sqlstate", None) == "23503"
+        s.rollback()

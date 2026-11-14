@@ -126,3 +126,8 @@
   path: [indexes, uq_budget_alerts__once]
   reason: "constraints bypass row-level security: a budget_alerts row naming another client's budget id was accepted (or collided with that client's slot, silencing its alert under ON CONFLICT DO NOTHING). Isolation review 1, item 2, B-607. Index of uq_budget_alerts__once."
   migration: ledger_0001
+
+- table: usage_events
+  path: [triggers, trg_usage_events_version_scope]
+  reason: "the foreign key to rate_card_versions accepts (and so confirms) another client's version id; this trigger requires a global version or one of the event's own tenant. Isolation review 1, item 3, B-608."
+  migration: ledger_0001
