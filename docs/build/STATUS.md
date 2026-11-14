@@ -17,7 +17,7 @@ Tokens per model: see `python scripts/usage_report.py` (by unit); the figure bel
 | adapters | done | `82cf9cb`, merged `0446a0c` | `gates.py --ref main --no-frontend` on the merge: scan 0 findings; ruff format/check 0; mypy 0 (141 files); lint-imports 5 kept; pytest `-n 8` 413 passed (39.9 s); scripts OK. 16 files; `adapters_0001` (`adapter_conformance_runs`, global with reason B-301; schema comparison passes); 150 SETH tests moved; Items 9 and 11 adapters part (max_tokens validated and sent; omitted usage stays None) and ARCH m13 fixed (B-304); Item 16 known defect. Isolation review APPROVED (`reviews/adapters-isolation-review-1.md`); deferred tests and follow-ups in `carry_forward.md` | sonnet build, opus review: 83 requests, est. $2.08 (unit `adapters`) |
 | audit | todo | | | |
 | authz | in progress: module-builder-critical (opus) on branch `authz` | | | |
-| observability | in progress: module-builder (haiku trial, charter §10) on branch `observability` | | | |
+| observability | done | `0f76432`, merged `82b3b66` | `gates.py --ref main --no-frontend` on the merge: scan 0 findings; ruff format/check 0; mypy 0 (144 files); lint-imports 5 kept; pytest `-n 8` 419 passed (52.4 s); scripts OK. 6 files copied unchanged; no tables; readiness uses `core.health.migration_state`; 6 SETH tests moved, 7 deferred (app, governance; `carry_forward.md`). Router mounting is owed by `app` (B-501). No migration and not critical: no isolation review. Haiku trial passed in one round (B-011) | haiku build: 25 requests, est. $0.04 (unit `observability`) |
 | ledger | in progress: module-builder (sonnet) on branch `ledger` | | | |
 | secrets | todo | | | |
 | identity | todo | | | |
