@@ -94,6 +94,8 @@ Each later module's brief must include its section here. Strike an item (move it
 | core (before identity/tenancy) | `core/db.py:_update`: lowering the context (`set_platform_admin(False)`, `set_tenant(None)`, tenant switch) in an aborted transaction raises and leaves `session.info` at the old, higher value, re-applied by `after_begin`; fail closed on exception (`platform_admin = old and new`, tenant/principal None unless unchanged), with parametrized tests | audit review 2 item 1 |
 | core/audit | `audit.service._may_lock_chain` decides from `session.info`, not the database: after a rolled-back savepoint that set another tenant it queues on B's chain lock; decide in one statement (`shifde.current_tenant_id() = :t OR NOT row_security_active(...)`), savepoint-mismatch test (same root as the savepoint-desync row) | audit review 2 item 2 |
 | identity | `PRE_TENANT_ACTIONS` NULL-tenant writes also require `get_context(session).tenant_id is None`, with a test | audit review 2 item 3 |
+| admin (with the secret routes) | Secrets review 1 items 1-2: `secret_access_log` plain `secret_id` FK fires before the composite one and tells B's id from an unknown id (replace it with a NULL-tenant-only key, test same constraint name); `secrets.service.resolve` must refuse when the session tenant differs from the PDP's before the lookup (same error as an unknown id) | secrets review 1 |
+| core / app | Redaction registry is process-wide: a client reflecting a chosen string through scrubbed output learns another client uses that value; per-tenant/per-request redaction or never scrub a client's own input back to it | secrets review 1 item 3 |
 
 ## Done
 
