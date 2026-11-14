@@ -107,6 +107,8 @@ Each later module's brief must include its section here. Strike an item (move it
 | identity (part 2b) | `login_rate_per_account_per_minute` (per normalized e-mail, api layer) has the same victim-lockout shape as SEC Minor-1 for its window: key it per (e-mail, client address) or justify, with a test | identity part 2a (B-911) |
 | cli | `login_lockouts` keeps one row per (person, source): purge rows with no active lock and old `updated_at` in the retention job (findings Item 20) | identity part 2a (B-911) |
 | cli | `identity.service.create_setup_token` and `platform_admin_exists` run as the schema owner (`platform_admin_exists` raises `OwnerOnly` under row-level security, B-914) | identity part 2a |
+| tenancy | `shifde_revoke_user_sessions` (identity_0002): revoke only sessions pinned to the current client, refuse a platform-admin target; cross-client test with `world.both` (today client A suspending a shared member logs them, or the admin, out of B) | identity review 2 item 1 |
+| identity (part 2b) | Review 2 items 2-6: `login_local` clears principal/tenant in a `finally` on failure and routes discard the session; lockout groups IPv6 by /64 plus an account-wide ceiling or slowdown; equalise known/unknown-account failure work if measurable; `actor_id = current_principal_id()` for the three new `PRE_TENANT_ACTIONS`; `definer_violations` requires owner `shifde_owner` for every allowlisted definer | identity review 2 |
 
 ## Done
 
