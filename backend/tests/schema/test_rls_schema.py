@@ -1319,3 +1319,406 @@ def test_principal_table_entry_without_reason_is_reported(scratch: Connection) -
         scratch, {"shifde.zz_rls_probe": " "}, seth_tables=_seth_tables(), ported=[]
     )
     assert problems == ["shifde.zz_rls_probe: no reason"]
+
+
+# --------------------------------------------------------------------------- B-116 items 8-10
+# Constraints and grants that bypass row-level security (isolation review 1 item 9, review 3
+# items 7, 8; design 5.3), added by tenancy (DECISIONS B-1007). A *client table* is a table with a
+# `tenant_id` column. Changing any list below needs isolation review; a stale entry fails.
+_SYSTEM_SCHEMAS = (
+    "n.nspname NOT IN ('pg_catalog', 'information_schema') "
+    r"AND n.nspname NOT LIKE 'pg\_toast%' AND n.nspname NOT LIKE 'pg\_temp\_%'"
+)
+_HAS_TENANT = (
+    "EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = {rel} "
+    "AND a.attname = 'tenant_id' AND a.attnum > 0 AND NOT a.attisdropped)"
+)
+APP_ROLE = "shifde_app"
+
+# TRUNCATE ignores row-level security; TRIGGER and REFERENCES let the role run code or hold
+# constraints over rows it cannot see. Checked on every relation (stricter than client tables),
+# including grants to PUBLIC (has_table_privilege counts them).
+_FORBIDDEN_PRIVILEGES = ("REFERENCES", "TRIGGER", "TRUNCATE")
+_PRIVILEGED_RELATIONS = text(
+    f"""SELECT n.nspname || '.' || c.relname AS rel, p.priv
+         FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+         CROSS JOIN pg_catalog.unnest(CAST(:privs AS text[])) AS p(priv)
+        WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f') AND {_SYSTEM_SCHEMAS}
+          AND (pg_catalog.has_table_privilege(:role, c.oid, p.priv)
+               OR (p.priv = 'REFERENCES'
+                   AND pg_catalog.has_any_column_privilege(:role, c.oid, 'REFERENCES')))
+        ORDER BY 1, 2"""
+)
+
+# schema.table.constraint -> why a foreign key between two client tables may leave `tenant_id`
+# out (it is checked as the owner, without row-level security: an existence check or a cascade
+# would otherwise reach another client's rows).
+PLAIN_FOREIGN_KEYS: dict[str, str] = {
+    "shifde.role_bindings.role_bindings_role_id_fkey": (
+        "a binding names a system template role (tenant NULL) or a role of its own client; "
+        "check_role_binding() (BEFORE INSERT/UPDATE, the writer's rights under RLS) refuses "
+        "another client's role with the message it gives an unknown id"
+    ),
+    "shifde.role_permissions.role_permissions_role_id_fkey": (
+        "system-template grants (tenant NULL, written only by migrations); client rows are "
+        "checked by the composite fk_role_permissions__role and trg_role_permissions_tenant"
+    ),
+    "shifde.rate_card_versions.rate_card_versions_rate_card_id_fkey": (
+        "installation rate cards (tenant NULL); client rows are checked by the composite "
+        "fk_rate_card_versions__rate_card and rate_card_versions_guard"
+    ),
+    "shifde.usage_events.usage_events_rate_card_version_id_fkey": (
+        "a client's event is priced by an installation rate card version (tenant NULL) or its "
+        "own; trg_usage_events_version_scope (BEFORE INSERT) refuses another client's version "
+        "with the message it gives an unknown id"
+    ),
+    "shifde.secret_access_log.secret_access_log_secret_id_fkey": (
+        "SETH's key, kept for installation secrets (tenant NULL) beside the composite "
+        "fk_secret_access_log__secret that checks every client row (B-801)"
+    ),
+    "shifde.idp_configs.idp_configs_client_secret_ref_id_fkey": (
+        "installation IdPs (tenant NULL) name installation secrets; client IdPs are checked by "
+        "the composite fk_idp_configs__client_secret (B-903) and trg_idp_configs_secret_scope"
+    ),
+    "shifde.oidc_auth_requests.oidc_auth_requests_idp_config_id_fkey": (
+        "flows at installation IdPs (tenant NULL); client flows are checked by the composite "
+        "fk_oidc_auth_requests__idp; rows are written only by shifde_begin_oidc_request"
+    ),
+}
+_CLIENT_FOREIGN_KEYS = text(
+    f"""SELECT n.nspname || '.' || src.relname || '.' || k.conname AS name,
+              ARRAY(SELECT a.attname::text
+                      FROM pg_catalog.unnest(k.conkey) WITH ORDINALITY u(att, ord)
+                      JOIN pg_catalog.pg_attribute a
+                        ON a.attrelid = k.conrelid AND a.attnum = u.att
+                     ORDER BY u.ord) AS columns,
+              ARRAY(SELECT a.attname::text
+                      FROM pg_catalog.unnest(k.confkey) WITH ORDINALITY u(att, ord)
+                      JOIN pg_catalog.pg_attribute a
+                        ON a.attrelid = k.confrelid AND a.attnum = u.att
+                     ORDER BY u.ord) AS target_columns
+         FROM pg_catalog.pg_constraint k
+         JOIN pg_catalog.pg_class src ON src.oid = k.conrelid
+         JOIN pg_catalog.pg_namespace n ON n.oid = src.relnamespace
+        WHERE k.contype = 'f' AND {_SYSTEM_SCHEMAS}
+          AND {_HAS_TENANT.format(rel="k.conrelid")} AND {_HAS_TENANT.format(rel="k.confrelid")}
+        ORDER BY 1"""
+)
+
+# schema.table.index -> why a unique key of a client table may leave `tenant_id` out (a
+# duplicate-key error is raised as the owner and would tell a client that another client holds
+# the value). Primary keys are not listed: they are server-minted ids (B-1007).
+UNIQUE_WITHOUT_TENANT: dict[str, str] = {
+    "shifde.api_keys.uq_api_keys__prefix": (
+        "server-generated public prefix, looked up before a client is known (B-903)"
+    ),
+    "shifde.oidc_auth_requests.uq_oidc_auth_requests__state": (
+        "hash of a server-generated state, consumed before a client is known; written only by "
+        "shifde_begin_oidc_request (B-922)"
+    ),
+    "shifde.setup_tokens.uq_setup_tokens__token_hash": (
+        "hash of a server-generated token, redeemed before a client is known; no grants to "
+        "shifde_app (B-902)"
+    ),
+    "shifde.rate_card_versions.uq_rate_card_versions__no": (
+        "version numbers per rate card: rate_card_versions_guard (BEFORE INSERT) refuses a "
+        "version on another client's card before the unique index is checked"
+    ),
+}
+_CLIENT_UNIQUE_INDEXES = text(
+    f"""SELECT n.nspname || '.' || c.relname || '.' || i.relname AS name,
+              EXISTS (SELECT 1 FROM pg_catalog.unnest(x.indkey) u(att)
+                        JOIN pg_catalog.pg_attribute a
+                          ON a.attrelid = x.indrelid AND a.attnum = u.att
+                       WHERE a.attname = 'tenant_id')
+              OR COALESCE(pg_catalog.pg_get_expr(x.indexprs, x.indrelid), '')
+                 ~ '\\mtenant_id\\M' AS keyed
+         FROM pg_catalog.pg_index x
+         JOIN pg_catalog.pg_class c ON c.oid = x.indrelid
+         JOIN pg_catalog.pg_class i ON i.oid = x.indexrelid
+         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE x.indisunique AND NOT x.indisprimary AND {_SYSTEM_SCHEMAS}
+          AND {_HAS_TENANT.format(rel="x.indrelid")}
+        ORDER BY 1"""
+)
+
+# Item 8 (decided: required): client and principal key columns are uuid, so a key compared with
+# current_tenant_id() / current_principal_id() (uuid) never goes through a text cast.
+_KEY_COLUMN_TYPES = text(
+    f"""SELECT n.nspname || '.' || c.relname || '.' || a.attname AS name,
+              pg_catalog.format_type(a.atttypid, a.atttypmod) AS type
+         FROM pg_catalog.pg_attribute a
+         JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relkind IN ('r', 'p') AND {_SYSTEM_SCHEMAS}
+          AND a.attname IN ('tenant_id', 'user_id') AND a.attnum > 0 AND NOT a.attisdropped
+          AND a.atttypid <> CAST('uuid' AS pg_catalog.regtype)
+        ORDER BY 1"""
+)
+
+# Item 10 (design 5.3): administering SETH does not grant sight of client content. On a client
+# table, `shifde.is_platform_admin_ctx()` may only reach installation rows: every occurrence must
+# sit in an AND with `tenant_id IS NULL` as a direct conjunct. Platform catalogs keyed to the
+# client by another column may OR it; schema.table -> reason.
+ADMIN_FLAG_CATALOGS: dict[str, str] = {
+    "shifde.tenants": (
+        "the list of organizations (design 5.3 names it a platform catalog): the platform "
+        "administrator creates and lists clients; it holds no client content"
+    ),
+}
+
+
+def _admin_outside_shared_rows(expr: str) -> bool:
+    """`shifde.is_platform_admin_ctx()` occurs outside every AND that has `tenant_id IS NULL` as
+    a direct conjunct."""
+    expr = _strip_parens(expr)
+    branches = _split_top(expr, "OR")
+    if len(branches) > 1:
+        return any(_admin_outside_shared_rows(b) for b in branches)
+    conjuncts = _split_top(expr, "AND")
+    if len(conjuncts) > 1:
+        if any(_strip_parens(c) == _GLOBAL_ROWS for c in conjuncts):
+            return False
+        return any(_admin_outside_shared_rows(c) for c in conjuncts)
+    return _ADMIN in expr
+
+
+def privilege_problems(conn: Connection, role: str = APP_ROLE) -> list[str]:
+    rows = conn.execute(_PRIVILEGED_RELATIONS, {"role": role, "privs": list(_FORBIDDEN_PRIVILEGES)})
+    return [f"{rel}: {role} holds {priv}" for rel, priv in rows]
+
+
+def foreign_key_problems(
+    conn: Connection, exceptions: Mapping[str, str] = PLAIN_FOREIGN_KEYS
+) -> list[str]:
+    problems: list[str] = []
+    seen: set[str] = set()
+    for name, columns, target in conn.execute(_CLIENT_FOREIGN_KEYS):
+        seen.add(name)
+        composite = any(
+            c == "tenant_id" and t == "tenant_id" for c, t in zip(columns, target, strict=True)
+        )
+        if not composite and name not in exceptions:
+            problems.append(f"{name}: foreign key between client tables without tenant_id")
+    problems += [
+        f"{name}: stale PLAIN_FOREIGN_KEYS entry" for name in exceptions if name not in seen
+    ]
+    return problems
+
+
+def unique_key_problems(
+    conn: Connection, exceptions: Mapping[str, str] = UNIQUE_WITHOUT_TENANT
+) -> list[str]:
+    problems: list[str] = []
+    unkeyed: set[str] = set()
+    for name, keyed in conn.execute(_CLIENT_UNIQUE_INDEXES):
+        if not keyed:
+            unkeyed.add(name)
+            if name not in exceptions:
+                problems.append(f"{name}: unique key on a client table without tenant_id")
+    problems += [
+        f"{name}: stale UNIQUE_WITHOUT_TENANT entry" for name in exceptions if name not in unkeyed
+    ]
+    return problems
+
+
+def key_type_problems(conn: Connection) -> list[str]:
+    return [f"{name}: {type_} (must be uuid)" for name, type_ in conn.execute(_KEY_COLUMN_TYPES)]
+
+
+def admin_flag_problems(
+    conn: Connection, catalogs: Mapping[str, str] = ADMIN_FLAG_CATALOGS
+) -> list[str]:
+    conn.execute(text("SELECT pg_catalog.set_config('search_path', 'pg_catalog', true)"))
+    problems: list[str] = []
+    widened: set[str] = set()
+    for schema, table, name, cmd, permissive, _roles, tenant_column, using, check in conn.execute(
+        _POLICIES
+    ):
+        relation = f"{schema}.{table}"
+        if not permissive or not (tenant_column or relation in catalogs):
+            continue
+        for kind, expr in (("USING", using), ("WITH CHECK", check)):
+            if expr is not None and _admin_outside_shared_rows(expr):
+                widened.add(relation)
+                if relation not in catalogs:
+                    problems.append(
+                        f"{relation}: policy {name} ({_CMD[cmd]}) {kind} lets {_ADMIN} reach "
+                        f"client rows: {expr}"
+                    )
+    problems += [
+        f"{entry}: stale ADMIN_FLAG_CATALOGS entry" for entry in catalogs if entry not in widened
+    ]
+    return problems
+
+
+def test_shifde_app_has_no_truncate_trigger_or_references(owner_engine: Engine) -> None:
+    with owner_engine.connect() as c:
+        assert privilege_problems(c) == []
+
+
+def test_foreign_keys_between_client_tables_include_tenant_id(owner_engine: Engine) -> None:
+    with owner_engine.connect() as c:
+        assert foreign_key_problems(c) == []
+
+
+def test_unique_keys_of_client_tables_include_tenant_id(owner_engine: Engine) -> None:
+    with owner_engine.connect() as c:
+        assert unique_key_problems(c) == []
+
+
+def test_client_and_principal_key_columns_are_uuid(owner_engine: Engine) -> None:
+    with owner_engine.connect() as c:
+        assert key_type_problems(c) == []
+
+
+def test_the_admin_flag_reaches_only_installation_rows_of_client_tables(
+    owner_engine: Engine,
+) -> None:
+    with owner_engine.connect() as c:
+        assert admin_flag_problems(c) == []
+
+
+def test_b116_exception_lists_have_reasons() -> None:
+    for listing in (PLAIN_FOREIGN_KEYS, UNIQUE_WITHOUT_TENANT, ADMIN_FLAG_CATALOGS):
+        assert listing
+        assert all(reason.strip() for reason in listing.values())
+
+
+def test_a_forbidden_privilege_is_reported(scratch: Connection) -> None:
+    _secured_table(scratch)
+    _tenant_policy(scratch)
+    for priv in _FORBIDDEN_PRIVILEGES:
+        scratch.execute(text(f"GRANT {priv} ON shifde.zz_rls_probe TO {APP_ROLE}"))
+    assert privilege_problems(scratch) == [
+        f"shifde.zz_rls_probe: {APP_ROLE} holds {priv}" for priv in _FORBIDDEN_PRIVILEGES
+    ]
+
+
+def test_a_column_references_grant_is_reported(scratch: Connection) -> None:
+    _secured_table(scratch)
+    scratch.execute(text(f"GRANT REFERENCES (ref) ON shifde.zz_rls_probe TO {APP_ROLE}"))
+    assert privilege_problems(scratch) == [f"shifde.zz_rls_probe: {APP_ROLE} holds REFERENCES"]
+
+
+def test_a_truncate_grant_to_public_is_reported(scratch: Connection) -> None:
+    _secured_table(scratch)
+    scratch.execute(text("GRANT TRUNCATE ON shifde.zz_rls_probe TO PUBLIC"))
+    assert privilege_problems(scratch) == [f"shifde.zz_rls_probe: {APP_ROLE} holds TRUNCATE"]
+
+
+def _client_pair(c: Connection) -> None:
+    c.execute(
+        text(
+            "CREATE TABLE shifde.zz_fk_target (id uuid PRIMARY KEY, tenant_id uuid NOT NULL, "
+            "code text, CONSTRAINT zz_fk_target_tid UNIQUE (tenant_id, id))"
+        )
+    )
+    c.execute(
+        text("CREATE TABLE shifde.zz_fk_source (id uuid PRIMARY KEY, tenant_id uuid, ref uuid)")
+    )
+
+
+def test_a_plain_foreign_key_between_client_tables_is_reported(scratch: Connection) -> None:
+    _client_pair(scratch)
+    scratch.execute(
+        text(
+            "ALTER TABLE shifde.zz_fk_source ADD CONSTRAINT zz_plain "
+            "FOREIGN KEY (ref) REFERENCES shifde.zz_fk_target (id)"
+        )
+    )
+    assert foreign_key_problems(scratch) == [
+        "shifde.zz_fk_source.zz_plain: foreign key between client tables without tenant_id"
+    ]
+    listed = {**PLAIN_FOREIGN_KEYS, "shifde.zz_fk_source.zz_plain": "test"}
+    assert foreign_key_problems(scratch, listed) == []
+
+
+def test_a_composite_key_must_pair_tenant_id_with_tenant_id(scratch: Connection) -> None:
+    _client_pair(scratch)
+    scratch.execute(
+        text(
+            "ALTER TABLE shifde.zz_fk_source ADD CONSTRAINT zz_crossed "
+            "FOREIGN KEY (ref, tenant_id) REFERENCES shifde.zz_fk_target (tenant_id, id)"
+        )
+    )
+    scratch.execute(
+        text(
+            "ALTER TABLE shifde.zz_fk_source ADD CONSTRAINT zz_composite "
+            "FOREIGN KEY (tenant_id, ref) REFERENCES shifde.zz_fk_target (tenant_id, id)"
+        )
+    )
+    assert foreign_key_problems(scratch) == [
+        "shifde.zz_fk_source.zz_crossed: foreign key between client tables without tenant_id"
+    ]
+
+
+def test_a_stale_plain_foreign_key_entry_is_reported(scratch: Connection) -> None:
+    assert foreign_key_problems(scratch, {**PLAIN_FOREIGN_KEYS, "shifde.nope.nope_fk": "x"}) == [
+        "shifde.nope.nope_fk: stale PLAIN_FOREIGN_KEYS entry"
+    ]
+
+
+def test_a_unique_key_without_tenant_id_is_reported(scratch: Connection) -> None:
+    _client_pair(scratch)
+    scratch.execute(text("ALTER TABLE shifde.zz_fk_target ADD CONSTRAINT zz_code UNIQUE (code)"))
+    scratch.execute(text("CREATE UNIQUE INDEX zz_lower_code ON shifde.zz_fk_target (lower(code))"))
+    scratch.execute(
+        text(
+            "CREATE UNIQUE INDEX zz_scoped_code ON shifde.zz_fk_target "
+            "(COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid), code)"
+        )
+    )
+    assert unique_key_problems(scratch) == [
+        "shifde.zz_fk_target.zz_code: unique key on a client table without tenant_id",
+        "shifde.zz_fk_target.zz_lower_code: unique key on a client table without tenant_id",
+    ]
+
+
+def test_a_stale_unique_entry_is_reported(scratch: Connection) -> None:
+    assert unique_key_problems(scratch, {**UNIQUE_WITHOUT_TENANT, "shifde.x.uq_x": "x"}) == [
+        "shifde.x.uq_x: stale UNIQUE_WITHOUT_TENANT entry"
+    ]
+
+
+def test_a_text_key_column_is_reported(scratch: Connection) -> None:
+    scratch.execute(text("CREATE TABLE shifde.zz_text_key (id int PRIMARY KEY, tenant_id text)"))
+    assert key_type_problems(scratch) == ["shifde.zz_text_key.tenant_id: text (must be uuid)"]
+
+
+ADMIN_OR = f"{TENANT} OR shifde.is_platform_admin_ctx()"
+
+
+@pytest.mark.parametrize(
+    ("using", "reported"),
+    [
+        (ADMIN_OR, True),
+        (f"({TENANT}) OR (shifde.is_platform_admin_ctx() AND ref IS NOT NULL)", True),
+        (f"{TENANT} OR (tenant_id IS NULL AND shifde.is_platform_admin_ctx())", False),
+        (f"{TENANT} AND shifde.is_platform_admin_ctx()", True),
+        (TENANT, False),
+    ],
+)
+def test_the_admin_flag_on_a_client_table_is_reported_unless_on_installation_rows(
+    scratch: Connection, using: str, reported: bool
+) -> None:
+    _secured_table(scratch)
+    scratch.execute(
+        text(f"CREATE POLICY p ON shifde.zz_rls_probe USING ({using}) WITH CHECK ({TENANT})")
+    )
+    problems = [p for p in admin_flag_problems(scratch) if p.startswith("shifde.zz_rls_probe")]
+    assert bool(problems) is reported
+
+
+def test_the_admin_flag_on_a_listed_catalog_passes_and_a_stale_entry_fails(
+    scratch: Connection,
+) -> None:
+    _secured_table(scratch)
+    scratch.execute(
+        text(f"CREATE POLICY p ON shifde.zz_rls_probe USING ({ADMIN_OR}) WITH CHECK ({TENANT})")
+    )
+    listed = {**ADMIN_FLAG_CATALOGS, "shifde.zz_rls_probe": "test"}
+    assert admin_flag_problems(scratch, listed) == []
+    assert admin_flag_problems(scratch, {**listed, "shifde.zz_none": "test"}) == [
+        "shifde.zz_none: stale ADMIN_FLAG_CATALOGS entry"
+    ]
