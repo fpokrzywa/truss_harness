@@ -18,7 +18,7 @@ Tokens per model: see `python scripts/usage_report.py` (by unit); the figure bel
 | audit | todo | | | |
 | authz | in progress: module-builder-critical (opus) on branch `authz` | | | |
 | observability | done | `0f76432`, merged `82b3b66` | `gates.py --ref main --no-frontend` on the merge: scan 0 findings; ruff format/check 0; mypy 0 (144 files); lint-imports 5 kept; pytest `-n 8` 419 passed (52.4 s); scripts OK. 6 files copied unchanged; no tables; readiness uses `core.health.migration_state`; 6 SETH tests moved, 7 deferred (app, governance; `carry_forward.md`). Router mounting is owed by `app` (B-501). No migration and not critical: no isolation review. Haiku trial passed in one round (B-011) | haiku build: 25 requests, est. $0.04 (unit `observability`) |
-| ledger | in progress: module-builder (sonnet) on branch `ledger` | | | |
+| ledger | in progress: build round 1 done, isolation review 1 BLOCKED; fix round 1 next | `31dae44` on `ledger` (pushed, not merged) | `gates.py --ref origin/ledger --no-frontend`: 8/8 PASS, pytest 470 passed (80.5 s). 8 tables in `ledger_0001`; Items 9, 11 ledger part and Item 10 primitive done (B-601..B-605). Isolation review 1 BLOCKED (`reviews/ledger-isolation-review-1.md`): (1) definer `rate_card_versions_guard` trusts caller `NEW.tenant_id` before WITH CHECK (oracle on another client's cards); (2) `budget_alerts` FK/UNIQUE ignore `tenant_id`. | sonnet build ~253k agent tokens (over the 200k sizing), opus review |
 | secrets | todo | | | |
 | identity | todo | | | |
 | tenancy | todo | | | |
