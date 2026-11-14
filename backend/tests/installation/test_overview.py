@@ -117,6 +117,34 @@ def test_overview_shape_defaults_and_settings(
     assert j["workers"] is None or isinstance(j["workers"], list)
 
 
+def test_installation_overview_reports_allow_private_egress_default(
+    client: TestClient, owner_session: Session
+) -> None:
+    """SETH `test_p9_installation.py`, moved with the connections port (egress_policies exists
+    and `shifde_app` holds SELECT on it, carry_forward B-1105); SETH's world login is replaced by
+    this module's platform administrator."""
+    person(owner_session, PLATFORM, admin=True)
+    owner_session.execute(
+        text(
+            "UPDATE shifde.egress_policies SET allow_private = true "
+            "WHERE tenant_id IS NULL AND is_default"
+        )
+    )
+    owner_session.commit()
+    try:
+        login(client, PLATFORM)
+        j = client.get(URL).json()
+        assert j["security"]["egress_default_allow_private"] is True
+    finally:
+        owner_session.execute(
+            text(
+                "UPDATE shifde.egress_policies SET allow_private = false "
+                "WHERE tenant_id IS NULL AND is_default"
+            )
+        )
+        owner_session.commit()
+
+
 def test_feature_flags_and_default_limits_come_from_installation_settings(
     client: TestClient, owner_session: Session
 ) -> None:

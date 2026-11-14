@@ -344,3 +344,33 @@
   reason: >-
     Tenancy review 1 item 1: SETH's tenant_isolation WITH CHECK (id = current_tenant_id() OR admin) let a client context naming a not-yet-existing id create that client (slug squatting, and uq_tenants__slug answered whether another client's slug exists). The RESTRICTIVE INSERT policy admits a client row only under the platform-administrator context, as B-910 did for memberships. DECISIONS B-1008.
   migration: tenancy_0002
+
+- table: egress_policies
+  path: [constraints, uq_egress_policies__tenant_id_id]
+  reason: "constraints bypass row-level security (B-116 item 9): target of the composite foreign key fk_connections__egress_policy, so a connection can name only an egress policy of its own client. DECISIONS B-1502."
+  migration: connections_0001
+
+- table: egress_policies
+  path: [indexes, uq_egress_policies__tenant_id_id]
+  reason: "index of uq_egress_policies__tenant_id_id (B-116 item 9, DECISIONS B-1502)."
+  migration: connections_0001
+
+- table: connections
+  path: [constraints, connections_secret_ref_id_fkey]
+  reason: "constraints bypass row-level security (B-116 item 9): SETH's plain key was checked as the owner against every client's secrets; replaced by the composite fk_connections__secret. A connection never names an installation secret (tenant NULL; SETH's connections_guard refused it), so the composite key checks every row. DECISIONS B-1502."
+  migration: connections_0001
+
+- table: connections
+  path: [constraints, fk_connections__secret]
+  reason: "constraints bypass row-level security (B-116 item 9): a connection names a secret of its own client, (tenant_id, secret_ref_id) -> secrets (tenant_id, id). Replaces SETH's plain connections_secret_ref_id_fkey. DECISIONS B-1502."
+  migration: connections_0001
+
+- table: connections
+  path: [constraints, connections_egress_policy_id_fkey]
+  reason: "constraints bypass row-level security (B-116 item 9): SETH's plain key was checked as the owner against every client's egress policies; replaced by the composite fk_connections__egress_policy. A connection never names the installation default (tenant NULL; SETH's connections_guard refused it). DECISIONS B-1502."
+  migration: connections_0001
+
+- table: connections
+  path: [constraints, fk_connections__egress_policy]
+  reason: "constraints bypass row-level security (B-116 item 9): a connection names an egress policy of its own client, (tenant_id, egress_policy_id) -> egress_policies (tenant_id, id). Replaces SETH's plain connections_egress_policy_id_fkey. DECISIONS B-1502."
+  migration: connections_0001

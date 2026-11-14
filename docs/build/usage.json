@@ -1,26 +1,26 @@
 {
-  "generated": "2026-11-14T14:20:39+00:00",
+  "generated": "2026-11-14T15:11:22+00:00",
   "note": "est_usd is an estimate at list price, not a bill",
   "totals": {
     "all": "all",
-    "input": 6268,
-    "output": 3259316,
-    "cache_write_5m": 9042134,
-    "cache_write_1h": 2495055,
-    "cache_read": 395636574,
-    "requests": 3076,
-    "est_usd": 198.3225
+    "input": 6738,
+    "output": 3460802,
+    "cache_write_5m": 9564096,
+    "cache_write_1h": 2553211,
+    "cache_read": 425796525,
+    "requests": 3308,
+    "est_usd": 211.4612
   },
   "by_model": [
     {
       "model": "claude-opus-5-5",
-      "input": 5074,
-      "output": 2496272,
-      "cache_write_5m": 6250515,
-      "cache_write_1h": 2077134,
-      "cache_read": 331953410,
-      "requests": 2480,
-      "est_usd": 164.2061
+      "input": 5544,
+      "output": 2697758,
+      "cache_write_5m": 6772477,
+      "cache_write_1h": 2135290,
+      "cache_read": 362113361,
+      "requests": 2712,
+      "est_usd": 177.3447
     },
     {
       "model": "claude-fable-5-2",
@@ -56,33 +56,33 @@
   "by_agent_type": [
     {
       "agent_type": "module-builder-critical",
-      "input": 2664,
-      "output": 1403138,
-      "cache_write_5m": 3907025,
+      "input": 2954,
+      "output": 1524279,
+      "cache_write_5m": 4242996,
       "cache_write_1h": 0,
-      "cache_read": 192554886,
-      "requests": 1317,
-      "est_usd": 86.1195
+      "cache_read": 210368658,
+      "requests": 1460,
+      "est_usd": 93.7861
     },
     {
       "agent_type": "lead",
-      "input": 1332,
-      "output": 652068,
+      "input": 1410,
+      "output": 685387,
       "cache_write_5m": 0,
-      "cache_write_1h": 2495055,
-      "cache_read": 116081801,
-      "requests": 630,
-      "est_usd": 62.882
+      "cache_write_1h": 2553211,
+      "cache_read": 125572012,
+      "requests": 668,
+      "est_usd": 65.9119
     },
     {
       "agent_type": "isolation-reviewer",
-      "input": 1200,
-      "output": 606797,
-      "cache_write_5m": 2343490,
+      "input": 1302,
+      "output": 653823,
+      "cache_write_5m": 2529481,
       "cache_write_1h": 0,
-      "cache_read": 34569436,
-      "requests": 594,
-      "est_usd": 30.7721
+      "cache_read": 37425404,
+      "requests": 645,
+      "est_usd": 33.2142
     },
     {
       "agent_type": "module-builder",
@@ -158,13 +158,13 @@
   "by_unit": [
     {
       "unit": "lead",
-      "input": 1332,
-      "output": 652068,
+      "input": 1410,
+      "output": 685387,
       "cache_write_5m": 0,
-      "cache_write_1h": 2495055,
-      "cache_read": 116081801,
-      "requests": 630,
-      "est_usd": 62.882
+      "cache_write_1h": 2553211,
+      "cache_read": 125572012,
+      "requests": 668,
+      "est_usd": 65.9119
     },
     {
       "unit": "identity",
@@ -207,6 +207,16 @@
       "est_usd": 9.9454
     },
     {
+      "unit": "admin",
+      "input": 288,
+      "output": 143417,
+      "cache_write_5m": 444786,
+      "cache_write_1h": 0,
+      "cache_read": 15110763,
+      "requests": 144,
+      "est_usd": 8.1156
+    },
+    {
       "unit": "ledger",
       "input": 294,
       "output": 187591,
@@ -215,6 +225,16 @@
       "cache_read": 15113417,
       "requests": 147,
       "est_usd": 5.7679
+    },
+    {
+      "unit": "connections",
+      "input": 200,
+      "output": 91322,
+      "cache_write_5m": 274407,
+      "cache_write_1h": 0,
+      "cache_read": 11085118,
+      "requests": 98,
+      "est_usd": 5.4163
     },
     {
       "unit": "secrets",
@@ -245,16 +265,6 @@
       "cache_read": 6041654,
       "requests": 102,
       "est_usd": 3.9799
-    },
-    {
-      "unit": "admin",
-      "input": 96,
-      "output": 66572,
-      "cache_write_5m": 197231,
-      "cache_write_1h": 0,
-      "cache_read": 5526141,
-      "requests": 48,
-      "est_usd": 3.4232
     },
     {
       "unit": "audit",
@@ -350,35 +360,35 @@
   "by_sub_project": [
     {
       "sub_project": "sp1",
-      "input": 4936,
-      "output": 2607248,
-      "cache_write_5m": 9042134,
+      "input": 5328,
+      "output": 2775415,
+      "cache_write_5m": 9564096,
       "cache_write_1h": 0,
-      "cache_read": 279554773,
-      "requests": 2446,
-      "est_usd": 135.4406
+      "cache_read": 300224513,
+      "requests": 2640,
+      "est_usd": 145.5492
     },
     {
       "sub_project": "lead",
-      "input": 1332,
-      "output": 652068,
+      "input": 1410,
+      "output": 685387,
       "cache_write_5m": 0,
-      "cache_write_1h": 2495055,
-      "cache_read": 116081801,
-      "requests": 630,
-      "est_usd": 62.882
+      "cache_write_1h": 2553211,
+      "cache_read": 125572012,
+      "requests": 668,
+      "est_usd": 65.9119
     }
   ],
   "by_day": [
     {
       "day": "2026-11-14",
-      "input": 4778,
-      "output": 2238611,
-      "cache_write_5m": 6170692,
-      "cache_write_1h": 1371979,
-      "cache_read": 298361164,
-      "requests": 2342,
-      "est_usd": 134.0423
+      "input": 5248,
+      "output": 2440097,
+      "cache_write_5m": 6692654,
+      "cache_write_1h": 1430135,
+      "cache_read": 328521115,
+      "requests": 2574,
+      "est_usd": 147.181
     },
     {
       "day": "2026-11-13",
@@ -405,10 +415,10 @@
       "unit": "admin",
       "build": 1,
       "verify": 0,
-      "fix": 0,
+      "fix": 1,
       "review": 0,
       "inventory": 0,
-      "other": 0
+      "other": 1
     },
     {
       "unit": "audit",
@@ -427,6 +437,15 @@
       "review": 0,
       "inventory": 0,
       "other": 2
+    },
+    {
+      "unit": "connections",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 1
     },
     {
       "unit": "core",

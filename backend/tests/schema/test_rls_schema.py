@@ -1384,6 +1384,11 @@ PLAIN_FOREIGN_KEYS: dict[str, str] = {
         "flows at installation IdPs (tenant NULL); client flows are checked by the composite "
         "fk_oidc_auth_requests__idp; rows are written only by shifde_begin_oidc_request"
     ),
+    "shifde.connections.connections_vendor_id_fkey": (
+        "a connection names a global catalog vendor (tenant NULL) or one of its own client's; "
+        "trg_connections_guard (BEFORE INSERT/UPDATE, the writer's rights under RLS) refuses "
+        "another client's vendor with the message it gives an unknown id (B-1502)"
+    ),
 }
 _CLIENT_FOREIGN_KEYS = text(
     f"""SELECT n.nspname || '.' || src.relname || '.' || k.conname AS name,
