@@ -36,3 +36,7 @@ workspaces  # tenancy
 projects  # tenancy
 installation_settings  # tenancy
 vendors  # vendors
+egress_policies  # connections
+connections  # connections
+connection_tests  # connections
+connection_discoveries  # connections
