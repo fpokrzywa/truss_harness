@@ -1,6 +1,6 @@
 # Handoff — 2026-11-14, end of session 3 (lead)
 
-Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md`, then this file. Session 3 handed off at about 280k lead tokens, between units, with no agent running and no merge half done. The next step is a fix round whose cost would have crossed 300k mid-unit (charter §10).
+Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md`, then this file. Session 3 handed off at or above 300k lead tokens (charter §10), between units, with no agent running and no merge half done. (An earlier handoff at ~280k was premature and was resumed to finish identity.)
 
 ## Finished in session 3
 
@@ -14,37 +14,21 @@ Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md`, then this file. Sessi
 | identity part 2a (definers, membership guard, login service) | done | `00abeb7` | review 2 APPROVED |
 | identity part 2b (API keys, dependencies, routes) | done | `d6d7b37` + fix `867b07d` | review 3 APPROVED |
 | identity part 3a (OIDC) | done | `20358ad` | review 4 APPROVED |
+| identity part 3b (SHI-wide groups) | done | `ccfe02a` + fix `b62d03b` | review 5 BLOCKED, then review 6 APPROVED |
 
-Identity decisions are B-901..B-927. Reviews are in `docs/build/reviews/`.
+Identity decisions are B-901..B-936. **`identity` is done.** Reviews are in `docs/build/reviews/`.
 
-Main is at the commit carrying this handoff, with 808 backend tests. The last clean-checkout gate run of main's code was `gates.py --ref identity` at `20358ad`: 8/8, 808 passed. Later commits change docs only. The front end is unchanged since `c925793` (13/13 then).
+Main is at the commit carrying this handoff, with 824 backend tests. The last clean-checkout gate run of main's code was `gates.py --ref identity` at `b62d03b`: 8/8, 824 passed (an earlier run hit the `_same_failure` timing flake, recorded in `carry_forward.md`). Later commits change docs only. The front end is unchanged since `c925793` (13/13 then).
 
 Also recorded:
 - S-002, an owner instruction relayed by the supervising session: use the local cluster for everything, including the two-org proof. The hosted database stays "waiting on owner input" but is deferred, not a blocker.
 
 ## The exact next step
 
-**Identity part 3b, fix round 1.**
-- Branch `identity` at `ccfe02a` (= main `091ce25` + part 3b, SHI-wide groups, B-928..B-935). It passed 8/8 gates (821 tests).
-- Isolation review 5 BLOCKED it: `docs/build/reviews/identity-isolation-review-5.md`.
-- **Blocking item 1:** remove `shifde.group_members` from `PRINCIPAL_TABLES` and from `test_reviewed_principal_tables`. Pin its `own_row` SELECT policy exactly in `REVIEWED_EXPRESSIONS`. Add the behaviour tests the review describes:
-  - as `shifde_app` with no client set, and again with B's context: self-insert into a group bound in B is refused, and so is inserting another person into one's own group;
-  - UPDATE and DELETE affect 0 rows.
-- **Item 2, cheap, same round:** `shifde_sync_idp_groups` also refuses when `current_tenant_id() IS NOT NULL`, with a test.
-
-How to run the round:
-1. Brief a **fresh** `module-builder-critical` with the review path and the worktree `.worktrees/identity`. The part 3b builder ended at 262k, so do not resume it.
-2. Run the gates.
-3. Re-review the fix-round diff with a fresh `isolation-reviewer`.
-4. Fast-forward main (if main has moved, merge and gate), push, and update STATUS.
-5. Add review 5 items 3-5 to `carry_forward.md`:
-   - admin/tenancy: audit group membership changes and group bindings into each client where the group is bound; fix the admin row that says "only if decided under isolation review";
-   - tenancy: `shifde_active_group_ids` with `p_user = current_principal_id()`;
-   - sub-project 3: `check_idp_group_scope` caller rights.
-6. Then mark identity **done** in STATUS.
+**`tenancy`** (plan Task 10; opus `module-builder-critical`; split into 2-3 parts per B-013, e.g. data layer + FKs on every earlier table, then service + visibility + who-may-grant, then routes + cross-client tests). Create a worktree from main (`git worktree add .worktrees/tenancy -b tenancy main`, then `python scripts/dev_db.py env` in it). Every brief must carry tenancy's rows from `carry_forward.md` (there are many) and the review items they came from.
 
 **Then, in the plan's layer order:**
-1. `tenancy`: opus, split into about 2-3 parts (B-013). Its carry_forward rows are many; read them all. They include:
+1. `tenancy` (the exact next step above): opus, split into about 2-3 parts (B-013). Its carry_forward rows are many; read them all. They include:
    - `tenants` FKs on every earlier table;
    - B-116 items 7/9/10;
    - the grant sweep;
@@ -72,7 +56,7 @@ How to run the round:
 | Item | State |
 |---|---|
 | `main` (local, origin) | Up to date with this handoff commit |
-| `identity` (local, origin) | `ccfe02a` (part 3b, BLOCKED, not merged to main; pushed to the branch). Worktree `.worktrees/identity` is clean at `ccfe02a`, with database `shifde_identity` |
+| `identity` (local, origin) | `b62d03b`, merged to main (fast-forward). Worktree `.worktrees/identity` is clean and can be removed |
 | `audit`, `authz-fix`, `secrets`, `core-ctx` (origin) | Merged. Worktrees removed. The `.worktrees/secrets` directory is left over (Windows refused to delete a locked file); git no longer tracks it |
 | `.worktrees/verify`, `verify2`, `verify3` | Detached checkouts used by `gates.py` (`--name`). Reuse them |
 | Scratch directories outside the repo | `S:/tmp_identity_scratch` and `S:/tmp_identity_tools` were left by the identity part 1 builder. Delete them by hand |

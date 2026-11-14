@@ -119,6 +119,10 @@ Each later module's brief must include its section here. Strike an item (move it
 | admin | `test_p2_review.py` OIDC tests `test_issuers_are_unique_...`, `test_oidc_link_works_only_...`, `test_tenant_idps_cannot_enable_jit`, `test_email_verified_is_ignored_...` (they create IdPs through the admin route; `test_tenant_idp_refuses_...` moved in part 3b) | identity part 3a, 3b |
 | tenancy | Identity review 4 items 3-4: `test_cross_client.py:836` assert an unpinned `both` session sees A's key and a B-pinned session gets 404/empty once sessions select a client; revoke `shifde_app` INSERT on `user_identities` and `oidc_auth_requests` that RESTRICTIVE false policies make useless (B-116 grant sweep, deliberate change) | identity review 4 |
 | admin | Identity review 4 items 5, 7: resolve installation IdP secrets through a narrow definer instead of raising `platform_admin_context` in an unauthenticated callback (`oidc._client_secret`); IdP admin routes never list a client's IdPs outside that client | identity review 4 |
+| admin, tenancy | Identity review 5 item 3 (design 5.3): audit group membership changes (manual and IdP sync, incl. sync adds/removes) and group bindings into each client where the group is bound, without naming other clients; a platform admin adding themselves to a group bound in A is the same as adding themselves to A (shown to A's owner) — supersedes any row saying "only if decided under isolation review" | identity review 5 |
+| tenancy | `shifde_active_group_ids(uuid)`: require `p_user = current_principal_id()` once the worker principal is settled | identity review 5 item 4 |
+| sub-project 3 (Entra) | `check_idp_group_scope()` runs with caller rights; IdP group membership changes only at next sign-in | identity review 5 item 5 |
+| identity | Flaky `_same_failure` (`tests/identity/test_cross_client.py:766`) compares raw Set-Cookie incl. `Expires`: compare parsed cookies without `Expires` or freeze the clock (assertion strength unchanged) | identity review 6 item 3 |
 
 ## Done
 
