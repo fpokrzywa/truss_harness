@@ -45,7 +45,7 @@ In scope for sub-project 1: C1, C2, batch R2 (ported code), R3 cost items (budge
 
 ## Waiting on owner input
 
-- **Hosted PostgreSQL**: enable TLS on the server (and ideally PostgreSQL 17, per design §3). Until then the two-organization proof and all other checks run on the local cluster; the hosted role setup, migration and side-by-side check wait (B-009).
+- **Hosted PostgreSQL**: enable TLS on the server (and ideally PostgreSQL 17, per design §3). Until then the two-organization proof and all other checks run on the local cluster; the hosted role setup, migration and side-by-side check wait (B-009). Deferred, not a blocker (S-002): the owner asked that the local cluster be used for everything, including the side-by-side proof, until further notice.
 
 - Databricks development workspace (`.devdata/databricks.env`): not needed in sub-project 1.
 - Entra application registration: not needed in sub-project 1.
