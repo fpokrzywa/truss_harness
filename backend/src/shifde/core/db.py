@@ -120,6 +120,22 @@ def _snapshot_context_at_savepoint(session: Session, transaction: SessionTransac
         saved[transaction] = get_context(session)
 
 
+_ROLLING_BACK_KEY = "shifde_ctx_rolling_back"
+
+
+class ContextSession(Session):
+    """Session handed out by `Database`. `Session.rollback()` rolls an open savepoint back first
+    and the whole transaction right after; this marks that case so the savepoint-rollback hook
+    below can tell it from a savepoint rolled back on its own (B-703)."""
+
+    def rollback(self) -> None:
+        self.info[_ROLLING_BACK_KEY] = True
+        try:
+            super().rollback()
+        finally:
+            self.info.pop(_ROLLING_BACK_KEY, None)
+
+
 @event.listens_for(Session, "after_soft_rollback")
 def _restore_context_after_savepoint_rollback(
     session: Session, previous_transaction: SessionTransaction
@@ -128,13 +144,16 @@ def _restore_context_after_savepoint_rollback(
         _SAVEPOINTS_KEY
     )
     snapshot = None if saved is None else saved.pop(previous_transaction, None)
-    # (A released savepoint never reaches here; its snapshot goes with the transaction.)
-    # Only while the enclosing transaction survives: if the whole transaction rolled back, the
-    # database holds nothing and the Session keeps what it last set (or its fail-closed value).
-    if snapshot is not None and session.in_transaction():
-        parent = previous_transaction.parent
-        if parent is not None and parent.is_active:
-            session.info[_CTX_KEY] = snapshot
+    # A savepoint rolled back on its own, with the enclosing transaction surviving, discards the
+    # settings made inside it: the Session returns to the snapshot. When `Session.rollback()`
+    # rolls the savepoint back on its way to the root, the database is about to hold nothing and
+    # the Session keeps its current value (possibly lowered by a refused change); restoring the
+    # snapshot there could turn a flag or tenant back on for later transactions.
+    if snapshot is None or session.info.get(_ROLLING_BACK_KEY):
+        return
+    parent = previous_transaction.parent
+    if session.in_transaction() and parent is not None and parent.is_active:
+        session.info[_CTX_KEY] = snapshot
 
 
 def init_context(session: Session, request_id: str | None) -> None:
@@ -239,7 +258,7 @@ class Database:
             },
         )
         event.listen(self.engine, "checkout", _clean_checkout)
-        self._factory = sessionmaker(self.engine, expire_on_commit=False)
+        self._factory = sessionmaker(self.engine, class_=ContextSession, expire_on_commit=False)
         if verify_role:
             try:
                 check_app_role(self.engine)
