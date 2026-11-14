@@ -1,4 +1,4 @@
-# Handoff — 2026-11-13, end of session 2 (lead)
+# Handoff — 2026-11-13, end of session 2 (lead), updated after the ledger merge
 
 Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md`, then this file. Session 2 handed off at 281k lead tokens (charter §10), between units, with no agent running.
 
@@ -9,25 +9,15 @@ Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md`, then this file. Sessi
 - **adapters**: merged (`0446a0c`); review APPROVED.
 - **observability**: haiku trial, passed in one round; merged (`82b3b66`). B-011: haiku for small, non-critical straight copies.
 - **authz**: merged (`74e6a83`); review APPROVED with follow-ups.
-- **ledger**: built (`31dae44` on branch `ledger`, pushed, NOT merged). Gates pass (470 tests). Isolation review 1 BLOCKED.
+- **ledger**: review 1 BLOCKED, fix round 1, review 2 APPROVED; merged (`36bd4db`). Main: 529 tests, 8/8 backend gates.
 - **New tooling**:
   - `scripts/gates.py` is the clean-checkout gate runner (B-012).
   - `docs/build/carry_forward.md` lists what each port owes later modules: deferred SETH tests, wiring and isolation items. **Every module brief must include that module's rows from this file.**
-- Main and origin/main are both at `379e8df` + this handoff commit. The backend suite on main passes 452 tests in ~50 s with `-n 8`. The front end was last run in full at `c925793` (13/13) and is unchanged since.
+- Main and origin/main are at the commit that carries this handoff. The backend suite on main passes 529 tests in ~64 s with `-n 8`. The front end was last run in full at `c925793` (13/13) and is unchanged since.
 
 ## The exact next step
 
-**Ledger fix round 1.** Start a FRESH `module-builder` (sonnet) in `.worktrees/ledger` (branch `ledger` at `31dae44`, clean; its `.devdata/dev.env` exists).
-1. First, merge main into `ledger`. Expected conflicts: `core/db.py` `prepare_threshold=None` (identical on both sides), `DECISIONS.md` and `carry_forward.md` (keep both sides), `CLEAN_TABLES` in `backend/tests/conftest.py`, `ported_tables.txt`, `deliberate_changes.yaml`.
-2. Fix blocking items 1 and 2 and follow-ups 3, 5 and 6 of `docs/build/reviews/ledger-isolation-review-1.md`. For follow-up 6: add the filter, or a carry_forward row for the owning module. Follow-up 10 (the definer allowlist is keyed by name) is cheap: key it by oid and refuse overloads, as the base helpers already are.
-3. Each fix needs a probe test that fails first.
-
-Then:
-1. `python scripts/gates.py --ref origin/ledger --no-frontend`.
-2. A fresh `isolation-reviewer` with review 1 attached, using the B-014 calibration.
-3. Merge, run the gates on main, update STATUS and the usage report, push.
-
-Then **audit** (layer 3, the last module of the layer; plan Task 7; sonnet). It is not a straight copy:
+`ledger` is merged (`36bd4db`, review 2 APPROVED). Next: **audit** (layer 3, the last module of the layer; plan Task 7; sonnet). It is not a straight copy:
 - `audit_events.write_own` is on B-112's rejected list (WITH CHECK `... OR tenant_id IS NULL`).
 - ARCH m7 is the same defect.
 
@@ -38,7 +28,7 @@ Then the layer order from the plan: `secrets` (opus), `identity` (opus; split by
 | Item | State |
 |---|---|
 | `main` (local, origin) | Up to date with this handoff commit. |
-| `ledger` (local, origin) | `31dae44`. Gates PASS; isolation review 1 BLOCKED; not merged. Worktree `.worktrees/ledger` (clean), database `shifde_ledger`. |
+| `ledger` (local, origin) | `3e9f6d5`, merged to main. Worktree `.worktrees/ledger` (clean) can be removed. |
 | `skeleton`, `core`, `adapters`, `observability`, `authz` (origin) | All merged to main. Their branches can stay. |
 | `.worktrees/verify`, `.worktrees/verify2` | Detached checkouts used by `gates.py`. Reuse them; `gates.py` resets and cleans them. |
 | `.worktrees/skeleton` (directory only) | Git no longer tracks it; Windows refused to delete it (permission denied, probably a locked `.venv` file). Harmless. Delete it later with `robocopy <empty> <dir> /MIR`. |
@@ -64,5 +54,5 @@ Then the layer order from the plan: `secrets` (opus), `identity` (opus; split by
 - **SETH tests:**
   - Most SETH test files need the full app `World` fixture. Lower modules therefore move few SETH tests and write direct tests instead.
   - The deferred SETH tests must move with the module named in `carry_forward.md`; the `app`/`cli` ports will pick up most of them.
-  - Track test counts: 452 on main now.
+  - Track test counts: 529 on main now.
 - **Hosted database:** still waiting on the owner (PostgreSQL 16.13, no TLS; B-009). Unchanged.
