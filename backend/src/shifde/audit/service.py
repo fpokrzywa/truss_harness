@@ -62,6 +62,10 @@ INSTALLATION_ACTIONS: frozenset[str] = frozenset(
         "identity.setup_token.rejected",
         "egress.default.updated",
         "installation.profile.applied",
+        # an installation-level secret (tenant_id NULL, e.g. an installation IdP client secret)
+        # resolved by `secrets.service.SecretProvider.resolve_system` (B-805); its row is visible
+        # only under the platform-administrator context, so only that path reaches this action
+        "secret.resolved",
     }
 )
 

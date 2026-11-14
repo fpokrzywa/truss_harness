@@ -141,3 +141,28 @@
   reason: >-
     A client role (tenant_id NOT NULL) cannot hold a platform-only permission (platform:admin): it comes only from users.is_platform_admin, never from a role. SETH let a client put it into its own role and the PDP then reported it from effective_permissions / missing_permissions / visible_scopes. Authz isolation review 1, follow-up 1; DECISIONS B-406. System templates (tenant_id NULL) are unaffected.
   migration: authz_0002
+
+- table: secrets
+  path: [constraints, secrets_tenant_id_fkey]
+  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
+  migration: secrets_0001
+
+- table: secret_access_log
+  path: [constraints, secret_access_log_tenant_id_fkey]
+  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
+  migration: secrets_0001
+
+- table: secrets
+  path: [constraints, uq_secrets__tenant_id_id]
+  reason: "constraints bypass row-level security: SETH's plain secret_access_log_secret_id_fkey accepted a client's access-log row naming another client's secret id (B-116 item 9, B-801). Target of the composite foreign key from secret_access_log."
+  migration: secrets_0001
+
+- table: secrets
+  path: [indexes, uq_secrets__tenant_id_id]
+  reason: "constraints bypass row-level security (B-116 item 9, B-801). Index of uq_secrets__tenant_id_id."
+  migration: secrets_0001
+
+- table: secret_access_log
+  path: [constraints, fk_secret_access_log__secret]
+  reason: "constraints bypass row-level security: an access-log row must name a secret of its own tenant, (tenant_id, secret_id) -> secrets (tenant_id, id) (B-116 item 9, B-801). SETH's plain secret_access_log_secret_id_fkey is kept for installation-level rows (tenant_id NULL), which the composite key does not check."
+  migration: secrets_0001
