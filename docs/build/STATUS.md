@@ -16,9 +16,9 @@ Tokens per model: see `python scripts/usage_report.py` (by unit); the figure bel
 | core | done | `4bf4563`, merged `a814a53` | `gates.py --ref main --no-frontend` on the merge: scan 0 findings; ruff format/check 0; mypy 0 (135 files); lint-imports 5 kept; pytest `-n 8` 245 passed (28.7 s); scripts OK. All 26 SETH core files; skeleton safeguards kept. Fixed: Item 3 (client IP via trusted proxies, B-201), Item 5b core part (body cap, B-202), Item 18 core part (connect/statement timeout, B-203), ARCH m1 (settings repr, B-204). Isolation review APPROVED (`reviews/core-isolation-review-1.md`); follow-ups 1, 3, 5 fixed before merge, rest in `carry_forward.md`. 14/15 of `test_core.py` moved; deferred SETH tests listed in `carry_forward.md` | sonnet build (2 rounds), opus review: 51 requests, est. $1.67 (unit `core`; review counted under its agent) |
 | adapters | done | `82cf9cb`, merged `0446a0c` | `gates.py --ref main --no-frontend` on the merge: scan 0 findings; ruff format/check 0; mypy 0 (141 files); lint-imports 5 kept; pytest `-n 8` 413 passed (39.9 s); scripts OK. 16 files; `adapters_0001` (`adapter_conformance_runs`, global with reason B-301; schema comparison passes); 150 SETH tests moved; Items 9 and 11 adapters part (max_tokens validated and sent; omitted usage stays None) and ARCH m13 fixed (B-304); Item 16 known defect. Isolation review APPROVED (`reviews/adapters-isolation-review-1.md`); deferred tests and follow-ups in `carry_forward.md` | sonnet build, opus review: 83 requests, est. $2.08 (unit `adapters`) |
 | audit | todo | | | |
-| authz | todo | | | |
-| observability | todo | | | |
-| ledger | todo | | | |
+| authz | in progress: module-builder-critical (opus) on branch `authz` | | | |
+| observability | in progress: module-builder (haiku trial, charter §10) on branch `observability` | | | |
+| ledger | in progress: module-builder (sonnet) on branch `ledger` | | | |
 | secrets | todo | | | |
 | identity | todo | | | |
 | tenancy | todo | | | |
