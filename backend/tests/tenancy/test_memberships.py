@@ -17,7 +17,11 @@ from tests.tenancy.conftest import World, app_session, owner_member
 
 
 def _bind(owner: Session, tenant: UUID, subject_type: str, subject: UUID, role_key: str) -> None:
-    """Owner-side binding (the trigger still checks subject and scope); expired with `expired`."""
+    """Owner-side binding (the trigger still checks subject and scope); expired with `expired`.
+    Naming an owner (`tenant_administrator`) runs in the platform-administrator context, the only
+    writer besides the owner the trigger lets do it (tenancy_0003, B-1016)."""
+    if role_key == "tenant_administrator":
+        owner.execute(text("SELECT set_config('app.platform_admin', 'on', true)"))
     owner.execute(
         text(
             "INSERT INTO shifde.role_bindings (id, tenant_id, subject_type, subject_id, role_id, "

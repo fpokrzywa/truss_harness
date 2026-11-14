@@ -560,3 +560,16 @@ def sync_idp_groups(
 def insert_decisions(session: Session, rows: list[dict[str, Any]]) -> None:
     if rows:
         session.execute(insert(PolicyDecision), rows)
+
+
+def may_name_owner(session: Session, tenant_id: UUID) -> bool:
+    """True when the database context may bind a person to `tenant_administrator` at
+    organization scope in `tenant_id` (which names an owner, B-1010): the platform-administrator
+    context, or the current principal is that client's owner in the current client
+    (`shifde_is_client_owner`, tenancy_0003, B-1016). The same rule as `check_role_binding`."""
+    return bool(
+        session.execute(
+            text("SELECT shifde.is_platform_admin_ctx() OR shifde.shifde_is_client_owner(:t)"),
+            {"t": tenant_id},
+        ).scalar_one()
+    )

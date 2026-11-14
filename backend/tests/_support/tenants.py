@@ -98,8 +98,19 @@ def bind_user(
 ) -> UUID:
     """A direct binding of a system role template at organization scope for a member of
     `tenant_id` (owner rights, `check_role_binding` runs). Since tenancy_0002 a person sees a
-    client, and a session pinned to it resolves, only with a live binding there (B-1009)."""
+    client, and a session pinned to it resolves, only with a live binding there (B-1009).
+
+    Binding `tenant_administrator` here names the client's owner, which since tenancy_0003 only
+    the platform-administrator context or the owner may do (B-1016): the helper sets the
+    platform-administrator context for that one insert, as `create_org` does, and restores it."""
     bid = uuid7()
+    names_owner = role_key == "tenant_administrator"
+    previous = ""
+    if names_owner:
+        previous = owner.execute(
+            text("SELECT COALESCE(current_setting('app.platform_admin', true), '')")
+        ).scalar_one()
+        owner.execute(text("SELECT set_config('app.platform_admin', 'on', true)"))
     owner.execute(
         text(
             "INSERT INTO shifde.role_bindings (id, tenant_id, subject_type, subject_id, role_id, "
@@ -108,4 +119,6 @@ def bind_user(
         ),
         {"i": bid, "t": tenant_id, "u": user_id, "k": role_key},
     )
+    if names_owner:
+        owner.execute(text("SELECT set_config('app.platform_admin', :v, true)"), {"v": previous})
     return bid

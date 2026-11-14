@@ -136,13 +136,23 @@ SECURITY_DEFINER_ALLOWLIST: dict[str, str] = {
         "and tenants are tenant-keyed, so the client chooser needs it before a client is set."
     ),
     "shifde.shifde_may_bind_group(uuid, uuid)": (
-        "tenancy_0002 (B-1010): owned by shifde_owner, search_path pg_catalog, pg_temp, every "
+        "tenancy_0002 (B-1010), tenancy_0003 (B-1015: false, never NULL, through "
+        "shifde_is_client_owner): owned by shifde_owner, search_path pg_catalog, pg_temp, every "
         "object schema-qualified, EXECUTE for shifde_app only (check_role_binding runs with "
         "invoker rights), writes no app.* setting. True only when p_tenant is current_tenant_id(), "
         "p_group is an active platform group and current_principal_id() is that client's owner "
         "(active person, active membership, live direct tenant_administrator binding at "
         "organization scope); false alike otherwise, so it answers nothing about another client "
         "and nothing about a group to anyone but an owner."
+    ),
+    "shifde.shifde_is_client_owner(uuid)": (
+        "tenancy_0003 (B-1015, B-1016): owned by shifde_owner, search_path pg_catalog, pg_temp, "
+        "every object schema-qualified, EXECUTE for shifde_app only (check_role_binding runs "
+        "with invoker rights and asks it before a person is bound to tenant_administrator at "
+        "organization scope), writes no app.* setting. True only when p_tenant is "
+        "current_tenant_id() and current_principal_id() is that client's owner (active person, "
+        "active membership, live direct tenant_administrator binding at organization scope); "
+        "false, never NULL, otherwise, so it answers nothing about another client."
     ),
     "shifde.shifde_bound_groups": (
         f"{_GROUP_DEFINER}. No arguments: id and name only of the platform groups holding a role "
@@ -152,7 +162,8 @@ SECURITY_DEFINER_ALLOWLIST: dict[str, str] = {
     "shifde.shifde_active_group_ids(uuid)": (
         f"{_GROUP_DEFINER}. The authz.GroupMembership the PDP uses: the person's active platform "
         "groups that hold a role binding in current_tenant_id() only (empty without a client), "
-        "so a client learns no more than which of the groups it bound a person is in."
+        "so a client learns no more than which of the groups it bound a person is in; nothing "
+        "for a person whose membership there is not active (tenancy_0003, B-1018)."
     ),
     "shifde.shifde_sync_idp_groups(uuid, uuid, text[])": (
         f"{_GROUP_DEFINER}. IdP group sync after a validated sign-in: only for an active "
@@ -361,8 +372,8 @@ def test_allowlist_has_no_stale_entries(owner_engine: Engine) -> None:
 
 
 def test_identity_definers_are_on_the_allowlist_by_signature(owner_engine: Engine) -> None:
-    """identity_0002..0005 (B-909, B-915, B-922, B-928) and tenancy_0001 (B-1006): each identity
-    and tenancy definer is listed under its full signature."""
+    """identity_0002..0005 (B-909, B-915, B-922, B-928) and tenancy_0001..0003 (B-1006, B-1010,
+    B-1016): each identity and tenancy definer is listed under its full signature."""
     with owner_engine.connect() as c:
         rows = [
             row
@@ -389,6 +400,7 @@ def test_identity_definers_are_on_the_allowlist_by_signature(owner_engine: Engin
         "shifde.shifde_sync_idp_groups(uuid, uuid, text[])",
         "shifde.shifde_my_memberships",
         "shifde.shifde_may_bind_group(uuid, uuid)",
+        "shifde.shifde_is_client_owner(uuid)",
     }
     assert all(row.owner == "shifde_owner" for row in rows)
     assert all(_search_path(row.proconfig) == "pg_catalog, pg_temp" for row in rows)

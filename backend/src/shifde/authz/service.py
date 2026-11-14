@@ -14,6 +14,7 @@ from shifde.authz.execution import ExecutionDenied, RunRef, execution_principal
 from shifde.authz.models import Group, Role
 from shifde.authz.pdp import (
     PDP,
+    PLATFORM_ONLY_ACTIONS,
     Decision,
     DecisionRecord,
     GroupMembership,
@@ -24,11 +25,14 @@ from shifde.authz.pdp import (
 from shifde.authz.repository import BindingRow, BoundGroup, GrantRow, MemberRef, PermissionRow
 from shifde.core.clock import utcnow
 from shifde.core.context import Principal
-from shifde.core.errors import ValidationFailed
+from shifde.core.errors import Forbidden, ValidationFailed
 from shifde.core.ids import uuid7
 
 __all__ = [
     "PDP",
+    "NAMING_AN_OWNER_REFUSED",
+    "OWNER_ROLE_KEY",
+    "PLATFORM_ONLY_ACTIONS",
     "PLATFORM_ONLY_ROLE_KEYS",
     "BindingRow",
     "BoundGroup",
@@ -88,6 +92,9 @@ __all__ = [
 
 # System role templates that are never bound inside a client (B-1010).
 PLATFORM_ONLY_ROLE_KEYS = frozenset({"platform_administrator"})
+# Bound directly to a person at organization scope, this template makes the client's owner.
+OWNER_ROLE_KEY = "tenant_administrator"
+NAMING_AN_OWNER_REFUSED = "only the owner or the platform administrator may name an owner"
 
 
 def is_platform_only_role(session: Session, role_id: UUID) -> bool:
@@ -117,12 +124,22 @@ def grant_role(
 ) -> None:
     """Bind a system role template to a user at a scope (caller has already authorized). The
     `platform_administrator` template is never bound in a client (authz review 2 item 5,
-    DECISIONS B-1010; `check_role_binding` refuses it as well)."""
+    DECISIONS B-1010; `check_role_binding` refuses it as well).
+
+    `tenant_administrator` at organization scope names the client's owner: only the
+    platform-administrator context or that client's owner may bind it, never `role:manage` alone
+    (tenancy isolation review 2 item 2, B-1016; the trigger checks the same rule)."""
     if role_key in PLATFORM_ONLY_ROLE_KEYS:
         raise ValidationFailed(f"unknown role: {role_key}")
     role_id = repository.system_role_id(session, role_key)
     if role_id is None:
         raise ValidationFailed(f"unknown role: {role_key}")
+    if (
+        role_key == OWNER_ROLE_KEY
+        and scope_type == "tenant"
+        and not repository.may_name_owner(session, tenant_id)
+    ):
+        raise Forbidden(NAMING_AN_OWNER_REFUSED)
     repository.insert_binding(
         session,
         {

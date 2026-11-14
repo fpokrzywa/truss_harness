@@ -253,3 +253,18 @@ def may_bind_group(session: Session, tenant_id: UUID, group_id: UUID) -> bool:
             text("SELECT shifde.shifde_may_bind_group(:t, :g)"), {"t": tenant_id, "g": group_id}
         ).scalar_one()
     )
+
+
+def actor_is_platform_admin(session: Session, user_id: UUID) -> bool:
+    """The `users.is_platform_admin` flag of the current principal (a person reads their own row,
+    `users_select`); False for anyone else. The principal's flag is off on a session pinned to a
+    client, which is where a self-added administrator acts as an owner (B-1017)."""
+    return bool(
+        session.execute(
+            text(
+                "SELECT COALESCE(bool_or(u.is_platform_admin), false) FROM shifde.users u "
+                "WHERE u.id = :u AND u.id = shifde.current_principal_id()"
+            ),
+            {"u": user_id},
+        ).scalar_one()
+    )

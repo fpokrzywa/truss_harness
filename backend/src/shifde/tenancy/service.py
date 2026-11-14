@@ -192,7 +192,17 @@ def list_all_orgs(
     )
 
 
+def _require_some_grant(scope: TenantScope) -> None:
+    """The PDP grants the caller something in this client: a permission at organization scope,
+    or any grant on a workspace or project of it (the path the selectors show). Hidden (404)
+    otherwise, as an unknown client (review 2 item 4, B-1019)."""
+    held = scope.pdp.effective_permissions(scope.tenant_ref) - authz.PLATFORM_ONLY_ACTIONS
+    if not held and not scope.pdp.ancestor_workspace_ids():
+        raise NotFound("organization not found")
+
+
 def get_org(scope: TenantScope) -> OrgOut:
+    _require_some_grant(scope)
     tenant = repository.get_tenant(scope.session, scope.tenant_id)
     if tenant is None:  # pragma: no cover - membership resolved it moments ago
         raise NotFound("organization not found")
@@ -771,15 +781,11 @@ def add_platform_admin_to_client(
                 scope_id=tenant_id,
                 created_by=principal.user_id,
             )
-            audit.record(
+            _record_self_add(
                 session,
                 ctx,
-                action="tenancy.platform_admin.self_added",
+                principal,
                 tenant_id=tenant_id,
-                actor_id=principal.user_id,
-                target_type="user",
-                target_id=principal.user_id,
-                target_label=f"user:{principal.email}",
                 details={"role": role_key, "by_platform_administrator": True},
             )
             session.flush()
@@ -789,6 +795,29 @@ def add_platform_admin_to_client(
         db.set_tenant(session, None)
         raise
     db.set_tenant(session, None)
+
+
+def _record_self_add(
+    session: Session,
+    ctx: RequestContext,
+    principal: Principal,
+    *,
+    tenant_id: UUID,
+    details: dict[str, Any],  # Any: audit details document
+) -> None:
+    """`tenancy.platform_admin.self_added` in that client's own audit log, which its owner reads
+    (B-1012); never in another client."""
+    audit.record(
+        session,
+        ctx,
+        action="tenancy.platform_admin.self_added",
+        tenant_id=tenant_id,
+        actor_id=principal.user_id,
+        target_type="user",
+        target_id=principal.user_id,
+        target_label=f"user:{principal.email}",
+        details=details,
+    )
 
 
 def _insert_group_binding(
@@ -895,6 +924,9 @@ def bind_group(
         expires_at=expires_at,
         created_by=principal.user_id,
     )
+    # An owner who is a platform administrator (an owner by a self-add) acts as one: the
+    # binding is shown as theirs and is a self-add in this client (review 2 item 3, B-1017).
+    by_admin = repository.actor_is_platform_admin(session, principal.user_id)
     _audit_group_binding(
         session,
         scope.ctx,
@@ -904,10 +936,39 @@ def bind_group(
         role_id=role_id,
         scope_type=scope_type,
         scope_id=scope_id,
-        by_platform_administrator=False,
+        by_platform_administrator=by_admin,
     )
+    if by_admin:
+        _record_self_add(
+            session,
+            scope.ctx,
+            principal,
+            tenant_id=scope.tenant_id,
+            details=_group_self_add_details(
+                binding_id, group_id, role_id, scope_type, scope_id, by_platform_administrator=False
+            ),
+        )
     _commit(session, "role binding")
     return binding_id
+
+
+def _group_self_add_details(
+    binding_id: UUID,
+    group_id: UUID,
+    role_id: UUID,
+    scope_type: str,
+    scope_id: UUID,
+    *,
+    by_platform_administrator: bool,
+) -> dict[str, Any]:  # Any: audit details document
+    return {
+        "through_group_id": str(group_id),
+        "binding_id": str(binding_id),
+        "role_id": str(role_id),
+        "scope_type": scope_type,
+        "scope_id": str(scope_id),
+        "by_platform_administrator": by_platform_administrator,
+    }
 
 
 def bind_group_as_platform_admin(
@@ -923,7 +984,9 @@ def bind_group_as_platform_admin(
     expires_at: datetime | None = None,
 ) -> UUID:
     """The platform administrator binds a platform group to a role in a client; audited in
-    that client like an owner's binding (B-1012)."""
+    that client like an owner's binding (B-1012). When the administrator is a member of the
+    group (whatever its status), that is also a self-add in the client (review 2 item 3,
+    B-1017)."""
     _require_platform_admin(session, principal)
     try:
         with db.platform_admin_context(session):
@@ -951,6 +1014,22 @@ def bind_group_as_platform_admin(
                 scope_id=scope_id,
                 by_platform_administrator=True,
             )
+            if principal.user_id in authz.member_user_ids(session, group_id):
+                # the administrator is in the group: adding it adds them (review 2 item 3)
+                _record_self_add(
+                    session,
+                    ctx,
+                    principal,
+                    tenant_id=tenant_id,
+                    details=_group_self_add_details(
+                        binding_id,
+                        group_id,
+                        role_id,
+                        scope_type,
+                        scope_id,
+                        by_platform_administrator=True,
+                    ),
+                )
             session.flush()
         _commit(session, "role binding")
     except BaseException:
