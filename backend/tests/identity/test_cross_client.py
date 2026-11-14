@@ -20,8 +20,9 @@ Identity part 2b (B-915..B-920) adds the routes of `identity.api` over the minim
 cross-client test fails `test_every_identity_route_has_a_cross_client_test`); a person of A sees
 and changes only their own session and A's memberships; A's session or A's API key asking for B's
 object by id gets the answer of a missing id, and B's objects are absent from A's lists;
-`shifde_resolve_api_key` resolves a key only with a principal of the key's own client. OIDC routes
-arrive with part 3, member and IdP administration with tenancy/admin (docs/build/carry_forward.md).
+`shifde_resolve_api_key` resolves a key only with a principal of the key's own client. The OIDC
+routes (part 3a) are tested with a fake IdP per client (`tests/identity/oidc_flow.py`); member and
+IdP administration arrive with tenancy/admin (docs/build/carry_forward.md).
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.identity import api as identity_api
 from shifde.identity import apikeys, repository, service
+from tests.identity import oidc_flow
 from tests.identity.conftest import World, app_session, owner_membership, owner_user
 from tests.identity.harness import PASSWORD, client_for, login, person
 
@@ -575,6 +577,12 @@ ROUTE_TESTS = {
     ("GET", "/api/auth/session"): "test_a_session_shows_only_its_own_person_and_clients",
     ("POST", "/api/auth/logout"): "test_logout_ends_only_the_callers_own_session",
     ("POST", "/api/auth/setup/redeem"): "test_redeeming_a_token_signs_in_only_its_own_person",
+    ("GET", "/api/auth/oidc/{idp_id}/login"): (
+        "test_oidc_login_at_bs_idp_files_the_flow_in_b_and_answers_like_a_missing_id"
+    ),
+    ("GET", "/api/auth/oidc/{idp_id}/callback"): (
+        "test_oidc_callback_signs_in_only_bs_members_pinned_to_b"
+    ),
 }
 
 
@@ -730,3 +738,108 @@ def test_a_cannot_reach_bs_objects_by_id_or_list(
         text("SELECT revoked_at FROM shifde.api_keys WHERE id = :i"), {"i": world.b.api_key}
     ).scalar_one()
     assert revoked is None
+
+
+# ------------------------------------------------------------------ OIDC routes (part 3a)
+def _same_failure(r: Any, reference: Any) -> None:  # Any: httpx responses
+    """A refusal that answers exactly like a missing IdP id: status, location, cookies."""
+    assert r.status_code == reference.status_code == 302
+    assert r.headers["location"] == reference.headers["location"] == oidc_flow.FAIL
+    assert r.headers.get("set-cookie") == reference.headers.get("set-cookie")
+
+
+def test_oidc_login_at_bs_idp_files_the_flow_in_b_and_answers_like_a_missing_id(
+    settings: Settings,
+    world: World,
+    owner_session: Session,
+    app_db: Database,
+    stub_memberships: None,
+) -> None:
+    """Starting a sign-in sets no client context: the flow row takes its client from the IdP
+    row (B-922), never from A's session; B's disabled or unsupported IdP and an IdP id that does
+    not exist answer identically; the app role cannot read or write flow state."""
+    a_idp = oidc_flow.owner_oidc_idp(owner_session, world.a.tenant, oidc_flow.sso("a"))
+    b_idp = oidc_flow.owner_oidc_idp(owner_session, world.b.tenant, oidc_flow.sso("b"))
+    b_off = oidc_flow.owner_oidc_idp(
+        owner_session, world.b.tenant, "https://off.b.test", status="disabled"
+    )
+    b_sync = oidc_flow.owner_oidc_idp(
+        owner_session, world.b.tenant, "https://sync.b.test", group_sync_mode="sync"
+    )
+    a_person = person(owner_session, "oidc-a@a.test")
+    owner_membership(owner_session, world.a.tenant, a_person)
+    owner_session.commit()
+    fake = oidc_flow.provider()
+    with oidc_flow.oidc_client(settings, fake) as c:
+        login(c, "oidc-a@a.test")  # A's person, signed in to A, starts a flow at B's IdP
+        oidc_flow.start(c, fake, b_idp)
+        oidc_flow.start(c, fake, a_idp)
+        missing = c.get(f"/api/auth/oidc/{uuid7()}/login", follow_redirects=False)
+        for other in (b_off, b_sync):
+            _same_failure(c.get(f"/api/auth/oidc/{other}/login", follow_redirects=False), missing)
+        _same_failure(c.get("/api/auth/oidc/not-a-uuid/login", follow_redirects=False), missing)
+    rows = owner_session.execute(
+        text("SELECT idp_config_id, tenant_id FROM shifde.oidc_auth_requests")
+    ).all()
+    assert sorted(rows) == sorted([(b_idp, world.b.tenant), (a_idp, world.a.tenant)])
+    for tenant in (world.a.tenant, world.b.tenant, None):
+        with app_session(app_db, tenant, a_person) as s:
+            assert _ids(s, "oidc_auth_requests") == set()
+            _refused(
+                s,
+                "INSERT INTO shifde.oidc_auth_requests (id, tenant_id, idp_config_id, state_hash, "
+                "binding_hash, nonce_hash, expires_at) VALUES (:id, :t, :i, 's', 'b', 'n', now())",
+                {"id": uuid7(), "t": tenant, "i": b_idp},
+            )
+
+
+def test_oidc_callback_signs_in_only_bs_members_pinned_to_b(
+    settings: Settings, world: World, owner_session: Session, stub_memberships: None
+) -> None:
+    """B's IdP signs in only an active member of B, pinned to B (a member of A and B sees only
+    B); it cannot sign in A's person, even one bound to B's IdP; a state started at A's IdP does
+    not complete at B's; failures before B's IdP vouched are not filed in B, and a callback for
+    B's IdP answers like one for a missing id."""
+    b_iss = oidc_flow.sso("b")
+    a_idp = oidc_flow.owner_oidc_idp(owner_session, world.a.tenant, oidc_flow.sso("a"))
+    b_idp = oidc_flow.owner_oidc_idp(owner_session, world.b.tenant, b_iss)
+    oidc_flow.owner_identity(owner_session, world.both, b_idp, b_iss, "both")
+    oidc_flow.owner_identity(owner_session, world.a.member, b_idp, b_iss, "a-member")
+    owner_session.commit()
+    fake = oidc_flow.provider()
+    with oidc_flow.oidc_client(settings, fake) as c:
+        # a state started at A's IdP, presented at B's callback: refused, filed in no client
+        auth = oidc_flow.start(c, fake, a_idp)
+        fake.issue_code(auth, fake.claims_for(auth, iss=b_iss, sub="both"), code="x")
+        crossed = oidc_flow.finish(c, b_idp, "x", auth.state)
+        missing = oidc_flow.finish(c, uuid7(), "x", auth.state)
+        _same_failure(crossed, missing)
+        assert oidc_flow.failures(owner_session)[-1] == ("state_invalid_or_replayed", None)
+        # A's person bound to B's IdP: B's IdP vouched, so the refusal is B's; no session
+        c.cookies.clear()
+        r = oidc_flow.sign_in(c, fake, b_idp, b_iss, code="a", sub="a-member")
+        assert r.headers["location"] == oidc_flow.FAIL
+        assert c.get("/api/auth/session").status_code == 401
+        assert oidc_flow.failures(owner_session)[-1] == (
+            "tenant_idp_not_an_active_member",
+            world.b.tenant,
+        )
+        # the member of A and B: signed in through B's IdP, pinned to B
+        c.cookies.clear()
+        r = oidc_flow.sign_in(c, fake, b_idp, b_iss, code="b", sub="both")
+        assert r.status_code == 302 and r.headers["location"] == "/", r.headers
+        body = c.get("/api/auth/session").json()
+        assert body["user"]["id"] == str(world.both)
+        assert {m["org"]["id"] for m in body["memberships"]} == {str(world.b.tenant)}
+        who = c.get("/api/v1/probe/whoami").json()
+        assert who["tenant_id"] == str(world.b.tenant)
+        assert c.get(f"/api/v1/probe/orgs/{world.a.tenant}/api-keys").json() == []
+    pinned = owner_session.execute(
+        text("SELECT active_tenant_id FROM shifde.sessions WHERE user_id = :u"),
+        {"u": world.both},
+    ).scalar_one()
+    assert pinned == world.b.tenant
+    events = owner_session.execute(
+        text("SELECT tenant_id FROM shifde.audit_events WHERE action = 'identity.login.succeeded'")
+    ).scalars()
+    assert set(events) == {world.b.tenant}

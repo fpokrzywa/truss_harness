@@ -245,33 +245,41 @@ def test_idp_configs_in_own_client_and_installation(world: World, app_db: Databa
 
 
 def test_identity_rows_for_oneself(world: World, app_db: Database, owner_session: Session) -> None:
+    """Review 1 item 2 (B-923): SETH let a person insert an identity for themself at any IdP and
+    subject (this test pinned that). Identities are now created only inside the resolve / JIT
+    definers: a direct insert is refused even for oneself at the installation IdP, and the
+    (IdP, subject) key stays unique."""
     me = owner_user(owner_session, "linked@shi.test")
     owner_login_session(owner_session, me, b"linked-session")
     owner_session.commit()
+    row = {
+        "id": uuid7(),
+        "user_id": me,
+        "issuer": "https://login.shi.test",
+        "subject": "linked",
+        "idp_config_id": world.installation_idp,
+    }
     with app_session(app_db, None, me) as s:
-        repository.insert_identity(
-            s,
-            {
-                "id": uuid7(),
-                "user_id": me,
-                "issuer": "https://login.shi.test",
-                "subject": "linked",
-                "idp_config_id": world.installation_idp,
-            },
-        )
-        s.commit()
-        with pytest.raises(DBAPIError, match="uq_user_identities__idp_subject"):
-            repository.insert_identity(
-                s,
-                {
-                    "id": uuid7(),
-                    "user_id": me,
-                    "issuer": "https://login.shi.test",
-                    "subject": "linked",
-                    "idp_config_id": world.installation_idp,
-                },
-            )
+        with pytest.raises(DBAPIError, match="row-level security|row level security"):
+            repository.insert_identity(s, row)
         s.rollback()
+    owner_session.execute(
+        text(
+            "INSERT INTO shifde.user_identities (id, user_id, issuer, subject, idp_config_id) "
+            "VALUES (:id, :user_id, :issuer, :subject, :idp_config_id)"
+        ),
+        row,
+    )
+    owner_session.commit()
+    with pytest.raises(DBAPIError, match="uq_user_identities__idp_subject"):
+        owner_session.execute(
+            text(
+                "INSERT INTO shifde.user_identities (id, user_id, issuer, subject, idp_config_id) "
+                "VALUES (:id, :user_id, :issuer, :subject, :idp_config_id)"
+            ),
+            {**row, "id": uuid7()},
+        )
+    owner_session.rollback()
 
 
 def test_owner_maintenance_paths(owner_session: Session) -> None:

@@ -175,6 +175,8 @@ class Settings(BaseSettings):
     oidc_state_ttl_seconds: int = 600
     oidc_jwks_min_refresh_seconds: int = 30
     oidc_http_timeout_seconds: float = 5.0
+    # OIDC sign-in starts and callbacks per client address and minute (findings Item 5b)
+    oidc_rate_per_minute: int = 20
     # Hard overall deadline of one governed model call; concurrency leases outlive it.
     model_call_deadline_seconds: float = 120.0
     # Hard overall deadline of one direct connection invoke (REST / MCP / SQL) through the API.

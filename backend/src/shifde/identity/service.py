@@ -149,12 +149,16 @@ def _audit_for_user(
     outcome: str,
     details: Mapping[str, str],
     auth_method: str = "local",
+    pinned_tenant_id: UUID | None = None,
 ) -> None:
     """One audit row per tenant the user belongs to (so each org's activity feed sees it);
     a single installation-level row (tenant_id NULL, written with no client context) if the user
-    has no memberships."""
+    has no memberships. A session pinned to a client (a client's IdP) is that client's activity
+    only: its row goes to that client and no other client learns of it (B-927)."""
     db.set_principal(session, user_id)
     tenant_ids = repository.my_membership_tenants(session)
+    if pinned_tenant_id is not None:
+        tenant_ids = [t for t in tenant_ids if t == pinned_tenant_id]
     targets: list[UUID | None] = list(tenant_ids) or [None]
     for tenant_id in targets:
         db.set_tenant(session, tenant_id)
@@ -382,6 +386,7 @@ def establish_session(
         outcome="success",
         details={},
         auth_method=auth_method,
+        pinned_tenant_id=active_tenant_id,
     )
     session.commit()
     auth = AuthResult(principal, session_id, csrf, min(idle_expires, absolute_expires))

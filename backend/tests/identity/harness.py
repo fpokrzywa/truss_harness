@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from typing import Any  # Any: JSON response bodies of the probe routes
 from uuid import UUID
 
+import httpx
 import pytest
 from fastapi import APIRouter, Depends, FastAPI
 from fastapi.testclient import TestClient
@@ -27,14 +28,17 @@ from sqlalchemy.orm import Session
 from shifde.core.clock import utcnow
 from shifde.core.db import Database
 from shifde.core.deps import SessionDep, check_origin, reject_basic_auth
+from shifde.core.egress import Resolver, default_resolver
 from shifde.core.errors import NotFound
 from shifde.core.features import FeatureRegistry
 from shifde.core.ids import uuid7
 from shifde.core.problem import install_error_handlers
 from shifde.core.ratelimit import SlidingWindowLimiter
 from shifde.core.settings import Settings
+from shifde.core.ssrf import OutboundHttp
 from shifde.identity import api, repository, service
 from shifde.identity.dependencies import AuthDep, require_auth
+from shifde.identity.oidc import OidcClient
 from shifde.identity.passwords import PasswordService
 
 ORIGIN = "http://127.0.0.1:3710"
@@ -84,7 +88,12 @@ def revoke_api_key(org: UUID, key_id: UUID, auth: AuthDep, session: SessionDep) 
     session.commit()
 
 
-def make_app(settings: Settings) -> FastAPI:
+def make_app(
+    settings: Settings,
+    *,
+    http_transport: httpx.BaseTransport | None = None,
+    resolver: Resolver | None = None,
+) -> FastAPI:
     app = FastAPI(openapi_url="/api/openapi.json")
     install_error_handlers(app)
     db = Database(settings.database_url)
@@ -99,6 +108,20 @@ def make_app(settings: Settings) -> FastAPI:
         settings.api_key_failures_per_minute, message="too many failed API key attempts"
     )
     app.state.features = FeatureRegistry()
+    # SETH 3ba0e06 app.py: the OIDC client over the SSRF-guarded HTTP client (a test passes the
+    # fake IdP's transport, `tests/_support/fake_oidc.py`)
+    app.state.oidc = OidcClient(
+        settings,
+        OutboundHttp(
+            allow_dev_loopback=settings.is_development,
+            resolver=resolver or default_resolver,
+            transport=http_transport,
+            timeout=settings.oidc_http_timeout_seconds,
+        ),
+    )
+    app.state.oidc_limiter = SlidingWindowLimiter(
+        settings.oidc_rate_per_minute, message="too many sign-in attempts; try again later"
+    )
     guards = [Depends(reject_basic_auth), Depends(check_origin)]
     app.include_router(api.router, dependencies=guards)
     app.include_router(probe, dependencies=[*guards, Depends(require_auth)])
@@ -118,8 +141,14 @@ def stub_memberships(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @contextmanager
-def client_for(settings: Settings, **kwargs: Any) -> Iterator[TestClient]:  # Any: options
-    app = make_app(settings)
+def client_for(
+    settings: Settings,
+    *,
+    http_transport: httpx.BaseTransport | None = None,
+    resolver: Resolver | None = None,
+    **kwargs: Any,  # Any: TestClient options
+) -> Iterator[TestClient]:
+    app = make_app(settings, http_transport=http_transport, resolver=resolver)
     try:
         with TestClient(
             app, base_url="https://testserver", headers={"Origin": ORIGIN}, **kwargs

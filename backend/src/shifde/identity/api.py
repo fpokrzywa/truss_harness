@@ -1,14 +1,20 @@
-"""Auth endpoints: /api/auth/* (config, local login, session, logout, setup-token redemption).
+"""Auth endpoints: /api/auth/* (config, local login, session, logout, setup-token redemption,
+OpenID Connect sign-in).
 
-Not mounted here: the `app` port includes `router` with `reject_basic_auth` and `check_origin`.
-The OpenID Connect routes (`/oidc/{idp_id}/login`, `/oidc/{idp_id}/callback`) arrive with
-`identity.oidc` in identity part 3. Port notes (part 2b, B-918): a failed login discards the
+Not mounted here: the `app` port includes `router` with `reject_basic_auth` and `check_origin`
+and sets `app.state.oidc` (`identity.oidc.OidcClient`) and `app.state.oidc_limiter`. The OpenID
+Connect routes (`/oidc/{idp_id}/login`, `/oidc/{idp_id}/callback`) are identity part 3a. Port
+notes (part 2b, B-918): a failed login discards the
 request's Session (identity review 2 item 2); limiter keys group an IPv6 address by its /64.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request, Response
+from typing import Annotated
+from uuid import UUID
+
+from fastapi import APIRouter, Query, Request, Response
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from shifde.core.deps import RequestCtxDep, SessionDep, SettingsDep
@@ -16,7 +22,7 @@ from shifde.core.errors import AppError
 from shifde.core.features import FeatureRegistry
 from shifde.core.ratelimit import SlidingWindowLimiter, ip_limit_applies, source_key
 from shifde.core.settings import Settings
-from shifde.identity import service
+from shifde.identity import oidc, service
 from shifde.identity.dependencies import PasswordsDep, SessionAuthDep, enforce_login_limits
 from shifde.identity.schemas import (
     AuthConfigOut,
@@ -189,3 +195,97 @@ def redeem_setup_token(
     memberships = service.my_memberships(session)
     _set_cookie(response, settings, result.session_token, result.max_age_seconds)
     return _session_out(result.auth, memberships, _features(request))
+
+
+# ---------------------------------------------------------------- OpenID Connect
+def _oidc_client(request: Request) -> oidc.OidcClient:
+    client: oidc.OidcClient = request.app.state.oidc
+    return client
+
+
+def _oidc_limit(request: Request, settings: Settings, client: str | None, step: str) -> None:
+    """Findings Item 5b: sign-in starts and callbacks per client address (`source_key`), skipped
+    for loopback and trusted proxies like the login limiter; a full window answers 429 before any
+    database work (B-926)."""
+    if ip_limit_applies(client, settings.trusted_proxies):
+        limiter: SlidingWindowLimiter = request.app.state.oidc_limiter
+        limiter.check(f"{step}:{source_key(client) or 'unknown'}")
+
+
+def _failure(settings: Settings) -> RedirectResponse:
+    response = RedirectResponse(oidc.FAILURE_PATH, status_code=302)
+    response.delete_cookie(settings.oidc_cookie_name, path="/", secure=settings.cookie_secure)
+    return response
+
+
+@router.get("/oidc/{idp_id}/login")
+def oidc_login(
+    idp_id: str,
+    request: Request,
+    session: SessionDep,
+    settings: SettingsDep,
+    ctx: RequestCtxDep,
+    next_path: Annotated[str | None, Query(alias="next")] = None,
+) -> Response:
+    """Start the authorization-code + PKCE flow: 302 to the IdP. An unknown, disabled or
+    unsupported IdP answers the same generic redirect as any other failure."""
+    _oidc_limit(request, settings, ctx.client_ip, "login")
+    try:
+        url, binding = oidc.begin_login(
+            session, settings, _oidc_client(request), idp_id=UUID(idp_id), next_path=next_path
+        )
+    except (ValueError, oidc.OidcFailure):
+        _discard(session)
+        return _failure(settings)
+    response = RedirectResponse(url, status_code=302)
+    response.set_cookie(
+        settings.oidc_cookie_name,
+        binding,
+        max_age=settings.oidc_state_ttl_seconds,
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",
+        path="/",
+    )
+    return response
+
+
+@router.get("/oidc/{idp_id}/callback")
+def oidc_callback(
+    idp_id: str,
+    request: Request,
+    session: SessionDep,
+    settings: SettingsDep,
+    ctx: RequestCtxDep,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+) -> Response:
+    """Finish the flow; every failure is a generic redirect (detail only in audit/log)."""
+    _oidc_limit(request, settings, ctx.client_ip, "callback")
+    try:
+        uid = UUID(idp_id)
+    except ValueError:
+        return _failure(settings)
+    if error or not code or not state:
+        oidc.record_failure(session, ctx, uid, None, "idp_error_or_missing_parameters")
+        return _failure(settings)
+    try:
+        result = oidc.complete_login(
+            session,
+            settings,
+            _oidc_client(request),
+            ctx,
+            idp_id=uid,
+            code=code,
+            state=state,
+            binding=request.cookies.get(settings.oidc_cookie_name),
+            previous_token=request.cookies.get(settings.session_cookie_name),
+        )
+    except oidc.OidcFailure:
+        _discard(session)
+        return _failure(settings)
+    response = RedirectResponse(result.next_path, status_code=302)
+    _set_cookie(response, settings, result.login.session_token, result.login.max_age_seconds)
+    response.delete_cookie(settings.oidc_cookie_name, path="/", secure=settings.cookie_secure)
+    return response

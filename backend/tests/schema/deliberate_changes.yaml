@@ -244,3 +244,27 @@
   reason: >-
     Identity review 1 item 1 (MUST): SETH let any client context insert a membership for any person (tenant_isolation only), after which users_select showed that client the person's e-mail and the invitation definer trusted the row. The RESTRICTIVE INSERT policy admits a membership only under the platform-administrator context. DECISIONS B-910.
   migration: identity_0002
+
+- table: oidc_auth_requests
+  path: [constraints, oidc_auth_requests_tenant_id_fkey]
+  reason: >-
+    foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)
+  migration: identity_0004
+
+- table: oidc_auth_requests
+  path: [policies, definer_only]
+  reason: >-
+    Identity review 3 item 5: SETH set the client context from the IdP named in the unauthenticated login and callback paths to write and consume flow state. The RESTRICTIVE policy (USING false, WITH CHECK false) keeps the application role off the table; flow state is written and consumed only by shifde_begin_oidc_request / shifde_consume_oidc_request, which take the client from the IdP row. DECISIONS B-922.
+  migration: identity_0004
+
+- table: user_identities
+  path: [policies, insert_by_definer_only]
+  reason: >-
+    Identity review 1 item 2 (MUST): SETH let a person insert an identity for themself at any IdP and subject (own_row and a plain key to idp_configs), so anyone could bind another person's subject at another client's or the installation IdP (lockout or sign-in into the wrong account). The RESTRICTIVE INSERT policy refuses every direct insert; identities are created only by shifde_resolve_identity (setup-token link) and shifde_jit_create_user. DECISIONS B-923.
+  migration: identity_0004
+
+- table: idp_configs
+  path: [triggers, trg_idp_configs_secret_scope]
+  reason: >-
+    Identity review 1 item 7: the composite key ties a client's IdP to that client's secrets, but an installation IdP (tenant_id NULL) is checked only by the plain key and could name a client's secret. The trigger refuses an installation IdP whose client secret is not an installation secret. DECISIONS B-924.
+  migration: identity_0004

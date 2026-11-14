@@ -30,3 +30,4 @@ service_accounts  # identity
 api_keys  # identity
 user_identities  # identity
 idp_configs  # identity
+oidc_auth_requests  # identity

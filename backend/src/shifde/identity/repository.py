@@ -767,33 +767,75 @@ def update_idp(
 @dataclass(frozen=True)
 class OidcRequest:
     id: UUID
+    tenant_id: UUID | None
     binding_hash: bytes
     nonce_hash: bytes
     next_path: str
 
 
-def insert_oidc_request(session: Session, values: dict[str, Any]) -> None:
-    session.execute(
-        text(
-            "INSERT INTO shifde.oidc_auth_requests (id, tenant_id, idp_config_id, state_hash, "
-            "binding_hash, nonce_hash, next_path, created_at, expires_at) VALUES (:id, "
-            ":tenant_id, :idp_config_id, :state_hash, :binding_hash, :nonce_hash, :next_path, "
-            ":created_at, :expires_at)"
-        ),
-        values,
+def begin_oidc_request(
+    session: Session,
+    *,
+    request_id: UUID,
+    idp_id: UUID,
+    state_hash: bytes,
+    binding_hash: bytes,
+    nonce_hash: bytes,
+    next_path: str,
+    ttl_seconds: int,
+) -> bool:
+    """Store the hashed flow state of an active IdP under the IdP's own client (definer,
+    B-922: `oidc_auth_requests` is closed to the application role)."""
+    return bool(
+        session.execute(
+            text(
+                "SELECT shifde.shifde_begin_oidc_request(:id, :idp, :state, :binding, :nonce, "
+                ":next, :ttl)"
+            ),
+            {
+                "id": request_id,
+                "idp": idp_id,
+                "state": state_hash,
+                "binding": binding_hash,
+                "nonce": nonce_hash,
+                "next": next_path,
+                "ttl": ttl_seconds,
+            },
+        ).scalar_one()
     )
 
 
-def consume_oidc_request(
-    session: Session, state_hash: bytes, idp_id: UUID, now: datetime
-) -> OidcRequest | None:
+def consume_oidc_request(session: Session, state_hash: bytes, idp_id: UUID) -> OidcRequest | None:
     """Atomically mark the request used (single use) and return it if valid and unexpired."""
     row = session.execute(
-        text(
-            "UPDATE shifde.oidc_auth_requests SET used_at = :now "
-            "WHERE state_hash = :h AND idp_config_id = :i AND used_at IS NULL "
-            "AND expires_at > :now RETURNING id, binding_hash, nonce_hash, next_path"
-        ),
-        {"now": now, "h": state_hash, "i": idp_id},
+        text("SELECT * FROM shifde.shifde_consume_oidc_request(:h, :i)"),
+        {"h": state_hash, "i": idp_id},
     ).first()
-    return OidcRequest(row[0], bytes(row[1]), bytes(row[2]), row[3]) if row else None
+    return OidcRequest(row[0], row[1], bytes(row[2]), bytes(row[3]), row[4]) if row else None
+
+
+def jit_create_user(
+    session: Session,
+    *,
+    user_id: UUID,
+    idp_id: UUID,
+    issuer: str,
+    subject: str,
+    email: str,
+    display_name: str,
+) -> bool:
+    """Just-in-time provisioning through an installation IdP (definer, B-923): the person and
+    the identity are created together, or nothing (False) is."""
+    return bool(
+        session.execute(
+            text("SELECT shifde.shifde_jit_create_user(:u, :i, :iss, :sub, :e, :n)"),
+            {
+                "u": user_id,
+                "i": idp_id,
+                "iss": issuer,
+                "sub": subject,
+                "e": email,
+                "n": display_name,
+            },
+        ).scalar_one()
+    )

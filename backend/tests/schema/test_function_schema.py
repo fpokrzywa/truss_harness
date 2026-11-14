@@ -51,6 +51,10 @@ _IDENTITY_DEFINER = (
     "identity_0002 (B-909): owned by shifde_owner, search_path pg_catalog, pg_temp, every object "
     "schema-qualified, EXECUTE for shifde_app only, writes no app.* setting"
 )
+_OIDC_DEFINER = (
+    "identity_0004 (B-922..B-924): owned by shifde_owner, search_path pg_catalog, pg_temp, every "
+    "object schema-qualified, EXECUTE for shifde_app only, writes no app.* setting"
+)
 SECURITY_DEFINER_ALLOWLIST: dict[str, str] = {
     "shifde.shifde_resolve_local_login(text)": (
         f"{_IDENTITY_DEFINER}. Pre-tenant login lookup: users and local_credentials are not "
@@ -94,6 +98,35 @@ SECURITY_DEFINER_ALLOWLIST: dict[str, str] = {
         "client comes from the key row only, and a row is returned only when the key's principal "
         "belongs to that client (a service account of the client or a person with a membership "
         "there; review 1 item 4). The caller verifies the secret against key_hash."
+    ),
+    "shifde.shifde_resolve_idp(uuid)": (
+        f"{_OIDC_DEFINER}. Pre-tenant OIDC: the sign-in start and callback resolve an active "
+        "IdP by its id before any client context exists (no secret values). A client's IdP is "
+        "returned only with jit off and a client secret of that same client, an installation IdP "
+        "only with an installation secret (review 1 items 4, 7); the caller pins the session to "
+        "the IdP's client and requires an active membership there."
+    ),
+    "shifde.shifde_resolve_identity(text, text, text, uuid)": (
+        f"{_OIDC_DEFINER}. Maps a validated (IdP, issuer, subject) of an active IdP to its "
+        "person (user_identities is own_row) and performs the setup-token link: only through an "
+        "installation IdP or the token's own client's IdP, and for a client's IdP only an active "
+        "member of that client who is not the platform administrator. One of the two paths that "
+        "insert identities (review 1 item 2)."
+    ),
+    "shifde.shifde_jit_create_user(uuid, uuid, text, text, text, text)": (
+        f"{_OIDC_DEFINER}. Just-in-time provisioning: only through an active installation IdP "
+        "with jit on, for a subject not bound yet; creates the person and the identity together "
+        "(the other path that inserts identities, review 1 item 2); refuses an existing e-mail."
+    ),
+    "shifde.shifde_begin_oidc_request(uuid, uuid, bytea, bytea, bytea, text, integer)": (
+        f"{_OIDC_DEFINER}. Writes the hashed single-use flow state of an active IdP with the "
+        "IdP's own client (oidc_auth_requests is closed to the app), so no client context is set "
+        "from the unauthenticated request (review 3 item 5); bounded expiry, 32-byte hashes."
+    ),
+    "shifde.shifde_consume_oidc_request(bytea, uuid)": (
+        f"{_OIDC_DEFINER}. Marks a live flow request used (single use, expiry checked in SQL) "
+        "for the IdP named in the callback, only while that IdP is active and still in the "
+        "request's client; returns only the request's own hashes and next path."
     ),
     "shifde.rate_card_versions_guard": (
         "ledger (B-601): the BEFORE INSERT guard of rate_card_versions closes the open-ended "
@@ -291,7 +324,7 @@ def test_allowlist_has_no_stale_entries(owner_engine: Engine) -> None:
 
 
 def test_identity_definers_are_on_the_allowlist_by_signature(owner_engine: Engine) -> None:
-    """identity_0002/0003 (B-909, B-915): each identity definer is listed under its full
+    """identity_0002/0003/0004 (B-909, B-915, B-922): each identity definer is listed under its full
     signature."""
     with owner_engine.connect() as c:
         rows = [
@@ -309,6 +342,11 @@ def test_identity_definers_are_on_the_allowlist_by_signature(owner_engine: Engin
         "shifde.shifde_redeem_setup_token(bytea, text, integer)",
         "shifde.shifde_my_membership_tenants",
         "shifde.shifde_resolve_api_key(text)",
+        "shifde.shifde_resolve_idp(uuid)",
+        "shifde.shifde_resolve_identity(text, text, text, uuid)",
+        "shifde.shifde_jit_create_user(uuid, uuid, text, text, text, text)",
+        "shifde.shifde_begin_oidc_request(uuid, uuid, bytea, bytea, bytea, text, integer)",
+        "shifde.shifde_consume_oidc_request(bytea, uuid)",
     }
     assert all(row.owner == "shifde_owner" for row in rows)
     assert all(_search_path(row.proconfig) == "pg_catalog, pg_temp" for row in rows)
