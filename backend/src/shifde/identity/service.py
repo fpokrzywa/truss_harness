@@ -82,8 +82,9 @@ TOUCH_INTERVAL = timedelta(minutes=1)
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 SETUP_TOKEN_TTL = timedelta(hours=1)
 # Account-wide ceiling over every source (identity review 2 item 3, B-918): rotating addresses
-# no longer gives unlimited guesses. High on purpose: reaching it takes ten sources each locked
-# by their own threshold, so it is not the e-mail-only victim lockout of SEC Minor-1.
+# no longer gives unlimited guesses. Each source counts at most LOCKOUT_THRESHOLD towards it
+# (isolation review 3 item 1), so reaching it takes ten distinct sources (IPv4 addresses or IPv6
+# /64s) each locked by its own threshold within the window, not one address hammering.
 ACCOUNT_CEILING = 100
 ACCOUNT_WINDOW = timedelta(hours=1)
 # The subject of an unknown account's lookups: no person has this id, so the same statements run
@@ -240,7 +241,9 @@ def _login_local(
     # (an operator may still set them; they are honoured).
     source_lock = repository.lock_login_source(session, subject, source)
     now = utcnow()  # after any lock wait
-    recent = repository.account_recent_failures(session, subject, now - ACCOUNT_WINDOW)
+    recent = repository.account_recent_failures(
+        session, subject, now - ACCOUNT_WINDOW, per_source_cap=LOCKOUT_THRESHOLD
+    )
     if row is not None and creds is not None:
         row = replace(
             row,

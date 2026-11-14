@@ -51,7 +51,8 @@ def mint(
             scopes=["read"],
             resource_scope=None,
             expires_at=extra.pop("expires_at", utcnow() + timedelta(days=30)),
-            created_by=None,
+            # a personal key is minted by its own person (B-921) unless a test says otherwise
+            created_by=extra.pop("created_by", principal if principal_type == "user" else None),
             **extra,
         )
         s.commit()
@@ -235,6 +236,27 @@ def test_a_key_is_minted_only_for_a_principal_of_its_own_client(
     owner_session.rollback()
     after = owner_session.execute(text("SELECT count(*) FROM shifde.api_keys")).scalar_one()
     assert after == before
+
+
+def test_a_personal_key_is_minted_only_for_oneself(
+    app_db: Database, settings: Settings, world: World, owner_session: Session
+) -> None:
+    """Isolation review 3 item 4 (B-921): a user key acts as its person under principal-keyed
+    policies, so `mint` refuses one whose creator is not that person (another member of the same
+    client, or no creator), with the same generic refusal."""
+    before = owner_session.execute(text("SELECT count(*) FROM shifde.api_keys")).scalar_one()
+    owner_session.commit()
+    for creator in (world.both, world.a.service_account, None):
+        with pytest.raises(Conflict) as err:
+            mint(app_db, settings, world.a.tenant, "user", world.a.member, created_by=creator)
+        assert str(err.value) == apikeys.MINT_REFUSED
+    after = owner_session.execute(text("SELECT count(*) FROM shifde.api_keys")).scalar_one()
+    owner_session.commit()
+    assert after == before
+    key_id, _ = mint(
+        app_db, settings, world.a.tenant, "user", world.a.member, created_by=world.a.member
+    )
+    assert key_id
 
 
 def test_a_prefix_collision_is_retried_and_other_refusals_are_generic(

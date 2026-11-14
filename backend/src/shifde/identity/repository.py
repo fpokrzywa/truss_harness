@@ -182,16 +182,20 @@ def record_source_failure(
     )
 
 
-def account_recent_failures(session: Session, user_id: UUID, since: datetime) -> int:
+def account_recent_failures(
+    session: Session, user_id: UUID, since: datetime, *, per_source_cap: int
+) -> int:
     """Failures counted for the person across every source whose counter moved since `since`
-    (the account-wide ceiling, identity review 2 item 3; needs the principal context)."""
+    (the account-wide ceiling, identity review 2 item 3; needs the principal context). Each
+    source counts at most `per_source_cap` (its own lock threshold, isolation review 3 item 1):
+    one address that keeps failing while locked cannot reach the ceiling alone."""
     return int(
         session.execute(
             text(
-                "SELECT COALESCE(SUM(failed_attempts), 0) FROM shifde.login_lockouts "
-                "WHERE user_id = :u AND updated_at > :since"
+                "SELECT COALESCE(SUM(LEAST(failed_attempts, :cap)), 0) "
+                "FROM shifde.login_lockouts WHERE user_id = :u AND updated_at > :since"
             ),
-            {"u": user_id, "since": since},
+            {"u": user_id, "since": since, "cap": per_source_cap},
         ).scalar_one()
     )
 

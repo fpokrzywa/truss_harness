@@ -169,6 +169,29 @@ def test_an_account_wide_ceiling_bounds_failures_over_every_source(
         _login(s, svc_settings, passwords, ip="198.51.100.1")
 
 
+def test_hammering_from_one_source_does_not_reach_the_account_wide_ceiling(
+    s: Session,
+    svc_settings: Settings,
+    passwords: PasswordService,
+    member: UUID,
+    owner_session: Session,
+) -> None:
+    """Isolation review 3 item 1: one address that keeps failing past its own lock counts at most
+    `LOCKOUT_THRESHOLD` towards the ceiling, so it cannot lock the person out from elsewhere."""
+    attempts = service.ACCOUNT_CEILING + 50
+    for _ in range(attempts):
+        with pytest.raises(InvalidCredentials):
+            _login(s, svc_settings, passwords, password="wrong", ip="203.0.113.7")
+    counted = owner_session.execute(
+        text("SELECT failed_attempts FROM shifde.login_lockouts WHERE user_id = :u"),
+        {"u": member},
+    ).scalar_one()
+    assert counted == attempts  # the source's own counter (and its doubling lock) is unchanged
+    with pytest.raises(InvalidCredentials):  # that source stays locked, right password or not
+        _login(s, svc_settings, passwords, ip="203.0.113.7")
+    _login(s, svc_settings, passwords, ip="198.51.100.2")  # the person signs in from elsewhere
+
+
 # ------------------------------------------------------------------ review 2 item 4
 def _statements(app_db: Database, run: Any) -> int:  # Any: a zero-argument callable
     seen: list[str] = []

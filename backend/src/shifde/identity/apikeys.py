@@ -120,8 +120,12 @@ def mint(
     rotated_from_id: UUID | None = None,
 ) -> tuple[ApiKey, str]:
     """Create a key row in the caller's client; returns (row, full secret). The secret exists
-    only in the return value. Refusals (principal not of this client, a constraint) are one
-    generic `Conflict`; only a prefix collision is retried."""
+    only in the return value. Refusals (principal not of this client, a personal key for someone
+    other than its creator, a constraint) are one generic `Conflict`; only a prefix collision is
+    retried. A user key acts as its person under principal-keyed policies, so it is minted only
+    by that person (`created_by == principal_id`, isolation review 3 item 4, B-921)."""
+    if principal_type == "user" and created_by != principal_id:
+        raise Conflict(MINT_REFUSED)
     if not _principal_in_client(session, tenant_id, principal_type, principal_id):
         raise Conflict(MINT_REFUSED)
     for _ in range(MINT_ATTEMPTS):
