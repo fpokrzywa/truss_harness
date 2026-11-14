@@ -14,12 +14,15 @@ from uuid import UUID
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError, PendingRollbackError
 from sqlalchemy.orm import Session
 
+from shifde.audit import repository
 from shifde.audit import service as audit
+from shifde.audit.models import AuditEvent
+from shifde.core.clock import utcnow
 from shifde.core.context import RequestContext
-from shifde.core.db import Database, set_platform_admin, set_tenant
+from shifde.core.db import Database, get_context, set_platform_admin, set_tenant
 from shifde.core.ids import uuid7
 
 INSERT = (
@@ -154,3 +157,107 @@ def test_the_service_cannot_write_for_another_client(app_db: Database, world: Wo
             audit.record(s, RequestContext(request_id="x"), action="test.x", tenant_id=world.b)
         assert _sqlstate(err) == "42501"
         s.rollback()
+
+
+# --- isolation review 1 (fix round 1) ---------------------------------------------------------
+
+
+def _assert_no_leaked_admin(s: Session) -> None:
+    """After the failed write and a rollback: the Session and the next transaction hold no
+    platform-administrator flag, and a raw global insert still fails."""
+    s.rollback()
+    assert get_context(s).platform_admin is False
+    assert s.execute(text("SELECT current_user")).scalar_one() == "shifde_app"
+    assert s.execute(text("SELECT shifde.is_platform_admin_ctx()")).scalar_one() is False
+    with pytest.raises(DBAPIError) as err:
+        s.execute(text(INSERT.format(tenant="NULL")))
+    assert _sqlstate(err) == "42501"
+    s.rollback()
+
+
+@pytest.mark.parametrize("with_context", [True, False], ids=["client-context", "no-context"])
+def test_a_failed_installation_write_in_an_aborted_transaction_leaks_no_admin_flag(
+    app_db: Database, world: World, with_context: bool
+) -> None:
+    ctx = RequestContext(request_id="x")
+    with _as(app_db, world.a if with_context else None) as s:
+        with pytest.raises(DBAPIError):
+            s.execute(text("SELECT 1/0"))
+        with pytest.raises(DBAPIError):  # InFailedSqlTransaction
+            audit.record(s, ctx, action="identity.login.failed", tenant_id=None)
+        _assert_no_leaked_admin(s)
+
+
+def test_a_failed_installation_write_after_a_failed_flush_leaks_no_admin_flag(
+    app_db: Database, world: World
+) -> None:
+    with _as(app_db, world.a) as s:
+        s.add(
+            AuditEvent(
+                id=uuid7(), tenant_id=world.a, occurred_at=utcnow(), actor_type="user",
+                action="test.x", outcome="bogus",
+            )
+        )  # fmt: skip
+        with pytest.raises(IntegrityError):
+            s.flush()
+        with pytest.raises(PendingRollbackError):
+            audit.record(
+                s, RequestContext(request_id="x"), action="identity.login.failed", tenant_id=None
+            )
+        _assert_no_leaked_admin(s)
+
+
+def test_an_insert_that_fails_reports_its_own_error(app_db: Database, world: World) -> None:
+    with _as(app_db, world.a) as s:
+        with pytest.raises(DBAPIError) as err:
+            audit.record(
+                s, RequestContext(request_id="x"), action="test.x", outcome="bogus",
+                tenant_id=world.a,
+            )  # fmt: skip
+        assert _sqlstate(err) == "23514"
+        s.rollback()
+    with _as(app_db, world.a) as s:
+        with pytest.raises(DBAPIError) as err:
+            audit.record(
+                s, RequestContext(request_id="x"), action="identity.login.failed",
+                outcome="bogus", tenant_id=None,
+            )  # fmt: skip
+        assert _sqlstate(err) == "23514"  # not InFailedSqlTransaction from the restore
+        _assert_no_leaked_admin(s)
+
+
+@pytest.mark.parametrize("action", ["egress.default.updated", "installation.profile.applied"])
+def test_installation_configuration_events_need_a_platform_administrator(
+    app_db: Database, world: World, action: str
+) -> None:
+    ctx = RequestContext(request_id="x")
+    with _as(app_db, world.a) as s:
+        with pytest.raises(audit.NotInstallationAction):
+            audit.record(s, ctx, action=action, tenant_id=None)
+        s.rollback()
+    with _as(app_db, world.a) as s:
+        set_platform_admin(s, True)
+        audit.record(s, ctx, action=action, tenant_id=None)
+        assert get_context(s).platform_admin  # the administrator's own context survives
+        s.rollback()
+    with _as(app_db, None) as s:
+        with pytest.raises(audit.NotInstallationAction):
+            audit.record(s, ctx, action=action, tenant_id=None)
+        s.rollback()
+
+
+@pytest.mark.parametrize("with_context", [True, False], ids=["client-context", "no-context"])
+def test_a_client_cannot_stall_another_clients_chain_before_being_refused(
+    app_db: Database, owner_db: Database, world: World, with_context: bool
+) -> None:
+    """B's writer holds B's chain lock; A's attempt for B is refused by RLS at once (42501), not
+    queued behind the lock (SQLSTATE 55P03 here would mean A reached the lock)."""
+    with owner_db.session() as holder:
+        repository.lock_chain(holder, world.b)
+        with _as(app_db, world.a if with_context else None) as s:
+            s.execute(text("SET LOCAL lock_timeout = '500ms'"))
+            with pytest.raises(DBAPIError) as err:
+                audit.record(s, RequestContext(request_id="x"), action="test.x", tenant_id=world.b)
+            assert _sqlstate(err) == "42501"
+            s.rollback()
+        holder.rollback()
