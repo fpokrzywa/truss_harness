@@ -9,6 +9,57 @@
 #     migration: <revision id that makes the change>
 #
 # An entry whose path does not actually differ from SETH fails the test (remove it).
+
+
+- table: usage_events
+  path: [constraints, usage_events_tenant_id_fkey]
+  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
+  migration: ledger_0001
+
+- table: usage_rollups_daily
+  path: [constraints, usage_rollups_daily_tenant_id_fkey]
+  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
+  migration: ledger_0001
+
+- table: rate_cards
+  path: [constraints, rate_cards_tenant_id_fkey]
+  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
+  migration: ledger_0001
+
+- table: rate_card_versions
+  path: [constraints, rate_card_versions_tenant_id_fkey]
+  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
+  migration: ledger_0001
+
+- table: budgets
+  path: [constraints, budgets_tenant_id_fkey]
+  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
+  migration: ledger_0001
+
+- table: budget_reservations
+  path: [constraints, budget_reservations_tenant_id_fkey]
+  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
+  migration: ledger_0001
+
+- table: budget_alerts
+  path: [constraints, budget_alerts_tenant_id_fkey]
+  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
+  migration: ledger_0001
+
+- table: quotas
+  path: [constraints, quotas_tenant_id_fkey]
+  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
+  migration: ledger_0001
+
+- table: budget_reservations
+  path: [constraints, fk_budget_reservations__run]
+  reason: "foreign key to shifde.runs, a table of the runtime module that is not ported yet; the runtime migration adds it (docs/build/carry_forward.md)"
+  migration: ledger_0001
+
+- table: usage_events
+  path: [constraints, usage_events_cost_kind_check]
+  reason: "cost_kind admits 'estimated': a cost priced from token counts the platform estimated because the provider reported none (findings Item 11, DECISIONS B-602); SETH stored such usage as 0 tokens labelled calculated"
+  migration: ledger_0001
 - table: roles
   path: [constraints, roles_tenant_id_fkey]
   reason: >-
@@ -50,3 +101,33 @@
   reason: >-
     Foreign key to shifde.tenants, a table of the later tenancy port; added by tenancy's migration (plan per-module recipe step 3, DECISIONS B-402, carry_forward.md), which removes this entry.
   migration: authz_0001
+
+- table: budgets
+  path: [constraints, uq_budgets__tenant_id]
+  reason: "constraints bypass row-level security: a budget_alerts row naming another client's budget id was accepted (or collided with that client's slot, silencing its alert under ON CONFLICT DO NOTHING). Isolation review 1, item 2, B-607. Target of the composite foreign key from budget_alerts."
+  migration: ledger_0001
+
+- table: budgets
+  path: [indexes, uq_budgets__tenant_id]
+  reason: "constraints bypass row-level security: a budget_alerts row naming another client's budget id was accepted (or collided with that client's slot, silencing its alert under ON CONFLICT DO NOTHING). Isolation review 1, item 2, B-607. Index of uq_budgets__tenant_id."
+  migration: ledger_0001
+
+- table: budget_alerts
+  path: [constraints, budget_alerts_budget_id_fkey, definition]
+  reason: "constraints bypass row-level security: a budget_alerts row naming another client's budget id was accepted (or collided with that client's slot, silencing its alert under ON CONFLICT DO NOTHING). Isolation review 1, item 2, B-607. The foreign key is (tenant_id, budget_id) to budgets (tenant_id, id)."
+  migration: ledger_0001
+
+- table: budget_alerts
+  path: [constraints, uq_budget_alerts__once, definition]
+  reason: "constraints bypass row-level security: a budget_alerts row naming another client's budget id was accepted (or collided with that client's slot, silencing its alert under ON CONFLICT DO NOTHING). Isolation review 1, item 2, B-607. The once-only slot is per tenant: (tenant_id, budget_id, period_start, threshold)."
+  migration: ledger_0001
+
+- table: budget_alerts
+  path: [indexes, uq_budget_alerts__once]
+  reason: "constraints bypass row-level security: a budget_alerts row naming another client's budget id was accepted (or collided with that client's slot, silencing its alert under ON CONFLICT DO NOTHING). Isolation review 1, item 2, B-607. Index of uq_budget_alerts__once."
+  migration: ledger_0001
+
+- table: usage_events
+  path: [triggers, trg_usage_events_version_scope]
+  reason: "the foreign key to rate_card_versions accepts (and so confirms) another client's version id; this trigger requires a global version or one of the event's own tenant. Isolation review 1, item 3, B-608."
+  migration: ledger_0001
