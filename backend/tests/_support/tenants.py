@@ -91,3 +91,21 @@ def add_project(
         {"i": pid, "t": tenant_id, "w": workspace_id, "s": f"p-{pid.hex}"},
     )
     return pid
+
+
+def bind_user(
+    owner: Connection | Session, tenant_id: UUID, user_id: UUID, role_key: str = "viewer"
+) -> UUID:
+    """A direct binding of a system role template at organization scope for a member of
+    `tenant_id` (owner rights, `check_role_binding` runs). Since tenancy_0002 a person sees a
+    client, and a session pinned to it resolves, only with a live binding there (B-1009)."""
+    bid = uuid7()
+    owner.execute(
+        text(
+            "INSERT INTO shifde.role_bindings (id, tenant_id, subject_type, subject_id, role_id, "
+            "scope_type, scope_id) SELECT :i, :t, 'user', :u, r.id, 'tenant', :t "
+            "FROM shifde.roles r WHERE r.tenant_id IS NULL AND r.key = :k"
+        ),
+        {"i": bid, "t": tenant_id, "u": user_id, "k": role_key},
+    )
+    return bid

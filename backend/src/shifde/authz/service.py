@@ -29,6 +29,7 @@ from shifde.core.ids import uuid7
 
 __all__ = [
     "PDP",
+    "PLATFORM_ONLY_ROLE_KEYS",
     "BindingRow",
     "BoundGroup",
     "Decision",
@@ -65,6 +66,7 @@ __all__ = [
     "insert_group",
     "insert_role",
     "insert_role_permissions",
+    "is_platform_only_role",
     "list_bindings",
     "list_groups",
     "list_permissions",
@@ -82,6 +84,15 @@ __all__ = [
     "update_group",
     "update_role",
 ]
+
+
+# System role templates that are never bound inside a client (B-1010).
+PLATFORM_ONLY_ROLE_KEYS = frozenset({"platform_administrator"})
+
+
+def is_platform_only_role(session: Session, role_id: UUID) -> bool:
+    """True when `role_id` is a system template that is never bound inside a client."""
+    return any(repository.system_role_id(session, k) == role_id for k in PLATFORM_ONLY_ROLE_KEYS)
 
 
 def new_pdp(
@@ -104,7 +115,11 @@ def grant_role(
     scope_id: UUID,
     created_by: UUID | None,
 ) -> None:
-    """Bind a system role template to a user at a scope (caller has already authorized)."""
+    """Bind a system role template to a user at a scope (caller has already authorized). The
+    `platform_administrator` template is never bound in a client (authz review 2 item 5,
+    DECISIONS B-1010; `check_role_binding` refuses it as well)."""
+    if role_key in PLATFORM_ONLY_ROLE_KEYS:
+        raise ValidationFailed(f"unknown role: {role_key}")
     role_id = repository.system_role_id(session, role_key)
     if role_id is None:
         raise ValidationFailed(f"unknown role: {role_key}")

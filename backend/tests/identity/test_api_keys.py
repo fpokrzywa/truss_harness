@@ -344,7 +344,7 @@ def test_resolve_api_key_needs_the_principal_in_the_keys_client(
 
 # ------------------------------------------------------------------ Item 4: pepper rotation
 def test_a_new_pepper_mints_new_keys_while_old_keys_still_verify(
-    app_db: Database, settings: Settings, world: World, stub_memberships: None
+    app_db: Database, settings: Settings, world: World
 ) -> None:
     _, old = mint(app_db, settings, world.a.tenant, "service_account", world.a.service_account)
     rotated = settings.model_copy(
@@ -413,7 +413,7 @@ def test_pkce_does_not_derive_from_the_api_key_pepper(settings: Settings) -> Non
 
 # ------------------------------------------------------------------ Item 5b: failure limiter
 def test_failed_bearer_attempts_are_limited_per_source(
-    settings: Settings, app_db: Database, world: World, stub_memberships: None
+    settings: Settings, app_db: Database, world: World
 ) -> None:
     limited = settings.model_copy(update={"api_key_failures_per_minute": 3})
     _, good = mint(app_db, settings, world.a.tenant, "service_account", world.a.service_account)

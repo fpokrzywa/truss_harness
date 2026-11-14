@@ -300,7 +300,7 @@ def test_link_paths_installation_idp_and_refusals_at_a_clients_idp(
 
 
 def test_tenant_idp_refuses_platform_admins_non_members_and_suspended_members(
-    settings: Settings, world: World, owner_session: Session, stub_memberships: None
+    settings: Settings, world: World, owner_session: Session
 ) -> None:
     """SETH `test_p2_review.py` (review 4 item 2), moved: the IdP is owner-inserted instead of
     created through the admin route, and identities are owner-inserted instead of prelinked;

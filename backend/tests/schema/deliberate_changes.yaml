@@ -338,3 +338,9 @@
   path: [triggers, trg_secrets_scope]
   reason: "carry_forward secrets (B-802): SETH checked a workspace or project scope_id against the secret's client only in admin code; the invoker-rights trigger check_secret_scope() refuses a scope of another client (or of none) for every writer. DECISIONS B-1005."
   migration: tenancy_0001
+
+- table: tenants
+  path: [policies, insert_by_platform_admin]
+  reason: >-
+    Tenancy review 1 item 1: SETH's tenant_isolation WITH CHECK (id = current_tenant_id() OR admin) let a client context naming a not-yet-existing id create that client (slug squatting, and uq_tenants__slug answered whether another client's slug exists). The RESTRICTIVE INSERT policy admits a client row only under the platform-administrator context, as B-910 did for memberships. DECISIONS B-1008.
+  migration: tenancy_0002

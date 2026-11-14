@@ -36,9 +36,10 @@ def test_a_head_named_in_depends_on_is_not_a_version_head() -> None:
     """identity_0001 depends on secrets_0001 (a branch head): Alembic keeps only identity_0001 in
     `alembic_version`, and `code_heads` (readiness, skeleton tests) agrees (B-906). identity_0005
     depends on authz_0002, the authz head (B-928). tenancy_0001 merges identity_0005 and
-    ledger_0001 (B-1001), so neither is a version head any more."""
+    ledger_0001 (B-1001), so neither is a version head any more; tenancy_0002 follows it."""
     heads = code_heads()
-    assert "tenancy_0001" in heads
+    assert "tenancy_0002" in heads
+    assert "tenancy_0001" not in heads
     assert "identity_0005" not in heads
     assert "ledger_0001" not in heads
     assert "identity_0004" not in heads

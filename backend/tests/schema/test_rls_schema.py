@@ -1463,7 +1463,9 @@ _KEY_COLUMN_TYPES = text(
 ADMIN_FLAG_CATALOGS: dict[str, str] = {
     "shifde.tenants": (
         "the list of organizations (design 5.3 names it a platform catalog): the platform "
-        "administrator creates and lists clients; it holds no client content"
+        "administrator creates (RESTRICTIVE insert_by_platform_admin, B-1008) and lists clients; "
+        "description and settings are written by the client, so the installation-wide list "
+        "returns id, slug, name and status only (tenancy.service.list_all_orgs, B-1011)"
     ),
 }
 

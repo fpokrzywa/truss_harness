@@ -135,6 +135,15 @@ SECURITY_DEFINER_ALLOWLIST: dict[str, str] = {
         "name, status and the role names of that client's bindings of the person; memberships "
         "and tenants are tenant-keyed, so the client chooser needs it before a client is set."
     ),
+    "shifde.shifde_may_bind_group(uuid, uuid)": (
+        "tenancy_0002 (B-1010): owned by shifde_owner, search_path pg_catalog, pg_temp, every "
+        "object schema-qualified, EXECUTE for shifde_app only (check_role_binding runs with "
+        "invoker rights), writes no app.* setting. True only when p_tenant is current_tenant_id(), "
+        "p_group is an active platform group and current_principal_id() is that client's owner "
+        "(active person, active membership, live direct tenant_administrator binding at "
+        "organization scope); false alike otherwise, so it answers nothing about another client "
+        "and nothing about a group to anyone but an owner."
+    ),
     "shifde.shifde_bound_groups": (
         f"{_GROUP_DEFINER}. No arguments: id and name only of the platform groups holding a role "
         "binding in current_tenant_id() (groups are platform-level and a client context reads "
@@ -379,6 +388,7 @@ def test_identity_definers_are_on_the_allowlist_by_signature(owner_engine: Engin
         "shifde.shifde_active_group_ids(uuid)",
         "shifde.shifde_sync_idp_groups(uuid, uuid, text[])",
         "shifde.shifde_my_memberships",
+        "shifde.shifde_may_bind_group(uuid, uuid)",
     }
     assert all(row.owner == "shifde_owner" for row in rows)
     assert all(_search_path(row.proconfig) == "pg_catalog, pg_temp" for row in rows)

@@ -6,9 +6,8 @@ the app factory will add them (SETH 3ba0e06 `app.py`). The probe routes stand in
 client routes that will sit behind `require_auth`: they read and change identity rows of the
 `{org}` in the path through the repository, relying only on the context the dependencies set.
 
-`shifde_my_memberships` (SETH; reads `tenants`) moves to tenancy, so `stub_memberships` replaces
-`service.my_memberships` with the caller's own active membership tenants from the reviewed
-definer `shifde_my_membership_tenants` (carry_forward: drop the stub when tenancy lands).
+`service.my_memberships` is the real definer `shifde_my_memberships` (tenancy_0002): the
+B-920 stub is gone (tenancy review 1 item 2, DECISIONS B-1009).
 """
 
 from __future__ import annotations
@@ -19,7 +18,6 @@ from typing import Any  # Any: JSON response bodies of the probe routes
 from uuid import UUID
 
 import httpx
-import pytest
 from fastapi import APIRouter, Depends, FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import text
@@ -36,7 +34,7 @@ from shifde.core.problem import install_error_handlers
 from shifde.core.ratelimit import SlidingWindowLimiter
 from shifde.core.settings import Settings
 from shifde.core.ssrf import OutboundHttp
-from shifde.identity import api, repository, service
+from shifde.identity import api, repository
 from shifde.identity.dependencies import AuthDep, require_auth
 from shifde.identity.oidc import OidcClient
 from shifde.identity.passwords import PasswordService
@@ -126,18 +124,6 @@ def make_app(
     app.include_router(api.router, dependencies=guards)
     app.include_router(probe, dependencies=[*guards, Depends(require_auth)])
     return app
-
-
-def _own_memberships(session: Session) -> list[service.MembershipRow]:
-    return [
-        service.MembershipRow(tenant_id=t, slug=str(t), name=str(t), status="active", role_names=[])
-        for t in repository.my_membership_tenants(session)
-    ]
-
-
-def stub_memberships(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Fixture body (`tests/identity/conftest.py`)."""
-    monkeypatch.setattr(service, "my_memberships", _own_memberships)
 
 
 @contextmanager

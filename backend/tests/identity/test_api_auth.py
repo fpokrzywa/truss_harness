@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
-from tests._support.tenants import add_tenant
+from tests._support.tenants import add_tenant, bind_user
 from tests.identity.conftest import owner_membership
 from tests.identity.harness import COOKIE, ORIGIN, PASSWORD, client_for, login, person
 
@@ -32,7 +32,9 @@ WHOAMI = "/api/v1/probe/whoami"
 @pytest.fixture
 def admin_a(owner_session: Session) -> UUID:
     uid = person(owner_session, ADMIN_A)
-    owner_membership(owner_session, add_tenant(owner_session), uid)
+    tenant = add_tenant(owner_session)
+    owner_membership(owner_session, tenant, uid)
+    bind_user(owner_session, tenant, uid)  # a client is listed only with a binding (B-1009)
     owner_session.commit()
     return uid
 
@@ -231,9 +233,7 @@ def test_cross_site_fetch_metadata_without_origin_is_rejected(
         assert bare.delete(url, headers=csrf).status_code == 404
 
 
-def test_local_auth_disabled_returns_auth_disabled(
-    settings: Settings, admin_a: UUID, stub_memberships: None
-) -> None:
+def test_local_auth_disabled_returns_auth_disabled(settings: Settings, admin_a: UUID) -> None:
     off = settings.model_copy(update={"auth_local_enabled": False})
     with client_for(off) as c:
         assert c.get("/api/auth/config").json() == {"local_enabled": False, "oidc_providers": []}
@@ -241,9 +241,7 @@ def test_local_auth_disabled_returns_auth_disabled(
         assert r.status_code == 403 and r.json()["code"] == "auth_disabled"
 
 
-def test_development_uses_plain_cookie_name(
-    settings: Settings, admin_a: UUID, stub_memberships: None
-) -> None:
+def test_development_uses_plain_cookie_name(settings: Settings, admin_a: UUID) -> None:
     dev = settings.model_copy(update={"env": "development"})
     with client_for(dev) as c:
         c.base_url = c.base_url.copy_with(scheme="http")

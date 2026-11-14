@@ -6,7 +6,7 @@ from collections.abc import Collection
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import ColumnElement, func, insert, or_, select, update
+from sqlalchemy import ColumnElement, func, insert, or_, select, text, update
 from sqlalchemy.orm import Session
 
 from shifde.tenancy.models import InstallationSettings, Project, Tenant, Workspace
@@ -242,3 +242,14 @@ def update_project(
         .execution_options(synchronize_session=False, populate_existing=True)
     )
     return session.scalars(stmt).first()
+
+
+def may_bind_group(session: Session, tenant_id: UUID, group_id: UUID) -> bool:
+    """True when the current principal is the owner of `tenant_id`, that is the database's
+    current client, and `group_id` is an active platform group (`shifde_may_bind_group`,
+    tenancy_0002, DECISIONS B-1010). False for every other case alike."""
+    return bool(
+        session.execute(
+            text("SELECT shifde.shifde_may_bind_group(:t, :g)"), {"t": tenant_id, "g": group_id}
+        ).scalar_one()
+    )

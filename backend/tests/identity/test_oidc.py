@@ -4,7 +4,7 @@ SETH 3ba0e06 `tests/test_p2_oidc.py`, the tests that need only identity and lowe
 unchanged in assertion. Setup differs where SETH used later modules: IdPs are inserted as the
 schema owner (SETH: the admin IdP routes, ported with admin), the app is
 `tests/identity/harness.py` (SETH: `create_app`), `world` seeds SETH's four local accounts
-without tenancy, and `service.my_memberships` is the B-920 stub. The fake IdP is
+without tenancy, and `service.my_memberships` is the real definer. The fake IdP is
 `tests/_support/fake_oidc.py` (SETH `p2util.FakeOidcProvider`). Deferred with carry_forward rows:
 the tenant-IdP pinning test (tenancy org routes; its isolation is covered by
 `test_oidc_cross_client.py`), the two group-sync tests (they use a client's IdP and admin's
@@ -131,7 +131,6 @@ def env(
     settings: Settings,
     world: World,
     provider: FakeOidcProvider,
-    stub_memberships: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[TestClient]:
     """App wired to the fake IdP (no network); JWKS refresh is unthrottled."""
@@ -142,7 +141,7 @@ def env(
 
 
 @pytest.fixture
-def client(settings: Settings, world: World, stub_memberships: None) -> Iterator[TestClient]:
+def client(settings: Settings, world: World) -> Iterator[TestClient]:
     with harness.client_for(settings) as c:
         yield c
 
@@ -515,11 +514,7 @@ def test_jit_requires_verified_email_and_refuses_existing_accounts(
 
 # ---------------------------------------------------------------- setup-token link
 def test_setup_token_links_the_next_verified_oidc_login_when_local_auth_is_off(
-    settings: Settings,
-    world: World,
-    provider: FakeOidcProvider,
-    owner_session: Session,
-    stub_memberships: None,
+    settings: Settings, world: World, provider: FakeOidcProvider, owner_session: Session
 ) -> None:
     from shifde.identity import service as identity
 

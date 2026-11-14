@@ -488,7 +488,6 @@ def test_idp_groups_are_synced_on_sign_in_and_their_grants_follow_the_claim(
     world: World,
     app_db: Database,
     owner_session: Session,
-    stub_memberships: None,
 ) -> None:
     """SETH `test_p2_oidc.py` `test_idp_groups_are_synced_on_login_and_removed_when_the_claim_
     shrinks` and `test_idp_group_grants_flow_through_to_permissions`, on platform groups

@@ -45,7 +45,7 @@ from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.identity import api as identity_api
 from shifde.identity import apikeys, repository, service
-from tests._support.tenants import add_workspace
+from tests._support.tenants import add_workspace, bind_user
 from tests.identity import oidc_flow
 from tests.identity.conftest import World, app_session, owner_membership, owner_user
 from tests.identity.harness import PASSWORD, client_for, login, person
@@ -546,6 +546,7 @@ def test_resolve_session_never_reports_admin_on_a_pinned_session(
     owner_session.execute(
         text("UPDATE shifde.users SET is_platform_admin = true WHERE id = :u"), {"u": world.both}
     )
+    bind_user(owner_session, world.a.tenant, world.both)  # a pin resolves only with a binding
     now = utcnow()
     for tenant, digest in ((world.a.tenant, b"admin-pinned"), (None, b"admin-free")):
         owner_session.execute(
@@ -637,8 +638,11 @@ def test_every_identity_route_has_a_cross_client_test() -> None:
 def people(owner_session: Session, world: World) -> tuple[str, str]:
     """A person with a password in A only and one in B only (e-mails)."""
     a, b = "route-a@a.test", "route-b@b.test"
-    owner_membership(owner_session, world.a.tenant, person(owner_session, a))
-    owner_membership(owner_session, world.b.tenant, person(owner_session, b))
+    pa, pb = person(owner_session, a), person(owner_session, b)
+    owner_membership(owner_session, world.a.tenant, pa)
+    owner_membership(owner_session, world.b.tenant, pb)
+    bind_user(owner_session, world.a.tenant, pa)  # a client is listed only with a binding
+    bind_user(owner_session, world.b.tenant, pb)
     owner_session.commit()
     return a, b
 
@@ -667,7 +671,7 @@ def test_login_shows_and_audits_only_the_persons_own_clients(
 
 
 def test_a_session_shows_only_its_own_person_and_clients(
-    settings: Settings, world: World, people: tuple[str, str], stub_memberships: None
+    settings: Settings, world: World, people: tuple[str, str]
 ) -> None:
     a, b = people
     with client_for(settings) as ca, client_for(settings) as cb:
@@ -679,7 +683,7 @@ def test_a_session_shows_only_its_own_person_and_clients(
 
 
 def test_logout_ends_only_the_callers_own_session(
-    settings: Settings, world: World, people: tuple[str, str], stub_memberships: None
+    settings: Settings, world: World, people: tuple[str, str]
 ) -> None:
     a, b = people
     with client_for(settings) as ca, client_for(settings) as cb:
@@ -695,6 +699,7 @@ def test_redeeming_a_token_signs_in_only_its_own_person(
 ) -> None:
     newcomer = owner_user(owner_session, "newcomer@a.test")
     owner_membership(owner_session, world.a.tenant, newcomer)
+    bind_user(owner_session, world.a.tenant, newcomer)  # listed only with a binding
     token, _ = service.create_setup_token(owner_session, newcomer)
     owner_session.commit()
     body = {"token": token, "password": "a long new password 1"}
@@ -738,7 +743,6 @@ def test_a_cannot_reach_bs_objects_by_id_or_list(
     people: tuple[str, str],
     app_db: Database,
     owner_session: Session,
-    stub_memberships: None,
     credential: str,
 ) -> None:
     """Behind `require_auth` (A's session or A's API key): B's service account and API key by id
@@ -786,11 +790,7 @@ def _same_failure(r: Any, reference: Any) -> None:  # Any: httpx responses
 
 
 def test_oidc_login_at_bs_idp_files_the_flow_in_b_and_answers_like_a_missing_id(
-    settings: Settings,
-    world: World,
-    owner_session: Session,
-    app_db: Database,
-    stub_memberships: None,
+    settings: Settings, world: World, owner_session: Session, app_db: Database
 ) -> None:
     """Starting a sign-in sets no client context: the flow row takes its client from the IdP
     row (B-922), never from A's session; B's disabled or unsupported IdP and an IdP id that does
@@ -837,7 +837,7 @@ def test_oidc_login_at_bs_idp_files_the_flow_in_b_and_answers_like_a_missing_id(
 
 
 def test_oidc_callback_signs_in_only_bs_members_pinned_to_b(
-    settings: Settings, world: World, owner_session: Session, stub_memberships: None
+    settings: Settings, world: World, owner_session: Session
 ) -> None:
     """B's IdP signs in only an active member of B, pinned to B (a member of A and B sees only
     B); it cannot sign in A's person, even one bound to B's IdP; a state started at A's IdP does
@@ -848,6 +848,7 @@ def test_oidc_callback_signs_in_only_bs_members_pinned_to_b(
     b_idp = oidc_flow.owner_oidc_idp(owner_session, world.b.tenant, b_iss)
     oidc_flow.owner_identity(owner_session, world.both, b_idp, b_iss, "both")
     oidc_flow.owner_identity(owner_session, world.a.member, b_idp, b_iss, "a-member")
+    bind_user(owner_session, world.b.tenant, world.both)  # a pin resolves only with a binding
     owner_session.commit()
     fake = oidc_flow.provider()
     with oidc_flow.oidc_client(settings, fake) as c:

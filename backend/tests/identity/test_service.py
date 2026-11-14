@@ -30,6 +30,7 @@ from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.identity import repository, schemas, service
 from shifde.identity.passwords import PasswordService
+from tests._support.tenants import bind_user
 from tests.identity.conftest import World, app_session, owner_membership, owner_user
 
 PASSWORD = "correct horse battery staple"
@@ -193,6 +194,7 @@ def test_a_session_pinned_to_a_client_has_no_admin_power_and_lapses_with_the_mem
     rechecked on every request against the person's current membership."""
     admin = _person(owner_session, passwords, "admin@shi.test", admin=True)
     membership = owner_membership(owner_session, world.a.tenant, admin)
+    bind_user(owner_session, world.a.tenant, admin)  # a pin resolves only with a binding
     owner_session.commit()
     pinned = service.establish_session(
         s,

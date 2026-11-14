@@ -70,13 +70,7 @@ class World:
 
 
 @pytest.fixture
-def stub_memberships(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`service.my_memberships` from the caller's own membership tenants (harness, B-920)."""
-    harness.stub_memberships(monkeypatch)
-
-
-@pytest.fixture
-def auth_client(settings: Settings, stub_memberships: None) -> Iterator[TestClient]:
+def auth_client(settings: Settings) -> Iterator[TestClient]:
     """The identity routes and probe routes as `shifde_app` (`tests/identity/harness.py`)."""
     with harness.client_for(settings) as c:
         yield c
