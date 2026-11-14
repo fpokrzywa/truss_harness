@@ -101,3 +101,28 @@
   reason: >-
     Foreign key to shifde.tenants, a table of the later tenancy port; added by tenancy's migration (plan per-module recipe step 3, DECISIONS B-402, carry_forward.md), which removes this entry.
   migration: authz_0001
+
+- table: budgets
+  path: [constraints, uq_budgets__tenant_id]
+  reason: "constraints bypass row-level security: a budget_alerts row naming another client's budget id was accepted (or collided with that client's slot, silencing its alert under ON CONFLICT DO NOTHING). Isolation review 1, item 2, B-607. Target of the composite foreign key from budget_alerts."
+  migration: ledger_0001
+
+- table: budgets
+  path: [indexes, uq_budgets__tenant_id]
+  reason: "constraints bypass row-level security: a budget_alerts row naming another client's budget id was accepted (or collided with that client's slot, silencing its alert under ON CONFLICT DO NOTHING). Isolation review 1, item 2, B-607. Index of uq_budgets__tenant_id."
+  migration: ledger_0001
+
+- table: budget_alerts
+  path: [constraints, budget_alerts_budget_id_fkey, definition]
+  reason: "constraints bypass row-level security: a budget_alerts row naming another client's budget id was accepted (or collided with that client's slot, silencing its alert under ON CONFLICT DO NOTHING). Isolation review 1, item 2, B-607. The foreign key is (tenant_id, budget_id) to budgets (tenant_id, id)."
+  migration: ledger_0001
+
+- table: budget_alerts
+  path: [constraints, uq_budget_alerts__once, definition]
+  reason: "constraints bypass row-level security: a budget_alerts row naming another client's budget id was accepted (or collided with that client's slot, silencing its alert under ON CONFLICT DO NOTHING). Isolation review 1, item 2, B-607. The once-only slot is per tenant: (tenant_id, budget_id, period_start, threshold)."
+  migration: ledger_0001
+
+- table: budget_alerts
+  path: [indexes, uq_budget_alerts__once]
+  reason: "constraints bypass row-level security: a budget_alerts row naming another client's budget id was accepted (or collided with that client's slot, silencing its alert under ON CONFLICT DO NOTHING). Isolation review 1, item 2, B-607. Index of uq_budget_alerts__once."
+  migration: ledger_0001

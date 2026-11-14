@@ -330,3 +330,37 @@ def test_a_tenant_cannot_close_a_global_version_through_the_guard(
             add_version(s, card, None, 2, frm=utcnow() + timedelta(days=1))
         assert getattr(err.value.orig, "sqlstate", None) == "42501"
         s.rollback()
+
+
+# ---- isolation review 1, item 2 (blocking): constraints bypass RLS, so a budget_alerts row of
+# tenant A naming tenant B's budget id used to be accepted (or collide with B's slot and, with
+# governance's ON CONFLICT DO NOTHING, silently stop B's alert).
+@pytest.mark.parametrize("threshold", ["0.5", "0.9"])  # B's existing slot and a free one
+def test_an_alert_cannot_name_another_tenants_budget(
+    app_db: Database, world: World, threshold: str
+) -> None:
+    with _as(app_db, world.a) as s:
+        with pytest.raises(DBAPIError) as err:
+            s.execute(
+                text(
+                    "INSERT INTO shifde.budget_alerts (id, tenant_id, budget_id, period_start, "
+                    "threshold, utilization) VALUES (:i, :t, :b, now(), :th, 0.5)"
+                ),
+                {"i": uuid7(), "t": world.a, "b": world.budget_b, "th": Decimal(threshold)},
+            )
+        # the same answer as for a budget id that does not exist: no oracle on B's slots
+        assert getattr(err.value.orig, "sqlstate", None) == "23503"
+        s.rollback()
+
+
+def test_a_budget_id_is_unique_within_its_tenant_for_the_alert_foreign_key(
+    owner_db: Database, world: World
+) -> None:
+    with owner_db.session() as s:
+        (n,) = s.execute(
+            text(
+                "SELECT count(*) FROM pg_constraint WHERE conrelid = 'shifde.budgets'::regclass "
+                "AND contype = 'u' AND pg_get_constraintdef(oid) = 'UNIQUE (tenant_id, id)'"
+            )
+        ).one()
+        assert n == 1

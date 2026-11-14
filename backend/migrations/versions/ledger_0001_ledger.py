@@ -329,7 +329,8 @@ def upgrade() -> None:
             CONSTRAINT ck_budgets__limit CHECK
                 (limit_tokens IS NOT NULL OR limit_runs IS NOT NULL OR amount IS NOT NULL),
             CONSTRAINT ck_budgets__cost CHECK
-                (metric <> 'cost' OR (amount IS NOT NULL AND currency IS NOT NULL))
+                (metric <> 'cost' OR (amount IS NOT NULL AND currency IS NOT NULL)),
+            CONSTRAINT uq_budgets__tenant_id UNIQUE (tenant_id, id)
         )""",
         "CREATE INDEX ix_budgets__scope ON shifde.budgets (tenant_id, scope_type, scope_id)",
         *_tenant_table("budgets"),
@@ -364,12 +365,15 @@ def upgrade() -> None:
         """CREATE TABLE shifde.budget_alerts (
             id uuid PRIMARY KEY,
             tenant_id uuid NOT NULL,
-            budget_id uuid NOT NULL REFERENCES shifde.budgets (id),
+            budget_id uuid NOT NULL,
             period_start timestamptz NOT NULL,
             threshold numeric(10,4) NOT NULL,
             utilization numeric(18,6) NOT NULL,
             fired_at timestamptz NOT NULL DEFAULT now(),
-            CONSTRAINT uq_budget_alerts__once UNIQUE (budget_id, period_start, threshold)
+            CONSTRAINT budget_alerts_budget_id_fkey FOREIGN KEY (tenant_id, budget_id)
+                REFERENCES shifde.budgets (tenant_id, id),
+            CONSTRAINT uq_budget_alerts__once
+                UNIQUE (tenant_id, budget_id, period_start, threshold)
         )""",
         *_tenant_table("budget_alerts"),
         "GRANT SELECT, INSERT ON shifde.budget_alerts TO shifde_app",
