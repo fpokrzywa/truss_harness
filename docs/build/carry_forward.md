@@ -78,6 +78,8 @@ Each later module's brief must include its section here. Strike an item (move it
 | ontology | `authz.subject_ids_covering(..., group_membership=)` takes the same seam as `new_pdp`; pass identity's membership once groups are platform-level | authz (B-403) |
 | every port | The permission catalog and system role grants are complete in `authz_0001` (SETH final, B-402): do not re-insert SETH's p04-p08 permission rows | authz |
 | every port | `Database` has psycopg auto-prepare off (B-404); an engine built outside `Database` that also runs `DISCARD ALL` needs the same | authz (core fix) |
+| admin, tenancy | Role create/update refuses `PLATFORM_ONLY_ACTIONS` keys with 422 before the insert (the `authz_0002` CHECK otherwise surfaces as a 500), with a test | authz review 2 item 4 |
+| tenancy | `grant_role` / `check_role_binding` refuse binding the `platform_administrator` system template in a client (or hide it from client `list_roles`) | authz review 2 item 5 |
 
 ## Done
 
