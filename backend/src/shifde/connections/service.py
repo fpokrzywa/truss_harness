@@ -123,7 +123,21 @@ class ConnectionService:
     def _require(
         self, action: str, row: Mapping[str, Any], *, hide: str | None = "connection:read"
     ) -> None:
-        self.sc.pdp.require(action, self.ref_of(row), hide_unless=hide)
+        try:
+            self.sc.pdp.require(action, self.ref_of(row), hide_unless=hide)
+        except NotFound as exc:
+            # a connection the caller cannot read (another workspace of the same client) gets the
+            # answer an unknown id gets, on every route (connections review 2 item 2, B-1512)
+            raise NotFound("connection not found") from exc
+
+    @staticmethod
+    def _expected_version(sent: int | None, row: Mapping[str, Any]) -> int:
+        """The version the write is conditional on: the caller's, else the one this request read.
+        Every check runs against the row as read, so the write lands only if that row is still
+        current; a concurrent change (a secret bound, a definition moved) answers 409 instead of
+        being overwritten by a decision taken on stale data (connections review 2 item 1, B-1511).
+        """
+        return sent if sent is not None else int(row["row_version"])
 
     def _active_tenant(self) -> None:
         if self.sc.tenant_status != "active":
@@ -373,7 +387,7 @@ class ConnectionService:
 
     def get(self, connection_id: UUID) -> s.ConnectionOut:
         row = self._get_row(connection_id)
-        self._require("connection:read", row, hide=None)
+        self._require("connection:read", row)
         return self._out(row)
 
     def create(self, body: s.ConnectionCreate) -> s.ConnectionOut:
@@ -498,7 +512,11 @@ class ConnectionService:
                 values["status"] = "draft"
         try:
             updated = repository.update_connection(
-                self._session, connection_id, body.row_version, values, tenant_id=self.sc.tenant_id
+                self._session,
+                connection_id,
+                self._expected_version(body.row_version, row),
+                values,
+                tenant_id=self.sc.tenant_id,
             )
             self._session.flush()
         except IntegrityError as exc:
@@ -546,7 +564,11 @@ class ConnectionService:
         if target in ("disabled", "retired"):
             values["last_tested_at"] = None  # re-enabling requires a fresh test
         updated = repository.update_connection(
-            self._session, connection_id, body.row_version, values, tenant_id=self.sc.tenant_id
+            self._session,
+            connection_id,
+            self._expected_version(body.row_version, row),
+            values,
+            tenant_id=self.sc.tenant_id,
         )
         if updated is None:
             raise Conflict("row_version mismatch: the connection was modified; reload and retry")
@@ -694,7 +716,7 @@ class ConnectionService:
         self, connection_id: UUID, limit: int, cursor: str | None
     ) -> Page[s.TestResultOut]:
         row = self._get_row(connection_id)
-        self._require("connection:read", row, hide=None)
+        self._require("connection:read", row)
         rows = repository.list_tests(
             self._session,
             connection_id,
@@ -760,7 +782,7 @@ class ConnectionService:
 
     def latest_discovery(self, connection_id: UUID) -> s.DiscoveryOut:
         row = self._get_row(connection_id)
-        self._require("connection:read", row, hide=None)
+        self._require("connection:read", row)
         found = repository.latest_discovery(
             self._session, connection_id, tenant_id=self.sc.tenant_id
         )

@@ -9,6 +9,7 @@ gives A the unknown-organization 404. Each side is built through the routes by i
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any  # Any: JSON bodies
 from uuid import UUID
@@ -87,6 +88,14 @@ class Two:
 
 
 @pytest.fixture
+def b_server() -> Iterator[RestTestServer]:
+    """B's own listener (connections review 2 item 3, B-1513): a request reaching it while A
+    calls the routes would mean A drove B's connection."""
+    with RestTestServer(token=REST_TOKEN) as server:
+        yield server
+
+
+@pytest.fixture
 def two(
     client: TestClient,
     world: World,
@@ -94,8 +103,9 @@ def two(
     app_db: Database,
     settings: Settings,
     rest_server: RestTestServer,
+    b_server: RestTestServer,
 ) -> Two:
-    b = _side(client, app_db, settings, world.b.tenant, world.b.slug, people.owner_b, rest_server)
+    b = _side(client, app_db, settings, world.b.tenant, world.b.slug, people.owner_b, b_server)
     a = _side(client, app_db, settings, world.a.tenant, world.a.slug, people.owner_a, rest_server)
     return Two(a, b)
 
@@ -199,10 +209,15 @@ def rest_body_none() -> dict[str, Any]:
 
 # ------------------------------------------------------------------ connections
 def test_a_cannot_reach_bs_connection(
-    client: TestClient, owner_db: Database, two: Two, rest_server: RestTestServer
+    client: TestClient,
+    owner_db: Database,
+    two: Two,
+    rest_server: RestTestServer,
+    b_server: RestTestServer,
 ) -> None:
     A, h = two.a.base, as_user(client, two.a.email)
     before = _b_state(owner_db, two)
+    b_before = list(b_server.requests)  # B's own test and discovery during setup
     own, theirs, nobody = two.a.connection, two.b.connection, str(uuid7())
     invoke = {"method": "GET", "path": "/health"}
     cases: list[tuple[str, str, Any, int]] = [
@@ -226,8 +241,9 @@ def test_a_cannot_reach_bs_connection(
             missing,
         )
     assert _b_state(owner_db, two) == before  # nothing of B's changed, no test or discovery added
-    b_calls = [r for r in rest_server.requests if r["method"] == "GET" and r["path"] == "/health"]
-    assert b_calls  # A's own calls reached the server; B's connection was never used by A
+    a_calls = [r for r in rest_server.requests if r["method"] == "GET" and r["path"] == "/health"]
+    assert a_calls  # A's own calls reached A's listener
+    assert b_server.requests == b_before  # B's connection was never used by A
 
 
 def test_a_lists_only_its_own_rows(client: TestClient, two: Two) -> None:

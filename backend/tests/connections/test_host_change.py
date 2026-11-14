@@ -12,14 +12,19 @@ fails: the PATCH answers 200 and the test call delivers the secret to `evil`.
 
 from __future__ import annotations
 
+import json
 from typing import Any  # Any: JSON bodies
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from shifde.adapters.registry import AdapterRegistry
 from shifde.adapters.testservers import RestTestServer
-from shifde.core.db import Database
+from shifde.connections import repository as connections_repository
+from shifde.core.db import Database, set_tenant
 from shifde.core.settings import Settings
 from tests.connections.routes import (
     REST_TOKEN,
@@ -260,6 +265,103 @@ def test_a_detached_secret_cannot_be_rebound_after_the_host_change_without_secre
     connection(c, hm, body, A, status=404)
     assert c.post(f"{A}/connections/{setup.cid}/test", headers=hm).status_code == 200
     assert _deliveries(evil) == 0
+
+
+# ------------------------------------------------------------------ the read-to-write race
+def _write_after_read(
+    monkeypatch: pytest.MonkeyPatch,
+    owner_db: Database,
+    tenant: UUID,
+    cid: str,
+    assignments: str,
+    params: dict[str, Any],
+) -> list[bool]:
+    """Connections review 2 item 1 (B-1511): right after the service's next read of `cid`, a
+    concurrent writer commits `assignments` (a bind or a definition change, with the version bump
+    every service write makes), so the request under test writes over a row that has moved since it
+    was read. Returns a list that holds one entry once the interleaved write has happened."""
+    fired: list[bool] = []
+    real = connections_repository.get_connection
+
+    def read_then_concurrent_write(
+        session: Session, connection_id: UUID, *, tenant_id: UUID
+    ) -> Any:  # Any: the repository's row mapping
+        row = real(session, connection_id, tenant_id=tenant_id)
+        if not fired and str(connection_id) == cid:
+            fired.append(True)
+            with owner_db.session() as o:
+                set_tenant(o, tenant)
+                o.execute(
+                    text(
+                        f"UPDATE shifde.connections SET {assignments}, "
+                        "row_version = row_version + 1 WHERE id = :i"
+                    ),
+                    {**params, "i": cid},
+                )
+                o.commit()
+        return row
+
+    monkeypatch.setattr(connections_repository, "get_connection", read_then_concurrent_write)
+    return fired
+
+
+def test_a_secret_bound_between_the_managers_read_and_write_stops_the_repoint(
+    setup: Setup, evil: RestTestServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A manager without `secret:use` repoints a secretless connection (no `row_version` sent)
+    while the owner binds a secret between the manager's read and write: the manager's host-change
+    check saw no secret, so the write must not land (409) and the secret never reaches `evil`."""
+    c, A = setup.client, setup.A
+    plain = connection(c, setup.as_admin(), rest_body(setup.good, None, name="plain"), A)
+    pid = str(plain["id"])
+    hm = setup.as_manager()
+    fired = _write_after_read(
+        monkeypatch,
+        setup.owner_db,
+        setup.world.a.tenant,
+        pid,
+        "secret_ref_id = CAST(:s AS uuid), auth_method = 'bearer'",
+        {"s": setup.secret_id},
+    )
+    r = c.patch(
+        f"{A}/connections/{pid}",
+        headers=hm,
+        json={"config": {"base_url": evil.base_url, "health_path": "/health"}},
+    )
+    assert fired, "the concurrent bind did not run between the read and the write"
+    monkeypatch.undo()
+    assert r.status_code == 409, r.text
+    row = setup.row(hm, pid)
+    assert row["config"]["base_url"] == setup.good.base_url and row["secret_set"] is True
+    assert c.post(f"{A}/connections/{pid}/test", headers=hm).status_code == 200
+    assert evil.requests == [] and _deliveries(evil) == 0
+
+
+def test_a_definition_changed_between_the_read_and_write_of_an_activation_is_not_activated(
+    setup: Setup, evil: RestTestServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`set_status` without `row_version`: the passing test matched the definition it read; a
+    repoint committed before its write leaves a definition nobody tested, which stays a draft."""
+    c, A, admin = setup.client, setup.A, setup.as_admin()
+    plain = connection(c, admin, rest_body(setup.good, setup.secret_id, name="tested"), A)
+    pid = str(plain["id"])
+    tested = c.post(f"{A}/connections/{pid}/test", headers=admin)
+    assert tested.status_code == 200 and tested.json()["outcome"] == "pass", tested.text
+    fired = _write_after_read(
+        monkeypatch,
+        setup.owner_db,
+        setup.world.a.tenant,
+        pid,
+        "config = CAST(:c AS jsonb), last_tested_at = NULL, health_status = 'unknown'",
+        {"c": json.dumps({"base_url": evil.base_url, "health_path": "/health"})},
+    )
+    r = c.post(f"{A}/connections/{pid}/status", headers=admin, json={"status": "active"})
+    assert fired, "the concurrent change did not run between the read and the write"
+    monkeypatch.undo()
+    assert r.status_code == 409, r.text
+    row = setup.row(admin, pid)
+    assert row["status"] == "draft" and row["config"]["base_url"] == evil.base_url
+    assert evil.requests == []
 
 
 # ------------------------------------------------------------------ every adapter type
