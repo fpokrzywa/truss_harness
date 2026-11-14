@@ -13,11 +13,19 @@ denials on visible resources surface as 403.
 ``require`` records every denial and every privileged allow in the session (``pdp_records``); a
 request-end hook persists them to `policy_decisions` in a fresh transaction so they survive the
 request rollback that a denial usually causes.
+
+Groups (design 5.3, DECISIONS B-403): which groups a user belongs to is answered by a
+``GroupMembership`` (default: ``tenant_group_membership``, SETH's per-client groups). The PDP
+then counts only role bindings stored in the client it decides for whose subject is one of those
+groups, so membership alone grants nothing and a group with no binding in a client gives no access
+there. The identity port swaps the answer for SHI-wide (platform-level) groups without changing
+the decision logic.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Protocol
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -33,6 +41,20 @@ from shifde.core.ids import uuid7
 PLATFORM_ONLY_ACTIONS = frozenset({"platform:admin"})
 RECORDS_KEY = "pdp_records"
 HOOK_FLAG = "pdp_hook_registered"
+
+
+class GroupMembership(Protocol):
+    """Ids of the active groups `user_id` belongs to that may hold role bindings in `tenant_id`.
+
+    Implementations return group ids only; what a group may do in a client is decided solely by
+    the role bindings stored in that client (``role_bindings.tenant_id``, also enforced by RLS)."""
+
+    def __call__(self, session: Session, *, tenant_id: UUID, user_id: UUID) -> frozenset[UUID]: ...
+
+
+def tenant_group_membership(session: Session, *, tenant_id: UUID, user_id: UUID) -> frozenset[UUID]:
+    """SETH 3ba0e06's groups: per-client groups of `tenant_id` the user is a member of (RLS)."""
+    return frozenset(repository.active_group_ids(session, tenant_id, user_id))
 
 
 @dataclass(frozen=True)
@@ -118,10 +140,18 @@ def _flush_decisions(session: Session) -> None:
 
 
 class PDP:
-    def __init__(self, session: Session, principal: Principal, tenant_id: UUID | None) -> None:
+    def __init__(
+        self,
+        session: Session,
+        principal: Principal,
+        tenant_id: UUID | None,
+        *,
+        group_membership: GroupMembership = tenant_group_membership,
+    ) -> None:
         self._session = session
         self._principal = principal
         self._tenant_id = tenant_id
+        self._group_membership = group_membership
         self._grants: list[repository.GrantRow] | None = None
         self._privileged: frozenset[str] | None = None
 
@@ -131,11 +161,20 @@ class PDP:
             if self._tenant_id is None:
                 self._grants = []
             else:
+                p = self._principal
+                groups = (
+                    self._group_membership(
+                        self._session, tenant_id=self._tenant_id, user_id=p.principal_id
+                    )
+                    if p.principal_type == "user"
+                    else frozenset()
+                )
                 grants = repository.load_grants(
                     self._session,
                     tenant_id=self._tenant_id,
-                    principal_type=self._principal.principal_type,
-                    principal_id=self._principal.principal_id,
+                    principal_type=p.principal_type,
+                    principal_id=p.principal_id,
+                    group_ids=groups,
                     now=utcnow(),
                 )
                 scopes = self._principal.key_scopes

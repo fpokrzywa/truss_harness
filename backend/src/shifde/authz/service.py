@@ -12,7 +12,15 @@ from sqlalchemy.orm import Session
 from shifde.authz import repository
 from shifde.authz.execution import ExecutionDenied, RunRef, execution_principal
 from shifde.authz.models import Group, Role
-from shifde.authz.pdp import PDP, Decision, DecisionRecord, ResourceRef, ScopeFilter
+from shifde.authz.pdp import (
+    PDP,
+    Decision,
+    DecisionRecord,
+    GroupMembership,
+    ResourceRef,
+    ScopeFilter,
+    tenant_group_membership,
+)
 from shifde.authz.repository import BindingRow, GrantRow, MemberRef, PermissionRow
 from shifde.core.clock import utcnow
 from shifde.core.context import Principal
@@ -27,6 +35,7 @@ __all__ = [
     "ExecutionDenied",
     "GrantRow",
     "Group",
+    "GroupMembership",
     "MemberRef",
     "PermissionRow",
     "ResourceRef",
@@ -66,13 +75,20 @@ __all__ = [
     "remove_group_members",
     "role_key_exists",
     "subject_ids_covering",
+    "tenant_group_membership",
     "update_group",
     "update_role",
 ]
 
 
-def new_pdp(session: Session, principal: Principal, tenant_id: UUID | None) -> PDP:
-    return PDP(session, principal, tenant_id)
+def new_pdp(
+    session: Session,
+    principal: Principal,
+    tenant_id: UUID | None,
+    *,
+    group_membership: GroupMembership = tenant_group_membership,
+) -> PDP:
+    return PDP(session, principal, tenant_id, group_membership=group_membership)
 
 
 def grant_role(
@@ -111,16 +127,23 @@ def subject_ids_covering(
     tenant_id: UUID,
     principal: Principal,
     resource: ResourceRef,
+    group_membership: GroupMembership = tenant_group_membership,
 ) -> tuple[set[UUID], set[UUID]]:
     """(role ids, group ids) the principal holds that apply to `resource`: a role counts when a
     binding of it covers the resource's scope (tenant, workspace, project or the resource);
     groups are the principal's active group memberships. Used by ontology access policies."""
+    groups: set[UUID] = (
+        set(group_membership(session, tenant_id=tenant_id, user_id=principal.principal_id))
+        if principal.principal_type == "user"
+        else set()
+    )
     roles: set[UUID] = set()
     for role_id, scope_type, scope_id, resource_type in repository.bound_roles(
         session,
         tenant_id=tenant_id,
         principal_type=principal.principal_type,
         principal_id=principal.principal_id,
+        group_ids=groups,
         now=utcnow(),
     ):
         covered = (
@@ -135,11 +158,6 @@ def subject_ids_covering(
         )
         if covered:
             roles.add(role_id)
-    groups: set[UUID] = (
-        repository.active_group_ids(session, tenant_id, principal.principal_id)
-        if principal.principal_type == "user"
-        else set()
-    )
     return roles, groups
 
 

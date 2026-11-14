@@ -40,33 +40,34 @@ class PermissionRow:
 
 
 # ------------------------------------------------------------------ grants (PDP)
+def _subject(
+    principal_type: str, principal_id: UUID, group_ids: Collection[UUID]
+) -> ColumnElement[bool]:
+    """Bindings held by the principal: directly, or (users only) through one of `group_ids`."""
+    subject: ColumnElement[bool] = (RoleBinding.subject_type == principal_type) & (
+        RoleBinding.subject_id == principal_id
+    )
+    if principal_type == "user" and group_ids:
+        subject = or_(
+            subject,
+            (RoleBinding.subject_type == "group") & RoleBinding.subject_id.in_(list(group_ids)),
+        )
+    return subject
+
+
 def load_grants(
     session: Session,
     *,
     tenant_id: UUID,
     principal_type: str,
     principal_id: UUID,
+    group_ids: Collection[UUID],
     now: datetime,
 ) -> list[GrantRow]:
     """Active (non-expired) permissions granted to a principal in a tenant, directly or (for
-    users) through active groups; one row per (binding, permission). Runs under RLS."""
-    subject: ColumnElement[bool] = (RoleBinding.subject_type == principal_type) & (
-        RoleBinding.subject_id == principal_id
-    )
-    if principal_type == "user":
-        member_groups = (
-            select(GroupMember.group_id)
-            .join(Group, (Group.id == GroupMember.group_id) & (Group.tenant_id == tenant_id))
-            .where(
-                GroupMember.tenant_id == tenant_id,
-                GroupMember.user_id == principal_id,
-                Group.status == "active",
-            )
-        )
-        subject = or_(
-            subject,
-            (RoleBinding.subject_type == "group") & RoleBinding.subject_id.in_(member_groups),
-        )
+    users) through the groups in `group_ids`; one row per (binding, permission). Only bindings
+    stored in `tenant_id` count, whatever the group: a group with no binding in this tenant
+    grants nothing here. Runs under RLS."""
     stmt = (
         select(
             RoleBinding.id,
@@ -79,7 +80,7 @@ def load_grants(
         .join(Role, Role.id == RoleBinding.role_id)
         .where(
             RoleBinding.tenant_id == tenant_id,
-            subject,
+            _subject(principal_type, principal_id, group_ids),
             Role.status == "active",
             or_(RoleBinding.expires_at.is_(None), RoleBinding.expires_at > now),
         )
@@ -93,27 +94,12 @@ def bound_roles(
     tenant_id: UUID,
     principal_type: str,
     principal_id: UUID,
+    group_ids: Collection[UUID],
     now: datetime,
 ) -> list[tuple[UUID, str, UUID, str | None]]:
     """(role id, scope type, scope id, resource type) of the principal's active, non-expired
-    bindings, directly or (users) through active groups. Runs under RLS."""
-    subject: ColumnElement[bool] = (RoleBinding.subject_type == principal_type) & (
-        RoleBinding.subject_id == principal_id
-    )
-    if principal_type == "user":
-        member_groups = (
-            select(GroupMember.group_id)
-            .join(Group, (Group.id == GroupMember.group_id) & (Group.tenant_id == tenant_id))
-            .where(
-                GroupMember.tenant_id == tenant_id,
-                GroupMember.user_id == principal_id,
-                Group.status == "active",
-            )
-        )
-        subject = or_(
-            subject,
-            (RoleBinding.subject_type == "group") & RoleBinding.subject_id.in_(member_groups),
-        )
+    bindings in `tenant_id`, directly or (users) through the groups in `group_ids`. Runs under
+    RLS."""
     stmt = (
         select(
             RoleBinding.role_id,
@@ -124,7 +110,7 @@ def bound_roles(
         .join(Role, Role.id == RoleBinding.role_id)
         .where(
             RoleBinding.tenant_id == tenant_id,
-            subject,
+            _subject(principal_type, principal_id, group_ids),
             Role.status == "active",
             or_(RoleBinding.expires_at.is_(None), RoleBinding.expires_at > now),
         )
