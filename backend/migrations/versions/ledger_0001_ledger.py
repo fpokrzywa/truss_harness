@@ -81,7 +81,11 @@ def _global_or_own(table: str) -> list[str]:
     ]
 
 
-# Insert guard. (1) the version belongs to the card's tenant (NULL-safe: global cards have no
+# Insert guard. (0) runs as the owner (BYPASSRLS) before the INSERT's WITH CHECK, so its first
+# statement refuses anything outside the caller's tenant (or, for a global version, a caller that
+# is not the platform administrator) with 42501, before any lock or lookup: no oracle on another
+# tenant's cards and no owner UPDATE on rows the caller may not touch (isolation review 1,
+# item 1). (1) the version belongs to the card's tenant (NULL-safe: global cards have no
 # tenant). (2) a version that would close an open-ended predecessor must not start in the past
 # (it would change how earlier instants resolve). (3) a new version starting AFTER an open-ended
 # one supersedes it: the predecessor's NULL effective_to is closed at the successor's start (the
@@ -92,6 +96,11 @@ GUARD = """CREATE FUNCTION shifde.rate_card_versions_guard() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = shifde, pg_catalog, pg_temp AS
 $$
 BEGIN
+  IF NOT ((NEW.tenant_id IS NOT NULL AND NEW.tenant_id = shifde.current_tenant_id())
+          OR (NEW.tenant_id IS NULL AND shifde.is_platform_admin_ctx())) THEN
+    RAISE EXCEPTION 'rate card version is outside the caller''s tenant'
+      USING ERRCODE = '42501';
+  END IF;
   PERFORM pg_advisory_xact_lock(hashtextextended('ratecard:' || NEW.rate_card_id::text, 0));
   IF NOT EXISTS (
     SELECT 1 FROM shifde.rate_cards c

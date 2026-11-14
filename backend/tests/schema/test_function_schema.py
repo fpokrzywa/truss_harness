@@ -46,9 +46,11 @@ SECURITY_DEFINER_ALLOWLIST: dict[str, str] = {
         "ledger (B-601): the BEFORE INSERT guard of rate_card_versions closes the open-ended "
         "predecessor of a new version (UPDATE effective_to), which the application role may not "
         "do (INSERT/SELECT grants only; the immutability trigger refuses every other update). It "
-        "runs as the owner, reads and updates only rows of the NEW row's own rate_card_id after "
-        "checking that the card belongs to NEW.tenant_id (the insert policy already pins that to "
-        "the caller's tenant or, for global cards, the platform admin), pins search_path "
+        "runs as the owner, and because it fires before the INSERT's WITH CHECK its first statement "
+        "refuses (42501) any NEW.tenant_id other than the caller's, and a global version unless "
+        "the caller is the platform administrator, before any lock or lookup. It then reads and "
+        "updates only rows of the NEW row's own rate_card_id after checking that the card "
+        "belongs to NEW.tenant_id (review 1, item 1). It pins search_path "
         "(shifde, pg_catalog, pg_temp), and is executable by the owner only."
     ),
 }

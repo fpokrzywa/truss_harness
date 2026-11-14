@@ -89,6 +89,25 @@ def add_rate_card(
     return card
 
 
+def _seed_context(s: Session, tenant_id: UUID | None) -> None:
+    """The version guard (isolation review 1, item 1) refuses a row outside the caller's context,
+    owner sessions included. A session without a client context gets the row's own
+    (transaction-local) and the helper re-points what it set for the next row; a context the test
+    set itself is kept, so the tests that expect the guard to refuse still do."""
+    seeded = s.info.get("seeded_context")  # what this helper last set on the session
+    current = s.execute(text("SELECT shifde.current_tenant_id()")).scalar_one()
+    admin = s.execute(text("SELECT shifde.is_platform_admin_ctx()")).scalar_one()
+    if (current is not None or admin) and seeded is None:
+        return  # the test's own context
+    s.info["seeded_context"] = tenant_id or "admin"
+    s.execute(
+        text(
+            "SELECT set_config('app.tenant_id', :t, true), set_config('app.platform_admin', :a, true)"
+        ),
+        {"t": str(tenant_id) if tenant_id else "", "a": "off" if tenant_id else "on"},
+    )
+
+
 def add_version(
     s: Session,
     card: UUID,
@@ -103,6 +122,7 @@ def add_version(
     currency: str = "USD",
 ) -> UUID:
     version = uuid7()
+    _seed_context(s, tenant_id)
     s.execute(
         text(
             "INSERT INTO shifde.rate_card_versions (id, rate_card_id, tenant_id, version_no, "

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from uuid import UUID
 
@@ -157,6 +157,17 @@ def test_without_a_tenant_context_nothing_is_visible_except_the_global_rate_card
         # a global card needs the platform administrator context
         "INSERT INTO shifde.rate_cards (id, tenant_id, provider_key, model_key, name) "
         "VALUES (gen_random_uuid(), NULL, 'p', 'm', 'n')",
+        # review 1, item 5
+        "INSERT INTO shifde.budget_alerts (id, tenant_id, budget_id, period_start, threshold, "
+        "utilization) VALUES (gen_random_uuid(), :other, gen_random_uuid(), now(), 0.5, 0.5)",
+        "INSERT INTO shifde.rate_card_versions (id, rate_card_id, tenant_id, version_no, "
+        "effective_from, currency, unit, input_rate, output_rate, source, revision) VALUES "
+        "(gen_random_uuid(), gen_random_uuid(), :other, 1, now(), 'USD', 'per_call', 1, 1, 's', "
+        "'r')",
+        "INSERT INTO shifde.rate_card_versions (id, rate_card_id, tenant_id, version_no, "
+        "effective_from, currency, unit, input_rate, output_rate, source, revision) VALUES "
+        "(gen_random_uuid(), gen_random_uuid(), NULL, 1, now(), 'USD', 'per_call', 1, 1, 's', "
+        "'r')",
     ],
 )
 def test_tenant_a_cannot_write_rows_for_tenant_b_or_global_rows(
@@ -270,3 +281,52 @@ def test_a_platform_administrator_may_write_a_global_card_but_a_tenant_may_not(
         s.rollback()
     with _as(app_db, uuid7()) as s, pytest.raises(DBAPIError):
         add_rate_card(s, None, model_key="not-allowed")
+
+
+# ---- isolation review 1, items 1 and 5: the SECURITY DEFINER version guard trusts nothing the
+# caller names. Before the fix a version naming another tenant's card answered 23P01 ("starts in
+# the past" / "overlaps"), an oracle on that card's version ranges, and took its advisory lock.
+def _card_of(db: Database, version: UUID) -> UUID:
+    with db.session() as s:
+        return s.execute(
+            text("SELECT rate_card_id FROM shifde.rate_card_versions WHERE id = :v"), {"v": version}
+        ).scalar_one()
+
+
+@pytest.mark.parametrize("backdated", [True, False])
+def test_a_version_on_another_tenants_card_is_refused_with_42501(
+    app_db: Database, owner_db: Database, world: World, backdated: bool
+) -> None:
+    card_b = _card_of(owner_db, world.version_b)
+    start = utcnow() - timedelta(days=1) if backdated else utcnow() + timedelta(days=1)
+    with _as(app_db, world.a) as s:
+        with pytest.raises(DBAPIError) as err:
+            add_version(s, card_b, world.b, 2, frm=start)
+        assert getattr(err.value.orig, "sqlstate", None) == "42501"
+        s.rollback()
+
+
+def test_a_version_naming_another_tenants_card_under_own_tenant_leaks_nothing(
+    app_db: Database, owner_db: Database, world: World
+) -> None:
+    """With its own tenant id the guard may look the card up, but the answer for B's card is the
+    one for a card that does not exist."""
+    codes = set()
+    for card in (_card_of(owner_db, world.version_b), uuid7()):
+        with _as(app_db, world.a) as s:
+            with pytest.raises(DBAPIError) as err:
+                add_version(s, card, world.a, 2, frm=utcnow() - timedelta(days=1))
+            codes.add(getattr(err.value.orig, "sqlstate", None))
+            s.rollback()
+    assert len(codes) == 1, codes
+
+
+def test_a_tenant_cannot_close_a_global_version_through_the_guard(
+    app_db: Database, owner_db: Database, world: World
+) -> None:
+    card = _card_of(owner_db, world.global_version)
+    with _as(app_db, world.a) as s:
+        with pytest.raises(DBAPIError) as err:
+            add_version(s, card, None, 2, frm=utcnow() + timedelta(days=1))
+        assert getattr(err.value.orig, "sqlstate", None) == "42501"
+        s.rollback()
