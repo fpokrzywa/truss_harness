@@ -21,6 +21,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from typing import Any
 from uuid import UUID
+from weakref import WeakKeyDictionary
 
 from sqlalchemy import Connection, MetaData, create_engine, event, text
 from sqlalchemy.engine import Engine
@@ -77,14 +78,63 @@ def get_context(session: Session) -> DbContext:
     return ctx if isinstance(ctx, DbContext) else DbContext()
 
 
+def _lowered(old: DbContext, new: DbContext) -> DbContext:
+    """The lower of two contexts: what a Session may safely hold when it cannot tell which of them
+    the database accepted. Platform administrator only if both say so; tenant and principal only
+    if unchanged."""
+    return replace(
+        new,
+        tenant_id=new.tenant_id if new.tenant_id == old.tenant_id else None,
+        principal_id=new.principal_id if new.principal_id == old.principal_id else None,
+        platform_admin=old.platform_admin and new.platform_admin,
+    )
+
+
 def _update(session: Session, **changes: object) -> None:
-    ctx = replace(get_context(session), **changes)  # type: ignore[arg-type]
+    old = get_context(session)
+    ctx = replace(old, **changes)  # type: ignore[arg-type]
     # Apply immediately to the current (or newly begun) transaction; later transactions on
-    # this Session re-apply from `session.info` via the after_begin hook. The statement runs
-    # first: if it fails (aborted transaction, lost connection) `session.info` must not change,
-    # or a context the database never accepted would be applied to every later transaction (B-702).
-    session.execute(_APPLY_SQL, _params(ctx))
+    # this Session re-apply from `session.info` via the after_begin hook. If the statement fails
+    # (aborted transaction, lost connection) the database may or may not hold the new value, so
+    # the Session keeps the lower of old and new and re-raises: a refused lowering must never
+    # leave the higher value to be re-applied to later transactions (B-702, B-703).
+    try:
+        session.execute(_APPLY_SQL, _params(ctx))
+    except BaseException:
+        session.info[_CTX_KEY] = _lowered(old, ctx)
+        raise
     session.info[_CTX_KEY] = ctx
+
+
+_SAVEPOINTS_KEY = "shifde_ctx_savepoints"
+
+
+@event.listens_for(Session, "after_transaction_create")
+def _snapshot_context_at_savepoint(session: Session, transaction: SessionTransaction) -> None:
+    """Remember the context a savepoint began with: its rollback discards the transaction-local
+    settings made inside it, so `session.info` must return to this value (B-703)."""
+    if transaction.nested:
+        saved: WeakKeyDictionary[SessionTransaction, DbContext] = session.info.setdefault(
+            _SAVEPOINTS_KEY, WeakKeyDictionary()
+        )
+        saved[transaction] = get_context(session)
+
+
+@event.listens_for(Session, "after_soft_rollback")
+def _restore_context_after_savepoint_rollback(
+    session: Session, previous_transaction: SessionTransaction
+) -> None:
+    saved: WeakKeyDictionary[SessionTransaction, DbContext] | None = session.info.get(
+        _SAVEPOINTS_KEY
+    )
+    snapshot = None if saved is None else saved.pop(previous_transaction, None)
+    # (A released savepoint never reaches here; its snapshot goes with the transaction.)
+    # Only while the enclosing transaction survives: if the whole transaction rolled back, the
+    # database holds nothing and the Session keeps what it last set (or its fail-closed value).
+    if snapshot is not None and session.in_transaction():
+        parent = previous_transaction.parent
+        if parent is not None and parent.is_active:
+            session.info[_CTX_KEY] = snapshot
 
 
 def init_context(session: Session, request_id: str | None) -> None:
