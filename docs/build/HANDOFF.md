@@ -4,7 +4,7 @@ Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md`, then this file. Sessi
 
 ## Finished in session 4
 
-All units below are merged to `main` and pushed. Main is at the commit that carries this handoff.
+All units below are merged to `main` and pushed. Main is at the commit that carries this handoff. Flaky under load (passes alone): `tests/connections/test_api.py::test_connection_call_deadline_applies_to_direct_invokes`.
 
 | Unit | Merged | Review |
 |---|---|---|
@@ -22,12 +22,7 @@ The last clean-checkout gate run was `gates.py --ref connections --workers 6` at
 
 ## The exact next step
 
-1. **Connections follow-up unit.** Opus `module-builder-critical`, small. Branch `connections-fu` off main. It closes the carry_forward row "connections (follow-up unit, do first)", which is connections review 2 items 1-3:
-   - The C2 race: a PATCH without `row_version` skips the version check.
-   - The same 404 for connections across workspaces.
-   - Give B its own listener in the route test.
-
-   Gate the branch, have the isolation reviewer read it, then merge.
+1. **Connections follow-up unit: done after the first handoff** (`a19c1f1` + `4ddce65`, merged; review 3 BLOCKED on an R+1 race variant, review 4 APPROVED; 1006 tests, 13/13 gates). The session was kept open by its stop hook, and context was still under 300k, so this unit ran after the first handoff. Start at step 2.
 2. **`admin` part 2: service accounts and API keys.** Opus. Reuse branch `admin` from main, with SETH `admin/credentials.py` and the service-account and api-key routes of `api.py`.
    - Close the carry_forward rows naming admin for these routes: the `test_p2_credentials.py` remainder, `revoke_api_key`/`touch_api_key` mutators, and `created_by` = caller (B-921).
    - Possibly add a platform-admin route for binding a group into a client (new row).
