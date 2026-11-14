@@ -19,6 +19,8 @@ from shifde.authz.models import (
     RoleBinding,
     RolePermission,
 )
+from shifde.core import db
+from shifde.core.errors import Forbidden
 
 
 @dataclass(frozen=True)
@@ -118,15 +120,16 @@ def bound_roles(
     return [(r[0], r[1], r[2], r[3]) for r in session.execute(stmt)]
 
 
-def active_group_ids(session: Session, tenant_id: UUID, user_id: UUID) -> set[UUID]:
+def platform_group_ids(session: Session, tenant_id: UUID, user_id: UUID) -> set[UUID]:
+    """The person's active platform groups that hold a role binding in `tenant_id`, which must be
+    the database's current client (`shifde_active_group_ids`, identity_0005, B-929): empty
+    without a client context, for another client, or for a group bound only elsewhere."""
     rows = session.execute(
-        select(GroupMember.group_id)
-        .join(Group, (Group.id == GroupMember.group_id) & (Group.tenant_id == tenant_id))
-        .where(
-            GroupMember.tenant_id == tenant_id,
-            GroupMember.user_id == user_id,
-            Group.status == "active",
-        )
+        text(
+            "SELECT g FROM shifde.shifde_active_group_ids(:u) AS g "
+            "WHERE shifde.current_tenant_id() = :t"
+        ),
+        {"u": user_id, "t": tenant_id},
     )
     return {r[0] for r in rows}
 
@@ -370,25 +373,31 @@ def delete_bindings_of_subject(
 
 
 # ------------------------------------------------------------------ groups
+# Groups are platform-level (design 5.3, identity_0005, DECISIONS B-928): one row per SHI-wide
+# group, no client key. Writes need the platform-administrator context (RLS, and refused here
+# before the database is touched); a client context reads no group row, only `bound_groups`.
+def _require_platform_admin(session: Session) -> None:
+    if not db.get_context(session).platform_admin:
+        raise Forbidden("platform groups are managed by the platform administrator")
+
+
 def insert_group(session: Session, values: dict[str, Any]) -> None:
+    _require_platform_admin(session)
     session.execute(insert(Group).values(**values))
 
 
-def get_group(session: Session, tenant_id: UUID, group_id: UUID) -> Group | None:
-    return session.scalar(select(Group).where(Group.tenant_id == tenant_id, Group.id == group_id))
+def get_group(session: Session, group_id: UUID) -> Group | None:
+    return session.scalar(select(Group).where(Group.id == group_id))
 
 
-def get_group_by_slug(session: Session, tenant_id: UUID, slug: str) -> Group | None:
-    return session.scalar(select(Group).where(Group.tenant_id == tenant_id, Group.slug == slug))
+def get_group_by_slug(session: Session, slug: str) -> Group | None:
+    return session.scalar(select(Group).where(Group.slug == slug))
 
 
-def get_idp_group(
-    session: Session, tenant_id: UUID, idp_config_id: UUID, external_id: str
-) -> Group | None:
-    """IdP-synced groups are keyed by (IdP, external name): two IdPs never share a group."""
+def get_idp_group(session: Session, idp_config_id: UUID, external_id: str) -> Group | None:
+    """IdP-mapped groups are keyed by (IdP, external name): two IdPs never share a group."""
     return session.scalar(
         select(Group).where(
-            Group.tenant_id == tenant_id,
             Group.source == "idp",
             Group.idp_config_id == idp_config_id,
             Group.external_id == external_id,
@@ -396,10 +405,8 @@ def get_idp_group(
     )
 
 
-def list_groups(
-    session: Session, *, tenant_id: UUID, after: UUID | None, limit: int
-) -> list[Group]:
-    stmt = select(Group).where(Group.tenant_id == tenant_id)
+def list_groups(session: Session, *, after: UUID | None, limit: int) -> list[Group]:
+    stmt = select(Group)
     if after is not None:
         stmt = stmt.where(Group.id > after)
     return list(session.scalars(stmt.order_by(Group.id).limit(limit)))
@@ -407,12 +414,12 @@ def list_groups(
 
 def update_group(
     session: Session,
-    tenant_id: UUID,
     group_id: UUID,
     expected_version: int | None,
     values: dict[str, Any],
 ) -> Group | None:
-    stmt = update(Group).where(Group.tenant_id == tenant_id, Group.id == group_id)
+    _require_platform_admin(session)
+    stmt = update(Group).where(Group.id == group_id)
     if expected_version is not None:
         stmt = stmt.where(Group.row_version == expected_version)
     stmt = (
@@ -424,6 +431,20 @@ def update_group(
 
 
 @dataclass(frozen=True)
+class BoundGroup:
+    """What a client sees of a platform group bound in it: id and name, nothing else."""
+
+    id: UUID
+    name: str
+
+
+def bound_groups(session: Session) -> list[BoundGroup]:
+    """Groups holding a role binding in the current client (`shifde_bound_groups`, B-930)."""
+    rows = session.execute(text("SELECT id, name FROM shifde.shifde_bound_groups()"))
+    return [BoundGroup(r[0], r[1]) for r in rows]
+
+
+@dataclass(frozen=True)
 class MemberRef:
     user_id: UUID
     email: str
@@ -431,41 +452,37 @@ class MemberRef:
     source: str
 
 
-def group_members(session: Session, tenant_id: UUID, group_id: UUID) -> list[MemberRef]:
+def group_members(session: Session, group_id: UUID) -> list[MemberRef]:
     rows = session.execute(
         text(
             "SELECT u.id, u.primary_email, u.display_name, gm.source FROM shifde.group_members gm "
             "JOIN shifde.users u ON u.id = gm.user_id "
-            "WHERE gm.tenant_id = :t AND gm.group_id = :g ORDER BY u.primary_email"
+            "WHERE gm.group_id = :g ORDER BY u.primary_email"
         ),
-        {"t": tenant_id, "g": group_id},
+        {"g": group_id},
     )
     return [MemberRef(*r) for r in rows]
 
 
-def member_counts(session: Session, tenant_id: UUID, group_ids: Sequence[UUID]) -> dict[UUID, int]:
+def member_counts(session: Session, group_ids: Sequence[UUID]) -> dict[UUID, int]:
     if not group_ids:
         return {}
     rows = session.execute(
         select(GroupMember.group_id, func.count())
-        .where(GroupMember.tenant_id == tenant_id, GroupMember.group_id.in_(list(group_ids)))
+        .where(GroupMember.group_id.in_(list(group_ids)))
         .group_by(GroupMember.group_id)
     )
     return {r[0]: r[1] for r in rows}
 
 
-def groups_of_users(
-    session: Session, tenant_id: UUID, user_ids: Sequence[UUID]
-) -> dict[UUID, list[Group]]:
+def groups_of_users(session: Session, user_ids: Sequence[UUID]) -> dict[UUID, list[Group]]:
     if not user_ids:
         return {}
     out: dict[UUID, list[Group]] = {}
     rows = session.execute(
         select(GroupMember.user_id, Group)
-        .join(
-            Group, (Group.id == GroupMember.group_id) & (Group.tenant_id == GroupMember.tenant_id)
-        )
-        .where(GroupMember.tenant_id == tenant_id, GroupMember.user_id.in_(list(user_ids)))
+        .join(Group, Group.id == GroupMember.group_id)
+        .where(GroupMember.user_id.in_(list(user_ids)))
         .order_by(Group.slug)
     )
     for user_id, group in rows:
@@ -473,70 +490,69 @@ def groups_of_users(
     return out
 
 
-def member_user_ids(session: Session, tenant_id: UUID, group_id: UUID) -> dict[UUID, str]:
+def member_user_ids(session: Session, group_id: UUID) -> dict[UUID, str]:
     """{user_id: source} for a group."""
     rows = session.execute(
-        select(GroupMember.user_id, GroupMember.source).where(
-            GroupMember.tenant_id == tenant_id, GroupMember.group_id == group_id
-        )
+        select(GroupMember.user_id, GroupMember.source).where(GroupMember.group_id == group_id)
     )
     return {r[0]: r[1] for r in rows}
 
 
 def add_group_members(
     session: Session,
-    tenant_id: UUID,
     group_id: UUID,
     user_ids: Collection[UUID],
     source: str,
     now: datetime,
 ) -> None:
+    _require_platform_admin(session)
     if user_ids:
         session.execute(
             insert(GroupMember),
             [
-                {
-                    "tenant_id": tenant_id,
-                    "group_id": group_id,
-                    "user_id": u,
-                    "source": source,
-                    "added_at": now,
-                }
+                {"group_id": group_id, "user_id": u, "source": source, "added_at": now}
                 for u in user_ids
             ],
         )
 
 
-def remove_group_members(
-    session: Session, tenant_id: UUID, group_id: UUID, user_ids: Collection[UUID]
-) -> None:
+def remove_group_members(session: Session, group_id: UUID, user_ids: Collection[UUID]) -> None:
+    _require_platform_admin(session)
     if user_ids:
         session.execute(
             delete(GroupMember).where(
-                GroupMember.tenant_id == tenant_id,
-                GroupMember.group_id == group_id,
-                GroupMember.user_id.in_(list(user_ids)),
+                GroupMember.group_id == group_id, GroupMember.user_id.in_(list(user_ids))
             )
         )
 
 
-def idp_synced_group_ids_of_user(
-    session: Session, tenant_id: UUID, user_id: UUID, idp_config_id: UUID
-) -> set[UUID]:
+def idp_synced_group_ids_of_user(session: Session, user_id: UUID, idp_config_id: UUID) -> set[UUID]:
     """Memberships synced from this IdP only (other IdPs' and manual memberships are untouched)."""
     rows = session.execute(
         select(GroupMember.group_id)
-        .join(
-            Group, (Group.id == GroupMember.group_id) & (Group.tenant_id == GroupMember.tenant_id)
-        )
+        .join(Group, Group.id == GroupMember.group_id)
         .where(
-            GroupMember.tenant_id == tenant_id,
             GroupMember.user_id == user_id,
             GroupMember.source == "idp_sync",
             Group.idp_config_id == idp_config_id,
         )
     )
     return {r[0] for r in rows}
+
+
+def sync_idp_groups(
+    session: Session, idp_config_id: UUID, user_id: UUID, names: Sequence[str]
+) -> int:
+    """Make the person's `idp_sync` memberships of groups mapped to this installation IdP equal
+    `names` (`shifde_sync_idp_groups`, B-932); never creates a group. Returns the number of
+    synced memberships. Raises (insufficient_privilege) unless the IdP is an active installation
+    IdP with sync on and the person has an identity there."""
+    return int(
+        session.execute(
+            text("SELECT shifde.shifde_sync_idp_groups(:i, :u, CAST(:n AS text[]))"),
+            {"i": idp_config_id, "u": user_id, "n": list(names)},
+        ).scalar_one()
+    )
 
 
 # ------------------------------------------------------------------ policy decisions

@@ -7,8 +7,10 @@ schema owner (SETH: the admin IdP routes, ported with admin), the app is
 without tenancy, and `service.my_memberships` is the B-920 stub. The fake IdP is
 `tests/_support/fake_oidc.py` (SETH `p2util.FakeOidcProvider`). Deferred with carry_forward rows:
 the tenant-IdP pinning test (tenancy org routes; its isolation is covered by
-`test_oidc_cross_client.py`), the two group-sync tests (identity part 3b) and the IdP
-configuration API tests (admin).
+`test_oidc_cross_client.py`), the two group-sync tests (they use a client's IdP and admin's
+group and binding routes; their behaviour on platform groups is pinned in
+`test_platform_groups.py`, the route parts move with admin) and the IdP configuration API tests
+(admin).
 """
 
 from __future__ import annotations

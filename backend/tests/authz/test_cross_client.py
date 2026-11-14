@@ -5,7 +5,9 @@ authz has no routes. Its entry points are the PDP (`authorize`, `require`,
 `subject_ids_covering`, the decision log hook, and the data operations other modules call through
 `authz.service`. For each: a principal bound in organization A gets nothing in organization B, and
 B's rows are absent. At the database: with A's context set, as `shifde_app`, B's authz rows are
-invisible and cannot be written. `execution_principal` reads users, memberships, service accounts
+invisible and cannot be written. Groups are platform-level since identity_0005 (DECISIONS B-928):
+a client context reads, writes and enumerates no group or member row and sees only id and name
+of the groups bound in it (`bound_groups`). `execution_principal` reads users, memberships, service accounts
 and API keys (identity/tenancy); its cross-client test (SETH `test_p2_execution.py`
 `test_a_run_naming_another_tenant_is_rejected`) moves with identity (carry_forward.md).
 """
@@ -73,7 +75,7 @@ def _org(owner: Session, seed: Engine, slug: str) -> Org:
         {"id": uuid7(), "t": tenant},
     )
     owner.commit()
-    group = owner_insert_group(owner, tenant, f"{slug}-fdes", [member])
+    group = owner_insert_group(owner, f"{slug}-fdes", [member])
     bindings = owner_insert_bindings(
         seed,
         [
@@ -271,22 +273,38 @@ def test_service_data_operations_return_nothing_of_another_client(
         assert authz.delete_binding(s, b.tenant, bid) is False
     assert authz.bindings_of_subject(s, b.tenant, "user", [b.admin]) == []
     assert authz.delete_bindings_of_subject(s, b.tenant, "user", b.admin) == 0
-    assert authz.get_group(s, b.tenant, b.group) is None
-    assert authz.get_group_by_slug(s, b.tenant, "b-fdes") is None
-    assert authz.list_groups(s, tenant_id=b.tenant, after=None, limit=500) == []
-    assert authz.update_group(s, b.tenant, b.group, None, {"name": "pwned"}) is None
-    assert authz.member_counts(s, b.tenant, [b.group]) == {}
-    assert authz.member_user_ids(s, b.tenant, b.group) == {}
-    assert authz.groups_of_users(s, b.tenant, [b.member]) == {}
-    assert authz.idp_synced_group_ids_of_user(s, b.tenant, b.member, uuid7()) == set()
-    assert authz.tenant_group_membership(s, tenant_id=b.tenant, user_id=b.member) == frozenset()
-    authz.remove_group_members(s, b.tenant, b.group, [b.member])
+    # platform groups (identity_0005, B-928): A's context reads, enumerates and writes none of
+    # them, not even the group bound in A; it sees id and name of A's bound groups only
+    assert authz.get_group(s, b.group) is None
+    assert authz.get_group(s, a.group) is None
+    assert authz.get_group_by_slug(s, "b-fdes") is None
+    assert authz.list_groups(s, after=None, limit=500) == []
+    assert authz.member_counts(s, [a.group, b.group]) == {}
+    assert authz.member_user_ids(s, b.group) == {}
+    assert authz.groups_of_users(s, [a.member, b.member]) == {}
+    assert authz.idp_synced_group_ids_of_user(s, b.member, uuid7()) == set()
+    assert authz.bound_groups(s) == [authz.BoundGroup(a.group, "a-fdes")]
+    assert authz.platform_group_membership(s, tenant_id=a.tenant, user_id=a.member) == {a.group}
+    assert authz.platform_group_membership(s, tenant_id=a.tenant, user_id=b.member) == frozenset()
+    assert authz.platform_group_membership(s, tenant_id=b.tenant, user_id=b.member) == frozenset()
+    writes = (
+        lambda: authz.update_group(s, b.group, None, {"name": "pwned"}),
+        lambda: authz.remove_group_members(s, b.group, [b.member]),
+        lambda: authz.add_group_members(s, b.group, [a.member], "manual", utcnow()),
+        lambda: authz.insert_group(s, {"id": uuid7(), "slug": "x", "name": "x"}),
+    )
+    for write in writes:
+        with pytest.raises(Forbidden):
+            write()
     s.commit()
     # B is intact
     db.set_tenant(s, b.tenant)
     assert authz.get_role(s, b.tenant, b.role) is not None
     assert len(authz.bindings_of_subject(s, b.tenant, "user", [b.admin])) == 2
-    assert authz.member_user_ids(s, b.tenant, b.group) == {b.member: "manual"}
+    assert authz.bound_groups(s) == [authz.BoundGroup(b.group, "b-fdes")]
+    with db.platform_admin_context(s):
+        assert authz.member_user_ids(s, b.group) == {b.member: "manual"}
+        assert authz.get_group(s, b.group) is not None
 
 
 # ------------------------------------------------------------------ database: RLS as shifde_app
@@ -294,8 +312,6 @@ TABLES = (
     "roles",
     "role_permissions",
     "role_bindings",
-    "groups",
-    "group_members",
     "policy_decisions",
 )
 
@@ -316,6 +332,38 @@ def test_with_a_set_b_rows_are_invisible_as_shifde_app(
     assert seen <= {None}  # no context: no client row at all
 
 
+@pytest.mark.parametrize("table", ["groups", "group_members"])
+def test_platform_group_rows_are_invisible_in_every_client_context_as_shifde_app(
+    s: Session, orgs: tuple[Org, Org], table: str
+) -> None:
+    """identity_0005 (B-928): no client context reads a group or member row, not even its own
+    bound group, and not even a member of that group acting inside the client; with no client
+    context a staff member reads only their own groups and memberships."""
+    a, b = orgs
+    count = text(f"SELECT count(*) FROM shifde.{table}")
+    for tenant, principal in (
+        (a.tenant, None),
+        (b.tenant, None),
+        (None, None),
+        (a.tenant, a.member),
+        (b.tenant, a.member),
+    ):
+        db.set_tenant(s, tenant)
+        db.set_principal(s, principal)
+        assert s.execute(WHO).scalar_one() == "shifde_app"
+        assert s.execute(count).scalar_one() == 0, (tenant, principal)
+        s.rollback()
+    db.set_tenant(s, None)
+    db.set_principal(s, a.member)
+    rows = {
+        "groups": "SELECT id FROM shifde.groups",
+        "group_members": "SELECT group_id FROM shifde.group_members",
+    }[table]
+    assert set(s.execute(text(rows)).scalars()) == {a.group}
+    s.rollback()
+    db.set_principal(s, None)
+
+
 def test_with_a_set_b_rows_cannot_be_written_as_shifde_app(
     s: Session, orgs: tuple[Org, Org]
 ) -> None:
@@ -325,16 +373,28 @@ def test_with_a_set_b_rows_cannot_be_written_as_shifde_app(
         "INSERT INTO shifde.roles (id, tenant_id, key, name) VALUES (gen_random_uuid(), :b, 'x', 'x')",
         # B's own role, or a system role, under B's tenant id
         "INSERT INTO shifde.role_permissions (role_id, permission_key, tenant_id) VALUES (:brole, 'project:read', :b)",
-        "INSERT INTO shifde.groups (id, tenant_id, slug, name) VALUES (gen_random_uuid(), :b, 'x', 'x')",
-        "INSERT INTO shifde.group_members (tenant_id, group_id, user_id) VALUES (:b, :bgroup, gen_random_uuid())",
+        # platform groups (identity_0005): no client context creates a group or adds a member
+        "INSERT INTO shifde.groups (id, slug, name) VALUES (gen_random_uuid(), 'x', 'x')",
+        "INSERT INTO shifde.group_members (group_id, user_id) VALUES (:bgroup, :amember)",
+        "INSERT INTO shifde.group_members (group_id, user_id) VALUES (:agroup, :bmember)",
         "INSERT INTO shifde.policy_decisions (id, tenant_id, action, decision) VALUES (gen_random_uuid(), :b, 'x:y', 'allow')",
         "INSERT INTO shifde.role_bindings (id, tenant_id, subject_type, subject_id, role_id, scope_type, scope_id, created_at) VALUES (gen_random_uuid(), :b, 'group', :bgroup, :brole, 'tenant', :b, :now)",
         # A's tenant id, but B's role or group
         "INSERT INTO shifde.role_permissions (role_id, permission_key, tenant_id) VALUES (:brole, 'project:read', :a)",
-        "INSERT INTO shifde.group_members (tenant_id, group_id, user_id) VALUES (:a, :bgroup, gen_random_uuid())",
+        # a platform group bound by a client context (B's group, or A's own): admin only
+        "INSERT INTO shifde.role_bindings (id, tenant_id, subject_type, subject_id, role_id, scope_type, scope_id, created_at) VALUES (gen_random_uuid(), :a, 'group', :bgroup, (SELECT id FROM shifde.roles WHERE tenant_id IS NULL AND key = 'viewer'), 'tenant', :a, :now)",
+        "INSERT INTO shifde.role_bindings (id, tenant_id, subject_type, subject_id, role_id, scope_type, scope_id, created_at) VALUES (gen_random_uuid(), :a, 'group', :agroup, (SELECT id FROM shifde.roles WHERE tenant_id IS NULL AND key = 'viewer'), 'tenant', :a, :now)",
         "INSERT INTO shifde.role_bindings (id, tenant_id, subject_type, subject_id, role_id, scope_type, scope_id, created_at) VALUES (gen_random_uuid(), :a, 'group', :agroup, :brole, 'tenant', :a, :now)",
     ]
-    params = {"a": a.tenant, "b": b.tenant, "brole": b.role, "bgroup": b.group, "agroup": a.group}
+    params = {
+        "a": a.tenant,
+        "b": b.tenant,
+        "brole": b.role,
+        "bgroup": b.group,
+        "agroup": a.group,
+        "amember": a.member,
+        "bmember": b.member,
+    }
     for sql in inserts:
         db.set_tenant(s, a.tenant)
         assert s.execute(WHO).scalar_one() == "shifde_app"
@@ -344,10 +404,10 @@ def test_with_a_set_b_rows_cannot_be_written_as_shifde_app(
     db.set_tenant(s, a.tenant)
     writes = [
         "UPDATE shifde.roles SET name = 'pwned' WHERE tenant_id = :b",
-        "UPDATE shifde.groups SET name = 'pwned' WHERE tenant_id = :b",
+        "UPDATE shifde.groups SET name = 'pwned'",
         "DELETE FROM shifde.role_permissions WHERE tenant_id = :b",
         "DELETE FROM shifde.role_bindings WHERE tenant_id = :b",
-        "DELETE FROM shifde.group_members WHERE tenant_id = :b",
+        "DELETE FROM shifde.group_members",
         # system templates are never writable by a client either
         "UPDATE shifde.roles SET name = 'pwned' WHERE tenant_id IS NULL",
         "DELETE FROM shifde.role_permissions WHERE tenant_id IS NULL",
@@ -401,19 +461,29 @@ def test_integrity_triggers_reject_cross_client_references_even_for_the_owner(
     owner_session: Session, orgs: tuple[Org, Org]
 ) -> None:
     a, b = orgs
-    """Subject checks of `check_role_binding()` (user, group, service account) and its
-    workspace/project scope checks need identity's and tenancy's tables; they are pinned with
-    those ports (carry_forward.md). The role check runs first and works now."""
+    """The role check runs first. Workspace/project scope checks need tenancy's tables
+    (carry_forward.md); the user and service-account subject checks are pinned in
+    `tests/identity/test_cross_client.py`, the group branch (identity_0005) here and in
+    `tests/identity/test_platform_groups.py`."""
     stmts = [
         # role of B bound inside A
         (
             "INSERT INTO shifde.role_bindings (id, tenant_id, subject_type, subject_id, role_id, scope_type, scope_id) VALUES (gen_random_uuid(), :a, 'group', :agroup, :brole, 'tenant', :a)",
             "role is not available to this tenant",
         ),
-        # a member row in A pointing at B's group (composite FK)
+        # platform group members: a real group and a person of the staff directory
         (
-            "INSERT INTO shifde.group_members (tenant_id, group_id, user_id) VALUES (:a, :bgroup, gen_random_uuid())",
+            "INSERT INTO shifde.group_members (group_id, user_id) VALUES (gen_random_uuid(), :amember)",
             "fk_group_members__group",
+        ),
+        (
+            "INSERT INTO shifde.group_members (group_id, user_id) VALUES (:bgroup, gen_random_uuid())",
+            "fk_group_members__user",
+        ),
+        # a group bound without the platform-administrator context, even by the owner
+        (
+            "INSERT INTO shifde.role_bindings (id, tenant_id, subject_type, subject_id, role_id, scope_type, scope_id) VALUES (gen_random_uuid(), :a, 'group', :bgroup, (SELECT id FROM shifde.roles WHERE tenant_id IS NULL AND key = 'viewer'), 'tenant', :a)",
+            "binding a group needs the platform administrator",
         ),
         # role_permissions row whose tenant differs from its role's tenant
         (
@@ -421,7 +491,13 @@ def test_integrity_triggers_reject_cross_client_references_even_for_the_owner(
             "must match the role tenant",
         ),
     ]
-    params = {"a": a.tenant, "brole": b.role, "bgroup": b.group, "agroup": a.group}
+    params = {
+        "a": a.tenant,
+        "brole": b.role,
+        "bgroup": b.group,
+        "agroup": a.group,
+        "amember": a.member,
+    }
     for sql, why in stmts:
         with pytest.raises(DBAPIError, match=why):
             owner_session.execute(text(sql), params)

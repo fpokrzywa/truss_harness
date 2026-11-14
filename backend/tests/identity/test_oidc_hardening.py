@@ -2,12 +2,15 @@
 code or schema: PKCE from `Settings.pkce_key` (findings Item 4), the callback limiter (Item 5b),
 identities only through the definers (review 1 item 2), installation IdPs name only installation
 secrets (review 1 item 7), single-use expiring flow state in the definers, a client's IdP links
-only that client's members, and IdP group sync refused until part 3b.
+only that client's members, and IdP group sync refused for a client's IdP (identity_0005: only
+installation IdPs sync platform groups, B-931). Identity review 4 items 1, 2, 6 (part 3b): the
+link paths and refusals pinned, SETH's client-IdP refusal test moved, unknown IdPs audited.
 """
 
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from uuid import UUID
 
 import pytest
@@ -19,7 +22,8 @@ from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.identity import repository
-from shifde.identity.oidc import pkce_challenge, pkce_verifier
+from shifde.identity.oidc import OidcFailure, _require_supported, pkce_challenge, pkce_verifier
+from shifde.identity.repository import ResolvedIdp
 from tests.identity import oidc_flow
 from tests.identity.conftest import World, app_session, owner_membership, owner_user
 
@@ -231,20 +235,123 @@ def test_a_link_armed_in_one_client_completes_only_through_its_own_or_the_instal
     assert rows == [(newcomer, a_idp)]
 
 
-def test_an_idp_that_syncs_groups_signs_nobody_in_until_part_3b(
+def test_a_clients_idp_never_syncs_groups(world: World, owner_session: Session) -> None:
+    """Replaces part 3a's `test_an_idp_that_syncs_groups_signs_nobody_in_until_part_3b`: groups
+    are platform-level and hold SHI staff, so a client's IdP with sync on cannot exist
+    (`ck_idp_configs__group_sync_installation_only`, B-931), and `identity.oidc` still refuses
+    such a row (B-925); an installation IdP may sync (tests/identity/test_platform_groups.py)."""
+    iss = oidc_flow.sso("a")
+    with (
+        pytest.raises(DBAPIError, match="ck_idp_configs__group_sync_installation_only"),
+        owner_session.begin_nested(),
+    ):
+        oidc_flow.owner_oidc_idp(owner_session, world.a.tenant, iss, group_sync_mode="sync")
+    row = ResolvedIdp(
+        uuid7(), world.a.tenant, "a", iss, f"{iss}/x", "c", None, [], {}, "off", "sync"
+    )
+    with pytest.raises(OidcFailure) as refused:
+        _require_supported(row)
+    assert refused.value.reason == "group_sync_unavailable"
+    _require_supported(replace(row, tenant_id=None))
+
+
+def test_link_paths_installation_idp_and_refusals_at_a_clients_idp(
+    world: World, app_db: Database, owner_session: Session
+) -> None:
+    """Review 4 item 1: a link armed in A completes through the installation IdP; at A's IdP a
+    link armed with no client, a suspended member's link and a link armed in A for a person
+    who is a member of B only are refused, and no identity is written for them."""
+    a, b = world.a.tenant, world.b.tenant
+    inst_iss, a_iss = oidc_flow.sso("inst"), oidc_flow.sso("a")
+    inst = oidc_flow.owner_oidc_idp(owner_session, None, inst_iss)
+    a_idp = oidc_flow.owner_oidc_idp(owner_session, a, a_iss)
+    via_inst = owner_user(owner_session, "via-inst@a.test")
+    owner_membership(owner_session, a, via_inst)
+    no_client = owner_user(owner_session, "no-client@shi.test")
+    suspended = owner_user(owner_session, "suspended@a.test")
+    owner_membership(owner_session, a, suspended)
+    owner_session.execute(
+        text("UPDATE shifde.memberships SET status = 'suspended' WHERE user_id = :u"),
+        {"u": suspended},
+    )
+    b_only = owner_user(owner_session, "b-only@b.test")
+    owner_membership(owner_session, b, b_only)
+    _arm_link(owner_session, via_inst, a)
+    _arm_link(owner_session, no_client, None)
+    _arm_link(owner_session, suspended, a)
+    _arm_link(owner_session, b_only, a)
+    owner_session.commit()
+
+    def resolve(issuer: str, subject: str, email: str, idp: UUID) -> object:
+        with app_session(app_db, None) as s:
+            row = repository.resolve_identity(s, issuer, subject, email, idp)
+            s.commit()
+            return row
+
+    assert resolve(a_iss, "x-1", "no-client@shi.test", a_idp) is None
+    assert resolve(a_iss, "x-2", "suspended@a.test", a_idp) is None
+    assert resolve(a_iss, "x-3", "b-only@b.test", a_idp) is None
+    linked = resolve(inst_iss, "x-4", "via-inst@a.test", inst)
+    assert linked is not None and getattr(linked, "user_id", None) == via_inst
+    rows = owner_session.execute(
+        text("SELECT user_id, idp_config_id FROM shifde.user_identities WHERE subject LIKE 'x-%'")
+    ).all()
+    assert rows == [(via_inst, inst)]
+
+
+def test_tenant_idp_refuses_platform_admins_non_members_and_suspended_members(
+    settings: Settings, world: World, owner_session: Session, stub_memberships: None
+) -> None:
+    """SETH `test_p2_review.py` (review 4 item 2), moved: the IdP is owner-inserted instead of
+    created through the admin route, and identities are owner-inserted instead of prelinked;
+    the assertions are SETH's (failure reason, no session, three failures filed in A)."""
+    a = world.a.tenant
+    iss = oidc_flow.sso("a")
+    idp = oidc_flow.owner_oidc_idp(owner_session, a, iss)
+    root = owner_user(owner_session, "root@example.com", admin=True)
+    owner_membership(owner_session, a, root)
+    outsider = owner_user(owner_session, "outsider@example.com")
+    susp = owner_user(owner_session, "susp@example.com")
+    owner_membership(owner_session, a, susp)
+    owner_session.execute(
+        text("UPDATE shifde.memberships SET status = 'suspended' WHERE user_id = :u"), {"u": susp}
+    )
+    for person, sub in ((root, "sub-root"), (outsider, "sub-out"), (susp, "sub-susp")):
+        oidc_flow.owner_identity(owner_session, person, idp, iss, sub)
+    owner_session.commit()
+    cases = {
+        "sub-root": "tenant_idp_platform_admin_refused",
+        "sub-out": "tenant_idp_not_an_active_member",
+        "sub-susp": "tenant_idp_not_an_active_member",
+    }
+    fake = oidc_flow.provider()
+    with oidc_flow.oidc_client(settings, fake) as c:
+        for sub, reason in cases.items():
+            c.cookies.clear()
+            r = oidc_flow.sign_in(c, fake, idp, iss, code=sub, sub=sub)
+            assert r.headers["location"] == oidc_flow.FAIL, sub
+            assert c.get("/api/auth/session").status_code == 401
+            assert oidc_flow.failures(owner_session)[-1] == (reason, a)
+    n = owner_session.execute(
+        text(
+            "SELECT count(*) FROM shifde.audit_events "
+            "WHERE action = 'identity.login.failed' AND tenant_id = :t"
+        ),
+        {"t": a},
+    ).scalar_one()
+    assert n == 3
+
+
+def test_a_callback_for_an_unknown_or_disabled_idp_is_audited(
     settings: Settings, world: World, owner_session: Session
 ) -> None:
-    iss = oidc_flow.sso("a")
-    idp = oidc_flow.owner_oidc_idp(owner_session, world.a.tenant, iss, group_sync_mode="sync")
-    oidc_flow.owner_identity(owner_session, world.a.member, idp, iss, "a")
+    """Review 4 item 6: `complete_login` audits `idp_not_found` (installation-level: nothing
+    proves a client) before answering with the generic failure."""
+    off = oidc_flow.owner_oidc_idp(owner_session, None, oidc_flow.sso("off"), status="disabled")
     owner_session.commit()
     fake = oidc_flow.provider()
     with oidc_flow.oidc_client(settings, fake) as c:
-        r = c.get(f"/api/auth/oidc/{idp}/login", follow_redirects=False)
-        assert r.status_code == 302 and r.headers["location"] == oidc_flow.FAIL
-    assert (
-        owner_session.execute(
-            text("SELECT count(*) FROM shifde.sessions WHERE user_id = :u"), {"u": world.a.member}
-        ).scalar_one()
-        == 1
-    )  # the seeded one
+        for idp in (uuid7(), off):
+            r = oidc_flow.finish(c, idp, "code", "forged-state")
+            assert r.headers["location"] == oidc_flow.FAIL
+    assert oidc_flow.failures(owner_session) == [("idp_not_found", None)] * 2

@@ -20,11 +20,11 @@ request-end hook persists them to `policy_decisions` in a fresh transaction so t
 request rollback that a denial usually causes.
 
 Groups (design 5.3, DECISIONS B-403): which groups a user belongs to is answered by a
-``GroupMembership`` (default: ``tenant_group_membership``, SETH's per-client groups). The PDP
+``GroupMembership`` (default: ``platform_group_membership``, SHI-wide groups). The PDP
 then counts only role bindings stored in the client it decides for whose subject is one of those
 groups, so membership alone grants nothing and a group with no binding in a client gives no access
-there. The identity port swaps the answer for SHI-wide (platform-level) groups without changing
-the decision logic.
+there. Identity part 3b (B-929) made groups platform-level and swapped the answer without
+changing the decision logic.
 """
 
 from __future__ import annotations
@@ -57,9 +57,12 @@ class GroupMembership(Protocol):
     def __call__(self, session: Session, *, tenant_id: UUID, user_id: UUID) -> frozenset[UUID]: ...
 
 
-def tenant_group_membership(session: Session, *, tenant_id: UUID, user_id: UUID) -> frozenset[UUID]:
-    """SETH 3ba0e06's groups: per-client groups of `tenant_id` the user is a member of (RLS)."""
-    return frozenset(repository.active_group_ids(session, tenant_id, user_id))
+def platform_group_membership(
+    session: Session, *, tenant_id: UUID, user_id: UUID
+) -> frozenset[UUID]:
+    """SHI-wide groups (design 5.3, identity_0005, B-929): the person's active platform groups
+    that hold a role binding in `tenant_id`, the database's current client (else empty)."""
+    return frozenset(repository.platform_group_ids(session, tenant_id, user_id))
 
 
 @dataclass(frozen=True)
@@ -151,7 +154,7 @@ class PDP:
         principal: Principal,
         tenant_id: UUID | None,
         *,
-        group_membership: GroupMembership = tenant_group_membership,
+        group_membership: GroupMembership = platform_group_membership,
     ) -> None:
         self._session = session
         self._principal = principal

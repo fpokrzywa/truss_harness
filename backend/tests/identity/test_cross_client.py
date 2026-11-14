@@ -351,16 +351,27 @@ def test_setup_tokens_are_never_readable_by_the_app(
 
 
 # ------------------------------------------------------------------ authz binding trigger
-def _bind(s: Session, tenant: UUID, subject_type: str, subject: UUID) -> None:
+def _bind(
+    s: Session, tenant: UUID, subject_type: str, subject: UUID, scope_type: str = "tenant"
+) -> None:
     role = s.execute(
         text("SELECT id FROM shifde.roles WHERE tenant_id IS NULL AND key = 'auditor'")
     ).scalar_one()
+    scope = tenant if scope_type == "tenant" else uuid7()
     s.execute(
         text(
             "INSERT INTO shifde.role_bindings (id, tenant_id, subject_type, subject_id, role_id, "
-            "scope_type, scope_id) VALUES (:id, :t, :st, :sid, :r, 'tenant', :t)"
+            "scope_type, scope_id) VALUES (:id, :t, :st, :sid, :r, :sc, :scid)"
         ),
-        {"id": uuid7(), "t": tenant, "st": subject_type, "sid": subject, "r": role},
+        {
+            "id": uuid7(),
+            "t": tenant,
+            "st": subject_type,
+            "sid": subject,
+            "r": role,
+            "sc": scope_type,
+            "scid": scope,
+        },
     )
 
 
@@ -384,11 +395,18 @@ def test_binding_another_clients_subject_is_refused_with_the_triggers_message(
 def test_binding_own_subject_passes_the_subject_check_and_fails_closed_until_tenancy(
     world: World, a_session: Session, subject_type: str
 ) -> None:
-    """A's own service account and member get past the subject branch; the scope branch then
-    needs `workspaces` (tenancy), so every binding still fails closed (B-402)."""
+    """A's own service account and member get past the subject branch. identity_0005 nests the
+    scope branches (B-933): an organization-scope binding is stored, in A only; a workspace
+    binding still needs `workspaces` (tenancy) and fails closed (B-402)."""
     subject = world.a.service_account if subject_type == "service_account" else world.a.member
+    _bind(a_session, world.a.tenant, subject_type, subject)
+    rows = a_session.execute(
+        text("SELECT tenant_id FROM shifde.role_bindings WHERE subject_id = :s"), {"s": subject}
+    ).scalars()
+    assert list(rows) == [world.a.tenant]
+    a_session.rollback()
     with pytest.raises(DBAPIError, match='relation "shifde.workspaces" does not exist'):
-        _bind(a_session, world.a.tenant, subject_type, subject)
+        _bind(a_session, world.a.tenant, subject_type, subject, scope_type="workspace")
     a_session.rollback()
 
 
@@ -763,9 +781,14 @@ def test_oidc_login_at_bs_idp_files_the_flow_in_b_and_answers_like_a_missing_id(
     b_off = oidc_flow.owner_oidc_idp(
         owner_session, world.b.tenant, "https://off.b.test", status="disabled"
     )
-    b_sync = oidc_flow.owner_oidc_idp(
-        owner_session, world.b.tenant, "https://sync.b.test", group_sync_mode="sync"
-    )
+    # a client's IdP never syncs SHI-wide groups (identity_0005, B-931): such a row cannot exist
+    with (
+        pytest.raises(DBAPIError, match="ck_idp_configs__group_sync_installation_only"),
+        owner_session.begin_nested(),
+    ):
+        oidc_flow.owner_oidc_idp(
+            owner_session, world.b.tenant, "https://sync.b.test", group_sync_mode="sync"
+        )
     a_person = person(owner_session, "oidc-a@a.test")
     owner_membership(owner_session, world.a.tenant, a_person)
     owner_session.commit()
@@ -775,7 +798,7 @@ def test_oidc_login_at_bs_idp_files_the_flow_in_b_and_answers_like_a_missing_id(
         oidc_flow.start(c, fake, b_idp)
         oidc_flow.start(c, fake, a_idp)
         missing = c.get(f"/api/auth/oidc/{uuid7()}/login", follow_redirects=False)
-        for other in (b_off, b_sync):
+        for other in (b_off,):
             _same_failure(c.get(f"/api/auth/oidc/{other}/login", follow_redirects=False), missing)
         _same_failure(c.get("/api/auth/oidc/not-a-uuid/login", follow_redirects=False), missing)
     rows = owner_session.execute(
@@ -814,7 +837,11 @@ def test_oidc_callback_signs_in_only_bs_members_pinned_to_b(
         crossed = oidc_flow.finish(c, b_idp, "x", auth.state)
         missing = oidc_flow.finish(c, uuid7(), "x", auth.state)
         _same_failure(crossed, missing)
-        assert oidc_flow.failures(owner_session)[-1] == ("state_invalid_or_replayed", None)
+        # the missing IdP is audited too (review 4 item 6), installation-level
+        assert oidc_flow.failures(owner_session)[-2:] == [
+            ("state_invalid_or_replayed", None),
+            ("idp_not_found", None),
+        ]
         # A's person bound to B's IdP: B's IdP vouched, so the refusal is B's; no session
         c.cookies.clear()
         r = oidc_flow.sign_in(c, fake, b_idp, b_iss, code="a", sub="a-member")

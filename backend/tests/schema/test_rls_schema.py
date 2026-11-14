@@ -165,6 +165,12 @@ PRINCIPAL_TABLES: dict[str, str] = {
     "shifde.user_identities": f"{_IDENTITY_STATE}: a person's identity-provider subjects",
     # identity_0002 (B-911): not a SETH table; failed-login counters per (person, source)
     "shifde.login_lockouts": f"{_IDENTITY_STATE}: a person's failed-login counters per source",
+    # identity_0005 (B-928): SHI-wide groups are platform-level; a staff member reads their own
+    # membership rows, and only outside any client context (`current_tenant_id() IS NULL`)
+    "shifde.group_members": (
+        "a staff member's own SHI-wide group memberships (platform-level, no tenant_id; design "
+        "5.3), readable only with no client context; never client content"
+    ),
 }
 
 # (relation, policy, command, "PERMISSIVE" | "RESTRICTIVE", roles, "USING" | "WITH CHECK")
@@ -189,6 +195,31 @@ REVIEWED_EXPRESSIONS: dict[ReviewedKey, str] = {
         "((id = shifde.current_principal_id()) OR shifde.is_platform_admin_ctx() OR (EXISTS "
         "( SELECT 1\n   FROM shifde.memberships m\n  WHERE ((m.user_id = users.id) AND "
         "(m.tenant_id = shifde.current_tenant_id())))))"
+    ),
+    # identity_0005 (DECISIONS B-928): `groups` and `group_members` are platform-level (no
+    # tenant_id, design 5.3): only the platform administrator writes them (a platform catalog,
+    # B-116 item 10), so the write policies hold the admin flag alone.
+    **{
+        (relation, "platform_admin_all", "ALL", "PERMISSIVE", ("public",), clause): (
+            "shifde.is_platform_admin_ctx()"
+        )
+        for relation in ("shifde.groups", "shifde.group_members")
+        for clause in ("USING", "WITH CHECK")
+    },
+    # A staff member reads the groups they belong to, only with no client context, so code
+    # running inside a client never reads the names of groups bound elsewhere. The EXISTS runs
+    # as the invoker under `group_members`' own_row policy (own rows, no client context).
+    (
+        "shifde.groups",
+        "member_read",
+        "SELECT",
+        "PERMISSIVE",
+        ("public",),
+        "USING",
+    ): (
+        "((shifde.current_tenant_id() IS NULL) AND (EXISTS ( SELECT 1\n   FROM "
+        "shifde.group_members gm\n  WHERE ((gm.group_id = groups.id) AND (gm.user_id = "
+        "shifde.current_principal_id())))))"
     ),
 }
 
@@ -1181,6 +1212,7 @@ def test_reviewed_principal_tables() -> None:
         "shifde.local_credentials",
         "shifde.user_identities",
         "shifde.login_lockouts",
+        "shifde.group_members",  # identity_0005 (B-928)
     }
     assert all(reason.strip() for reason in PRINCIPAL_TABLES.values())
 

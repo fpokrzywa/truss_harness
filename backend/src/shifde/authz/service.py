@@ -19,9 +19,9 @@ from shifde.authz.pdp import (
     GroupMembership,
     ResourceRef,
     ScopeFilter,
-    tenant_group_membership,
+    platform_group_membership,
 )
-from shifde.authz.repository import BindingRow, GrantRow, MemberRef, PermissionRow
+from shifde.authz.repository import BindingRow, BoundGroup, GrantRow, MemberRef, PermissionRow
 from shifde.core.clock import utcnow
 from shifde.core.context import Principal
 from shifde.core.errors import ValidationFailed
@@ -30,6 +30,7 @@ from shifde.core.ids import uuid7
 __all__ = [
     "PDP",
     "BindingRow",
+    "BoundGroup",
     "Decision",
     "DecisionRecord",
     "ExecutionDenied",
@@ -44,6 +45,7 @@ __all__ = [
     "ScopeFilter",
     "add_group_members",
     "bindings_of_subject",
+    "bound_groups",
     "delete_binding",
     "delete_bindings_of_subject",
     "delete_role_permissions",
@@ -71,11 +73,12 @@ __all__ = [
     "member_user_ids",
     "new_pdp",
     "permissions_by_role",
+    "platform_group_membership",
     "privileged_keys",
     "remove_group_members",
     "role_key_exists",
     "subject_ids_covering",
-    "tenant_group_membership",
+    "sync_idp_groups",
     "update_group",
     "update_role",
 ]
@@ -86,7 +89,7 @@ def new_pdp(
     principal: Principal,
     tenant_id: UUID | None,
     *,
-    group_membership: GroupMembership = tenant_group_membership,
+    group_membership: GroupMembership = platform_group_membership,
 ) -> PDP:
     return PDP(session, principal, tenant_id, group_membership=group_membership)
 
@@ -127,7 +130,7 @@ def subject_ids_covering(
     tenant_id: UUID,
     principal: Principal,
     resource: ResourceRef,
-    group_membership: GroupMembership = tenant_group_membership,
+    group_membership: GroupMembership = platform_group_membership,
 ) -> tuple[set[UUID], set[UUID]]:
     """(role ids, group ids) the principal holds that apply to `resource`: a role counts when a
     binding of it covers the resource's scope (tenant, workspace, project or the resource);
@@ -189,6 +192,8 @@ update_group = repository.update_group
 group_members = repository.group_members
 member_counts = repository.member_counts
 groups_of_users = repository.groups_of_users
+bound_groups = repository.bound_groups
+sync_idp_groups = repository.sync_idp_groups
 member_user_ids = repository.member_user_ids
 add_group_members = repository.add_group_members
 remove_group_members = repository.remove_group_members

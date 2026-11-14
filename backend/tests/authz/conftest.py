@@ -77,24 +77,29 @@ def owner_insert_bindings(seed: Engine, rows: list[Mapping[str, object]]) -> lis
 
 
 def owner_insert_group(
-    owner: Session, tenant_id: UUID, slug: str, members: list[UUID], status: str = "active"
+    owner: Session, slug: str, members: list[UUID], status: str = "active"
 ) -> UUID:
-    """A per-client group (SETH's model) with `members`, inserted as the owner; commits."""
+    """A SHI-wide (platform-level) group with `members`, inserted as the owner; commits.
+
+    Groups have no client since identity_0005 (DECISIONS B-928): a group reaches a client only
+    through role bindings stored there. Members are people of the staff directory, so each id
+    in `members` gets a `users` row if it has none (`group_members.user_id -> users`)."""
     gid = uuid7()
     owner.execute(
-        text(
-            "INSERT INTO shifde.groups (id, tenant_id, slug, name, status) "
-            "VALUES (:id, :t, :s, :s, :st)"
-        ),
-        {"id": gid, "t": tenant_id, "s": slug, "st": status},
+        text("INSERT INTO shifde.groups (id, slug, name, status) VALUES (:id, :s, :s, :st)"),
+        {"id": gid, "s": slug, "st": status},
     )
     for user_id in members:
         owner.execute(
             text(
-                "INSERT INTO shifde.group_members (tenant_id, group_id, user_id) "
-                "VALUES (:t, :g, :u)"
+                "INSERT INTO shifde.users (id, primary_email, display_name) "
+                "VALUES (:u, :e, :e) ON CONFLICT (id) DO NOTHING"
             ),
-            {"t": tenant_id, "g": gid, "u": user_id},
+            {"u": user_id, "e": f"{user_id.hex}@staff.test"},
+        )
+        owner.execute(
+            text("INSERT INTO shifde.group_members (group_id, user_id) VALUES (:g, :u)"),
+            {"g": gid, "u": user_id},
         )
     owner.commit()
     return gid

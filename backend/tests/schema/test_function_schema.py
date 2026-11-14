@@ -55,6 +55,10 @@ _OIDC_DEFINER = (
     "identity_0004 (B-922..B-924): owned by shifde_owner, search_path pg_catalog, pg_temp, every "
     "object schema-qualified, EXECUTE for shifde_app only, writes no app.* setting"
 )
+_GROUP_DEFINER = (
+    "identity_0005 (B-928..B-932): owned by shifde_owner, search_path pg_catalog, pg_temp, every "
+    "object schema-qualified, EXECUTE for shifde_app only, writes no app.* setting"
+)
 SECURITY_DEFINER_ALLOWLIST: dict[str, str] = {
     "shifde.shifde_resolve_local_login(text)": (
         f"{_IDENTITY_DEFINER}. Pre-tenant login lookup: users and local_credentials are not "
@@ -122,6 +126,22 @@ SECURITY_DEFINER_ALLOWLIST: dict[str, str] = {
         f"{_OIDC_DEFINER}. Writes the hashed single-use flow state of an active IdP with the "
         "IdP's own client (oidc_auth_requests is closed to the app), so no client context is set "
         "from the unauthenticated request (review 3 item 5); bounded expiry, 32-byte hashes."
+    ),
+    "shifde.shifde_bound_groups": (
+        f"{_GROUP_DEFINER}. No arguments: id and name only of the platform groups holding a role "
+        "binding in current_tenant_id() (groups are platform-level and a client context reads "
+        "no group row); no members, slug, description or IdP mapping; empty without a client."
+    ),
+    "shifde.shifde_active_group_ids(uuid)": (
+        f"{_GROUP_DEFINER}. The authz.GroupMembership the PDP uses: the person's active platform "
+        "groups that hold a role binding in current_tenant_id() only (empty without a client), "
+        "so a client learns no more than which of the groups it bound a person is in."
+    ),
+    "shifde.shifde_sync_idp_groups(uuid, uuid, text[])": (
+        f"{_GROUP_DEFINER}. IdP group sync after a validated sign-in: only for an active "
+        "installation IdP with sync on and a person with an identity at that IdP, at most 200 "
+        "names; touches only that person's idp_sync memberships of groups the platform "
+        "administrator mapped to that IdP; never creates a group."
     ),
     "shifde.shifde_consume_oidc_request(bytea, uuid)": (
         f"{_OIDC_DEFINER}. Marks a live flow request used (single use, expiry checked in SQL) "
@@ -324,8 +344,8 @@ def test_allowlist_has_no_stale_entries(owner_engine: Engine) -> None:
 
 
 def test_identity_definers_are_on_the_allowlist_by_signature(owner_engine: Engine) -> None:
-    """identity_0002/0003/0004 (B-909, B-915, B-922): each identity definer is listed under its full
-    signature."""
+    """identity_0002..0005 (B-909, B-915, B-922, B-928): each identity definer is listed under its
+    full signature."""
     with owner_engine.connect() as c:
         rows = [
             row
@@ -347,6 +367,9 @@ def test_identity_definers_are_on_the_allowlist_by_signature(owner_engine: Engin
         "shifde.shifde_jit_create_user(uuid, uuid, text, text, text, text)",
         "shifde.shifde_begin_oidc_request(uuid, uuid, bytea, bytea, bytea, text, integer)",
         "shifde.shifde_consume_oidc_request(bytea, uuid)",
+        "shifde.shifde_bound_groups",
+        "shifde.shifde_active_group_ids(uuid)",
+        "shifde.shifde_sync_idp_groups(uuid, uuid, text[])",
     }
     assert all(row.owner == "shifde_owner" for row in rows)
     assert all(_search_path(row.proconfig) == "pg_catalog, pg_temp" for row in rows)

@@ -78,18 +78,6 @@
     Foreign key to shifde.tenants, a table of the later tenancy port; added by tenancy's migration (plan per-module recipe step 3, DECISIONS B-402, carry_forward.md), which removes this entry.
   migration: authz_0001
 
-- table: groups
-  path: [constraints, groups_tenant_id_fkey]
-  reason: >-
-    Foreign key to shifde.tenants, a table of the later tenancy port; added by tenancy's migration (plan per-module recipe step 3, DECISIONS B-402, carry_forward.md), which removes this entry.
-  migration: authz_0001
-
-- table: group_members
-  path: [constraints, fk_group_members__membership]
-  reason: >-
-    Foreign key to shifde.memberships (identity). Not added by identity_0001: identity part 3 makes groups platform-level (design 5.3), so whether group members stay keyed to a client's memberships is decided there (DECISIONS B-402, B-905, carry_forward.md); part 3 adds or removes the key and this entry.
-  migration: authz_0001
-
 - table: policy_decisions
   path: [constraints, policy_decisions_tenant_id_fkey]
   reason: >-
@@ -268,3 +256,141 @@
   reason: >-
     Identity review 1 item 7: the composite key ties a client's IdP to that client's secrets, but an installation IdP (tenant_id NULL) is checked only by the plain key and could name a client's secret. The trigger refuses an installation IdP whose client secret is not an installation secret. DECISIONS B-924.
   migration: identity_0004
+
+- table: groups
+  path: [columns, tenant_id]
+  reason: >-
+    Groups are platform-level since identity_0005 (design 5.3, DECISIONS B-928): a SHI-wide group exists once and reaches a client only through role bindings stored in that client; SETH keyed every group to one client. Also replaces the deferred groups_tenant_id_fkey (no column, no key).
+  migration: identity_0005
+
+- table: groups
+  path: [constraints, uq_groups__tenant_id_id]
+  reason: >-
+    Groups are platform-level since identity_0005 (design 5.3, DECISIONS B-928): a SHI-wide group exists once and reaches a client only through role bindings stored in that client; the composite (tenant_id, id) key existed only for SETH's client-keyed group_members foreign key.
+  migration: identity_0005
+
+- table: groups
+  path: [indexes, uq_groups__tenant_id_id]
+  reason: >-
+    Groups are platform-level since identity_0005 (design 5.3, DECISIONS B-928): a SHI-wide group exists once and reaches a client only through role bindings stored in that client; index of the dropped composite key.
+  migration: identity_0005
+
+- table: groups
+  path: [constraints, uq_groups__tenant_id_slug]
+  reason: >-
+    Groups are platform-level since identity_0005 (design 5.3, DECISIONS B-928): a SHI-wide group exists once and reaches a client only through role bindings stored in that client; replaced by the platform-wide uq_groups__slug.
+  migration: identity_0005
+
+- table: groups
+  path: [indexes, uq_groups__tenant_id_slug]
+  reason: >-
+    Groups are platform-level since identity_0005 (design 5.3, DECISIONS B-928): a SHI-wide group exists once and reaches a client only through role bindings stored in that client; index of the replaced key.
+  migration: identity_0005
+
+- table: groups
+  path: [constraints, uq_groups__slug]
+  reason: >-
+    Groups are platform-level since identity_0005 (design 5.3, DECISIONS B-928): a SHI-wide group exists once and reaches a client only through role bindings stored in that client; a slug names one SHI-wide group.
+  migration: identity_0005
+
+- table: groups
+  path: [indexes, uq_groups__slug]
+  reason: >-
+    Groups are platform-level since identity_0005 (design 5.3, DECISIONS B-928): a SHI-wide group exists once and reaches a client only through role bindings stored in that client; index of uq_groups__slug.
+  migration: identity_0005
+
+- table: groups
+  path: [indexes, uq_groups__idp_external]
+  reason: >-
+    Groups are platform-level since identity_0005 (design 5.3, DECISIONS B-928): a SHI-wide group exists once and reaches a client only through role bindings stored in that client; an IdP-mapped group is unique per (IdP, external name) platform-wide.
+  migration: identity_0005
+
+- table: groups
+  path: [policies, tenant_isolation]
+  reason: >-
+    Groups are platform-level since identity_0005 (design 5.3, DECISIONS B-928): a SHI-wide group exists once and reaches a client only through role bindings stored in that client; no tenant_id to key on. Replaced by platform_admin_all and member_read (B-928).
+  migration: identity_0005
+
+- table: groups
+  path: [policies, platform_admin_all]
+  reason: >-
+    Only the platform administrator creates, renames, disables or maps platform groups (design 5.3, B-928); a client context writes and reads no group row (reviewed REVIEWED_EXPRESSIONS entry).
+  migration: identity_0005
+
+- table: groups
+  path: [policies, member_read]
+  reason: >-
+    A staff member reads the groups they belong to, only with no client context, so code running inside a client never learns the names of groups bound elsewhere (B-928; reviewed REVIEWED_EXPRESSIONS entry). A client sees id and name of its bound groups only, through shifde_bound_groups().
+  migration: identity_0005
+
+- table: groups
+  path: [triggers, trg_groups_idp_scope]
+  reason: >-
+    A group's idp_config_id names an installation IdP only (identity part 1 carry_forward: constraints ignore RLS, so a group could name a client's IdP and let that client's IdP sync SHI staff groups; B-931).
+  migration: identity_0005
+
+- table: group_members
+  path: [columns, tenant_id]
+  reason: >-
+    Groups are platform-level since identity_0005 (design 5.3, DECISIONS B-928): a SHI-wide group exists once and reaches a client only through role bindings stored in that client; membership of a staff member in a SHI-wide group is not client data.
+  migration: identity_0005
+
+- table: group_members
+  path: [constraints, fk_group_members__group, definition]
+  reason: >-
+    Groups are platform-level since identity_0005 (design 5.3, DECISIONS B-928): a SHI-wide group exists once and reaches a client only through role bindings stored in that client; the key is group_id -> groups (id).
+  migration: identity_0005
+
+- table: group_members
+  path: [constraints, fk_group_members__user]
+  reason: >-
+    Members are people of the platform staff directory (users); replaces the deferred client-keyed (tenant_id, user_id) -> memberships key (B-905), which is dropped for good: a staff member need not be a member of any client to be in a group (B-928).
+  migration: identity_0005
+
+- table: group_members
+  path: [indexes, ix_group_members__user]
+  reason: >-
+    Groups are platform-level since identity_0005 (design 5.3, DECISIONS B-928): a SHI-wide group exists once and reaches a client only through role bindings stored in that client; index by person only.
+  migration: identity_0005
+
+- table: group_members
+  path: [policies, tenant_isolation]
+  reason: >-
+    Groups are platform-level since identity_0005 (design 5.3, DECISIONS B-928): a SHI-wide group exists once and reaches a client only through role bindings stored in that client; replaced by platform_admin_all and own_row (B-928).
+  migration: identity_0005
+
+- table: group_members
+  path: [policies, platform_admin_all]
+  reason: >-
+    Only the platform administrator adds or removes members (design 5.3, B-928); IdP sync writes through shifde_sync_idp_groups (B-932). Reviewed REVIEWED_EXPRESSIONS entry.
+  migration: identity_0005
+
+- table: group_members
+  path: [policies, own_row]
+  reason: >-
+    A staff member reads their own membership rows with no client context only (PRINCIPAL_TABLES entry, B-928); the PDP reads memberships through shifde_active_group_ids(uuid), limited to groups bound in the current client (B-929).
+  migration: identity_0005
+
+- table: idp_configs
+  path: [constraints, ck_idp_configs__group_sync_installation_only]
+  reason: >-
+    Groups are platform-level and hold SHI staff: a client's IdP never syncs groups, otherwise a client's IdP administrator could put people into SHI groups bound in other clients (B-931).
+  migration: identity_0005
+
+- table: idp_configs
+  path: [triggers, trg_idp_configs_group_scope]
+  reason: >-
+    An IdP mapped to platform groups cannot be moved into a client (keeps trg_groups_idp_scope true after the fact, B-931).
+  migration: identity_0005
+
+- table: groups
+  path: [constraints, groups_tenant_id_fkey]
+  reason: >-
+    Groups are platform-level since identity_0005 (design 5.3, DECISIONS B-928): no tenant_id column, so SETH's key to shifde.tenants does not exist and tenancy does not add it.
+  migration: identity_0005
+
+- table: group_members
+  path: [constraints, fk_group_members__membership]
+  reason: >-
+    Dropped for good (B-905 decided by identity part 3b, B-928): a staff member is in a SHI-wide group without being a member of any client; the person is tied to the staff directory by fk_group_members__user instead.
+  migration: identity_0005

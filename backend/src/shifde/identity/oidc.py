@@ -19,9 +19,10 @@ anything earlier proves no client and is one installation-level row (B-922, as B
 
 Changes from SETH 3ba0e06 (identity part 3a): identities are created only by the definers
 (`shifde_resolve_identity` link, `shifde_jit_create_user`; review 1 item 2, B-923); IdP group
-sync waits for platform-level groups (identity part 3b): an IdP with `group_sync_mode = 'sync'`
-signs nobody in until then (B-925); a cached discovery document is rechecked against the
-expected issuer.
+sync is only from installation IdPs into platform-level groups the platform administrator mapped
+to that IdP (identity part 3b, `shifde_sync_idp_groups`, B-932; a client's IdP never syncs:
+check constraint, and refused here as B-925); a cached discovery document is rechecked against
+the expected issuer; an unknown or disabled IdP at the callback is audited (review 4 item 6).
 """
 
 from __future__ import annotations
@@ -42,9 +43,11 @@ import structlog
 from joserfc import jwt
 from joserfc.errors import JoseError
 from joserfc.jwk import KeySet
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from shifde.audit import service as audit
+from shifde.authz import service as authz
 from shifde.core import db
 from shifde.core.context import RequestContext
 from shifde.core.ids import uuid7
@@ -61,6 +64,7 @@ ALLOWED_ALGS = ["RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "
 SKEW_SECONDS = 60
 DISCOVERY_TTL = 300.0
 FAILURE_PATH = "/login?error=oidc_failed"
+MAX_IDP_GROUPS = 200  # SETH 3ba0e06: group names kept per sign-in (the definer refuses more)
 _SAFE_NEXT = re.compile(r"^/(?!/)[A-Za-z0-9\-._~!$&'()*+,;=:@%/?#]*$")
 
 
@@ -319,6 +323,8 @@ def complete_login(
     """Validate the callback and open a session. Raises OidcFailure on any problem."""
     idp = repository.resolve_idp(session, idp_id)
     if idp is None:
+        # review 4 item 6: audited like every other failure; nothing proves a client
+        record_failure(session, ctx, None, None, "idp_not_found")
         raise OidcFailure("idp_not_found")
     try:
         return _complete(session, settings, client, ctx, idp, code, state, binding, previous_token)
@@ -427,6 +433,8 @@ def _sign_in(
     user_id = _map_identity(session, idp, claims, email if verified else None, email, verified)
     if idp.tenant_id is not None:
         _require_tenant_member(session, idp.tenant_id, user_id)
+    elif idp.group_sync_mode == "sync":
+        _sync_groups(session, idp, user_id, _claim_groups(claims, idp))
     db.set_tenant(session, None)
     login = identity.establish_session(
         session,
@@ -441,11 +449,29 @@ def _sign_in(
 
 
 def _require_supported(idp: ResolvedIdp) -> None:
-    """IdP group sync arrives with platform-level groups (identity part 3b): until then an IdP
-    that syncs groups signs nobody in, so a shrunk group claim can never leave stale grants
-    (B-925)."""
-    if idp.group_sync_mode != "off":
+    """Groups are platform-level and hold SHI staff (design 5.3): only an installation IdP syncs
+    them. A client's IdP with sync on (refused by `ck_idp_configs__group_sync_installation_only`
+    since identity_0005) signs nobody in (B-925, kept for client IdPs by B-932)."""
+    if idp.tenant_id is not None and idp.group_sync_mode != "off":
         raise OidcFailure("group_sync_unavailable")
+
+
+def _claim_groups(claims: dict[str, Any], idp: ResolvedIdp) -> list[str]:
+    raw = claims.get(idp.claim_mappings.get("groups", "groups"))
+    items = [raw] if isinstance(raw, str) else raw if isinstance(raw, list) else []
+    names = [g.strip() for g in items if isinstance(g, str) and g.strip() and len(g) <= 200]
+    return list(dict.fromkeys(names))[:MAX_IDP_GROUPS]
+
+
+def _sync_groups(session: Session, idp: ResolvedIdp, user_id: UUID, names: list[str]) -> None:
+    """Make the person's `idp_sync` memberships of the platform groups mapped to this
+    installation IdP equal the claim (SETH synced per client and created groups; B-932). No
+    client context: the definer checks the IdP and the person's identity there."""
+    db.set_tenant(session, None)
+    try:
+        authz.sync_idp_groups(session, idp.id, user_id, names)
+    except DBAPIError as exc:
+        raise OidcFailure("group_sync_refused") from exc
 
 
 def _require_tenant_member(session: Session, tenant_id: UUID, user_id: UUID) -> None:

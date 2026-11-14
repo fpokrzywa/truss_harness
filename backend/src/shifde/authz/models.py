@@ -65,8 +65,7 @@ class RoleBinding(Base):
 class Group(Base):
     __tablename__ = "groups"
 
-    id: Mapped[UUID] = mapped_column(primary_key=True)
-    tenant_id: Mapped[UUID]
+    id: Mapped[UUID] = mapped_column(primary_key=True)  # platform-level (identity_0005, B-928)
     slug: Mapped[str] = mapped_column(Text)
     name: Mapped[str] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text)
@@ -83,7 +82,6 @@ class Group(Base):
 class GroupMember(Base):
     __tablename__ = "group_members"
 
-    tenant_id: Mapped[UUID]
     group_id: Mapped[UUID] = mapped_column(primary_key=True)
     user_id: Mapped[UUID] = mapped_column(primary_key=True)
     source: Mapped[str] = mapped_column(Text, default="manual")

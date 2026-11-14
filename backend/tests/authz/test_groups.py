@@ -65,7 +65,7 @@ def test_a_group_binding_grants_its_members_only_at_the_bound_scope(
 ) -> None:
     a, _ = orgs
     member, outsider = uuid7(), uuid7()
-    group = owner_insert_group(owner_session, a.tenant, "fdes", [member])
+    group = owner_insert_group(owner_session, "fdes", [member])
     [bid] = owner_insert_bindings(
         seed_engine,
         [
@@ -100,7 +100,7 @@ def test_membership_without_a_binding_grants_nothing(
 ) -> None:
     a, _ = orgs
     member = uuid7()
-    owner_insert_group(owner_session, a.tenant, "unbound", [member])
+    owner_insert_group(owner_session, "unbound", [member])
     pdp = _pdp(app_session, member, a.tenant)
     d = pdp.authorize("workspace:read", ResourceRef(a.tenant, a.ws))
     assert not d.allowed and d.reason == "no_binding"
@@ -116,8 +116,8 @@ def test_disabled_group_and_expired_group_binding_grant_nothing(
 ) -> None:
     a, _ = orgs
     member = uuid7()
-    disabled = owner_insert_group(owner_session, a.tenant, "off", [member], status="disabled")
-    expired = owner_insert_group(owner_session, a.tenant, "old", [member])
+    disabled = owner_insert_group(owner_session, "off", [member], status="disabled")
+    expired = owner_insert_group(owner_session, "old", [member])
     owner_insert_bindings(
         seed_engine,
         [
