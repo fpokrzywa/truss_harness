@@ -34,7 +34,7 @@ from shifde.core.errors import Forbidden, NotFound
 from shifde.core.hooks import run_close_hooks
 from shifde.core.ids import uuid7
 from tests._support.tenants import add_project, add_tenants, add_workspace
-from tests.authz.conftest import owner_insert_bindings, owner_insert_group
+from tests.authz.conftest import owner_insert_group, seed_bindings
 
 WHO = text("SELECT current_user")
 ALL_ACTIONS = ("tenant:admin", "workspace:read", "project:manage", "agent:create", "role:manage")
@@ -80,7 +80,7 @@ def _org(owner: Session, seed: Engine, slug: str) -> Org:
     )
     owner.commit()
     group = owner_insert_group(owner, f"{slug}-fdes", [member])
-    bindings = owner_insert_bindings(
+    bindings = seed_bindings(
         seed,
         [
             {

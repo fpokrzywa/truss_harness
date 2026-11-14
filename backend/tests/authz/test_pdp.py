@@ -3,7 +3,8 @@
 Moved from SETH 3ba0e06 `tests/test_pdp_and_cli.py` (the PDP part; the CLI tests move with `cli`).
 The seven tests and their assertions are SETH's. The `pdp_env` fixture differs: SETH took the
 tenants, workspace, project and user from the seeded `world` (identity/tenancy/cli); here they are
-fresh ids, and `_bind` inserts through `owner_insert_bindings` (see conftest.py).
+fresh ids, and `_bind` inserts through `seed_bindings`, which creates the person (with a
+membership) and the scopes the binding names (see conftest.py).
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from shifde.core.context import Principal
 from shifde.core.db import Database
 from shifde.core.errors import Forbidden, NotFound
 from shifde.core.ids import uuid7
-from tests.authz.conftest import owner_insert_bindings
+from tests.authz.conftest import seed_bindings
 
 
 @pytest.fixture
@@ -50,7 +51,7 @@ def _bind(
     scope_id: UUID,
     expires: object = None,
 ) -> None:
-    owner_insert_bindings(
+    seed_bindings(
         owner,
         [
             {
