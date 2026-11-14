@@ -11,46 +11,6 @@
 # An entry whose path does not actually differ from SETH fails the test (remove it).
 
 
-- table: usage_events
-  path: [constraints, usage_events_tenant_id_fkey]
-  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
-  migration: ledger_0001
-
-- table: usage_rollups_daily
-  path: [constraints, usage_rollups_daily_tenant_id_fkey]
-  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
-  migration: ledger_0001
-
-- table: rate_cards
-  path: [constraints, rate_cards_tenant_id_fkey]
-  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
-  migration: ledger_0001
-
-- table: rate_card_versions
-  path: [constraints, rate_card_versions_tenant_id_fkey]
-  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
-  migration: ledger_0001
-
-- table: budgets
-  path: [constraints, budgets_tenant_id_fkey]
-  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
-  migration: ledger_0001
-
-- table: budget_reservations
-  path: [constraints, budget_reservations_tenant_id_fkey]
-  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
-  migration: ledger_0001
-
-- table: budget_alerts
-  path: [constraints, budget_alerts_tenant_id_fkey]
-  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
-  migration: ledger_0001
-
-- table: quotas
-  path: [constraints, quotas_tenant_id_fkey]
-  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
-  migration: ledger_0001
-
 - table: budget_reservations
   path: [constraints, fk_budget_reservations__run]
   reason: "foreign key to shifde.runs, a table of the runtime module that is not ported yet; the runtime migration adds it (docs/build/carry_forward.md)"
@@ -60,30 +20,6 @@
   path: [constraints, usage_events_cost_kind_check]
   reason: "cost_kind admits 'estimated': a cost priced from token counts the platform estimated because the provider reported none (findings Item 11, DECISIONS B-602); SETH stored such usage as 0 tokens labelled calculated"
   migration: ledger_0001
-- table: roles
-  path: [constraints, roles_tenant_id_fkey]
-  reason: >-
-    Foreign key to shifde.tenants, a table of the later tenancy port; added by tenancy's migration (plan per-module recipe step 3, DECISIONS B-402, carry_forward.md), which removes this entry.
-  migration: authz_0001
-
-- table: role_permissions
-  path: [constraints, role_permissions_tenant_id_fkey]
-  reason: >-
-    Foreign key to shifde.tenants, a table of the later tenancy port; added by tenancy's migration (plan per-module recipe step 3, DECISIONS B-402, carry_forward.md), which removes this entry.
-  migration: authz_0001
-
-- table: role_bindings
-  path: [constraints, role_bindings_tenant_id_fkey]
-  reason: >-
-    Foreign key to shifde.tenants, a table of the later tenancy port; added by tenancy's migration (plan per-module recipe step 3, DECISIONS B-402, carry_forward.md), which removes this entry.
-  migration: authz_0001
-
-- table: policy_decisions
-  path: [constraints, policy_decisions_tenant_id_fkey]
-  reason: >-
-    Foreign key to shifde.tenants, a table of the later tenancy port; added by tenancy's migration (plan per-module recipe step 3, DECISIONS B-402, carry_forward.md), which removes this entry.
-  migration: authz_0001
-
 - table: budgets
   path: [constraints, uq_budgets__tenant_id]
   reason: "constraints bypass row-level security: a budget_alerts row naming another client's budget id was accepted (or collided with that client's slot, silencing its alert under ON CONFLICT DO NOTHING). Isolation review 1, item 2, B-607. Target of the composite foreign key from budget_alerts."
@@ -125,16 +61,6 @@
   migration: authz_0002
 
 - table: secrets
-  path: [constraints, secrets_tenant_id_fkey]
-  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
-  migration: secrets_0001
-
-- table: secret_access_log
-  path: [constraints, secret_access_log_tenant_id_fkey]
-  reason: "foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)"
-  migration: secrets_0001
-
-- table: secrets
   path: [constraints, uq_secrets__tenant_id_id]
   reason: "constraints bypass row-level security: SETH's plain secret_access_log_secret_id_fkey accepted a client's access-log row naming another client's secret id (B-116 item 9, B-801). Target of the composite foreign key from secret_access_log."
   migration: secrets_0001
@@ -148,42 +74,6 @@
   path: [constraints, fk_secret_access_log__secret]
   reason: "constraints bypass row-level security: an access-log row must name a secret of its own tenant, (tenant_id, secret_id) -> secrets (tenant_id, id) (B-116 item 9, B-801). SETH's plain secret_access_log_secret_id_fkey is kept for installation-level rows (tenant_id NULL), which the composite key does not check."
   migration: secrets_0001
-
-- table: memberships
-  path: [constraints, memberships_tenant_id_fkey]
-  reason: >-
-    foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)
-  migration: identity_0001
-
-- table: sessions
-  path: [constraints, sessions_active_tenant_id_fkey]
-  reason: >-
-    foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md); the pin itself must be checked against the user's current bindings on every request (B-116 review 5 item 3)
-  migration: identity_0001
-
-- table: setup_tokens
-  path: [constraints, setup_tokens_tenant_id_fkey]
-  reason: >-
-    foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)
-  migration: identity_0001
-
-- table: service_accounts
-  path: [constraints, service_accounts_tenant_id_fkey]
-  reason: >-
-    foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)
-  migration: identity_0001
-
-- table: api_keys
-  path: [constraints, api_keys_tenant_id_fkey]
-  reason: >-
-    foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)
-  migration: identity_0001
-
-- table: idp_configs
-  path: [constraints, idp_configs_tenant_id_fkey]
-  reason: >-
-    foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)
-  migration: identity_0001
 
 - table: users
   path: [policies, users_insert, with_check]
@@ -232,12 +122,6 @@
   reason: >-
     Identity review 1 item 1 (MUST): SETH let any client context insert a membership for any person (tenant_isolation only), after which users_select showed that client the person's e-mail and the invitation definer trusted the row. The RESTRICTIVE INSERT policy admits a membership only under the platform-administrator context. DECISIONS B-910.
   migration: identity_0002
-
-- table: oidc_auth_requests
-  path: [constraints, oidc_auth_requests_tenant_id_fkey]
-  reason: >-
-    foreign key to shifde.tenants, a table of the tenancy module that is not ported yet; the tenancy migration adds it (docs/build/carry_forward.md)
-  migration: identity_0004
 
 - table: oidc_auth_requests
   path: [policies, definer_only]
@@ -394,3 +278,63 @@
   reason: >-
     Dropped for good (B-905 decided by identity part 3b, B-928): a staff member is in a SHI-wide group without being a member of any client; the person is tied to the staff directory by fk_group_members__user instead.
   migration: identity_0005
+
+- table: roles
+  path: [constraints, uq_roles__tenant_id_id]
+  reason: "constraints are checked as the owner without row-level security (B-116 items 7, 9): target of the composite fk_role_permissions__role. DECISIONS B-1003."
+  migration: tenancy_0001
+
+- table: roles
+  path: [indexes, uq_roles__tenant_id_id]
+  reason: "Index of uq_roles__tenant_id_id (B-116 items 7, 9). DECISIONS B-1003."
+  migration: tenancy_0001
+
+- table: role_permissions
+  path: [constraints, fk_role_permissions__role]
+  reason: "B-116 items 7, 9: a client's role grant names a role of its own client, checked by the composite key even where the invoker-rights trigger does not run (owner, replica mode); SETH's plain role_permissions_role_id_fkey stays for system-template rows (tenant NULL). DECISIONS B-1003."
+  migration: tenancy_0001
+
+- table: rate_cards
+  path: [constraints, uq_rate_cards__tenant_id_id]
+  reason: "B-116 items 7, 9: target of the composite fk_rate_card_versions__rate_card. DECISIONS B-1003."
+  migration: tenancy_0001
+
+- table: rate_cards
+  path: [indexes, uq_rate_cards__tenant_id_id]
+  reason: "Index of uq_rate_cards__tenant_id_id (B-116 items 7, 9). DECISIONS B-1003."
+  migration: tenancy_0001
+
+- table: rate_card_versions
+  path: [constraints, fk_rate_card_versions__rate_card]
+  reason: "B-116 items 7, 9: a client's rate card version belongs to a rate card of the same client; SETH's plain rate_card_versions_rate_card_id_fkey stays for installation rate cards (tenant NULL). DECISIONS B-1003."
+  migration: tenancy_0001
+
+- table: idp_configs
+  path: [constraints, uq_idp_configs__tenant_id_id]
+  reason: "B-116 items 7, 9: target of the composite fk_oidc_auth_requests__idp. DECISIONS B-1003."
+  migration: tenancy_0001
+
+- table: idp_configs
+  path: [indexes, uq_idp_configs__tenant_id_id]
+  reason: "Index of uq_idp_configs__tenant_id_id (B-116 items 7, 9). DECISIONS B-1003."
+  migration: tenancy_0001
+
+- table: oidc_auth_requests
+  path: [constraints, fk_oidc_auth_requests__idp]
+  reason: "B-116 items 7, 9: a client's sign-in flow state names an IdP of the same client; SETH's plain oidc_auth_requests_idp_config_id_fkey stays for installation IdPs (tenant NULL). DECISIONS B-1003."
+  migration: tenancy_0001
+
+- table: oidc_auth_requests
+  path: [privileges, table]
+  reason: "Grant sweep (B-116, identity review 4 item 4): the RESTRICTIVE definer_only policy refuses every direct write, so shifde_app's INSERT grant is useless and is revoked; flow state is written only by shifde_begin_oidc_request. DECISIONS B-1004."
+  migration: tenancy_0001
+
+- table: user_identities
+  path: [privileges, table]
+  reason: "Grant sweep (B-116, identity review 4 item 4): the RESTRICTIVE insert_by_definer_only policy refuses every direct insert, so shifde_app's INSERT grant is useless and is revoked; identities are created only by shifde_resolve_identity and shifde_jit_create_user. DECISIONS B-1004."
+  migration: tenancy_0001
+
+- table: secrets
+  path: [triggers, trg_secrets_scope]
+  reason: "carry_forward secrets (B-802): SETH checked a workspace or project scope_id against the secret's client only in admin code; the invoker-rights trigger check_secret_scope() refuses a scope of another client (or of none) for every writer. DECISIONS B-1005."
+  migration: tenancy_0001

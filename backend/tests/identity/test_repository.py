@@ -260,7 +260,7 @@ def test_identity_rows_for_oneself(world: World, app_db: Database, owner_session
         "idp_config_id": world.installation_idp,
     }
     with app_session(app_db, None, me) as s:
-        with pytest.raises(DBAPIError, match="row-level security|row level security"):
+        with pytest.raises(DBAPIError, match="permission denied for table user_identities"):
             repository.insert_identity(s, row)
         s.rollback()
     owner_session.execute(

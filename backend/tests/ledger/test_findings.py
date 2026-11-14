@@ -21,6 +21,7 @@ from shifde.core.db import Database, set_tenant
 from shifde.core.ids import uuid7
 from shifde.ledger import estimate
 from shifde.ledger.enforcement import BudgetDenied, BudgetScope, ReserveDetail, evaluate
+from tests._support.tenants import add_tenants
 from tests.ledger.util import add_budget, add_model, add_rate, add_tenant, create_stand_ins
 
 
@@ -215,6 +216,7 @@ def test_a_succeeded_model_call_cannot_be_recorded_without_token_counts(
 ) -> None:
     """Before: a missing or None count was silently stored as 0."""
     s, t = owner_session, uuid7()
+    add_tenants(s, t)
     for bad in ({"output_tokens": 5}, {"input_tokens": None, "output_tokens": 5}):
         with pytest.raises(ledger.UsageNotReported):
             ledger.record(s, _call(t, f"k{len(bad)}", **bad))
@@ -241,8 +243,13 @@ def test_a_provider_reported_cost_survives_unreported_tokens(
 
 
 # ------------------------------------------------------------- Item 11: survives a crash
-def test_a_usage_row_survives_a_crash_after_the_provider_answered(app_url: str) -> None:
+def test_a_usage_row_survives_a_crash_after_the_provider_answered(
+    app_url: str, owner_db: Database
+) -> None:
     t = uuid7()
+    with owner_db.session() as owner:
+        add_tenants(owner, t)
+        owner.commit()
     key = f"step-{uuid7()}"
     db = Database(app_url, pool_size=3, max_overflow=0)  # the run's connection and the ledger's
     try:
@@ -277,9 +284,12 @@ def test_a_usage_row_survives_a_crash_after_the_provider_answered(app_url: str) 
 
 
 def test_the_durable_write_is_tenant_scoped_and_refuses_another_tenants_values(
-    app_db: Database,
+    app_db: Database, owner_db: Database
 ) -> None:
     a, b = uuid7(), uuid7()
+    with owner_db.session() as owner:
+        add_tenants(owner, a, b)
+        owner.commit()
     with pytest.raises(DBAPIError):
         ledger.record_model_call_durably(
             app_db,

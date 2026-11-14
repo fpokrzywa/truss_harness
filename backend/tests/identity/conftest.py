@@ -25,6 +25,7 @@ from shifde.core.clock import utcnow
 from shifde.core.db import Database, set_principal, set_tenant
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
+from tests._support.tenants import add_tenants
 from tests.conftest import CLEAN_TABLES
 from tests.identity import harness
 
@@ -177,6 +178,7 @@ def owner_login_session(owner: Session, user: UUID, session_hash: bytes) -> UUID
 
 def _client(owner: Session, name: str) -> Client:
     tenant = uuid7()
+    add_tenants(owner, tenant)
     member = owner_user(owner, f"member@{name}.test")
     membership = owner_membership(owner, tenant, member)
     sa = uuid7()

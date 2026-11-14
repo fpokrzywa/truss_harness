@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
+from tests._support.tenants import add_tenant
 from tests.identity.conftest import owner_membership
 from tests.identity.harness import COOKIE, ORIGIN, PASSWORD, client_for, login, person
 
@@ -31,7 +32,7 @@ WHOAMI = "/api/v1/probe/whoami"
 @pytest.fixture
 def admin_a(owner_session: Session) -> UUID:
     uid = person(owner_session, ADMIN_A)
-    owner_membership(owner_session, uuid7(), uid)
+    owner_membership(owner_session, add_tenant(owner_session), uid)
     owner_session.commit()
     return uid
 

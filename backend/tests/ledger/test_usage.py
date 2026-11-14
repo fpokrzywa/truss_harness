@@ -16,6 +16,7 @@ from shifde import ledger
 from shifde.core.clock import utcnow
 from shifde.core.ids import uuid7
 from shifde.ledger import pricing
+from tests._support.tenants import add_tenants
 from tests.ledger.util import add_model, add_rate, add_tenant, create_stand_ins
 
 
@@ -36,6 +37,7 @@ def _today() -> date:
 
 def test_a_replayed_event_inserts_nothing_and_changes_no_rollup(owner_session: Session) -> None:
     s, t = owner_session, uuid7()
+    add_tenants(s, t)
     first = ledger.record(s, _event(t, "step-1"))
     again = ledger.record(s, _event(t, "step-1"))
     assert first.inserted and not again.inserted
@@ -48,6 +50,7 @@ def test_a_replayed_event_inserts_nothing_and_changes_no_rollup(owner_session: S
 
 def test_the_same_key_in_another_tenant_is_a_separate_event(owner_session: Session) -> None:
     s, a, b = owner_session, uuid7(), uuid7()
+    add_tenants(s, a, b)
     assert ledger.record(s, _event(a, "k")).inserted
     assert ledger.record(s, _event(a, "k2")).inserted
     assert ledger.record(s, _event(b, "k")).inserted
@@ -64,6 +67,7 @@ def test_a_correction_is_a_compensating_row_that_nets_out_and_is_idempotent(
     owner_session: Session,
 ) -> None:
     s, t = owner_session, uuid7()
+    add_tenants(s, t)
     ev = ledger.record(s, _event(t, "step-1"))
     fix = ledger.correct(s, t, ev.event_id, reason="duplicate charge")
     assert fix is not None and fix.inserted
@@ -80,6 +84,7 @@ def test_a_correction_is_a_compensating_row_that_nets_out_and_is_idempotent(
 
 def test_a_tampered_rollup_is_detected_in_both_modes_and_rebuilt(owner_session: Session) -> None:
     s, t = owner_session, uuid7()
+    add_tenants(s, t)
     ledger.record(s, _event(t, "k1"))
     ledger.record(s, _event(t, "k2"))
     s.execute(text("UPDATE shifde.usage_rollups_daily SET input_tokens = input_tokens + 7"))
@@ -94,6 +99,7 @@ def test_a_tampered_rollup_is_detected_in_both_modes_and_rebuilt(owner_session: 
 
 def test_reconciliation_counts_only_the_tenants_own_events(owner_session: Session) -> None:
     s, a, b = owner_session, uuid7(), uuid7()
+    add_tenants(s, a, b)
     ledger.record(s, _event(a, "k"))
     ledger.record(s, _event(b, "k", input_tokens=5000))
     rec = ledger.reconcile(s, a, _today(), _today())
@@ -103,6 +109,7 @@ def test_reconciliation_counts_only_the_tenants_own_events(owner_session: Sessio
 
 def test_events_are_append_only(owner_session: Session) -> None:
     s, t = owner_session, uuid7()
+    add_tenants(s, t)
     ledger.record(s, _event(t, "k"))
     for sql in (
         "UPDATE shifde.usage_events SET input_tokens = 0",
@@ -172,6 +179,7 @@ def test_a_provider_reported_cost_wins_over_the_calculated_one(owner_session: Se
 
 def test_a_cost_kind_and_an_amount_must_agree(owner_session: Session) -> None:
     s, t = owner_session, uuid7()
+    add_tenants(s, t)
     bad = pricing.Costed("calculated", None, None)
     with pytest.raises(DBAPIError), s.begin_nested():
         ledger.record(s, _event(t, "k", costed=bad))

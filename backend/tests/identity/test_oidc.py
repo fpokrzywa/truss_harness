@@ -39,6 +39,7 @@ from tests._support.fake_oidc import (
     FakeOidcProvider,
     resolver,
 )
+from tests._support.tenants import add_tenants
 from tests.identity import harness
 from tests.identity.conftest import owner_membership
 
@@ -59,6 +60,7 @@ def world(owner_session: Session) -> World:
     """SETH's seed shape without tenancy: four people with a local password (the platform
     administrator, two in demo-a, one in demo-b) and no identities."""
     tenants = {"demo-a": uuid7(), "demo-b": uuid7()}
+    add_tenants(owner_session, *tenants.values())
     harness.person(owner_session, "platform@shifde.local", admin=True)
     for email, slug in (
         ("admin@demo-a.local", "demo-a"),

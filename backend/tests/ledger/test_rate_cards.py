@@ -14,6 +14,7 @@ from shifde.core.clock import utcnow
 from shifde.core.db import Database, set_tenant
 from shifde.core.ids import uuid7
 from shifde.ledger import pricing
+from tests._support.tenants import add_tenants
 from tests.ledger.util import PAST, add_rate, add_rate_card, add_version
 
 
@@ -25,6 +26,7 @@ def test_a_tenant_card_overrides_the_global_one_and_time_selects_the_version(
     owner_session: Session,
 ) -> None:
     s, t = owner_session, uuid7()
+    add_tenants(s, t)
     add_rate(s, None, input_rate="1")
     add_rate(s, t, input_rate="5")
     now = utcnow()
@@ -40,6 +42,7 @@ def test_a_new_version_supersedes_the_open_ended_one_from_its_start(
     owner_session: Session,
 ) -> None:
     s, t = owner_session, uuid7()
+    add_tenants(s, t)
     card = add_rate_card(s, t)
     v1 = add_version(s, card, t, 1, input_rate="1")
     start = utcnow() + timedelta(hours=1)
@@ -58,6 +61,7 @@ def test_a_version_closing_an_open_ended_one_in_the_past_is_refused(
     owner_session: Session,
 ) -> None:
     s, t = owner_session, uuid7()
+    add_tenants(s, t)
     card = add_rate_card(s, t)
     add_version(s, card, t, 1)
     with pytest.raises(DBAPIError) as err, s.begin_nested():
@@ -67,6 +71,7 @@ def test_a_version_closing_an_open_ended_one_in_the_past_is_refused(
 
 def test_an_overlapping_version_is_refused(owner_session: Session) -> None:
     s, t = owner_session, uuid7()
+    add_tenants(s, t)
     card = add_rate_card(s, t)
     add_version(s, card, t, 1, frm=PAST, to=PAST + timedelta(days=10))
     with pytest.raises(DBAPIError) as err, s.begin_nested():
@@ -78,6 +83,7 @@ def test_an_overlapping_version_is_refused(owner_session: Session) -> None:
 
 def test_a_version_belongs_to_the_tenant_of_its_card(owner_session: Session) -> None:
     s, a, b = owner_session, uuid7(), uuid7()
+    add_tenants(s, a, b)
     card = add_rate_card(s, a)
     with pytest.raises(DBAPIError) as err, s.begin_nested():
         add_version(s, card, b, 1)
@@ -92,6 +98,7 @@ def test_only_the_guard_may_close_a_version_and_versions_are_never_deleted(
     owner_session: Session,
 ) -> None:
     s, t = owner_session, uuid7()
+    add_tenants(s, t)
     card = add_rate_card(s, t)
     v1 = add_version(s, card, t, 1)
     # the guard closes a predecessor from inside its own trigger (depth 2) ...
@@ -117,9 +124,12 @@ def test_only_the_guard_may_close_a_version_and_versions_are_never_deleted(
 
 
 def test_the_app_role_supersedes_through_the_guard_and_cannot_update_directly(
-    app_db: Database,
+    app_db: Database, owner_db: Database
 ) -> None:
     t = uuid7()
+    with owner_db.session() as owner:
+        add_tenants(owner, t)
+        owner.commit()
     with app_db.session() as s:
         set_tenant(s, t)
         assert s.execute(text("SELECT current_user")).scalar_one() == "shifde_app"
@@ -144,6 +154,7 @@ def test_the_app_role_supersedes_through_the_guard_and_cannot_update_directly(
 
 def test_rate_columns_reject_bad_values(owner_session: Session) -> None:
     s, t = owner_session, uuid7()
+    add_tenants(s, t)
     card = add_rate_card(s, t)
     with pytest.raises(IntegrityError), s.begin_nested():
         add_version(s, card, t, 1, input_rate="-1")

@@ -127,6 +127,14 @@ SECURITY_DEFINER_ALLOWLIST: dict[str, str] = {
         "IdP's own client (oidc_auth_requests is closed to the app), so no client context is set "
         "from the unauthenticated request (review 3 item 5); bounded expiry, 32-byte hashes."
     ),
+    "shifde.shifde_my_memberships": (
+        "tenancy_0001 (B-1006): owned by shifde_owner, search_path pg_catalog, pg_temp, every "
+        "object schema-qualified, EXECUTE for shifde_app only, writes no app.* setting. No "
+        "arguments: the clients of current_principal_id() only (active membership and at least "
+        "one live role binding there, direct or through an active platform group), with slug, "
+        "name, status and the role names of that client's bindings of the person; memberships "
+        "and tenants are tenant-keyed, so the client chooser needs it before a client is set."
+    ),
     "shifde.shifde_bound_groups": (
         f"{_GROUP_DEFINER}. No arguments: id and name only of the platform groups holding a role "
         "binding in current_tenant_id() (groups are platform-level and a client context reads "
@@ -344,8 +352,8 @@ def test_allowlist_has_no_stale_entries(owner_engine: Engine) -> None:
 
 
 def test_identity_definers_are_on_the_allowlist_by_signature(owner_engine: Engine) -> None:
-    """identity_0002..0005 (B-909, B-915, B-922, B-928): each identity definer is listed under its
-    full signature."""
+    """identity_0002..0005 (B-909, B-915, B-922, B-928) and tenancy_0001 (B-1006): each identity
+    and tenancy definer is listed under its full signature."""
     with owner_engine.connect() as c:
         rows = [
             row
@@ -370,6 +378,7 @@ def test_identity_definers_are_on_the_allowlist_by_signature(owner_engine: Engin
         "shifde.shifde_bound_groups",
         "shifde.shifde_active_group_ids(uuid)",
         "shifde.shifde_sync_idp_groups(uuid, uuid, text[])",
+        "shifde.shifde_my_memberships",
     }
     assert all(row.owner == "shifde_owner" for row in rows)
     assert all(_search_path(row.proconfig) == "pg_catalog, pg_temp" for row in rows)

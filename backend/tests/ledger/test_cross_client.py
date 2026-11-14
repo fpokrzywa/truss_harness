@@ -22,6 +22,7 @@ from shifde.core.clock import utcnow
 from shifde.core.db import Database, set_platform_admin, set_tenant
 from shifde.core.ids import uuid7
 from shifde.ledger import budgeting, enforcement, pricing
+from tests._support.tenants import add_tenants
 from tests.ledger.util import add_budget, add_rate, add_rate_card, add_version
 
 TABLES = (
@@ -91,6 +92,7 @@ def _seed(s: Session, t: UUID, tag: str) -> UUID:
 def world(owner_db: Database) -> Iterator[World]:
     a, b = uuid7(), uuid7()
     with owner_db.session() as s:
+        add_tenants(s, a, b)
         global_version = add_rate(s, None, input_rate="1")
         version_a = add_rate(s, a, input_rate="5")
         version_b = add_rate(s, b, input_rate="9")

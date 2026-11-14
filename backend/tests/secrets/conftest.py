@@ -27,6 +27,7 @@ from shifde.core.crypto import KeyRing
 from shifde.core.db import Database, set_principal, set_tenant
 from shifde.core.ids import uuid7
 from shifde.secrets.service import SecretProvider
+from tests._support.tenants import add_tenants
 from tests.authz.conftest import owner_insert_bindings
 from tests.conftest import CLEAN_TABLES
 
@@ -69,6 +70,8 @@ def keyring() -> KeyRing:
 
 def _client(seed: Engine) -> Client:
     tenant, admin, auditor, nobody = uuid7(), uuid7(), uuid7(), uuid7()
+    with seed.begin() as c:
+        add_tenants(c, tenant)
     owner_insert_bindings(
         seed,
         [

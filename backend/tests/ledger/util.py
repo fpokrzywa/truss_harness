@@ -3,6 +3,7 @@ direct inserts (as the schema owner) of rate cards and budgets."""
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -13,15 +14,15 @@ from sqlalchemy.orm import Session
 
 from shifde.core.clock import utcnow
 from shifde.core.ids import uuid7
+from tests._support import tenants
 
 PAST = utcnow() - timedelta(days=30)
 
-# The ledger reads these tables of later modules (tenancy, models_admin, runtime). Until those
+# The ledger reads these tables of later modules (models_admin, runtime). Until those
 # modules are ported, a test that evaluates budgets creates minimal stand-ins in its own
 # transaction, which the test rolls back. Delete this when the real tables exist (carry_forward).
+# `tenants` is real since tenancy_0001.
 STAND_INS = (
-    "CREATE TABLE IF NOT EXISTS shifde.tenants "
-    "(id uuid PRIMARY KEY, settings jsonb NOT NULL DEFAULT '{}')",
     "CREATE TABLE IF NOT EXISTS shifde.model_providers "
     "(id uuid PRIMARY KEY, tenant_id uuid, adapter_key text)",
     "CREATE TABLE IF NOT EXISTS shifde.models "
@@ -38,12 +39,7 @@ def create_stand_ins(s: Session) -> None:
 
 
 def add_tenant(s: Session, tenant_id: UUID | None = None, settings: str = "{}") -> UUID:
-    tid = tenant_id or uuid7()
-    s.execute(
-        text("INSERT INTO shifde.tenants (id, settings) VALUES (:i, CAST(:s AS jsonb))"),
-        {"i": tid, "s": settings},
-    )
-    return tid
+    return tenants.add_tenant(s, tenant_id, settings=json.loads(settings))
 
 
 def add_model(

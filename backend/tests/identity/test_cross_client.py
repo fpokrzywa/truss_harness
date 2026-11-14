@@ -45,11 +45,15 @@ from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.identity import api as identity_api
 from shifde.identity import apikeys, repository, service
+from tests._support.tenants import add_workspace
 from tests.identity import oidc_flow
 from tests.identity.conftest import World, app_session, owner_membership, owner_user
 from tests.identity.harness import PASSWORD, client_for, login, person
 
 ROW_SECURITY = "row-level security|row level security"
+# tenancy_0001 grant sweep (B-1004): no INSERT grant left on tables whose RESTRICTIVE false
+# policy refused every direct write; the refusal now comes from the missing privilege.
+NO_INSERT = "permission denied for table (user_identities|oidc_auth_requests)"
 
 
 @pytest.fixture
@@ -286,6 +290,7 @@ def test_a_person_sees_only_their_own_principal_rows(
             "INSERT INTO shifde.user_identities (id, user_id, issuer, subject, idp_config_id) "
             "VALUES (:id, :u, 'i', 's', :c)",
             {"id": uuid7(), "u": world.b.member, "c": world.b.idp},
+            NO_INSERT,
         )
 
 
@@ -352,12 +357,17 @@ def test_setup_tokens_are_never_readable_by_the_app(
 
 # ------------------------------------------------------------------ authz binding trigger
 def _bind(
-    s: Session, tenant: UUID, subject_type: str, subject: UUID, scope_type: str = "tenant"
+    s: Session,
+    tenant: UUID,
+    subject_type: str,
+    subject: UUID,
+    scope_type: str = "tenant",
+    scope_id: UUID | None = None,
 ) -> None:
     role = s.execute(
         text("SELECT id FROM shifde.roles WHERE tenant_id IS NULL AND key = 'auditor'")
     ).scalar_one()
-    scope = tenant if scope_type == "tenant" else uuid7()
+    scope = tenant if scope_type == "tenant" else (scope_id or uuid7())
     s.execute(
         text(
             "INSERT INTO shifde.role_bindings (id, tenant_id, subject_type, subject_id, role_id, "
@@ -392,12 +402,17 @@ def test_binding_another_clients_subject_is_refused_with_the_triggers_message(
 
 
 @pytest.mark.parametrize("subject_type", ["service_account", "user"])
-def test_binding_own_subject_passes_the_subject_check_and_fails_closed_until_tenancy(
-    world: World, a_session: Session, subject_type: str
+def test_binding_own_subject_passes_the_subject_check_and_needs_a_scope_of_the_client(
+    world: World, a_session: Session, owner_db: Database, subject_type: str
 ) -> None:
     """A's own service account and member get past the subject branch. identity_0005 nests the
-    scope branches (B-933): an organization-scope binding is stored, in A only; a workspace
-    binding still needs `workspaces` (tenancy) and fails closed (B-402)."""
+    scope branches (B-933): an organization-scope binding is stored, in A only. Since tenancy_0001
+    a workspace binding is stored for A's own workspace and refused, with the trigger's message,
+    for B's (it failed closed on the missing `workspaces` table before)."""
+    with owner_db.session() as owner:
+        ws_a = add_workspace(owner, world.a.tenant)
+        ws_b = add_workspace(owner, world.b.tenant)
+        owner.commit()
     subject = world.a.service_account if subject_type == "service_account" else world.a.member
     _bind(a_session, world.a.tenant, subject_type, subject)
     rows = a_session.execute(
@@ -405,8 +420,12 @@ def test_binding_own_subject_passes_the_subject_check_and_fails_closed_until_ten
     ).scalars()
     assert list(rows) == [world.a.tenant]
     a_session.rollback()
-    with pytest.raises(DBAPIError, match='relation "shifde.workspaces" does not exist'):
-        _bind(a_session, world.a.tenant, subject_type, subject, scope_type="workspace")
+    with pytest.raises(DBAPIError, match="scope workspace is not in this tenant"):
+        _bind(
+            a_session, world.a.tenant, subject_type, subject, scope_type="workspace", scope_id=ws_b
+        )
+    a_session.rollback()
+    _bind(a_session, world.a.tenant, subject_type, subject, scope_type="workspace", scope_id=ws_a)
     a_session.rollback()
 
 
@@ -813,6 +832,7 @@ def test_oidc_login_at_bs_idp_files_the_flow_in_b_and_answers_like_a_missing_id(
                 "INSERT INTO shifde.oidc_auth_requests (id, tenant_id, idp_config_id, state_hash, "
                 "binding_hash, nonce_hash, expires_at) VALUES (:id, :t, :i, 's', 'b', 'n', now())",
                 {"id": uuid7(), "t": tenant, "i": b_idp},
+                NO_INSERT,
             )
 
 

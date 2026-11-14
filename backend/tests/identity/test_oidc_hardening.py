@@ -74,7 +74,7 @@ def test_identities_are_inserted_only_by_the_definers(
     owner_session.commit()
     for tenant, idp in ((world.a.tenant, world.b.idp), (None, world.installation_idp)):
         with app_session(app_db, tenant, me) as s:
-            with pytest.raises(DBAPIError, match="row-level security|row level security"):
+            with pytest.raises(DBAPIError, match="permission denied for table user_identities"):
                 s.execute(
                     text(
                         "INSERT INTO shifde.user_identities (id, user_id, issuer, subject, "

@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from shifde import ledger
 from shifde.core.ids import uuid7
 from shifde.ledger import budgeting, enforcement, estimate
+from tests._support.tenants import add_tenants
 from tests.ledger.util import add_budget, add_model, add_rate, add_run, create_stand_ins
 
 
@@ -24,6 +25,7 @@ def test_budgets_in_scope_ignores_another_tenants_budget_on_a_shared_scope_id(
     owner_session: Session,
 ) -> None:
     a, b, project = uuid7(), uuid7(), uuid7()
+    add_tenants(owner_session, a, b)
     other = add_budget(owner_session, b, scope_type="project", scope_id=project)
     own = add_budget(owner_session, a)
     found = [x["id"] for x in enforcement.budgets_in_scope(owner_session, _scope(a, project))]
@@ -35,6 +37,7 @@ def test_quotas_in_scope_ignores_another_tenants_quota_on_a_shared_scope_id(
     owner_session: Session,
 ) -> None:
     a, b, project = uuid7(), uuid7(), uuid7()
+    add_tenants(owner_session, a, b)
     owner_session.execute(
         text(
             "INSERT INTO shifde.quotas (id, tenant_id, scope_type, scope_id, metric, limit_value)"
@@ -49,6 +52,7 @@ def test_quotas_in_scope_ignores_another_tenants_quota_on_a_shared_scope_id(
 def test_a_model_of_another_tenant_is_not_priced(owner_session: Session) -> None:
     create_stand_ins(owner_session)
     a, b = uuid7(), uuid7()
+    add_tenants(owner_session, a, b)
     add_rate(owner_session, a, input_rate="1")
     model_b = add_model(owner_session, b)
     assert estimate.call_cost(owner_session, a, model_b, 10, 10) is None
@@ -60,6 +64,7 @@ def test_an_event_does_not_inherit_attribution_from_another_tenants_run(
 ) -> None:
     create_stand_ins(owner_session)
     a, b, pipeline = uuid7(), uuid7(), uuid7()
+    add_tenants(owner_session, a, b)
     run_b = add_run(owner_session, b, pipeline_id=pipeline)
     ledger.record(
         owner_session,
@@ -77,6 +82,7 @@ def test_held_amount_does_not_count_a_reservation_on_another_tenants_run(
 ) -> None:
     create_stand_ins(owner_session)
     a, b = uuid7(), uuid7()
+    add_tenants(owner_session, a, b)
     run_b = add_run(owner_session, b)
     owner_session.execute(
         text(

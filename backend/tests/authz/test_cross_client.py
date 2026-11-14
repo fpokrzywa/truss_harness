@@ -33,6 +33,7 @@ from shifde.core.db import Database
 from shifde.core.errors import Forbidden, NotFound
 from shifde.core.hooks import run_close_hooks
 from shifde.core.ids import uuid7
+from tests._support.tenants import add_project, add_tenants, add_workspace
 from tests.authz.conftest import owner_insert_bindings, owner_insert_group
 
 WHO = text("SELECT current_user")
@@ -56,6 +57,9 @@ class Org:
 
 def _org(owner: Session, seed: Engine, slug: str) -> Org:
     tenant, ws, proj, admin, member, role = (uuid7() for _ in range(6))
+    add_tenants(owner, tenant)
+    add_workspace(owner, tenant, ws)
+    add_project(owner, tenant, ws, proj)
     owner.execute(
         text("INSERT INTO shifde.roles (id, tenant_id, key, name) VALUES (:id, :t, :k, :k)"),
         {"id": role, "t": tenant, "k": f"{slug}-role"},

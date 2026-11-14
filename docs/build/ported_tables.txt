@@ -31,3 +31,7 @@ api_keys  # identity
 user_identities  # identity
 idp_configs  # identity
 oidc_auth_requests  # identity
+tenants  # tenancy
+workspaces  # tenancy
+projects  # tenancy
+installation_settings  # tenancy

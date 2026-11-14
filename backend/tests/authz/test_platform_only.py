@@ -33,6 +33,7 @@ from shifde.core.context import Principal
 from shifde.core.db import Database
 from shifde.core.errors import Forbidden
 from shifde.core.ids import uuid7
+from tests._support.tenants import add_tenants
 from tests.authz.conftest import owner_insert_bindings
 
 WHO = text("SELECT current_user")
@@ -55,9 +56,12 @@ def _check_violation(exc: IntegrityError) -> tuple[str | None, str | None]:
 # ------------------------------------------------------------------ database
 @pytest.mark.parametrize("key", PLATFORM_ONLY)
 def test_a_client_role_cannot_hold_a_platform_only_permission_as_shifde_app(
-    s: Session, key: str
+    s: Session, owner_db: Database, key: str
 ) -> None:
     tenant_a, role = uuid7(), uuid7()
+    with owner_db.session() as owner:
+        add_tenants(owner, tenant_a)
+        owner.commit()
     db.set_tenant(s, tenant_a)
     assert s.execute(WHO).scalar_one() == "shifde_app"
     s.execute(
@@ -84,6 +88,7 @@ def test_the_schema_owner_cannot_put_a_platform_only_permission_in_a_client_role
     owner_session: Session, key: str
 ) -> None:
     tenant_a, role = uuid7(), uuid7()
+    add_tenants(owner_session, tenant_a)
     owner_session.execute(
         text("INSERT INTO shifde.roles (id, tenant_id, key, name) VALUES (:id, :t, 'c', 'c')"),
         {"id": role, "t": tenant_a},

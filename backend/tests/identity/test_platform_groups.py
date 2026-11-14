@@ -333,19 +333,20 @@ def test_the_platform_administrator_manages_and_binds_groups(
         )
 
 
-def test_a_group_binding_below_the_organization_fails_closed_until_tenancy(
+def test_a_group_binding_below_the_organization_needs_a_scope_of_that_client(
     world: World, app_db: Database, owner_session: Session
 ) -> None:
-    """Workspace and project scope checks read tenancy's tables (not here yet): the platform
-    administrator's binding at those scopes is refused, never stored unchecked. That such a
-    binding grants only at and below its scope is pinned by `tests/authz/test_groups.py` (real
-    platform membership, owner-inserted bindings) and moves to real bindings with tenancy."""
+    """Workspace and project scope checks read tenancy's tables: the platform administrator's
+    binding at those scopes naming no workspace or project of the client is refused with the
+    trigger's message, never stored unchecked (before tenancy_0001 it failed closed on the
+    missing tables). Positive group bindings at those scopes, and that they grant only at and
+    below the scope: `tests/tenancy/test_bindings.py`."""
     staff = _staff(owner_session, "fde")
     group = _staff_group(app_db, staff, [])
-    for scope_type, table in (("workspace", "workspaces"), ("project", "projects")):
+    for scope_type in ("workspace", "project"):
         with (
             admin_session(app_db, world.a.tenant) as s,
-            pytest.raises(DBAPIError, match=f'relation "shifde.{table}" does not exist'),
+            pytest.raises(DBAPIError, match=f"scope {scope_type} is not in this tenant"),
         ):
             _bind_group(s, world.a.tenant, group, scope_type=scope_type, scope_id=uuid7())
 
