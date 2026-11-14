@@ -33,6 +33,7 @@ Tokens per model: see `python scripts/usage_report.py` (by unit); the figure bel
 | ontology | todo | | | |
 | runtime | todo | | | |
 | app, cli, main | todo | | | |
+| front-end areas 1 (identity, installation; audit/secrets/observability waiting on routes) | done (partial by design, B-1107) | `4bcc1fb` (fast-forward) | `gates.py --ref fe-areas-1 --tests tests/installation` (lead, clean checkout) 13/13: scan 0 findings; backend gates 0; pnpm lint/typecheck 0; pnpm test 183 passed; pnpm build 0. Ported login (no branding fetch), setup, platform settings; remaining files of these areas marked `later` in `frontend-areas.md` with owners | sonnet build ~97k |
 | two-org side-by-side proof | todo | | | |
 | software factory install | todo | | | |
 
