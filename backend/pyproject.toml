@@ -79,6 +79,9 @@ exclude = ["migrations/"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+# pytest's default norecursedirs minus "build": the default skips any directory named
+# build, which silently dropped tests/build from full runs (B-1914).
+norecursedirs = ["*.egg", ".*", "_darcs", "CVS", "dist", "node_modules", "venv", "{arch}"]
 addopts = "-ra"
 
 # ---------------------------------------------------------------------------
