@@ -20,7 +20,9 @@ shared. Another client's model and an unknown id give the same error, and the tr
 the key is checked, so there is no lock wait on another client's uncommitted `models` row. The
 client's own models keep full referential integrity; a shared model is guarded by the trigger only
 (the platform administrator can delete it: B-1940). Whether the caller's client may use a shared
-model is the service's decision at call time (the SHI switch, B-1732).
+model is the service's decision at call time (the SHI switch, B-1732). A row for another client
+than the session's is left to the `WITH CHECK` policy (42501); the schema owner has no session
+client, so the check applies to it in full.
 
 Rollback: drops the column, check, trigger and function and restores the composite keys on
 `(tenant_id, model_id)`. It fails (23503) while a row names a shared model; delete those rows first.
@@ -47,6 +49,11 @@ GUARD = """CREATE FUNCTION shifde.build_model_ref_guard() RETURNS trigger
    $$ DECLARE owner_tenant uuid; found boolean;
    BEGIN
      IF NEW.model_id IS NULL THEN NEW.own_model_id := NULL; RETURN NEW; END IF;
+     -- a row for another client than the session's: row-level security refuses it (42501)
+     IF shifde.current_tenant_id() IS NOT NULL
+        AND NEW.tenant_id IS DISTINCT FROM shifde.current_tenant_id() THEN
+       NEW.own_model_id := NULL; RETURN NEW;
+     END IF;
      SELECT true, m.tenant_id INTO found, owner_tenant FROM shifde.models m
        WHERE m.id = NEW.model_id AND (m.tenant_id IS NULL OR m.tenant_id = NEW.tenant_id);
      IF found IS NOT TRUE THEN
