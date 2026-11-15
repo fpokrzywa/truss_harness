@@ -38,6 +38,8 @@ class Side:
     pipeline: UUID
     pipeline_version: UUID
     model: UUID
+    service_account: UUID
+    schedule: UUID
 
 
 @dataclass(frozen=True)
@@ -118,7 +120,7 @@ def _request_values(tenant: UUID, artifact: UUID, version: UUID) -> dict[str, ob
     }
 
 
-def _side(s: Session, tenant: UUID, label: str) -> Side:
+def _side(s: Session, tenant: UUID, label: str, service_account: UUID) -> Side:
     artifact = _artifact(s, tenant, "prompts", f"prompt-{label}")
     published = _version(s, tenant, artifact, "prompts", 1)
     s.execute(
@@ -140,6 +142,15 @@ def _side(s: Session, tenant: UUID, label: str) -> Side:
     pipeline_version = _version(s, tenant, pipeline, "pipelines", 1)
     repo.insert_pipeline_refs(s, tenant, pipeline_version, [("n1", "model", model)])
     repo.insert_validation_report(s, tenant, pipeline_version, {"ok": True}, ["n1"])
+    schedule = uuid7()
+    s.execute(
+        text(
+            "INSERT INTO shifde.pipeline_schedules (id, tenant_id, pipeline_id, version_policy, "
+            "cron, run_as_service_account_id, created_by) VALUES (:i, :t, :p, "
+            "'latest_published', '0 * * * *', :sa, :sa)"
+        ),
+        {"i": schedule, "t": tenant, "p": pipeline, "sa": service_account},
+    )
     return Side(
         tenant,
         artifact,
@@ -150,13 +161,18 @@ def _side(s: Session, tenant: UUID, label: str) -> Side:
         pipeline,
         pipeline_version,
         model,
+        service_account,
+        schedule,
     )
 
 
 @pytest.fixture
 def seed(owner_db: Database, world: World) -> Seed:
     with owner_db.session() as s:
-        out = Seed(_side(s, world.a.tenant, "a"), _side(s, world.b.tenant, "b"))
+        out = Seed(
+            _side(s, world.a.tenant, "a", world.a.service_account),
+            _side(s, world.b.tenant, "b", world.b.service_account),
+        )
         s.commit()
     return out
 
@@ -300,6 +316,11 @@ def test_a_cannot_insert_rows_for_b(app_db: Database, seed: Seed) -> None:
                 lambda: repo.insert_request(s, _request_values(b.tenant, b.artifact, b.draft)),
                 lambda: repo.insert_pins(s, b.tenant, b.draft, [(b.published, "tool")]),
                 lambda: repo.insert_run(s, _run_values(b.tenant, b.artifact, b.published, b.model)),
+                lambda: _version(s, b.tenant, b.artifact, "prompts", 9),
+                lambda: repo.insert_pipeline_refs(
+                    s, b.tenant, b.pipeline_version, [("n9", "model", b.model)]
+                ),
+                lambda: repo.insert_validation_report(s, b.tenant, b.draft, {}, []),
             ],
             ("42501",),
         )
@@ -329,24 +350,109 @@ def test_a_cannot_reference_bs_rows(app_db: Database, seed: Seed) -> None:
         )
 
 
-def test_a_validation_report_for_bs_version_is_a_silent_no_op(
-    app_db: Database, owner_db: Database, seed: Seed
+_ORACLE_WRITES: dict[str, Callable[[Session, UUID, UUID], None]] = {
+    "report": lambda s, t, v: repo.insert_validation_report(s, t, v, {"x": 1}, []),
+    "pin": lambda s, t, v: repo.insert_pins(s, t, v, [(v, "tool")]),
+    "ref": lambda s, t, v: repo.insert_pipeline_refs(s, t, v, [("n", "model", uuid7())]),
+}
+
+
+def _state_of(
+    app_db: Database, tenant: UUID, write: Callable[[Session, UUID, UUID], None], v: UUID
+) -> str:
+    with app_session(app_db, tenant) as s:
+        return _state_of_in(s, tenant, write, v)
+
+
+@pytest.mark.parametrize("kind", sorted(_ORACLE_WRITES))
+def test_bs_version_and_an_unknown_id_give_a_the_same_outcome(
+    app_db: Database, seed: Seed, kind: str
 ) -> None:
-    """The report insert is `ON CONFLICT DO NOTHING` on the version id: naming B's version writes
-    nothing (no row for A, B's report untouched) and returns nothing to tell A it exists."""
+    """Primary keys are client-keyed (B-1905): A naming B's version that has a row, B's version
+    without one, and an id that exists nowhere all fail the same way (23503), whatever the
+    `ON CONFLICT DO NOTHING` could have told."""
     a, b = seed.a, seed.b
-    with app_session(app_db, a.tenant) as s:
-        repo.insert_validation_report(s, a.tenant, b.pipeline_version, {"forged": True}, ["x"])
-        s.commit()
+    write = _ORACLE_WRITES[kind]
+    outcomes = {
+        _state_of(app_db, a.tenant, write, v) for v in (b.pipeline_version, b.draft, uuid7())
+    }
+    assert outcomes == {"23503"}
+
+
+@pytest.mark.parametrize("kind", sorted(_ORACLE_WRITES))
+def test_a_does_not_wait_on_bs_uncommitted_insert(
+    app_db: Database, owner_db: Database, seed: Seed, kind: str
+) -> None:
+    """B's uncommitted row for a version id never blocks A's insert naming that id (no 55P03)."""
+    a, b = seed.a, seed.b
+    version = uuid7()
+    other = {
+        "report": "INSERT INTO shifde.pipeline_validation_reports (tenant_id, version_id, report) "
+        "VALUES (:t, :v, '{}')",
+        "pin": "INSERT INTO shifde.artifact_version_pins (tenant_id, version_id, "
+        "pinned_version_id, role) VALUES (:t, :v, :p, 'tool')",
+        "ref": "INSERT INTO shifde.pipeline_version_refs (tenant_id, pipeline_version_id, "
+        "node_id, ref_type, ref_id, model_id) VALUES (:t, :v, 'n', 'model', :m, :m)",
+    }[kind]
     with owner_db.session() as o:
-        rows = o.execute(
+        spare = _artifact(o, b.tenant, "pipelines", "pipeline-spare")
+        o.execute(
             text(
-                "SELECT tenant_id, report FROM shifde.pipeline_validation_reports "
-                "WHERE version_id = :v"
+                "INSERT INTO shifde.artifact_versions (id, tenant_id, artifact_id, kind, "
+                "version_no, state) VALUES (:v, :t, :a, 'pipelines', 1, 'draft')"
             ),
-            {"v": b.pipeline_version},
-        ).all()
-    assert [(r[0], r[1]) for r in rows] == [(b.tenant, {"ok": True})]
+            {"v": version, "t": b.tenant, "a": spare},
+        )
+        o.commit()
+        o.execute(
+            text(other), {"t": b.tenant, "v": version, "p": b.published, "m": b.model}
+        )  # not committed: holds the key
+        with app_session(app_db, a.tenant) as s:
+            s.execute(text("SET LOCAL lock_timeout = '500ms'"))
+            assert _state_of_in(s, a.tenant, _ORACLE_WRITES[kind], version) == "23503"
+        o.rollback()
+
+
+def _state_of_in(
+    s: Session, tenant: UUID, write: Callable[[Session, UUID, UUID], None], v: UUID
+) -> str:
+    try:
+        write(s, tenant, v)
+        s.flush()
+        return "ok"
+    except DBAPIError as err:
+        return str(getattr(err.orig, "sqlstate", None))
+    finally:
+        s.rollback()
+
+
+def test_a_schedule_naming_bs_rows_is_refused(app_db: Database, seed: Seed) -> None:
+    a, b = seed.a, seed.b
+    insert = (
+        "INSERT INTO shifde.pipeline_schedules (id, tenant_id, pipeline_id, version_policy, "
+        "pipeline_version_id, cron, run_as_service_account_id, created_by) VALUES "
+        "(gen_random_uuid(), :t, :p, :pol, :v, '0 * * * *', :sa, :sa)"
+    )
+    cases = (
+        {"p": b.pipeline, "pol": "latest_published", "v": None, "sa": a.service_account},
+        {"p": a.pipeline, "pol": "pinned", "v": b.pipeline_version, "sa": a.service_account},
+        {"p": a.pipeline, "pol": "latest_published", "v": None, "sa": b.service_account},
+    )
+    with app_session(app_db, a.tenant) as s:
+        for case in cases:
+            with pytest.raises(DBAPIError) as err:
+                s.execute(text(insert), {"t": a.tenant, **case})
+            assert getattr(err.value.orig, "sqlstate", None) == "23503"
+            s.rollback()
+
+
+def test_without_a_client_context_an_insert_for_a_is_refused(app_db: Database, seed: Seed) -> None:
+    with app_session(app_db, None) as s:
+        with pytest.raises(DBAPIError) as err:
+            _artifact(s, seed.a.tenant, "prompts", "no-context")
+            s.flush()
+        assert getattr(err.value.orig, "sqlstate", None) == "42501"
+        s.rollback()
 
 
 # ------------------------------------------------------------------ raw SQL as shifde_app
@@ -358,6 +464,7 @@ _TABLES = (
     "prompt_test_runs",
     "pipeline_version_refs",
     "pipeline_validation_reports",
+    "pipeline_schedules",
 )
 
 

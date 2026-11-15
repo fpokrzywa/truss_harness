@@ -199,7 +199,7 @@ def upgrade() -> None:
             role text NOT NULL CHECK (role IN
                 ('prompt', 'tool', 'skill', 'composed_prompt', 'skill_dependency', 'agent',
                  'ontology', 'action_tool')),
-            PRIMARY KEY (version_id, pinned_version_id, role),
+            PRIMARY KEY (tenant_id, version_id, pinned_version_id, role),
             CONSTRAINT fk_pins__version FOREIGN KEY (tenant_id, version_id)
                 REFERENCES shifde.artifact_versions (tenant_id, id),
             CONSTRAINT fk_pins__pinned FOREIGN KEY (tenant_id, pinned_version_id)
@@ -295,7 +295,7 @@ def upgrade() -> None:
             connection_id uuid,
             ref_version_id uuid,
             model_id uuid,
-            PRIMARY KEY (pipeline_version_id, node_id, ref_type, ref_id),
+            PRIMARY KEY (tenant_id, pipeline_version_id, node_id, ref_type, ref_id),
             CONSTRAINT ck_pipeline_refs__typed CHECK (
                 (ref_type = 'connection' AND connection_id = ref_id
                     AND ref_version_id IS NULL AND model_id IS NULL)
@@ -324,7 +324,7 @@ def upgrade() -> None:
             report jsonb NOT NULL,
             topo_order jsonb NOT NULL DEFAULT '[]',
             created_at timestamptz NOT NULL DEFAULT now(),
-            PRIMARY KEY (version_id),
+            PRIMARY KEY (tenant_id, version_id),
             CONSTRAINT fk_pipeline_reports__version FOREIGN KEY (tenant_id, version_id)
                 REFERENCES shifde.artifact_versions (tenant_id, id)
         )""",

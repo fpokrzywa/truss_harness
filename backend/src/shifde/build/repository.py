@@ -600,18 +600,24 @@ def get_mapping(
     )
 
 
-def upsert_mapping(session: Session, values: Mapping[str, Any]) -> Row:  # Any: column values
+def upsert_mapping(
+    session: Session, tenant_id: UUID, values: Mapping[str, Any]
+) -> Row:  # Any: column values
     """Insert or replace the draft mapping of a target. The DB trigger refuses anything that is
-    not a draft version's mapping."""
+    not a draft version's mapping. The insert names a version of `tenant_id` only (EXISTS guard):
+    another client's version id and an unknown id give the same outcome (no row, `NoResultFound`),
+    and the conflict update never touches another client's row (B-1905)."""
     return (
         session.execute(
             text(
                 "INSERT INTO shifde.ontology_source_mappings (id, tenant_id, ontology_version_id, "
                 "target_kind, target_key, connection_id, relation_schema, relation_name, "
-                "column_map, key_map, filters, status, created_by) VALUES (:id, :tenant_id, "
+                "column_map, key_map, filters, status, created_by) SELECT :id, :tenant_id, "
                 ":ontology_version_id, :target_kind, :target_key, :connection_id, "
                 ":relation_schema, :relation_name, CAST(:column_map AS jsonb), "
-                "CAST(:key_map AS jsonb), CAST(:filters AS jsonb), :status, :created_by) "
+                "CAST(:key_map AS jsonb), CAST(:filters AS jsonb), :status, :created_by "
+                "WHERE EXISTS (SELECT 1 FROM shifde.artifact_versions "
+                "WHERE tenant_id = :tenant_id AND id = :ontology_version_id) "
                 "ON CONFLICT (ontology_version_id, target_kind, target_key) DO UPDATE SET "
                 "connection_id = EXCLUDED.connection_id, "
                 "relation_schema = EXCLUDED.relation_schema, "
@@ -619,10 +625,12 @@ def upsert_mapping(session: Session, values: Mapping[str, Any]) -> Row:  # Any: 
                 "key_map = EXCLUDED.key_map, filters = EXCLUDED.filters, "
                 "status = EXCLUDED.status, updated_at = now(), "
                 "row_version = shifde.ontology_source_mappings.row_version + 1 "
+                "WHERE shifde.ontology_source_mappings.tenant_id = :tenant_id "
                 f"RETURNING {MAPPING_COLUMNS}"
             ),
             {
                 **values,
+                "tenant_id": tenant_id,
                 "column_map": json.dumps(values["column_map"]),
                 "key_map": json.dumps(values["key_map"]) if values["key_map"] is not None else None,
                 "filters": json.dumps(values["filters"]),
@@ -675,6 +683,7 @@ def copy_mappings(
     for r in rows:
         upsert_mapping(
             session,
+            tenant_id,
             {
                 "id": uuid7(),
                 "tenant_id": tenant_id,
@@ -700,7 +709,9 @@ def insert_ontology_info(
     session.execute(
         text(
             "INSERT INTO shifde.ontology_version_info (tenant_id, version_id, mappings_hash, "
-            "report) VALUES (:t, :v, :h, CAST(:r AS jsonb))"
+            "report) SELECT :t, :v, :h, CAST(:r AS jsonb) "
+            "WHERE EXISTS (SELECT 1 FROM shifde.artifact_versions "
+            "WHERE tenant_id = :t AND id = :v)"
         ),
         {"t": tenant_id, "v": version_id, "h": mappings_hash, "r": json.dumps(report)},
     )
