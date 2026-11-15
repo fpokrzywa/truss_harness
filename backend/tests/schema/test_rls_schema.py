@@ -1389,6 +1389,11 @@ PLAIN_FOREIGN_KEYS: dict[str, str] = {
         "trg_connections_guard (BEFORE INSERT/UPDATE, the writer's rights under RLS) refuses "
         "another client's vendor with the message it gives an unknown id (B-1502)"
     ),
+    "shifde.model_providers.model_providers_vendor_id_fkey": (
+        "a provider names a global catalog vendor (tenant NULL) or one of its own client's; "
+        "trg_model_providers_guard (BEFORE INSERT/UPDATE, the writer's rights under RLS) refuses "
+        "another client's vendor with the message it gives an unknown id (B-1703)"
+    ),
 }
 _CLIENT_FOREIGN_KEYS = text(
     f"""SELECT n.nspname || '.' || src.relname || '.' || k.conname AS name,

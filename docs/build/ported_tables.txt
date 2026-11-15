@@ -40,3 +40,10 @@ egress_policies  # connections
 connections  # connections
 connection_tests  # connections
 connection_discoveries  # connections
+model_providers  # models_admin
+models  # models_admin
+model_allowlists  # models_admin
+model_allowlist_models  # models_admin
+model_routes  # models_admin
+rate_limit_windows  # models_admin
+concurrency_leases  # models_admin

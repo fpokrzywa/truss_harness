@@ -1,4 +1,4 @@
-"""Not yet ported from SETH 3ba0e06; see docs/build/STATUS.md.
+"""Not yet ported from SETH 3ba0e06 (models_admin part 2); see docs/build/STATUS.md.
 
 Placeholder import: keeps the import-linter `ignore_imports` entry
 `shifde.models_admin.** -> shifde.models_admin.repository` matched until the port replaces

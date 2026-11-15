@@ -1,5 +1,5 @@
-"""Helpers shared by the ledger tests: stand-ins for tables of modules not ported yet, and
-direct inserts (as the schema owner) of rate cards and budgets."""
+"""Helpers shared by the ledger tests: a stand-in for a table of a module not ported yet, and
+direct inserts (as the schema owner) of models, rate cards and budgets."""
 
 from __future__ import annotations
 
@@ -18,15 +18,11 @@ from tests._support import tenants
 
 PAST = utcnow() - timedelta(days=30)
 
-# The ledger reads these tables of later modules (models_admin, runtime). Until those
-# modules are ported, a test that evaluates budgets creates minimal stand-ins in its own
-# transaction, which the test rolls back. Delete this when the real tables exist (carry_forward).
-# `tenants` is real since tenancy_0001.
+# The ledger reads `shifde.runs` (runtime). Until runtime is ported, a test that evaluates
+# budgets creates a minimal stand-in in its own transaction, which the test rolls back. Delete this
+# when the real table exists (carry_forward). `tenants` is real since tenancy_0001; `models` and
+# `model_providers` since models_admin_0001.
 STAND_INS = (
-    "CREATE TABLE IF NOT EXISTS shifde.model_providers "
-    "(id uuid PRIMARY KEY, tenant_id uuid, adapter_key text)",
-    "CREATE TABLE IF NOT EXISTS shifde.models "
-    "(id uuid PRIMARY KEY, tenant_id uuid, provider_id uuid, model_key text)",
     "CREATE TABLE IF NOT EXISTS shifde.runs (id uuid PRIMARY KEY, tenant_id uuid, "
     "root_run_id uuid, workspace_id uuid, project_id uuid, agent_id uuid, pipeline_id uuid, "
     "orchestration_id uuid, initiated_by_principal_id uuid)",
@@ -45,13 +41,33 @@ def add_tenant(s: Session, tenant_id: UUID | None = None, settings: str = "{}") 
 def add_model(
     s: Session, tenant_id: UUID, adapter_key: str = "openai", model_key: str = "m1"
 ) -> UUID:
-    provider, model = uuid7(), uuid7()
+    """A registered model of `tenant_id` (connection, provider, model), as the schema owner."""
+    connection, provider, model = uuid7(), uuid7(), uuid7()
     s.execute(
-        text("INSERT INTO shifde.model_providers VALUES (:p, :t, :a)"),
-        {"p": provider, "t": tenant_id, "a": adapter_key},
+        text(
+            "INSERT INTO shifde.connections (id, tenant_id, name, connection_type, adapter_key) "
+            "VALUES (:c, :t, :n, 'model_api', :a)"
+        ),
+        {"c": connection, "t": tenant_id, "n": f"conn-{connection.hex}", "a": adapter_key},
     )
     s.execute(
-        text("INSERT INTO shifde.models VALUES (:m, :t, :p, :k)"),
+        text(
+            "INSERT INTO shifde.model_providers (id, tenant_id, name, adapter_key, connection_id) "
+            "VALUES (:p, :t, :n, :a, :c)"
+        ),
+        {
+            "p": provider,
+            "t": tenant_id,
+            "n": f"prov-{provider.hex}",
+            "a": adapter_key,
+            "c": connection,
+        },
+    )
+    s.execute(
+        text(
+            "INSERT INTO shifde.models (id, tenant_id, provider_id, model_key, display_name) "
+            "VALUES (:m, :t, :p, :k, :k)"
+        ),
         {"m": model, "t": tenant_id, "p": provider, "k": model_key},
     )
     return model

@@ -374,3 +374,74 @@
   path: [constraints, fk_connections__egress_policy]
   reason: "constraints bypass row-level security (B-116 item 9): a connection names an egress policy of its own client, (tenant_id, egress_policy_id) -> egress_policies (tenant_id, id). Replaces SETH's plain connections_egress_policy_id_fkey. DECISIONS B-1502."
   migration: connections_0001
+
+# models_admin_0001: the SHI-wide provider (DECISIONS B-1701..B-1703)
+- table: model_providers
+  path: [columns, tenant_id, nullable]
+  reason: "the SHI-wide model provider and its models are shared rows (tenant NULL) every client reads and only the platform administrator context writes (design 3 and 5.3, DECISIONS B-1701, B-1702): tenant_id NULL marks the one SHI provider; ck_model_providers__platform pins it to SHI_PROVIDER_ID."
+  migration: models_admin_0001
+
+- table: model_providers
+  path: [columns, connection_id, nullable]
+  reason: "the SHI-wide model provider and its models are shared rows (tenant NULL) every client reads and only the platform administrator context writes (design 3 and 5.3, DECISIONS B-1701, B-1702): the SHI provider uses no client connection; ck_model_providers__platform makes connection_id NULL exactly on the shared row, so every client provider still names its own connection through fk_model_providers__connection."
+  migration: models_admin_0001
+
+- table: model_providers
+  path: [constraints, ck_model_providers__platform]
+  reason: "the SHI-wide model provider and its models are shared rows (tenant NULL) every client reads and only the platform administrator context writes (design 3 and 5.3, DECISIONS B-1701, B-1702): a NULL-tenant provider has the fixed id SHI_PROVIDER_ID (at most one) and no connection; a client provider always has one."
+  migration: models_admin_0001
+
+- table: model_providers
+  path: [policies, tenant_isolation]
+  reason: "the SHI-wide model provider and its models are shared rows (tenant NULL) every client reads and only the platform administrator context writes (design 3 and 5.3, DECISIONS B-1701, B-1702): replaced by read_global_or_own and write_own, as egress_policies (B-1501)."
+  migration: models_admin_0001
+
+- table: model_providers
+  path: [policies, read_global_or_own]
+  reason: "the SHI-wide model provider and its models are shared rows (tenant NULL) every client reads and only the platform administrator context writes (design 3 and 5.3, DECISIONS B-1701, B-1702): SELECT own rows and the shared row."
+  migration: models_admin_0001
+
+- table: model_providers
+  path: [policies, write_own]
+  reason: "the SHI-wide model provider and its models are shared rows (tenant NULL) every client reads and only the platform administrator context writes (design 3 and 5.3, DECISIONS B-1701, B-1702): writes need the client's own rows, or tenant NULL together with the platform administrator context."
+  migration: models_admin_0001
+
+- table: model_providers
+  path: [triggers, trg_model_providers_guard]
+  reason: "B-116 item 9 for the plain model_providers_vendor_id_fkey (vendors has no (tenant_id, id) key): model_providers_guard (BEFORE INSERT/UPDATE OF vendor_id, the writer's rights under RLS) refuses another client's private vendor with the message an unknown id gets; the shared provider may name only a global vendor (DECISIONS B-1703, as trg_connections_guard B-1502)."
+  migration: models_admin_0001
+
+- table: models
+  path: [columns, tenant_id, nullable]
+  reason: "the SHI-wide model provider and its models are shared rows (tenant NULL) every client reads and only the platform administrator context writes (design 3 and 5.3, DECISIONS B-1701, B-1702): tenant_id NULL marks a model of the SHI provider; ck_models__platform pins such a row to SHI_PROVIDER_ID."
+  migration: models_admin_0001
+
+- table: models
+  path: [constraints, ck_models__platform]
+  reason: "the SHI-wide model provider and its models are shared rows (tenant NULL) every client reads and only the platform administrator context writes (design 3 and 5.3, DECISIONS B-1701, B-1702): a NULL-tenant model belongs to the SHI provider (the composite fk_models__provider does not check a row whose tenant_id is NULL)."
+  migration: models_admin_0001
+
+- table: models
+  path: [triggers, trg_models_guard]
+  reason: "the SHI-wide model provider and its models are shared rows (tenant NULL) every client reads and only the platform administrator context writes (design 3 and 5.3, DECISIONS B-1701, B-1702): models_guard (BEFORE INSERT) makes the SHI provider row of a shared model exist; a plain key on provider_id would tell another client's provider id from an unknown one, so client rows stay checked by the composite fk_models__provider only."
+  migration: models_admin_0001
+
+- table: models
+  path: [indexes, uq_models__platform_key]
+  reason: "the SHI-wide model provider and its models are shared rows (tenant NULL) every client reads and only the platform administrator context writes (design 3 and 5.3, DECISIONS B-1701, B-1702): model keys are unique per provider among shared rows too (uq_models__provider_key does not compare tenant_id NULL)."
+  migration: models_admin_0001
+
+- table: models
+  path: [policies, tenant_isolation]
+  reason: "the SHI-wide model provider and its models are shared rows (tenant NULL) every client reads and only the platform administrator context writes (design 3 and 5.3, DECISIONS B-1701, B-1702): replaced by read_global_or_own and write_own, as egress_policies (B-1501)."
+  migration: models_admin_0001
+
+- table: models
+  path: [policies, read_global_or_own]
+  reason: "the SHI-wide model provider and its models are shared rows (tenant NULL) every client reads and only the platform administrator context writes (design 3 and 5.3, DECISIONS B-1701, B-1702): SELECT own rows and the shared models. Reading is not calling: the call-time gate checks shi_provider_access."
+  migration: models_admin_0001
+
+- table: models
+  path: [policies, write_own]
+  reason: "the SHI-wide model provider and its models are shared rows (tenant NULL) every client reads and only the platform administrator context writes (design 3 and 5.3, DECISIONS B-1701, B-1702): writes need the client's own rows, or tenant NULL together with the platform administrator context."
+  migration: models_admin_0001
