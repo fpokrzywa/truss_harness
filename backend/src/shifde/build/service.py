@@ -639,6 +639,12 @@ class ArtifactService:
             or confirmed["artifact_id"] != art["id"]
         ):
             raise NotFound("publish request not found")
+        # the bypass belongs to the one who may decide a request that is still open (B-1931)
+        self.sc.pdp.require("approval:decide", self.ref_of(art))
+        if confirmed["requested_by"] == self.sc.principal.principal_id:
+            raise Forbidden("separation of duties: you cannot decide your own publish request")
+        if confirmed["status"] != "pending":
+            raise Conflict(f"the publish request is already {confirmed['status']}")
         return _Env(self, art, tenant, check_visibility=False)
 
     def prepare(
@@ -650,6 +656,10 @@ class ArtifactService:
         approval_of: Mapping[str, Any] | None = None,
     ) -> Prepared:
         env = self.env(art, approval_of=approval_of)
+        if approval_of is not None:  # the spec validated for an approver is the frozen draft
+            frozen = repository.get_request(self.session, self.sc.tenant_id, approval_of["id"])
+            if frozen is None or spec_hash(spec) != frozen["spec_hash"]:
+                raise Conflict("the draft changed after the request; ask for a new publish request")
         report = Report()
         kind = art["kind"]
         pins: list[tuple[UUID, str]] = []

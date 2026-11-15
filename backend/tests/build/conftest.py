@@ -13,19 +13,24 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from shifde.adapters.testservers import RestTestServer
 from shifde.build import repository as build_repo
 from shifde.build.env import Env
 from shifde.connections import repository as conn_repo
 from shifde.core.db import Database
 from shifde.core.settings import Settings
 from tests.build.env_support import RepoEnv, add_published
+from tests.build.routes import build_client
 from tests.build.service_support import add_person, service_env
 from tests.conftest import CLEAN_TABLES
 from tests.connections.conftest import connection_values, discovery_values, owner_vendor
+from tests.connections.routes import REST_TOKEN
 from tests.tenancy.conftest import World, app_session, world
+from tests.tenancy.routes import People, make_people
 
 __all__ = ["EnvFactory", "World", "owner_vendor", "world"]
 
@@ -45,6 +50,52 @@ for _table in (
 ):
     if _table not in CLEAN_TABLES:
         CLEAN_TABLES.append(_table)
+
+
+# part 4b: the route tests sign people in, call models and write usage and audit rows
+for _table in (
+    "secret_access_log",
+    "secrets",
+    "login_lockouts",
+    "user_identities",
+    "sessions",
+    "local_credentials",
+    "memberships",
+    "idp_configs",
+    "users",
+    "audit_events",
+    "usage_rollups_daily",
+    "usage_events",
+    "rate_card_versions",
+    "rate_cards",
+    "policy_decisions",
+    "shi_provider_access",
+    "model_allowlist_models",
+    "model_allowlists",
+    "rate_limit_windows",
+    "concurrency_leases",
+):
+    if _table not in CLEAN_TABLES:
+        CLEAN_TABLES.append(_table)
+
+
+@pytest.fixture
+def client(settings: Settings) -> Iterator[TestClient]:
+    with build_client(settings) as c:
+        yield c
+
+
+@pytest.fixture
+def rest_server() -> Iterator[RestTestServer]:
+    """SETH's local REST target that accepts `REST_TOKEN` (tests/connections/conftest.py)."""
+    with RestTestServer(token=REST_TOKEN) as server:
+        yield server
+
+
+@pytest.fixture
+def people(owner_db: Database, world: World) -> People:
+    with owner_db.session() as owner:
+        return make_people(owner, world)
 
 
 @pytest.fixture
