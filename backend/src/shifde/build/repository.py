@@ -352,6 +352,49 @@ def pinned_by_count(session: Session, tenant_id: UUID, version_id: UUID) -> int:
     )
 
 
+def pin_closure(session: Session, tenant_id: UUID, version_id: UUID) -> set[UUID]:
+    """`version_id` and every version it pins, directly or through a pinned version (a prompt's
+    composed prompts, a skill's dependencies), all of `tenant_id`; empty for another client's or
+    an unknown version."""
+    rows = session.execute(
+        text(
+            "WITH RECURSIVE c(id) AS ("
+            "SELECT v.id FROM shifde.artifact_versions v WHERE v.id = :v AND v.tenant_id = :t "
+            "UNION SELECT p.pinned_version_id FROM shifde.artifact_version_pins p "
+            "JOIN c ON p.version_id = c.id WHERE p.tenant_id = :t) "
+            "SELECT id FROM c"
+        ),
+        {"t": tenant_id, "v": version_id},
+    ).scalars()
+    return set(rows)
+
+
+# ------------------------------------------------------------------ runs (read only)
+# The run row an execution `Env` is anchored to (`ArtifactService.env(run_of=...)`, B-1933): the
+# runtime owns `shifde.runs`; build reads the target columns of one run of one client.
+RUN_TARGETS = {
+    "agents": "agent_version_id",
+    "orchestrations": "orchestration_version_id",
+    "pipelines": "pipeline_version_id",
+    "ontologies": "ontology_version_id",
+}
+
+
+def run_target(session: Session, tenant_id: UUID, run_id: UUID) -> Row | None:
+    return (
+        session.execute(
+            text(
+                "SELECT id, tenant_id, kind, agent_version_id, orchestration_version_id, "
+                "pipeline_version_id, ontology_version_id FROM shifde.runs "
+                "WHERE id = :r AND tenant_id = :t"
+            ),
+            {"r": run_id, "t": tenant_id},
+        )
+        .mappings()
+        .first()
+    )
+
+
 # ------------------------------------------------------------------ publish requests
 def insert_request(session: Session, values: Mapping[str, Any]) -> None:
     session.execute(

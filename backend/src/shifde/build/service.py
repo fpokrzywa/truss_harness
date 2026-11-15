@@ -612,7 +612,13 @@ class ArtifactService:
         return self._version_out(saved, with_spec=True)
 
     # ================================================================== validation
-    def env(self, art: Mapping[str, Any], *, approval_of: Mapping[str, Any] | None = None) -> _Env:
+    def env(
+        self,
+        art: Mapping[str, Any],
+        *,
+        approval_of: Mapping[str, Any] | None = None,
+        run_of: Mapping[str, Any] | None = None,
+    ) -> _Env:
         """The validators' `Env` for `art`, built for this request from this service's
         `TenantScope` (never cached). Every lookup carries the scope's client id.
 
@@ -620,10 +626,22 @@ class ArtifactService:
         caller's visibility and use checks skipped (the requester was checked at request time),
         and only once the request, its artifact and `art` are confirmed to be this client's and
         to belong together; names stay hidden (`reveal_names=False`). Anything else is the
-        unknown-id answer (B-1928)."""
+        unknown-id answer (B-1928).
+
+        `run_of` is the run row the runtime executes (the Execution Gate authorizes each action of
+        the run): the run is re-read with the scope's client id, `art` must be the artifact of the
+        run's own pinned version (agent, orchestration, pipeline or ontology), and the env then
+        answers only for that version and the versions it pins, directly or transitively, with
+        no visibility or use check and names hidden (`latest` answers nothing: a run executes
+        pinned versions). Another client's run, an unknown run or a run of another artifact is
+        `NotFound("run not found")` (B-1933)."""
         tenant = self.sc.tenant_id
         if art["tenant_id"] != tenant:
             raise NotFound(f"{SINGULAR.get(art['kind'], 'artifact')} not found")
+        if approval_of is not None and run_of is not None:
+            raise ValueError("an env is for a publish request or for a run, not both")
+        if run_of is not None:
+            return self._run_env(art, run_of)
         if approval_of is None:
             return _Env(self, art, tenant, check_visibility=True)
         if (
@@ -647,6 +665,26 @@ class ArtifactService:
             raise Conflict(f"the publish request is already {confirmed['status']}")
         return _Env(self, art, tenant, check_visibility=False)
 
+    def _run_env(self, art: Mapping[str, Any], run_of: Mapping[str, Any]) -> _Env:
+        tenant = self.sc.tenant_id
+        column = repository.RUN_TARGETS.get(art["kind"])
+        if run_of["tenant_id"] != tenant or column is None:
+            raise NotFound("run not found")
+        run = repository.run_target(self.session, tenant, run_of["id"])
+        target = run[column] if run is not None and run["tenant_id"] == tenant else None
+        version = (
+            repository.get_version(self.session, tenant, target) if target is not None else None
+        )
+        if (
+            version is None
+            or version["tenant_id"] != tenant
+            or version["artifact_id"] != art["id"]
+            or version["kind"] != art["kind"]
+        ):
+            raise NotFound("run not found")
+        pinned = frozenset(repository.pin_closure(self.session, tenant, version["id"]))
+        return _Env(self, art, tenant, check_visibility=False, only_versions=pinned)
+
     def prepare(
         self,
         art: Mapping[str, Any],
@@ -654,8 +692,9 @@ class ArtifactService:
         *,
         resolve: bool = True,
         approval_of: Mapping[str, Any] | None = None,
+        run_of: Mapping[str, Any] | None = None,
     ) -> Prepared:
-        env = self.env(art, approval_of=approval_of)
+        env = self.env(art, approval_of=approval_of, run_of=run_of)
         if approval_of is not None:  # the spec validated for an approver is the frozen draft
             frozen = repository.get_request(self.session, self.sc.tenant_id, approval_of["id"])
             if frozen is None or spec_hash(spec) != frozen["spec_hash"]:
@@ -1198,12 +1237,15 @@ class _Env:
         tenant_id: UUID,
         *,
         check_visibility: bool,
+        only_versions: frozenset[UUID] | None = None,
     ) -> None:
         self.svc = svc
         self.art = art
         self.tenant_id = tenant_id
         self.check_visibility = check_visibility
         self.reveal_names = check_visibility
+        # a run's env (`run_of`): only the run's pinned version and what it pins
+        self.only_versions = only_versions
 
     def _same_client(self) -> bool:
         """The scope still names the client this env was built for (an env is never reused)."""
@@ -1240,6 +1282,8 @@ class _Env:
     def version(self, version_id: UUID) -> VersionRef | None:
         if not self._same_client():
             return None
+        if self.only_versions is not None and version_id not in self.only_versions:
+            return None
         session = self.svc.session
         row = repository.get_version(session, self.tenant_id, version_id)
         if row is None:
@@ -1248,7 +1292,7 @@ class _Env:
         return self._ref(art, row) if art is not None else None
 
     def latest(self, artifact_id: UUID) -> VersionRef | None:
-        if not self._same_client():
+        if not self._same_client() or self.only_versions is not None:
             return None
         session = self.svc.session
         art = repository.get_artifact(session, self.tenant_id, artifact_id)
