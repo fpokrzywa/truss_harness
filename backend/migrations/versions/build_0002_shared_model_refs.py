@@ -21,8 +21,9 @@ the key is checked, so there is no lock wait on another client's uncommitted `mo
 client's own models keep full referential integrity; a shared model is guarded by the trigger only
 (the platform administrator can delete it: B-1940). Whether the caller's client may use a shared
 model is the service's decision at call time (the SHI switch, B-1732). A row for another client
-than the session's is left to the `WITH CHECK` policy (42501); the schema owner has no session
-client, so the check applies to it in full.
+than the session's client (when the session has one) is refused with 42501, the SQLSTATE of the
+`WITH CHECK` policy, for the schema owner too (BYPASSRLS); a session without a client (the owner's
+migrations and tests) gets the model check in full.
 
 Rollback: drops the column, check, trigger and function and restores the composite keys on
 `(tenant_id, model_id)`. It fails (23503) while a row names a shared model; delete those rows first.
@@ -49,10 +50,12 @@ GUARD = """CREATE FUNCTION shifde.build_model_ref_guard() RETURNS trigger
    $$ DECLARE owner_tenant uuid; found boolean;
    BEGIN
      IF NEW.model_id IS NULL THEN NEW.own_model_id := NULL; RETURN NEW; END IF;
-     -- a row for another client than the session's: row-level security refuses it (42501)
+     -- a row for another client than the session's: refused as row-level security does (42501),
+     -- also for the schema owner, which row-level security does not bind
      IF shifde.current_tenant_id() IS NOT NULL
         AND NEW.tenant_id IS DISTINCT FROM shifde.current_tenant_id() THEN
-       NEW.own_model_id := NULL; RETURN NEW;
+       RAISE EXCEPTION 'new row violates row-level security policy'
+         USING ERRCODE = '42501';
      END IF;
      SELECT true, m.tenant_id INTO found, owner_tenant FROM shifde.models m
        WHERE m.id = NEW.model_id AND (m.tenant_id IS NULL OR m.tenant_id = NEW.tenant_id);
@@ -76,7 +79,17 @@ def upgrade() -> None:
         statements += [
             f"ALTER TABLE shifde.{table} DROP CONSTRAINT {KEYS[table]}",
             f"ALTER TABLE shifde.{table} ADD COLUMN own_model_id uuid",
+            *(
+                [f"ALTER TABLE shifde.{table} DISABLE TRIGGER trg_{table}_append_only"]
+                if table == "prompt_test_runs"
+                else []
+            ),
             f"UPDATE shifde.{table} SET own_model_id = model_id",
+            *(
+                [f"ALTER TABLE shifde.{table} ENABLE TRIGGER trg_{table}_append_only"]
+                if table == "prompt_test_runs"
+                else []
+            ),
             f"ALTER TABLE shifde.{table} ADD CONSTRAINT ck_{table}__own_model "
             "CHECK (own_model_id IS NULL OR own_model_id = model_id)",
             f"ALTER TABLE shifde.{table} ADD CONSTRAINT {KEYS[table]} "
