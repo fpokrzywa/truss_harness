@@ -16,8 +16,9 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from shifde.build import repository as build_repo
-from shifde.core.db import Database
+from shifde.core.db import Database, platform_admin_context
 from shifde.core.errors import NotFound, ValidationFailed
+from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.ontology import engine
 from shifde.ontology import repository as repo
@@ -260,3 +261,71 @@ def test_a_huge_integer_literal_is_exact_and_not_a_server_error() -> None:
     assert engine.exact_number("-" + digits) == Decimal("-" + digits)  # (unary minus would round)
     assert engine.exact_number("9" * 4300) == int("9" * 4300)  # still an int at the limit
     assert _typed(f"{digits},1")[0] == Decimal(digits)
+
+
+# ------------------------------------------------------------------ G1 (B-2013)
+def _group_policy(group: UUID) -> s.PolicyIn:
+    return s.PolicyIn(
+        object_type_key=TYPE,
+        subject=s.PolicySubject(type="group", id=group),
+        row_filter="row.id > 0",
+    )
+
+
+@pytest.mark.parametrize("platform_admin", [False, True], ids=["client-user", "platform-admin"])
+def test_a_group_policy_names_only_a_group_bound_in_the_clients_own_context(
+    opener: Opener, two: Two, settings: Settings, owner_db: Database, platform_admin: bool
+) -> None:
+    """A's bound group is accepted; a group bound only in B and an unknown id are refused with
+    the same 422 and the same body, for A's user and for a platform administrator."""
+    a = two.a
+    a_group, b_group = uuid7(), uuid7()
+    with owner_db.session() as o, platform_admin_context(o):
+        for group, tenant in ((a_group, a.tenant), (b_group, two.b.tenant)):
+            o.execute(
+                text("INSERT INTO shifde.groups (id, slug, name) VALUES (:g, :s, :s)"),
+                {"g": group, "s": f"g-{group.hex}"},
+            )
+            o.execute(
+                text(
+                    "INSERT INTO shifde.role_bindings (id, tenant_id, subject_type, subject_id, "
+                    "role_id, scope_type, scope_id) SELECT :i, :t, 'group', :g, r.id, "
+                    "'tenant', :t FROM shifde.roles r WHERE r.tenant_id IS NULL AND r.key = 'viewer'"
+                ),
+                {"i": uuid7(), "t": tenant, "g": group},
+            )
+        o.commit()
+    try:
+        with opener(a.tenant) as session:
+            svc = _service(session, a, settings)
+            ontology = UUID(a.ontology)
+
+            def create(group: UUID) -> s.PolicyOut:
+                if platform_admin:
+                    with platform_admin_context(session):
+                        return svc.create_policy(ontology, _group_policy(group))
+                return svc.create_policy(ontology, _group_policy(group))
+
+            assert create(a_group).subject.id == a_group
+            refusals = []
+            for missing in (b_group, uuid4()):
+                with pytest.raises(ValidationFailed) as exc:
+                    create(missing)
+                refusals.append((type(exc.value), exc.value.args, str(exc.value)))
+                session.rollback()
+            assert refusals[0] == refusals[1]
+            assert "no such group" in refusals[0][2]
+    finally:
+        with owner_db.session() as o, platform_admin_context(o):
+            o.execute(
+                text("DELETE FROM shifde.role_bindings WHERE subject_id IN (:a, :b)"),
+                {"a": a_group, "b": b_group},
+            )
+            o.execute(
+                text("DELETE FROM shifde.groups WHERE id IN (:a, :b)"), {"a": a_group, "b": b_group}
+            )
+            o.execute(
+                text("DELETE FROM shifde.ontology_access_policies WHERE subject_id = :a"),
+                {"a": a_group},
+            )
+            o.commit()
