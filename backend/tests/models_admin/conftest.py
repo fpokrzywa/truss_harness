@@ -1,6 +1,10 @@
-"""models_admin tests, part 1 (data layer): two clients from the tenancy world, each with a model
+"""models_admin tests (data layer and routes): two clients from the tenancy world, each with a model
 connection and a private vendor written as the schema owner; the assertions run as `shifde_app`
 under row-level security (`tests.tenancy.conftest.app_session` asserts the role).
+
+The route tests (part 2a) mount `models_admin.api.router` with the connections routes in the
+connections harness (`tests/models_admin/routes.py`); importing `tests.connections.conftest` adds
+the sessions, audit and secret tables to the per-test truncation.
 
 Rows the tests add are removed before and after each test, as the schema owner: every row of the
 module's tables (the SHI provider included: the service creates it, no migration seeds it), every
@@ -15,14 +19,17 @@ from typing import Any  # Any: SQL parameter values
 from uuid import UUID
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from shifde.core.db import Database, platform_admin_context
 from shifde.core.ids import uuid7
+from shifde.core.settings import Settings
 from shifde.models_admin import repository
 from tests.connections.conftest import owner_vendor
 from tests.tenancy.conftest import Client, World, app_session, world
+from tests.tenancy.routes import People, make_people
 
 __all__ = ["world"]
 
@@ -130,7 +137,7 @@ def make_shi(app_db: Database, tenant: UUID | None = None) -> UUID:
     """The SHI provider and one shared model, written in the platform administrator context;
     returns the shared model's id."""
     with app_session(app_db, tenant) as s, platform_admin_context(s):
-        repository.ensure_shi_provider(s, adapter_key="fake", settings={}, created_by=None)
+        repository.ensure_shi_provider(s, adapter_key="fake", created_by=None)
         values = model_values(None, repository.SHI_PROVIDER_ID, model_key="shi-model")
         repository.insert_model(s, values)
         s.commit()
@@ -141,6 +148,8 @@ def _clean(owner_db: Database) -> None:
     with owner_db.session() as s:
         for table in MODULE_TABLES:
             s.execute(text(f"DELETE FROM shifde.{table}"))
+        s.execute(text("DELETE FROM shifde.connection_discoveries"))
+        s.execute(text("DELETE FROM shifde.connection_tests"))
         s.execute(text("DELETE FROM shifde.connections"))
         s.execute(text("DELETE FROM shifde.vendors WHERE created_by IS NOT NULL"))
         s.commit()
@@ -157,6 +166,21 @@ def clean_models(owner_db: Database) -> Iterator[None]:
 def owner_session(owner_db: Database) -> Iterator[Session]:
     with owner_db.session() as s:
         yield s
+
+
+@pytest.fixture
+def client(settings: Settings) -> Iterator[TestClient]:
+    """The connections harness plus `models_admin.api.router` (part 2a route tests)."""
+    from tests.models_admin.routes import models_client  # routes.py imports this module
+
+    with models_client(settings) as c:
+        yield c
+
+
+@pytest.fixture
+def people(owner_db: Database, world: World) -> People:
+    with owner_db.session() as owner:
+        return make_people(owner, world)
 
 
 @pytest.fixture
