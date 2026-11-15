@@ -82,12 +82,17 @@ def insert_policy(
 def update_policy(
     session: Session,
     tenant_id: UUID,
+    ontology_id: UUID,
     policy_id: UUID,
     expected: int | None,
     values: Mapping[str, Any],  # Any: column values
     property_keys: list[str] | None,
 ) -> Row | None:
-    """Optimistic update of a whole policy; None when `expected` does not match."""
+    """Optimistic update of a whole policy of `ontology_id`; None when the policy is not that
+    ontology's (ontology review 1 F1; `ontology_id` is never updatable) or `expected` does not
+    match."""
+    if get_policy(session, tenant_id, ontology_id, policy_id) is None:
+        return None
     row = update_returning(
         session,
         "ontology_access_policies",
@@ -104,10 +109,11 @@ def update_policy(
         session.execute(
             text(
                 "UPDATE shifde.ontology_access_policies "
-                "SET property_keys = CAST(:k AS text[]) WHERE tenant_id = :t AND id = :id "
+                "SET property_keys = CAST(:k AS text[]) WHERE tenant_id = :t AND ontology_id = :o "
+                "AND id = :id "
                 f"RETURNING {POLICY_COLUMNS}"
             ),
-            {"k": property_keys, "id": policy_id, "t": tenant_id},
+            {"k": property_keys, "id": policy_id, "t": tenant_id, "o": ontology_id},
         )
         .mappings()
         .one()

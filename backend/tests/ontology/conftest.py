@@ -4,10 +4,25 @@ removed before each test, as the schema owner."""
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
+import pytest
+from fastapi.testclient import TestClient
+
+from shifde.core.settings import Settings
+from tests.build.conftest import owner_session, people, sides
 from tests.conftest import CLEAN_TABLES
+from tests.ontology.routes import ontology_client
 from tests.tenancy.conftest import World, world
 
-__all__ = ["World", "world"]
+__all__ = ["World", "owner_session", "people", "sides", "world"]
+
+
+@pytest.fixture
+def client(settings: Settings) -> Iterator[TestClient]:
+    with ontology_client(settings) as c:
+        yield c
+
 
 for _table in (
     "ontology_materializations",

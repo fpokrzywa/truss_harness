@@ -335,8 +335,8 @@ def test_a_cannot_change_bs_rows_through_the_repository(
         "subject_id": uuid7(),
         "row_filter": "x",
     }
-    assert repo.update_policy(session, t, b.policy, None, values, ["id"]) is None
-    assert repo.update_policy(session, t, unknown, None, values, ["id"]) is None
+    assert repo.update_policy(session, t, b.ontology, b.policy, None, values, ["id"]) is None
+    assert repo.update_policy(session, t, a.ontology, unknown, None, values, ["id"]) is None
     assert repo.delete_policy(session, t, b.ontology, b.policy) is False
     assert repo.delete_policy(session, t, a.ontology, b.policy) is False  # A's ontology, B's policy
     assert repo.delete_policy(session, t, unknown, unknown) is False
@@ -370,7 +370,7 @@ def test_a_own_writes_succeed_as_the_positive_control(
             "subject_id": uuid7(),
             "row_filter": "r",
         }
-        row = repo.update_policy(s, a.tenant, a.policy, None, values, ["id"])
+        row = repo.update_policy(s, a.tenant, a.ontology, a.policy, None, values, ["id"])
         assert row is not None and row["object_type_key"] == "x.new" and row["row_version"] == 2
         assert repo.delete_policy(s, a.tenant, a.ontology, a.policy) is True
         stored = repo.put_attributes(s, a.tenant, "user", a.principal, {"k": 2}, 1, uuid7())

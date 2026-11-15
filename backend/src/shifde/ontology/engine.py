@@ -133,7 +133,10 @@ def exact_number(value: str) -> Any:  # Any: int | float | Decimal | the text it
     `float` only when the float prints back to the same value, else an exact `Decimal`."""
     text = value.strip()
     if _INTEGER_LITERAL.fullmatch(text):
-        return int(text)
+        try:
+            return int(text)
+        except ValueError:  # more than `sys.int_info.default_max_str_digits` (4300) digits
+            return Decimal(text)
     try:
         exact = Decimal(text)
     except InvalidOperation:
