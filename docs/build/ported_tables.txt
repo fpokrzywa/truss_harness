@@ -49,3 +49,11 @@ rate_limit_windows  # models_admin
 concurrency_leases  # models_admin
 governance_policies  # governance
 retention_policies  # governance
+artifacts  # build
+artifact_versions  # build
+artifact_version_pins  # build
+publish_requests  # build
+prompt_test_runs  # build
+pipeline_version_refs  # build
+pipeline_validation_reports  # build
+pipeline_schedules  # build

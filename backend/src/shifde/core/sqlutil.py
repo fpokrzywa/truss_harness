@@ -29,6 +29,8 @@ def update_returning(
     expected_version: int | None,
     values: Mapping[str, Any],
     json_columns: frozenset[str] = frozenset(),
+    *,
+    tenant_id: UUID | None = None,
 ) -> Mapping[Any, Any] | None:  # Any: RowMapping keys
     """Optimistic-locking ``UPDATE ... RETURNING``. Table/column names come from code-owned
     allowlists (`updatable`); every value is a bound parameter."""
@@ -40,6 +42,10 @@ def update_returning(
             raise ValueError(f"column {column!r} may never be updatable")
     sets = ["row_version = row_version + 1"]
     params: dict[str, Any] = {"id": row_id, "expected": expected_version}
+    scope = ""
+    if tenant_id is not None:  # second fence next to row-level security (DECISIONS B-1902)
+        scope = " AND tenant_id = :tenant_id"
+        params["tenant_id"] = tenant_id
     for column, value in values.items():
         if column not in updatable:
             raise ValueError(f"column {column!r} is not updatable")
@@ -50,7 +56,7 @@ def update_returning(
             sets.append(f"{column} = :{column}")
             params[column] = value
     sql = (
-        f"UPDATE shifde.{table} SET {', '.join(sets)} WHERE id = :id "
+        f"UPDATE shifde.{table} SET {', '.join(sets)} WHERE id = :id{scope} "
         f"AND (CAST(:expected AS int) IS NULL OR row_version = :expected) RETURNING {columns}"
     )
     return session.execute(text(sql), params).mappings().first()
