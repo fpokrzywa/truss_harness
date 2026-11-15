@@ -157,6 +157,38 @@ def test_a_call_without_provider_usage_is_recorded_as_estimated_not_calculated(
     assert ledger.reconcile(s, t, _today(), _today()).consistent
 
 
+@pytest.mark.parametrize("column", ["provider_key", "model_key"])
+def test_the_provider_key_of_a_model_call_is_the_models_never_the_callers(
+    world: tuple[Session, UUID, UUID], column: str
+) -> None:
+    """Runtime isolation review 2, finding 3: `shifde_ops_stats` groups every client's events by
+    `provider_key` and `/api/metrics` exports it, so a caller cannot choose it."""
+    s, t, model = world
+    add_rate(s, t, input_rate="2", output_rate="4")
+    with pytest.raises(ValueError, match="not by the caller"):
+        ledger.record_model_call(
+            s,
+            _call(t, "forged", model, **{column: "chosen-by-client"}),
+            reported=Usage(input_tokens=1, output_tokens=1),
+            estimated_input=1,
+            estimated_output=1,
+        )
+    ledger.record_model_call(
+        s,
+        _call(t, "own", model),
+        reported=Usage(input_tokens=1, output_tokens=1),
+        estimated_input=1,
+        estimated_output=1,
+    )
+    keys = s.execute(
+        text(
+            "SELECT event_key, provider_key, model_key FROM shifde.usage_events WHERE tenant_id = :t"
+        ),
+        {"t": t},
+    ).all()
+    assert [tuple(k) for k in keys] == [("own", "openai", "m1")]
+
+
 def test_reported_usage_is_calculated_and_labelled_reported(
     world: tuple[Session, UUID, UUID],
 ) -> None:

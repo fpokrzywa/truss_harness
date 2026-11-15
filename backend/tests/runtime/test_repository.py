@@ -24,6 +24,7 @@ from shifde.runtime import repository as repo
 from tests._support.runs import add_run
 from tests.build.env_support import add_published
 from tests.runtime.conftest import TABLES, Client, Two, app_session, insert
+from tests.tenancy.conftest import owner_member, owner_person
 
 TOKEN = UUID("00000000-0000-7000-8000-00000000a7e3")
 WORKER = "rt3-worker"
@@ -48,6 +49,7 @@ class Ids:
     idem: str
     service_account: UUID
     api_key: UUID
+    user: UUID  # a person who is a member of this client only
 
 
 def _seed_client(o: Session, c: Client) -> Ids:
@@ -105,9 +107,11 @@ def _seed_client(o: Session, c: Client) -> Ids:
     artifact = o.execute(
         text("SELECT id FROM shifde.run_artifacts WHERE run_id = :r"), {"r": c.run}
     ).scalar_one()
+    user = owner_person(o, "rt3-user")
+    owner_member(o, t, user)
     return Ids(t, c.run, c.job, queued_job, c.step, c.invocation, f"k-{c.invocation}",
                c.approval, artifact, child_pending, child_done, pipeline_run, c.workspace,
-               principal, "idem", service_account, api_key)  # fmt: skip
+               principal, "idem", service_account, api_key, user)  # fmt: skip
 
 
 @pytest.fixture
@@ -199,6 +203,10 @@ CASES: dict[str, Case] = {
     "principal_display": lambda s, t, x: (
         repo.principal_display(s, t, "service_account", x.service_account) == str(x.service_account)
     ),
+    # a person of another client only is displayed as the id, like an unknown one (review 2 F1)
+    "principal_display_user": lambda s, t, x: (
+        repo.principal_display(s, t, "user", x.user) == str(x.user)
+    ),
     "pending_approval_refs": lambda s, t, x: repo.pending_approval_refs(s, t, x.run),
     "pending_unknown_refs": lambda s, t, x: repo.pending_unknown_refs(s, t, x.run),
     "request_cancel": lambda s, t, x: repo.request_cancel(s, t, x.run, uuid7()),
@@ -271,7 +279,10 @@ def test_every_id_taking_function_has_a_case() -> None:
         n for n, v in vars(repo).items()
         if callable(v) and not n.startswith("_") and getattr(v, "__module__", "") == repo.__name__
     }  # fmt: skip
-    covered = {n.removesuffix("_lock").removesuffix("_outcome_unknown") for n in CASES}
+    covered = {
+        n.removesuffix("_lock").removesuffix("_outcome_unknown").removesuffix("_user")
+        for n in CASES
+    }
     covered |= {"list_approvals"}
     assert public - covered - inserts - cross_client - helpers == set()
 

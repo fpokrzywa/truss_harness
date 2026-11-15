@@ -1136,9 +1136,15 @@ def principal_display(
         ).first()
     else:
         # `users` is global (no tenant_id); `users_select` shows only the caller, members of the
-        # current client and, to a platform administrator, everyone
+        # current client and, to a platform administrator, everyone. The membership predicate
+        # names the client too, so a user of another client only is displayed as the id
+        # (runtime isolation review 2, finding 1)
         row = session.execute(
-            text("SELECT display_name FROM shifde.users WHERE id = :p"), {"p": principal_id}
+            text(
+                "SELECT u.display_name FROM shifde.users u WHERE u.id = :p AND EXISTS "
+                "(SELECT 1 FROM shifde.memberships m WHERE m.user_id = u.id AND m.tenant_id = :t)"
+            ),
+            {"p": principal_id, "t": tenant_id},
         ).first()
     return str(row[0]) if row else str(principal_id)
 

@@ -227,6 +227,10 @@ def record_model_call(
         reported, estimated_input=estimated_input, estimated_output=estimated_output
     )
     v: dict[str, Any] = dict(values)  # Any: column values
+    if "provider_key" in v or "model_key" in v:
+        # the keys come from the model's own rate keys below, never from the caller (runtime
+        # isolation review 2, finding 3)
+        raise ValueError("provider_key and model_key are set from the model, not by the caller")
     usage = pricing.Usage(
         input_tokens=resolved.input_tokens,
         output_tokens=resolved.output_tokens,
@@ -251,8 +255,8 @@ def record_model_call(
         # provider_key must stay the platform adapter key (the model's provider), never a string a
         # client chooses: shifde_ops_stats groups every client's events by it and /api/metrics
         # exports it as a label (runtime isolation review 1 F5 (d), B-2118)
-        v.setdefault("provider_key", provider_key)
-        v.setdefault("model_key", model_key)
+        v["provider_key"] = provider_key
+        v["model_key"] = model_key
     return record(session, v)
 
 
