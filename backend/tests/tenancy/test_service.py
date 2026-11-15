@@ -26,7 +26,7 @@ from shifde.core.ids import uuid7
 from shifde.identity import repository as identity_repo
 from shifde.identity import service as identity
 from shifde.tenancy import service
-from shifde.tenancy.schemas import OrgCreate
+from shifde.tenancy.schemas import OrgCreate, OrgSummaryOut
 from shifde.tenancy.scope import TenantScope
 from tests._support.tenants import bind_user
 from tests.authz.conftest import owner_insert_bindings
@@ -190,10 +190,18 @@ def test_the_platform_admin_flag_lists_no_client_and_the_full_list_checks_the_pr
         db.set_platform_admin(s, True)  # the database flag alone is not enough
         with pytest.raises(Forbidden):
             service.list_all_orgs(s, _p(admin), include_archived=True, limit=500, cursor=None)
-        page = service.list_all_orgs(
-            s, _p(admin, admin=True), include_archived=True, limit=500, cursor=None
-        )
-    listed = {o.id: o for o in page.items}
+        # Follow every page: tenant rows from earlier tests stay in the worker's database
+        # (tenants are not truncated) and ids sort oldest first, so A and B can be past page one.
+        listed: dict[UUID, OrgSummaryOut] = {}
+        cursor: str | None = None
+        while True:
+            page = service.list_all_orgs(
+                s, _p(admin, admin=True), include_archived=True, limit=500, cursor=cursor
+            )
+            listed.update((o.id, o) for o in page.items)
+            if page.next_cursor is None:
+                break
+            cursor = page.next_cursor
     assert {world.a.tenant, world.b.tenant} <= set(listed)
     assert set(type(listed[world.a.tenant]).model_fields) == {"id", "slug", "name", "status"}
     with (
