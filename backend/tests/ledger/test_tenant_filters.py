@@ -14,6 +14,7 @@ from shifde import ledger
 from shifde.core.ids import uuid7
 from shifde.ledger import budgeting, enforcement, estimate
 from tests._support.tenants import add_tenants
+from tests.build.env_support import add_published
 from tests.ledger.util import add_budget, add_model, add_rate, add_run, create_stand_ins
 
 
@@ -74,6 +75,34 @@ def test_an_event_does_not_inherit_attribution_from_another_tenants_run(
         text("SELECT pipeline_id FROM shifde.usage_events WHERE tenant_id = :t"), {"t": a}
     ).scalar_one()
     assert got is None
+    owner_session.rollback()
+
+
+def test_an_event_does_not_inherit_a_prompt_from_another_tenants_artifact_version(
+    owner_session: Session,
+) -> None:
+    """Carry-forward row 71: `_fill_attribution` over the real `artifact_versions` (build_0001)."""
+    a, b = uuid7(), uuid7()
+    add_tenants(owner_session, a, b)
+    prompt_a, version_a = add_published(owner_session, a, "prompts", "p-a", {"x": 1})
+    prompt_b, version_b = add_published(owner_session, b, "prompts", "p-b", {"x": 1})
+    for key, version in (("own", version_a), ("theirs", version_b)):
+        ledger.record(
+            owner_session,
+            {
+                "tenant_id": a,
+                "event_key": key,
+                "event_type": "tool_call",
+                "prompt_version_id": version,
+            },
+        )
+    got = dict(
+        owner_session.execute(
+            text("SELECT event_key, prompt_id FROM shifde.usage_events WHERE tenant_id = :t"),
+            {"t": a},
+        ).all()
+    )
+    assert got == {"own": prompt_a, "theirs": None} and prompt_b != prompt_a
     owner_session.rollback()
 
 

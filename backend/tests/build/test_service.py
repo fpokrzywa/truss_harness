@@ -28,7 +28,7 @@ from shifde.build.canonical import spec_hash
 from shifde.build.env import VersionRef
 from shifde.build.service import ArtifactService
 from shifde.connections import repository as conn_repo
-from shifde.core.db import Database
+from shifde.core.db import Database, platform_admin_context
 from shifde.core.errors import AppError, NotFound
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
@@ -36,7 +36,12 @@ from shifde.models_admin import repository as models_repo
 from tests.build.conftest import World
 from tests.build.service_support import REGISTRY, add_person, bind_at, holder, service_for
 from tests.connections.conftest import connection_values, discovery_values
-from tests.models_admin.conftest import model_values, owner_connection, provider_values
+from tests.models_admin.conftest import (
+    make_shi,
+    model_values,
+    owner_connection,
+    provider_values,
+)
 from tests.tenancy.conftest import app_session
 
 PROMPT: dict[str, Any] = {
@@ -287,7 +292,7 @@ def test_lists_name_only_the_callers_client(orgs: tuple[Org, Org], as_user: Open
 
 
 def test_create_takes_ids_owner_and_client_from_the_session(
-    orgs: tuple[Org, Org], as_user: Opener, owner_db: Database
+    orgs: tuple[Org, Org], as_user: Opener, owner_db: Database, world: World
 ) -> None:
     """The client comes from the scope: a scope id naming B's client (or B's workspace) is the
     unknown-scope answer; the ids and the owner are minted here."""
@@ -299,7 +304,17 @@ def test_create_takes_ids_owner_and_client_from_the_session(
         svc.session.rollback()
         made = _create(svc, "mine", PROMPT)
     assert theirs == nothing and theirs[0] == "NotFound"
+    with as_user(a.tenant, a.admin) as svc:
+        for kind, theirs_id in (("workspace", world.b.ws), ("project", world.b.project)):
+            scope = sch.ScopeRef(type=kind, id=theirs_id)
+            there = _outcome(lambda s=scope: _create(svc, "x2", PROMPT, scope=s))
+            svc.session.rollback()
+            ghost = sch.ScopeRef(type=kind, id=uuid7())
+            nowhere = _outcome(lambda s=ghost: _create(svc, "x2", PROMPT, scope=s))
+            svc.session.rollback()
+            assert there == nowhere and there[0] == "NotFound", kind
     with owner_db.session() as o:
+        assert not o.execute(text("SELECT 1 FROM shifde.artifacts WHERE key = 'x2'")).first()
         row = repository.get_artifact(o, a.tenant, made.id)
         assert row is not None and row["tenant_id"] == a.tenant
         draft = repository.get_draft(o, a.tenant, made.id)
@@ -447,6 +462,8 @@ def test_connection_lookups_follow_read_and_use_and_the_registry(
     with as_user(a.tenant, a.admin) as svc:
         info = svc.env(holder(a.tenant)).connection(a.connection)
         assert info is not None and info.usable_by_publisher
+        # the newer discovery is an `openapi` one: the schema lookup reads kind `schema` only
+        assert svc.env(holder(a.tenant)).schema_discovery(a.connection) is None
         assert info.implemented == desc.implemented
         assert info.capabilities == frozenset(str(c) for c in desc.capabilities)
         # the latest discovery is not an MCP one: no tool, whatever its payload says
@@ -588,3 +605,105 @@ def test_an_unknown_kind_or_another_clients_artifact_has_no_env(
     a, b = orgs
     with as_user(a.tenant, a.admin) as svc, pytest.raises(NotFound):
         svc.env(holder(b.tenant, "prompts"))
+
+
+def test_the_approver_bypass_is_for_the_one_who_may_decide_an_open_request(
+    orgs: tuple[Org, Org], as_user: Opener, owner_db: Database
+) -> None:
+    """Review 3 F2: `env(approval_of=)` and `prepare(approval_of=)` are public, so the bypass
+    itself checks what `decide` checks: the request is open, the caller holds `approval:decide`
+    and is not its requester, and the spec validated is the frozen draft."""
+    a, _ = orgs
+    with owner_db.session() as o:
+        viewer = add_person(o, a.tenant, "viewer-f2", "viewer")
+        req = repository.get_request(o, a.tenant, a.request)
+        art = repository.get_artifact(o, a.tenant, a.pending)
+        draft = repository.get_draft(o, a.tenant, a.pending)
+    assert req and art and draft
+    with as_user(a.tenant, a.admin) as svc:  # the requester
+        assert _outcome(lambda: svc.env(art, approval_of=req))[0] == "Forbidden"
+    with as_user(a.tenant, viewer) as svc:  # no `approval:decide` (and cannot see the artifact)
+        assert _outcome(lambda: svc.env(art, approval_of=req))[0] in {"Forbidden", "NotFound"}
+    with as_user(a.tenant, a.approver) as svc:
+        assert not svc.env(art, approval_of=req).check_visibility
+        svc.prepare(art, dict(draft["spec"]), approval_of=req)
+        changed = _outcome(lambda: svc.prepare(art, dict(PROMPT2), approval_of=req))
+        assert changed[0] == "Conflict"
+    with owner_db.session() as o:
+        o.execute(
+            text(
+                "UPDATE shifde.publish_requests SET status = 'rejected', "
+                "decided_by = :u, decided_at = now() WHERE id = :i"
+            ),
+            {"i": a.request, "u": a.approver},
+        )
+        o.commit()
+        closed = repository.get_request(o, a.tenant, a.request)
+    with as_user(a.tenant, a.approver) as svc:
+        assert _outcome(lambda: svc.env(art, approval_of=closed))[0] == "Conflict"
+
+
+def _switch(app_db: Database, tenant: UUID, user: UUID, enabled: bool) -> None:
+    with app_session(app_db, tenant, user) as s, platform_admin_context(s):
+        models_repo.set_shi_access(s, tenant_id=tenant, enabled=enabled, expected=None)
+        s.commit()
+
+
+def test_problems_at_names_what_cannot_be_used_at_the_scope(
+    orgs: tuple[Org, Org], as_user: Opener, owner_db: Database, app_db: Database
+) -> None:
+    """`ModelService.problems_at` through the service's `Env` (F1 (f)): B's model, an unknown id
+    and a retired model are not usable, an allowlist at the organization leaves out the rest, and
+    the shared SHI model is visible only while the client's switch is on (plan Review Focus 5)."""
+    a, b = orgs
+    shi = make_shi(app_db)
+    with owner_db.session() as o:
+        provider = o.execute(
+            text("SELECT provider_id FROM shifde.models WHERE id = :m"), {"m": a.model}
+        ).scalar_one()
+        retired = {**model_values(a.tenant, provider), "lifecycle": "retired"}
+        models_repo.insert_model(o, retired)
+        other = model_values(a.tenant, provider)
+        models_repo.insert_model(o, other)
+        o.commit()
+    gone = uuid7()
+    with as_user(a.tenant, a.admin) as svc:
+        env = svc.env(holder(a.tenant))
+        ref = svc.scope_ref_of(holder(a.tenant))
+        asked = [a.model, b.model, gone, retired["id"], other["id"], shi]
+        expected = {
+            b.model: "model_not_found",
+            gone: "model_not_found",
+            retired["id"]: "model_unavailable",
+            shi: "model_not_found",  # the switch is off by default
+        }
+        assert svc.models.problems_at(ref, asked) == env.model_problems(asked) == expected
+        assert env.model_problems([a.model, a.model]) == {}  # duplicates are one question
+    _switch(app_db, a.tenant, a.admin, True)
+    with as_user(a.tenant, a.admin) as svc:
+        env = svc.env(holder(a.tenant))
+        # switch on, but the SHI provider is not active yet: found, not usable
+        assert env.model_problems([a.model, shi, b.model]) == {
+            b.model: "model_not_found",
+            shi: "model_unavailable",
+        }
+    with owner_db.session() as o:
+        o.execute(
+            text("UPDATE shifde.model_providers SET status = 'active' WHERE tenant_id IS NULL")
+        )
+        o.commit()
+    with as_user(a.tenant, a.admin) as svc:
+        env = svc.env(holder(a.tenant))
+        assert env.model_problems([a.model, shi, b.model]) == {b.model: "model_not_found"}
+    with as_user(b.tenant, b.admin) as svc:  # B's switch is its own
+        assert svc.env(holder(b.tenant)).model_problems([shi]) == {shi: "model_not_found"}
+    with owner_db.session() as o:
+        allow = uuid7()
+        models_repo.upsert_allowlist(o, a.tenant, allow, "tenant", a.tenant, True)
+        models_repo.replace_allowlist_models(o, a.tenant, allow, [a.model])
+        o.commit()
+    with as_user(a.tenant, a.admin) as svc:
+        env = svc.env(holder(a.tenant))
+        listed = env.model_problems([a.model, other["id"], b.model])
+        assert listed == {other["id"]: "model_not_allowed", b.model: "model_not_found"}
+    _switch(app_db, a.tenant, a.admin, False)
