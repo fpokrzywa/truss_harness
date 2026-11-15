@@ -61,6 +61,7 @@ class Ids:
 
     artifact: str
     version: str
+    request: str = ""  # a pending publish request (prompts only), for the decide route
 
 
 @dataclass(frozen=True)
@@ -170,9 +171,9 @@ def _side(
         f"{base}/prompts/{waiting['id']}/publish", json={"change_note": "n"}, headers=h
     )
     assert pending.status_code == 202, pending.text
-    return Side(
-        base, email, tenant, ids, str(pending.json()["publish_request"]["id"]), str(conn.connection)
-    )
+    request = str(pending.json()["publish_request"]["id"])
+    ids["prompts"] = Ids(ids["prompts"].artifact, ids["prompts"].version, request)
+    return Side(base, email, tenant, ids, request, str(conn.connection))
 
 
 @pytest.fixture
@@ -299,12 +300,18 @@ def _routes() -> list[tuple[str, str, str, Make]]:
     return out
 
 
-ROUTES = _routes()
+DECIDE = ("POST", "/orgs/{org}/publish-requests/{request_id}/decide")
+
+
+def _decide(kind: str, ids: Ids, side: Side) -> Req:
+    return ("POST", f"/publish-requests/{ids.request}/decide", {"decision": "reject"})
+
+
+ROUTES = [*_routes(), (f"{DECIDE[0]} {DECIDE[1]}", "prompts", f"{DECIDE[0]} {DECIDE[1]}", _decide)]
 UNKNOWN_FREE = {  # routes without a path id: list, create, publish-requests
     ("GET", "/orgs/{org}/{k}"),
     ("POST", "/orgs/{org}/{k}"),
     ("GET", "/orgs/{org}/publish-requests"),
-    ("POST", "/orgs/{org}/publish-requests/{request_id}/decide"),
     ("GET", "/tool-executors"),
     ("GET", "/pipelines/node-types"),
 }
@@ -334,7 +341,7 @@ def _send(client: TestClient, h: dict[str, str], base: str, req: Req) -> httpx.R
 
 
 def _unknown(kind: str, side: Side) -> Ids:
-    return Ids(str(uuid4()), str(uuid4()))
+    return Ids(str(uuid4()), str(uuid4()), str(uuid4()))
 
 
 def _b_state(owner_db: Database, tenant: UUID) -> list[Any]:  # Any: rows
@@ -502,3 +509,126 @@ def test_every_request_gets_its_own_service_for_its_own_client(
     assert len({id(s) for s in made}) == 3
     assert len({id(s.conns) for s in made}) == len({id(s.models) for s in made}) == 3
     assert all(s.conns.sc is s.sc and s.models.sc is s.sc for s in made)
+
+
+def test_decide_on_bs_request_is_unknown_to_a_and_not_to_bs_own_owner(
+    client: TestClient, two: Two, owner_db: Database
+) -> None:
+    """A rejecting B's pending request and an unknown request get the same answer and B's request
+    stays pending; B's own owner (who requested it) is refused by separation of duties (403)."""
+    h = as_user(client, two.a.email)
+    body = {"decision": "reject"}
+    refused = client.post(
+        f"{two.a.base}/publish-requests/{two.b.request}/decide", json=body, headers=h
+    )
+    missing = client.post(f"{two.a.base}/publish-requests/{uuid4()}/decide", json=body, headers=h)
+    same(refused, missing)
+    control = client.post(
+        f"{two.b.base}/publish-requests/{two.b.request}/decide",
+        json=body,
+        headers=as_user(client, two.b.email),
+    )
+    assert control.status_code == 403, control.text
+    with owner_db.session() as o:
+        status = o.execute(
+            text("SELECT status FROM shifde.publish_requests WHERE id = :i"),
+            {"i": two.b.request},
+        ).scalar_one()
+    assert status == "pending"
+
+
+def test_bs_slug_is_unknown_to_a_for_list_create_and_publish_requests(
+    client: TestClient, two: Two, owner_db: Database
+) -> None:
+    h = as_user(client, two.a.email)
+    before = _b_state(owner_db, two.b.tenant)
+    ghost = org(f"no-such-{uuid7().hex[-12:]}")
+    body = {"key": "x", "name": "X", "spec": prompt_spec(), "scope": scope_of(two.b.tenant)}
+    requests: list[Req] = [
+        *(("GET", f"/{kind}", None) for kind in KINDS),
+        ("POST", "/prompts", body),
+        ("GET", "/publish-requests", None),
+        ("POST", f"/publish-requests/{two.b.request}/decide", {"decision": "reject"}),
+    ]
+    for req in requests:
+        same(_send(client, h, two.b.base, req), _send(client, h, ghost, req))
+    assert _b_state(owner_db, two.b.tenant) == before
+
+
+def _count(owner_db: Database, tenant: UUID, table: str) -> int:
+    with owner_db.session() as o:
+        return int(
+            o.execute(
+                text(f"SELECT count(*) FROM shifde.{table} WHERE tenant_id = :t"), {"t": tenant}
+            ).scalar_one()
+        )
+
+
+def test_bs_model_and_route_in_a_request_body_are_unknown_to_a(
+    client: TestClient, two: Two, owner_db: Database
+) -> None:
+    """Review F4: A's prompt test naming B's model, and A's agent spec naming B's model or route,
+    get the answer an unknown id gets; no run or usage row is written and B's rows are unchanged."""
+    ha, hb = as_user(client, two.a.email), as_user(client, two.b.email)
+    b_model = client.get(f"{two.b.base}/models", headers=hb).json()["items"][0]["id"]
+    route = client.post(
+        f"{two.b.base}/model-routes",
+        headers=hb,
+        json={
+            "name": "b-route",
+            "scope": {"type": "tenant", "id": str(two.b.tenant)},
+            "primary_model_id": b_model,
+            "fallback_model_ids": [],
+            "conditions": {},
+        },
+    )
+    assert route.status_code == 201, route.text
+    ha = as_user(client, two.a.email)  # one session at a time: B's login replaced A's cookies
+    before_b = _b_state(owner_db, two.b.tenant)
+    counts = {
+        (t, table): _count(owner_db, t, table)
+        for t in (two.a.tenant, two.b.tenant)
+        for table in ("prompt_test_runs", "usage_events")
+    }
+    pid, pv = two.a.ids["prompts"].artifact, two.a.ids["prompts"].version
+    test = f"{two.a.base}/prompts/{pid}/test"
+    base_body = {"version_id": pv, "variables": {"message": "hi"}}
+    same(
+        client.post(test, json={**base_body, "model_id": b_model}, headers=ha),
+        client.post(test, json={**base_body, "model_id": str(uuid4())}, headers=ha),
+    )
+    # an agent spec naming B's model or route fails validation like an unknown id does
+    agent = two.a.ids["agents"].artifact
+    draft = client.get(f"{two.a.base}/agents/{agent}/draft", headers=ha).json()
+    answers = []
+    for ref in (
+        {"model_id": b_model},
+        {"model_id": str(uuid4())},
+        {"route_id": route.json()["id"]},
+        {"route_id": str(uuid4())},
+    ):
+        spec = {
+            **draft["spec"],
+            "model": {**ref, **({"fallback_model_ids": []} if "model_id" in ref else {})},
+        }
+        r = client.put(
+            f"{two.a.base}/agents/{agent}/draft",
+            json={"spec": spec, "row_version": draft["row_version"]},
+            headers=ha,
+        )
+        v = client.post(f"{two.a.base}/agents/{agent}/draft/validate", headers=ha)
+        answers.append((r.status_code, v.status_code, _issues(v)))
+        draft = client.get(f"{two.a.base}/agents/{agent}/draft", headers=ha).json()
+    assert answers[0] == answers[1] and answers[2] == answers[3], answers
+    assert all(ans[0] >= 400 or ans[2] for ans in answers), answers  # refused, not vacuous
+    assert _b_state(owner_db, two.b.tenant) == before_b
+    after = {k: _count(owner_db, *k) for k in counts}
+    assert after == counts
+
+
+def _issues(r: httpx.Response) -> list[Any]:  # Any: JSON
+    body = r.json()
+    found = body.get("errors") or body.get("issues") or body.get("detail") or []
+    return [
+        {k: v for k, v in i.items() if k != "message"} if isinstance(i, dict) else i for i in found
+    ]
