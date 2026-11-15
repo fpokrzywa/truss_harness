@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import Any
+from uuid import UUID
 
 import httpx
 import pytest
@@ -22,8 +24,10 @@ from shifde import ledger
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.governance import api as governance_api
+from shifde.models_admin.repository import SHI_PROVIDER_ID
 from tests.connections.routes import as_user, org
 from tests.governance.routes import (
+    CURRENCY,
     PLATFORM,
     budget,
     project_scope,
@@ -121,6 +125,29 @@ ROUTE_TESTS = {
     ),
     ("GET", "/api/v1/orgs/{org}/rate-cards/{card_id}/versions"): ("test_a_cannot_reach_bs_card"),
     ("POST", "/api/v1/orgs/{org}/rate-cards/{card_id}/versions"): "test_a_cannot_reach_bs_card",
+    ("GET", "/api/v1/orgs/{org}/governance/policies"): "test_a_cannot_reach_bs_policies",
+    ("POST", "/api/v1/orgs/{org}/governance/policies"): "test_a_cannot_reach_bs_policies",
+    ("GET", "/api/v1/orgs/{org}/governance/policies/{policy_id}"): (
+        "test_a_cannot_reach_bs_policies"
+    ),
+    ("PATCH", "/api/v1/orgs/{org}/governance/policies/{policy_id}"): (
+        "test_a_cannot_reach_bs_policies"
+    ),
+    ("GET", "/api/v1/orgs/{org}/governance/retention"): "test_retention_is_per_client",
+    ("PUT", "/api/v1/orgs/{org}/governance/retention"): "test_retention_is_per_client",
+    ("POST", "/api/v1/orgs/{org}/governance/retention/preview"): "test_retention_is_per_client",
+    ("GET", "/api/v1/orgs/{org}/governance/decisions"): (
+        "test_decisions_and_overview_hold_only_as_own"
+    ),
+    ("GET", "/api/v1/orgs/{org}/governance/overview"): (
+        "test_decisions_and_overview_hold_only_as_own"
+    ),
+    ("GET", "/api/v1/orgs/{org}/observability/performance"): (
+        "test_performance_is_scoped_to_the_organization"
+    ),
+    ("GET", "/api/v1/platform/health-details"): (
+        "test_platform_health_details_are_for_the_platform_administrator_only"
+    ),
     ("GET", "/api/v1/platform/rate-cards"): "test_a_client_cannot_use_the_platform_price_list",
     ("POST", "/api/v1/platform/rate-cards"): "test_a_client_cannot_use_the_platform_price_list",
     ("GET", "/api/v1/platform/rate-cards/{card_id}/versions"): (
@@ -534,3 +561,278 @@ def test_pricing_manage_on_an_archived_client_is_refused_while_reads_work(
         assert client.get(f"{two.a.base}/rate-cards", headers=h).status_code == 200
     finally:
         set_status("active")
+
+
+# ------------------------------------------------------------------ policies (part 3)
+def _policy(client: TestClient, h: dict[str, str], base: str, definition: dict[str, Any]) -> Any:
+    r = client.post(
+        f"{base}/governance/policies",
+        json={"kind": "data_export", "name": "t", "definition": definition},
+        headers=h,
+    )
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def test_a_cannot_reach_bs_policies(client: TestClient, world: World, two: Two) -> None:
+    hb = as_user(client, two.b.email)
+    b_pol = _policy(client, hb, two.b.base, {"allow_export": False})
+    b_scoped = client.post(
+        f"{two.b.base}/governance/policies",
+        json={
+            "kind": "cost_threshold",
+            "definition": {"threshold_amount": 1, "currency": CURRENCY},
+            "scope": workspace_scope(world.b.ws),
+        },
+        headers=hb,
+    )
+    assert b_scoped.status_code == 201, b_scoped.text
+    h = as_user(client, two.a.email)
+    a_pol = _policy(client, h, two.a.base, {"allow_export": True})
+    got = client.get(f"{two.a.base}/governance/policies/{a_pol['id']}", headers=h)
+    assert got.status_code == 200 and got.json()["id"] == a_pol["id"]
+    upd = client.patch(
+        f"{two.a.base}/governance/policies/{a_pol['id']}",
+        json={"status": "disabled", "row_version": a_pol["row_version"]},
+        headers=h,
+    )
+    assert upd.status_code == 200
+    listed = client.get(f"{two.a.base}/governance/policies", headers=h).json()["items"]
+    assert [p["id"] for p in listed] == [a_pol["id"]]  # B's two policies are absent
+    unknown = uuid7()
+    for ident in (b_pol["id"], b_scoped.json()["id"]):
+        _same(
+            client.get(f"{two.a.base}/governance/policies/{ident}", headers=h),
+            client.get(f"{two.a.base}/governance/policies/{unknown}", headers=h),
+        )
+        _same(
+            client.patch(
+                f"{two.a.base}/governance/policies/{ident}", json={"status": "disabled"}, headers=h
+            ),
+            client.patch(
+                f"{two.a.base}/governance/policies/{unknown}",
+                json={"status": "disabled"},
+                headers=h,
+            ),
+        )
+    # a policy cannot be scoped to B's scopes: refused like an unknown scope
+    for foreign, nobody in (
+        (workspace_scope(world.b.ws), {"type": "workspace", "id": str(unknown)}),
+        (project_scope(world.b), {"type": "project", "id": str(unknown)}),
+        (tenant_scope(world.b), {"type": "tenant", "id": str(unknown)}),
+    ):
+        body = {"kind": "cost_threshold", "definition": {"threshold_amount": 1, "currency": "XTS"}}
+        _same(
+            client.post(
+                f"{two.a.base}/governance/policies", json={**body, "scope": foreign}, headers=h
+            ),
+            client.post(
+                f"{two.a.base}/governance/policies", json={**body, "scope": nobody}, headers=h
+            ),
+        )
+    # B's data_export policy (no exports) does not apply in A: A's export works, B's is denied
+    assert client.get(f"{two.a.base}/usage/export?format=csv", headers=h).status_code == 200
+    hb = as_user(client, two.b.email)
+    assert client.get(f"{two.b.base}/usage/export?format=csv", headers=hb).status_code == 403
+    # B's policies are untouched; B's slug under A is the unknown organization
+    b_list = client.get(f"{two.b.base}/governance/policies", headers=hb).json()["items"]
+    assert {p["id"] for p in b_list} == {b_pol["id"], b_scoped.json()["id"]}
+    assert all(p["status"] == "active" for p in b_list)
+    h = as_user(client, two.a.email)
+    nobody_org = org(f"no-such-{uuid7().hex[-12:]}")
+    for method, path, payload in (
+        ("GET", "governance/policies", None),
+        ("GET", f"governance/policies/{b_pol['id']}", None),
+        ("POST", "governance/policies", {"kind": "data_export", "definition": {"max_rows": 1}}),
+        ("PATCH", f"governance/policies/{b_pol['id']}", {"status": "disabled"}),
+    ):
+        _same(
+            client.request(method, f"{two.b.base}/{path}", json=payload, headers=h),
+            client.request(method, f"{nobody_org}/{path}", json=payload, headers=h),
+        )
+
+
+def test_retention_is_per_client(client: TestClient, world: World, two: Two) -> None:
+    h = as_user(client, two.a.email)
+    put = client.put(
+        f"{two.a.base}/governance/retention",
+        json={"items": [{"data_class": "audit_events", "retain_days": 100, "legal_hold": True}]},
+        headers=h,
+    )
+    assert put.status_code == 200
+    got = client.get(f"{two.a.base}/governance/retention", headers=h).json()["items"]
+    own = {i["data_class"]: i for i in got}
+    assert own["audit_events"]["retain_days"] == 100 and own["audit_events"]["legal_hold"] is True
+    assert client.post(f"{two.a.base}/governance/retention/preview", headers=h).status_code == 200
+    hb = as_user(client, two.b.email)
+    got_b = client.get(f"{two.b.base}/governance/retention", headers=hb).json()["items"]
+    theirs = {i["data_class"]: i for i in got_b}
+    assert theirs["audit_events"]["is_default"] is True and not theirs["audit_events"]["legal_hold"]
+    b_prev = client.post(f"{two.b.base}/governance/retention/preview", headers=hb).json()["items"]
+    assert not {i["data_class"]: i for i in b_prev}["audit_events"]["on_legal_hold"]
+    h = as_user(client, two.a.email)
+    nobody_org = org(f"no-such-{uuid7().hex[-12:]}")
+    items = {"items": [{"data_class": "usage_events", "retain_days": 60, "legal_hold": False}]}
+    for method, path, payload in (
+        ("GET", "governance/retention", None),
+        ("PUT", "governance/retention", items),
+        ("POST", "governance/retention/preview", None),
+    ):
+        _same(
+            client.request(method, f"{two.b.base}/{path}", json=payload, headers=h),
+            client.request(method, f"{nobody_org}/{path}", json=payload, headers=h),
+        )
+    hb = as_user(client, two.b.email)  # nothing was written to B
+    after = client.get(f"{two.b.base}/governance/retention", headers=hb).json()["items"]
+    assert all(i["is_default"] for i in after)
+
+
+def _decision(owner: Session, tenant: UUID, action: str, decision: str, *, policy: bool) -> UUID:
+    ident = uuid7()
+    owner.execute(
+        text(
+            "INSERT INTO shifde.policy_decisions (id, tenant_id, action, decision, reason_codes, "
+            "policy_ids) VALUES (:i, :t, :a, :d, CAST(:r AS text[]), "
+            "CASE WHEN :p THEN ARRAY[CAST(:i AS uuid)] ELSE CAST('{}' AS uuid[]) END)"
+        ),
+        {
+            "i": ident, "t": tenant, "a": action, "d": decision, "p": policy,
+            "r": "{budget_denied}" if decision == "deny" else "{}",
+        },
+    )  # fmt: skip
+    owner.commit()
+    return ident
+
+
+def test_decisions_and_overview_hold_only_as_own(
+    client: TestClient, world: World, two: Two, owner_session: Session
+) -> None:
+    a_ids = {
+        _decision(owner_session, world.a.tenant, "run:start", "deny", policy=True),
+        _decision(owner_session, world.a.tenant, "run:start", "allow", policy=False),
+    }
+    b_ids = {
+        _decision(owner_session, world.b.tenant, "run:start", "deny", policy=True),
+        _decision(owner_session, world.b.tenant, "run:start", "deny", policy=True),
+        _decision(owner_session, world.b.tenant, "model:invoke", "allow", policy=False),
+    }
+    h = as_user(client, two.a.email)
+    seen = client.get(f"{two.a.base}/governance/decisions", headers=h).json()["items"]
+    assert a_ids <= {UUID(d["id"]) for d in seen}  # plus the decisions A's own requests wrote
+    assert not {UUID(d["id"]) for d in seen} & b_ids
+    deny = "decision=deny&action=run:start"
+    denied = client.get(f"{two.a.base}/governance/decisions?{deny}", headers=h).json()
+    assert len(denied["items"]) == 1 and denied["items"][0]["reason_codes"] == ["budget_denied"]
+    only_b = client.get(f"{two.a.base}/governance/decisions?action=model:invoke", headers=h)
+    assert only_b.json()["items"] == []  # B's only model:invoke decision
+    page = client.get(
+        f"{two.a.base}/governance/decisions?limit=1&action=run:start", headers=h
+    ).json()
+    assert len(page["items"]) == 1 and page["next_cursor"]
+    rest = client.get(
+        f"{two.a.base}/governance/decisions?limit=1&action=run:start&cursor={page['next_cursor']}",
+        headers=h,
+    ).json()
+    assert {UUID(page["items"][0]["id"]), UUID(rest["items"][0]["id"])} == a_ids
+    maybe = client.get(f"{two.a.base}/governance/decisions?decision=maybe", headers=h)
+    assert maybe.status_code == 422
+    # the overview counts A's denial and A's policies only
+    _policy(client, h, two.a.base, {"allow_export": True})
+    hb = as_user(client, two.b.email)
+    _policy(client, hb, two.b.base, {"allow_export": True})
+    _policy(client, hb, two.b.base, {"max_rows": 5})
+    h = as_user(client, two.a.email)
+    ov_r = client.get(f"{two.a.base}/governance/overview", headers=h)
+    assert ov_r.status_code == 200, ov_r.text
+    ov = ov_r.json()
+    assert ov["denials_7d"] == 1 and ov["policy_counts"] == {"data_export": 1}
+    assert ov["pending_approvals"] == 0 and ov["budgets"] == []
+    hb = as_user(client, two.b.email)
+    b_ov = client.get(f"{two.b.base}/governance/overview", headers=hb).json()
+    assert b_ov["denials_7d"] == 2 and b_ov["policy_counts"] == {"data_export": 2}
+    h = as_user(client, two.a.email)
+    nobody_org = org(f"no-such-{uuid7().hex[-12:]}")
+    for path in ("governance/decisions", "governance/overview"):
+        _same(
+            client.get(f"{two.b.base}/{path}", headers=h),
+            client.get(f"{nobody_org}/{path}", headers=h),
+        )
+
+
+def test_performance_is_scoped_to_the_organization(client: TestClient, two: Two) -> None:
+    h = as_user(client, two.a.email)
+    for group in ("agent", "model", "pipeline"):
+        r = client.get(f"{two.a.base}/observability/performance?group_by={group}", headers=h)
+        assert r.status_code == 200 and r.json()["groups"] == [], r.text  # no runs yet
+    bad = client.get(f"{two.a.base}/observability/performance?group_by=user", headers=h)
+    assert bad.status_code == 422
+    nobody_org = org(f"no-such-{uuid7().hex[-12:]}")
+    _same(
+        client.get(f"{two.b.base}/observability/performance", headers=h),
+        client.get(f"{nobody_org}/observability/performance", headers=h),
+    )
+
+
+def test_platform_health_details_are_for_the_platform_administrator_only(
+    client: TestClient, two: Two
+) -> None:
+    ph = as_user(client, two.platform)
+    got = client.get(f"{PLATFORM}/health-details", headers=ph)
+    assert got.status_code == 200, got.text
+    body = got.json()
+    assert body["database"]["reachable"] is True and body["migrations"]["status"] == "ok"
+    assert set(body) >= {"workers", "queue", "reaper", "recent_error_rates", "telemetry"}
+    refused = []
+    for email in (two.a.email, two.b.email):
+        h = as_user(client, email)
+        r = client.get(f"{PLATFORM}/health-details", headers=h)
+        assert r.status_code == 403, r.text
+        refused.append(r)
+    _same(refused[0], refused[1], 403)  # one answer for every client user
+
+
+def test_resolve_by_model_id_prices_a_shared_model_from_global_cards_only(
+    client: TestClient, world: World, two: Two, owner_session: Session, app_db: Database
+) -> None:
+    from tests.models_admin.conftest import make_shi
+
+    model_id = str(make_shi(app_db))
+    try:
+        _resolve_by_model_id(client, world, two, owner_session, model_id)
+    finally:
+        owner_session.execute(text("DELETE FROM shifde.models WHERE id = :i"), {"i": model_id})
+        owner_session.execute(
+            text("DELETE FROM shifde.model_providers WHERE id = :i"),
+            {"i": str(SHI_PROVIDER_ID)},
+        )
+        owner_session.commit()
+
+
+def _resolve_by_model_id(
+    client: TestClient, world: World, two: Two, owner_session: Session, model_id: str
+) -> None:
+    keys = ledger.pricing.rate_keys(owner_session, world.a.tenant, UUID(model_id))
+    assert keys is not None and keys[2] is True  # shared
+    provider_key, model_key, _ = keys
+    h = as_user(client, two.a.email)
+    own = rate_card(client, h, two.a.base, model_key, provider_key)
+    rate_version(client, h, two.a.base, own["id"])
+    hp = as_user(client, two.platform)
+    g = client.post(
+        f"{PLATFORM}/rate-cards",
+        json={"provider_key": provider_key, "model_key": model_key, "name": "g"},
+        headers=hp,
+    ).json()
+    rate_version(client, hp, PLATFORM, g["id"])
+    h = as_user(client, two.a.email)
+    q = f"provider_key={provider_key}&model_key={model_key}"
+    by_keys = client.get(f"{two.a.base}/rate-cards/resolve?{q}", headers=h)
+    assert by_keys.status_code == 200 and by_keys.json()["card"]["id"] == own["id"]
+    by_id = client.get(f"{two.a.base}/rate-cards/resolve?model_id={model_id}", headers=h)
+    assert by_id.status_code == 200, by_id.text
+    assert by_id.json()["card"]["id"] == g["id"]  # what pricing uses for a shared model
+    _same(
+        client.get(f"{two.a.base}/rate-cards/resolve?model_id={uuid7()}", headers=h),
+        client.get(f"{two.a.base}/rate-cards/resolve?model_id={uuid7()}", headers=h),
+    )
+    assert client.get(f"{two.a.base}/rate-cards/resolve", headers=h).status_code == 422
