@@ -248,6 +248,9 @@ def record_model_call(
     v["costed"] = costed
     v["provider_reported_usage"] = resolved.as_json()
     if provider_key is not None:
+        # provider_key must stay the platform adapter key (the model's provider), never a string a
+        # client chooses: shifde_ops_stats groups every client's events by it and /api/metrics
+        # exports it as a label (runtime isolation review 1 F5 (d), B-2118)
         v.setdefault("provider_key", provider_key)
         v.setdefault("model_key", model_key)
     return record(session, v)
