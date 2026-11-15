@@ -1,8 +1,9 @@
 """Admin endpoints under /api/v1 (authentication is the app-level router dependency).
 
-Ported from SETH 3ba0e06 `admin/api.py`, part 1 (IAM); the `app` port mounts `router` (B-501).
-Service accounts and API keys (part 2), IdPs, secrets and audit (part 3) are added to the same
-router by those parts. Changes (DECISIONS B-1401..B-1406):
+Ported from SETH 3ba0e06 `admin/api.py`, part 1 (IAM) and part 2 (service accounts and API
+keys, B-1601) and part 3a (identity providers, B-1621); the `app` port mounts `router` (B-501).
+Secrets and audit (part 3b) are added to the same router by that part. Changes (DECISIONS
+B-1401..B-1406, B-1601.., B-1621..):
 
 * Every `{org}` route resolves the client through `tenancy.dependencies.resolve_org` (B-1019),
   except `POST /orgs/{org}/users`: people are created by the platform administrator only
@@ -10,23 +11,33 @@ router by those parts. Changes (DECISIONS B-1401..B-1406):
 * `/orgs/{org}/groups` lists the platform groups bound in that client (id, name, bindings
   there); SETH's per-client group writes are replaced by `/platform/groups*`, platform
   administrator only (design 5.3).
+* `POST /platform/orgs/{org}/group-bindings`: the platform administrator binds a platform group
+  in a client without being its owner (B-1602).
+* `/platform/idps*` are the platform administrator's (one 403 for everyone else whatever the id)
+  and reach installation IdPs only; `/orgs/{org}/idps*` reach that client's IdPs only (B-1621).
 """
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Depends, Request, Response
 
-from shifde.admin import iam
+from shifde.admin import credentials, iam, providers
 from shifde.admin import schemas as s
-from shifde.core.deps import RequestCtxDep, SessionDep
+from shifde.core.deps import RequestCtxDep, SessionDep, SettingsDep
 from shifde.core.pagination import DEFAULT_LIMIT, Page
 from shifde.identity.dependencies import AuthDep
+from shifde.identity.oidc import OidcClient
 from shifde.tenancy.dependencies import CursorQuery, LimitQuery, ScopeDep
 
 router = APIRouter(prefix="/api/v1")
+
+
+def _oidc_client(request: Request) -> OidcClient:
+    client: OidcClient = request.app.state.oidc
+    return client
 
 
 # ---------------------------------------------------------------- permission catalog
@@ -172,6 +183,144 @@ def my_permissions(
     return iam.my_permissions(scope, workspace, project)
 
 
-# ---------------------------------------------------------------- parts 2-3
-# Service accounts and API keys (`credentials`), IdPs, secrets and audit (`providers`) are added
-# here by admin parts 2 and 3.
+# ---------------------------------------------------------------- platform group bindings
+@router.post("/platform/orgs/{org}/group-bindings", status_code=201, tags=["roles"])
+def bind_group_as_platform_admin(
+    org: str, body: s.GroupBindingCreate, auth: AuthDep, session: SessionDep, ctx: RequestCtxDep
+) -> s.BindingOut:
+    """Platform administrator only (B-1602): binds a platform group in client `org` without
+    being its owner, through `tenancy.service.bind_group_as_platform_admin`."""
+    return iam.bind_group_as_platform_admin(session, ctx, auth.principal, org, body)
+
+
+# ---------------------------------------------------------------- service accounts & API keys
+@router.get("/orgs/{org}/service-accounts", tags=["service-accounts"])
+def list_service_accounts(
+    scope: ScopeDep, limit: LimitQuery = DEFAULT_LIMIT, cursor: CursorQuery = None
+) -> Page[s.ServiceAccountOut]:
+    return credentials.list_service_accounts(scope, limit=limit, cursor=cursor)
+
+
+@router.post("/orgs/{org}/service-accounts", status_code=201, tags=["service-accounts"])
+def create_service_account(scope: ScopeDep, body: s.ServiceAccountCreate) -> s.ServiceAccountOut:
+    return credentials.create_service_account(scope, body)
+
+
+@router.get("/orgs/{org}/service-accounts/{sa_id}", tags=["service-accounts"])
+def get_service_account(scope: ScopeDep, sa_id: UUID) -> s.ServiceAccountOut:
+    return credentials.get_service_account(scope, sa_id)
+
+
+@router.patch("/orgs/{org}/service-accounts/{sa_id}", tags=["service-accounts"])
+def update_service_account(
+    scope: ScopeDep, sa_id: UUID, body: s.ServiceAccountPatch
+) -> s.ServiceAccountOut:
+    return credentials.update_service_account(scope, sa_id, body)
+
+
+@router.get("/orgs/{org}/api-keys", tags=["api-keys"])
+def list_api_keys(
+    scope: ScopeDep,
+    principal_type: Literal["user", "service_account"] | None = None,
+    principal_id: UUID | None = None,
+    limit: LimitQuery = DEFAULT_LIMIT,
+    cursor: CursorQuery = None,
+) -> Page[s.ApiKeyOut]:
+    return credentials.list_api_keys(
+        scope, principal_type=principal_type, principal_id=principal_id, limit=limit, cursor=cursor
+    )
+
+
+@router.post("/orgs/{org}/api-keys", status_code=201, tags=["api-keys"])
+def create_api_key(scope: ScopeDep, settings: SettingsDep, body: s.ApiKeyCreate) -> s.ApiKeyCreated:
+    created, _ = credentials.create_api_key(scope, settings, body)
+    return created
+
+
+@router.post("/orgs/{org}/api-keys/{key_id}/rotate", status_code=201, tags=["api-keys"])
+def rotate_api_key(
+    scope: ScopeDep, settings: SettingsDep, key_id: UUID, body: s.ApiKeyRotate
+) -> s.ApiKeyCreated:
+    return credentials.rotate_api_key(scope, settings, key_id, body)
+
+
+@router.post("/orgs/{org}/api-keys/{key_id}/revoke", tags=["api-keys"])
+def revoke_api_key(scope: ScopeDep, key_id: UUID) -> s.ApiKeyOut:
+    return credentials.revoke_api_key(scope, key_id)
+
+
+# ---------------------------------------------------------------- part 3
+# IdPs, secrets and audit (`providers`) are added here by admin part 3.
+
+
+# ---------------------------------------------------------------- identity providers (part 3a)
+def _tenant_idp_scope(scope: ScopeDep) -> providers.IdpScope:
+    return providers.IdpScope.for_tenant(scope)
+
+
+def _platform_idp_scope(
+    auth: AuthDep, session: SessionDep, ctx: RequestCtxDep
+) -> providers.IdpScope:
+    return providers.IdpScope.for_platform(session, ctx, auth.principal)
+
+
+TenantIdp = Annotated[providers.IdpScope, Depends(_tenant_idp_scope)]
+PlatformIdp = Annotated[providers.IdpScope, Depends(_platform_idp_scope)]
+
+
+@router.get("/platform/idps", tags=["idps"])
+def list_platform_idps(
+    sc: PlatformIdp, limit: LimitQuery = DEFAULT_LIMIT, cursor: CursorQuery = None
+) -> Page[s.IdpOut]:
+    return providers.list_idps(sc, limit=limit, cursor=cursor)
+
+
+@router.post("/platform/idps", status_code=201, tags=["idps"])
+def create_platform_idp(sc: PlatformIdp, settings: SettingsDep, body: s.IdpCreate) -> s.IdpOut:
+    return providers.create_idp(sc, settings, body)
+
+
+@router.get("/platform/idps/{idp_id}", tags=["idps"])
+def get_platform_idp(sc: PlatformIdp, idp_id: UUID) -> s.IdpOut:
+    return providers.get_idp(sc, idp_id)
+
+
+@router.patch("/platform/idps/{idp_id}", tags=["idps"])
+def update_platform_idp(
+    sc: PlatformIdp, settings: SettingsDep, idp_id: UUID, body: s.IdpPatch
+) -> s.IdpOut:
+    return providers.update_idp(sc, settings, idp_id, body)
+
+
+@router.post("/platform/idps/{idp_id}/test", tags=["idps"])
+def test_platform_idp(sc: PlatformIdp, request: Request, idp_id: UUID) -> s.IdpTestOut:
+    return providers.test_idp(sc, _oidc_client(request), idp_id)
+
+
+@router.get("/orgs/{org}/idps", tags=["idps"])
+def list_tenant_idps(
+    sc: TenantIdp, limit: LimitQuery = DEFAULT_LIMIT, cursor: CursorQuery = None
+) -> Page[s.IdpOut]:
+    return providers.list_idps(sc, limit=limit, cursor=cursor)
+
+
+@router.post("/orgs/{org}/idps", status_code=201, tags=["idps"])
+def create_tenant_idp(sc: TenantIdp, settings: SettingsDep, body: s.IdpCreate) -> s.IdpOut:
+    return providers.create_idp(sc, settings, body)
+
+
+@router.get("/orgs/{org}/idps/{idp_id}", tags=["idps"])
+def get_tenant_idp(sc: TenantIdp, idp_id: UUID) -> s.IdpOut:
+    return providers.get_idp(sc, idp_id)
+
+
+@router.patch("/orgs/{org}/idps/{idp_id}", tags=["idps"])
+def update_tenant_idp(
+    sc: TenantIdp, settings: SettingsDep, idp_id: UUID, body: s.IdpPatch
+) -> s.IdpOut:
+    return providers.update_idp(sc, settings, idp_id, body)
+
+
+@router.post("/orgs/{org}/idps/{idp_id}/test", tags=["idps"])
+def test_tenant_idp(sc: TenantIdp, request: Request, idp_id: UUID) -> s.IdpTestOut:
+    return providers.test_idp(sc, _oidc_client(request), idp_id)

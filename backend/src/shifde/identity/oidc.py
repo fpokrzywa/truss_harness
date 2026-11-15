@@ -434,7 +434,7 @@ def _sign_in(
     if idp.tenant_id is not None:
         _require_tenant_member(session, idp.tenant_id, user_id)
     elif idp.group_sync_mode == "sync":
-        _sync_groups(session, idp, user_id, _claim_groups(claims, idp))
+        _sync_groups(session, idp, user_id, _claim_groups(claims, idp), ctx=ctx, email=email)
     db.set_tenant(session, None)
     login = identity.establish_session(
         session,
@@ -463,15 +463,88 @@ def _claim_groups(claims: dict[str, Any], idp: ResolvedIdp) -> list[str]:
     return list(dict.fromkeys(names))[:MAX_IDP_GROUPS]
 
 
-def _sync_groups(session: Session, idp: ResolvedIdp, user_id: UUID, names: list[str]) -> None:
+def _sync_groups(
+    session: Session,
+    idp: ResolvedIdp,
+    user_id: UUID,
+    names: list[str],
+    *,
+    ctx: RequestContext | None = None,
+    email: str | None = None,
+) -> None:
     """Make the person's `idp_sync` memberships of the platform groups mapped to this
     installation IdP equal the claim (SETH synced per client and created groups; B-932). No
-    client context: the definer checks the IdP and the person's identity there."""
+    client context: the definer checks the IdP and the person's identity there. With `ctx`,
+    each change is audited in every client where the group is bound (B-1624)."""
     db.set_tenant(session, None)
     try:
-        authz.sync_idp_groups(session, idp.id, user_id, names)
+        changes = authz.sync_idp_group_changes(session, idp.id, user_id, names)
     except DBAPIError as exc:
         raise OidcFailure("group_sync_refused") from exc
+    if ctx is not None:
+        _audit_group_sync(session, ctx, user_id, email, changes)
+
+
+def _audit_group_sync(
+    session: Session,
+    ctx: RequestContext,
+    user_id: UUID,
+    email: str | None,
+    changes: list[authz.IdpGroupChange],
+) -> None:
+    """Admin review 2 item 1 (B-1624): a sync change is `identity.group.members_changed` in each
+    client where the group is bound, with counts only (B-1408: the person may belong to other
+    clients), and a platform administrator synced into such a group is a
+    `tenancy.platform_admin.self_added` there (B-1012, B-1407), read through
+    `shifde_bound_group_admin_ids` in that client's context. The context is cleared after."""
+    try:
+        for change in changes:
+            if change.change == "kept":
+                continue
+            added = change.change == "added"
+            for tenant_id in change.bound_tenant_ids:
+                db.set_tenant(session, tenant_id)
+                names = {g.id: g.name for g in authz.bound_groups(session)}
+                if change.group_id not in names:  # unbound since the sync read it
+                    continue
+                name = names[change.group_id]
+                audit.record(
+                    session,
+                    ctx,
+                    action="identity.group.members_changed",
+                    tenant_id=tenant_id,
+                    actor_label="idp_sync",
+                    target_type="group",
+                    target_id=change.group_id,
+                    target_label=f"group:{name}",
+                    details={
+                        "group_name": name,
+                        "group_id": str(change.group_id),
+                        "added_count": int(added),
+                        "removed_count": int(not added),
+                        "source": "idp_sync",
+                    },
+                )
+                if added and user_id in authz.bound_group_admin_ids(session, change.group_id):
+                    audit.record(
+                        session,
+                        ctx,
+                        action="tenancy.platform_admin.self_added",
+                        tenant_id=tenant_id,
+                        actor_id=user_id,
+                        target_type="user",
+                        target_id=user_id,
+                        target_label=f"user:{email}" if email else None,
+                        details={
+                            "group_membership": "added",
+                            "through_idp_sync": True,
+                            "through_group_id": str(change.group_id),
+                        },
+                    )
+    except BaseException:
+        db.forget_tenant(session)  # never raise over the original error (B-1410)
+        raise
+    db.set_tenant(session, None)
 
 
 def _require_tenant_member(session: Session, tenant_id: UUID, user_id: UUID) -> None:

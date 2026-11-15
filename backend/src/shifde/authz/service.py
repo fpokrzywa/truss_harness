@@ -86,6 +86,9 @@ __all__ = [
     "role_key_exists",
     "subject_ids_covering",
     "sync_idp_groups",
+    "sync_idp_group_changes",
+    "bound_group_admin_ids",
+    "IdpGroupChange",
     "update_group",
     "update_role",
 ]
@@ -227,6 +230,9 @@ member_counts = repository.member_counts
 groups_of_users = repository.groups_of_users
 bound_groups = repository.bound_groups
 sync_idp_groups = repository.sync_idp_groups
+sync_idp_group_changes = repository.sync_idp_group_changes
+bound_group_admin_ids = repository.bound_group_admin_ids
+IdpGroupChange = repository.IdpGroupChange
 member_user_ids = repository.member_user_ids
 add_group_members = repository.add_group_members
 remove_group_members = repository.remove_group_members

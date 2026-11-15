@@ -575,20 +575,50 @@ def idp_synced_group_ids_of_user(session: Session, user_id: UUID, idp_config_id:
     return {r[0] for r in rows}
 
 
+@dataclass(frozen=True)
+class IdpGroupChange:
+    """One group of the person's IdP sync (`shifde_sync_idp_groups`, identity_0006): `change`
+    is `added`, `removed` or `kept`; `bound_tenant_ids` names the clients where an added or
+    removed group holds a role binding (empty for `kept`), for their audit (B-1624)."""
+
+    group_id: UUID
+    change: str
+    bound_tenant_ids: tuple[UUID, ...]
+
+
+def sync_idp_group_changes(
+    session: Session, idp_config_id: UUID, user_id: UUID, names: Sequence[str]
+) -> list[IdpGroupChange]:
+    """Make the person's `idp_sync` memberships of groups mapped to this installation IdP equal
+    `names` (`shifde_sync_idp_groups`, B-932); never creates a group. Raises
+    (insufficient_privilege) inside any client context and unless the IdP is an active
+    installation IdP with sync on and the person has an identity there (B-936)."""
+    rows = session.execute(
+        text("SELECT * FROM shifde.shifde_sync_idp_groups(:i, :u, CAST(:n AS text[]))"),
+        {"i": idp_config_id, "u": user_id, "n": list(names)},
+    ).all()
+    return [
+        IdpGroupChange(UUID(str(r[0])), str(r[1]), tuple(UUID(str(t)) for t in r[2] or ()))
+        for r in rows
+    ]
+
+
 def sync_idp_groups(
     session: Session, idp_config_id: UUID, user_id: UUID, names: Sequence[str]
 ) -> int:
-    """Make the person's `idp_sync` memberships of groups mapped to this installation IdP equal
-    `names` (`shifde_sync_idp_groups`, B-932); never creates a group. Returns the number of
-    synced memberships. Raises (insufficient_privilege) inside any client context and unless
-    the IdP is an active installation IdP with sync on and the person has an identity there
-    (B-936)."""
-    return int(
-        session.execute(
-            text("SELECT shifde.shifde_sync_idp_groups(:i, :u, CAST(:n AS text[]))"),
-            {"i": idp_config_id, "u": user_id, "n": list(names)},
-        ).scalar_one()
-    )
+    """`sync_idp_group_changes`; returns the number of synced memberships."""
+    changes = sync_idp_group_changes(session, idp_config_id, user_id, names)
+    return sum(1 for c in changes if c.change != "removed")
+
+
+def bound_group_admin_ids(session: Session, group_id: UUID) -> list[UUID]:
+    """Ids of the platform administrators in `group_id` when the group holds a role binding in
+    the current client (`shifde_bound_group_admin_ids`, tenancy_0004, B-1407); empty otherwise.
+    For IdP sync at sign-in, which identity runs below tenancy (B-1624)."""
+    rows = session.execute(
+        text("SELECT shifde.shifde_bound_group_admin_ids(:g)"), {"g": group_id}
+    ).scalars()
+    return [UUID(str(r)) for r in rows]
 
 
 # ------------------------------------------------------------------ policy decisions

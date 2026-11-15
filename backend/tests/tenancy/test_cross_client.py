@@ -289,6 +289,22 @@ def test_org_lists_show_only_the_callers_clients(
         assert all(set(o) == {"id", "slug", "name", "status"} for o in items)
 
 
+def test_the_platform_administrators_client_list_pages_with_a_cursor(
+    settings: Settings, world: World, people: People
+) -> None:
+    """A page that is not the last carries a cursor (it used to be read after the rollback,
+    outside the platform-admin context, and failed with a 500), and the next page follows."""
+    with tenancy_client(settings) as c:
+        login(c, people.platform)
+        first = c.get("/api/v1/orgs?scope=all&include_archived=true&limit=1")
+        assert first.status_code == 200
+        cursor = first.json()["next_cursor"]
+        assert cursor
+        second = c.get(f"/api/v1/orgs?scope=all&include_archived=true&limit=1&cursor={cursor}")
+        assert second.status_code == 200
+        assert second.json()["items"][0]["id"] != first.json()["items"][0]["id"]
+
+
 def test_only_the_platform_administrator_creates_a_client(
     settings: Settings, world: World, people: People
 ) -> None:
