@@ -156,6 +156,20 @@ def _side(
             _put_draft(client, h, base, kind, a["id"], spec)
         else:
             ids[kind] = Ids(str(a["id"]), _put_draft(client, h, base, kind, a["id"], spec))
+    # a mapping on the ontology's draft, so the mapping routes (check, delete) have an object for
+    # the positive control of the client's own owner
+    mapped = client.put(
+        f"{base}/ontologies/{ids['ontologies'].artifact}/draft/mappings/object_type/{ONTO_KEY}",
+        json={
+            "target_kind": "object_type",
+            "target_key": ONTO_KEY,
+            "connection_id": str(conn.connection),
+            "relation": {"schema": "public", "name": "customers_x"},
+            "column_map": {"id": "id", "name": "name"},
+        },
+        headers=h,
+    )
+    assert mapped.status_code == 200, mapped.text
     # a pending publish request: this client requires approval, then a second prompt is published
     with owner_db.session() as o:
         o.execute(
@@ -403,8 +417,6 @@ def test_a_cannot_reach_bs_objects(
         assert _b_state(owner_db, two.b.tenant) == before
     # positive control: B's own owner reaches its object with the same request
     hb = as_user(client, two.b.email)
-    if kind == "ontologies" and any(w in key for w in ("mappings", "validate", "publish")):
-        return  # the ontology tables arrive with the `ontology` module's migration
     control = _send(client, hb, two.b.base, make(kind, bs, two.b))
     assert control.status_code != 404, (label, control.text)
 

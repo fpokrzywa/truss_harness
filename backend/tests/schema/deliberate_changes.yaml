@@ -560,3 +560,38 @@
   path: [triggers, trg_build_model_ref_guard]
   reason: "sets own_model_id and refuses another client's model and an unknown id alike (23503, no lock wait) while accepting the client's own and shared models; refuses a row for another client than the session's with 42501, the owner too (B-1941)"
   migration: build_0002
+
+- table: ontology_source_mappings
+  path: [constraints, uq_ontology_mappings__target, definition]
+  reason: "client-keyed unique key closes an existence and lock oracle: with a key that omits tenant_id, an INSERT ... ON CONFLICT under client A's context could conflict with client B's row (silent outcome where an unknown id gives 23503) and wait on B's uncommitted insert (55P03). Build isolation review 1, item 2, B-1905, B-2001. Key is (tenant_id, ontology_version_id, target_kind, target_key)."
+  migration: ontology_0001
+
+- table: ontology_source_mappings
+  path: [indexes, uq_ontology_mappings__target]
+  reason: "client-keyed unique key closes an existence and lock oracle: with a key that omits tenant_id, an INSERT ... ON CONFLICT under client A's context could conflict with client B's row (silent outcome where an unknown id gives 23503) and wait on B's uncommitted insert (55P03). Build isolation review 1, item 2, B-1905, B-2001. Index of uq_ontology_mappings__target."
+  migration: ontology_0001
+
+- table: ontology_version_info
+  path: [constraints, ontology_version_info_pkey, definition]
+  reason: "client-keyed unique key closes an existence and lock oracle: with a key that omits tenant_id, an INSERT ... ON CONFLICT under client A's context could conflict with client B's row (silent outcome where an unknown id gives 23503) and wait on B's uncommitted insert (55P03). Build isolation review 1, item 2, B-1905, B-2001. Primary key is (tenant_id, version_id)."
+  migration: ontology_0001
+
+- table: ontology_version_info
+  path: [indexes, ontology_version_info_pkey]
+  reason: "client-keyed unique key closes an existence and lock oracle: with a key that omits tenant_id, an INSERT ... ON CONFLICT under client A's context could conflict with client B's row (silent outcome where an unknown id gives 23503) and wait on B's uncommitted insert (55P03). Build isolation review 1, item 2, B-1905, B-2001. Index of the primary key."
+  migration: ontology_0001
+
+- table: ontology_materializations
+  path: [constraints, uq_ontology_materializations__type, definition]
+  reason: "client-keyed unique key closes an existence and lock oracle: with a key that omits tenant_id, an INSERT ... ON CONFLICT under client A's context could conflict with client B's row (silent outcome where an unknown id gives 23503) and wait on B's uncommitted insert (55P03). Build isolation review 1, item 2, B-1905, B-2001. Key is (tenant_id, ontology_version_id, object_type_key)."
+  migration: ontology_0001
+
+- table: ontology_materializations
+  path: [indexes, uq_ontology_materializations__type]
+  reason: "client-keyed unique key closes an existence and lock oracle: with a key that omits tenant_id, an INSERT ... ON CONFLICT under client A's context could conflict with client B's row (silent outcome where an unknown id gives 23503) and wait on B's uncommitted insert (55P03). Build isolation review 1, item 2, B-1905, B-2001. Index of uq_ontology_materializations__type."
+  migration: ontology_0001
+
+- table: ontology_query_lineage
+  path: [constraints, fk_ontology_lineage__run]
+  reason: "foreign key (tenant_id, run_id) to shifde.runs, a table of the runtime module that is not ported yet; the runtime migration adds it (docs/build/carry_forward.md)"
+  migration: ontology_0001

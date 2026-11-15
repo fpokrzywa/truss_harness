@@ -1,1 +1,1 @@
-"""Not yet ported from SETH 3ba0e06; see docs/build/STATUS.md."""
+"""Ontology: access policies, query planning and execution, lineage (part 1 of the port)."""

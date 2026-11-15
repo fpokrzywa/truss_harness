@@ -57,3 +57,9 @@ prompt_test_runs  # build
 pipeline_version_refs  # build
 pipeline_validation_reports  # build
 pipeline_schedules  # build
+ontology_source_mappings  # ontology
+ontology_version_info  # ontology
+ontology_access_policies  # ontology
+ontology_principal_attributes  # ontology
+ontology_query_lineage  # ontology
+ontology_materializations  # ontology
