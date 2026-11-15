@@ -179,7 +179,9 @@ SECURITY_DEFINER_ALLOWLIST: dict[str, str] = {
         f"{_GROUP_DEFINER}. IdP group sync after a validated sign-in: only for an active "
         "installation IdP with sync on and a person with an identity at that IdP, at most 200 "
         "names; touches only that person's idp_sync memberships of groups the platform "
-        "administrator mapped to that IdP; never creates a group."
+        "administrator mapped to that IdP; never creates a group. identity_0006 (B-1624): returns "
+        "each such group with its change and, for an added or removed group only, the clients "
+        "binding it, for their audit at sign-in."
     ),
     "shifde.shifde_consume_oidc_request(bytea, uuid)": (
         f"{_OIDC_DEFINER}. Marks a live flow request used (single use, expiry checked in SQL) "

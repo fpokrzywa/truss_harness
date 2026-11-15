@@ -97,6 +97,11 @@ ADMIN_INSTALLATION_ACTIONS: frozenset[str] = frozenset(
         "identity.group.created",
         "identity.group.updated",
         "identity.group.members_changed",
+        # installation identity providers (tenant_id NULL), configured and tested by the
+        # platform administrator only (`admin.providers`, DECISIONS B-1621)
+        "identity.idp.created",
+        "identity.idp.updated",
+        "identity.idp.tested",
         # the global vendor catalog (tenant_id NULL rows) is changed only by the platform
         # administrator (`vendors.service`, `platform:admin`); no client is the subject (B-1304)
         "vendor.created",

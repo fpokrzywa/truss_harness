@@ -15,10 +15,12 @@ from typing import Any  # Any: JSON bodies
 from uuid import UUID
 
 import httpx
+import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from shifde.admin import api, credentials
+from shifde.admin import api, credentials, providers
 from shifde.core.clock import utcnow
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
@@ -94,6 +96,27 @@ ROUTE_TESTS = {
     ),
     ("POST", "/api/v1/orgs/{org}/api-keys/{key_id}/revoke"): (
         "test_a_cannot_list_create_rotate_or_revoke_bs_api_keys"
+    ),
+    # admin part 3a (B-1621..)
+    ("GET", "/api/v1/orgs/{org}/idps"): ("test_a_cannot_list_read_change_or_test_bs_idps"),
+    ("POST", "/api/v1/orgs/{org}/idps"): ("test_a_cannot_list_read_change_or_test_bs_idps"),
+    ("GET", "/api/v1/orgs/{org}/idps/{idp_id}"): ("test_a_cannot_list_read_change_or_test_bs_idps"),
+    ("PATCH", "/api/v1/orgs/{org}/idps/{idp_id}"): (
+        "test_a_cannot_list_read_change_or_test_bs_idps"
+    ),
+    ("POST", "/api/v1/orgs/{org}/idps/{idp_id}/test"): (
+        "test_a_cannot_list_read_change_or_test_bs_idps"
+    ),
+    ("GET", "/api/v1/platform/idps"): ("test_platform_idp_routes_reach_installation_idps_only"),
+    ("POST", "/api/v1/platform/idps"): ("test_platform_idp_routes_reach_installation_idps_only"),
+    ("GET", "/api/v1/platform/idps/{idp_id}"): (
+        "test_platform_idp_routes_reach_installation_idps_only"
+    ),
+    ("PATCH", "/api/v1/platform/idps/{idp_id}"): (
+        "test_platform_idp_routes_reach_installation_idps_only"
+    ),
+    ("POST", "/api/v1/platform/idps/{idp_id}/test"): (
+        "test_platform_idp_routes_reach_installation_idps_only"
     ),
 }
 
@@ -876,3 +899,189 @@ def test_only_the_platform_administrator_binds_a_group_without_owning_the_client
     with admin_client(settings) as c:
         login(c, people.owner_b)
         assert c.get(f"/api/v1/orgs/{b.slug}/groups").json()["items"] == []
+
+
+# ---------------------------------------------------------------- identity providers (part 3a)
+def _idp(issuer: str, **extra: Any) -> dict[str, Any]:
+    return {
+        "display_name": "corp",
+        "issuer": issuer,
+        "discovery_url": f"{issuer}/.well-known/openid-configuration",
+        "client_id": "c",
+        **extra,
+    }
+
+
+def test_a_cannot_list_read_change_or_test_bs_idps(
+    settings: Settings, app_db: Database, world: World, people: People, owner_session: Session
+) -> None:
+    """Identity review 4 item 7, carry_forward 85 and 95 (B-1621, B-1623): B's IdP under A's org
+    is exactly a missing id, under B's org exactly a missing org; B's IdPs are absent from A's
+    list and B's issuer is not taken in A; a client's IdP holds only that client's secret."""
+    a, b = world.a, world.b
+    with admin_client(settings) as c:
+        hb = login(c, people.owner_b)
+        theirs_made = c.post(
+            f"/api/v1/orgs/{b.slug}/idps",
+            json=_idp("https://b-idp.test", client_secret="b-secret-value"),
+            headers=hb,
+        )
+        assert theirs_made.status_code == 201, theirs_made.text
+        b_idp = theirs_made.json()["id"]
+        c.cookies.clear()
+        headers = login(c, people.owner_a)
+        url = f"/api/v1/orgs/{a.slug}/idps"
+        made = c.post(url, json=_idp("https://a-idp.test", client_secret="a-sec"), headers=headers)
+        assert made.status_code == 201, made.text
+        own = made.json()["id"]
+        assert made.json()["tenant_id"] == str(a.tenant)
+        assert c.get(f"{url}/{own}").status_code == 200
+        patched = c.patch(
+            f"{url}/{own}", json={"display_name": "d", "row_version": 1}, headers=headers
+        )
+        assert patched.status_code == 200, patched.text
+        listed = {i["id"] for i in c.get(f"{url}?limit=200").json()["items"]}
+        assert listed == {own}  # B's IdP is not listed in A
+        # B's IdP under A's org: exactly a missing id
+        missing = uuid7()
+        body = {"display_name": "taken", "status": "disabled", "row_version": 1}
+        _same(c.get(f"{url}/{b_idp}"), c.get(f"{url}/{missing}"), 404)
+        _same(
+            c.patch(f"{url}/{b_idp}", json=body, headers=headers),
+            c.patch(f"{url}/{missing}", json=body, headers=headers),
+            404,
+        )
+        _same(
+            c.post(f"{url}/{b_idp}/test", headers=headers),
+            c.post(f"{url}/{missing}/test", headers=headers),
+            404,
+        )
+        # B's issuer is not taken in A (no existence oracle); A's own duplicate is one answer
+        r = c.post(url, json=_idp("https://b-idp.test"), headers=headers)
+        assert r.status_code == 201, r.text
+        dup = c.post(url, json=_idp("https://a-idp.test"), headers=headers)
+        assert dup.status_code == 409 and dup.json()["code"] == "issuer_conflict", dup.text
+        assert dup.json()["detail"] == providers.IDP_CONFLICT
+        # under B's org: exactly a missing org
+        gone = "/api/v1/orgs/no-such-client/idps"
+        theirs = f"/api/v1/orgs/{b.slug}/idps"
+        _same(c.get(theirs), c.get(gone), 404)
+        _same(c.get(f"{theirs}/{b_idp}"), c.get(f"{gone}/{b_idp}"), 404)
+        _same(
+            c.post(theirs, json=_idp("https://x.test"), headers=headers),
+            c.post(gone, json=_idp("https://x.test"), headers=headers),
+            404,
+        )
+        _same(
+            c.patch(f"{theirs}/{b_idp}", json=body, headers=headers),
+            c.patch(f"{gone}/{b_idp}", json=body, headers=headers),
+            404,
+        )
+        _same(
+            c.post(f"{theirs}/{b_idp}/test", headers=headers),
+            c.post(f"{gone}/{b_idp}/test", headers=headers),
+            404,
+        )
+    row = owner_session.execute(
+        text("SELECT display_name, status, row_version FROM shifde.idp_configs WHERE id = :i"),
+        {"i": b_idp},
+    ).one()
+    assert tuple(row) == ("corp", "active", 1)
+    # each IdP's secret is its own client's (B-924)
+    pairs = owner_session.execute(
+        text(
+            "SELECT c.tenant_id, s.tenant_id FROM shifde.idp_configs c "
+            "JOIN shifde.secrets s ON s.id = c.client_secret_ref_id"
+        )
+    ).all()
+    assert sorted((str(x), str(y)) for x, y in pairs) == sorted(
+        [(str(a.tenant), str(a.tenant)), (str(b.tenant), str(b.tenant))]
+    )
+    b_secret = owner_session.execute(
+        text("SELECT client_secret_ref_id FROM shifde.idp_configs WHERE id = :i"), {"i": b_idp}
+    ).scalar_one()
+    owner_session.rollback()
+    with app_session(app_db, a.tenant) as s:
+        # pointing A's IdP at B's secret is refused by the composite key
+        with pytest.raises(IntegrityError):
+            s.execute(
+                text("UPDATE shifde.idp_configs SET client_secret_ref_id = :s WHERE id = :i"),
+                {"s": b_secret, "i": own},
+            )
+        s.rollback()
+    with app_session(app_db, a.tenant) as s:
+        # B's IdP is invisible to A's context (row-level security)
+        changed = s.execute(
+            text("UPDATE shifde.idp_configs SET display_name = 'x' WHERE id = :i"), {"i": b_idp}
+        )
+        assert getattr(changed, "rowcount", None) == 0
+        s.rollback()
+
+
+def test_platform_idp_routes_reach_installation_idps_only(
+    settings: Settings, world: World, people: People, owner_session: Session
+) -> None:
+    """Platform IdP routes are one 403 for a client owner whatever the id (B-1011) and reach only
+    installation IdPs: a client's IdP id is a missing id there (identity review 4 item 7); an
+    installation IdP holds only an installation secret (B-924)."""
+    b = world.b
+    with admin_client(settings) as c:
+        hb = login(c, people.owner_b)
+        made_b = c.post(
+            f"/api/v1/orgs/{b.slug}/idps",
+            json=_idp("https://b.test", client_secret="bs"),
+            headers=hb,
+        )
+        assert made_b.status_code == 201, made_b.text
+        b_idp = made_b.json()["id"]
+        c.cookies.clear()
+        hp = login(c, people.platform)
+        base = "/api/v1/platform/idps"
+        made = c.post(base, json=_idp("https://inst.test", client_secret="is"), headers=hp)
+        assert made.status_code == 201, made.text
+        inst = made.json()["id"]
+        assert made.json()["tenant_id"] is None
+        assert c.get(f"{base}/{inst}").status_code == 200
+        r = c.patch(f"{base}/{inst}", json={"display_name": "i2", "row_version": 1}, headers=hp)
+        assert r.status_code == 200, r.text
+        assert {i["id"] for i in c.get(f"{base}?limit=200").json()["items"]} == {inst}
+        missing = uuid7()
+        body = {"display_name": "x", "row_version": 1}
+        _same(c.get(f"{base}/{b_idp}"), c.get(f"{base}/{missing}"), 404)
+        _same(
+            c.patch(f"{base}/{b_idp}", json=body, headers=hp),
+            c.patch(f"{base}/{missing}", json=body, headers=hp),
+            404,
+        )
+        _same(
+            c.post(f"{base}/{b_idp}/test", headers=hp),
+            c.post(f"{base}/{missing}/test", headers=hp),
+            404,
+        )
+        # a client owner: one 403 whatever the id
+        c.cookies.clear()
+        ha = login(c, people.owner_a)
+        ref = c.get(base)
+        for r in (
+            c.post(base, json=_idp("https://y.test"), headers=ha),
+            c.get(f"{base}/{inst}"),
+            c.get(f"{base}/{b_idp}"),
+            c.get(f"{base}/{missing}"),
+            c.patch(f"{base}/{inst}", json=body, headers=ha),
+            c.patch(f"{base}/{missing}", json=body, headers=ha),
+            c.post(f"{base}/{inst}/test", headers=ha),
+            c.post(f"{base}/{missing}/test", headers=ha),
+        ):
+            _same(r, ref, 403)
+    tenant = owner_session.execute(
+        text(
+            "SELECT s.tenant_id FROM shifde.idp_configs c "
+            "JOIN shifde.secrets s ON s.id = c.client_secret_ref_id WHERE c.id = :i"
+        ),
+        {"i": inst},
+    ).scalar_one()
+    assert tenant is None
+    name = owner_session.execute(
+        text("SELECT display_name FROM shifde.idp_configs WHERE id = :i"), {"i": b_idp}
+    ).scalar_one()
+    assert name == "corp"

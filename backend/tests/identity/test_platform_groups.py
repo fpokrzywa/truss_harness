@@ -535,3 +535,65 @@ def test_idp_groups_are_synced_on_sign_in_and_their_grants_follow_the_claim(
     assert synced() == ["Data Eng"]
     assert not can_read(a)  # removed at the IdP: access ends at the next sign-in
     assert owner_session.execute(text("SELECT count(*) FROM shifde.groups")).scalar_one() == 2
+
+
+def test_idp_sync_changes_are_audited_in_bound_clients_and_an_administrator_is_a_self_add(
+    settings: Settings,
+    world: World,
+    app_db: Database,
+    owner_session: Session,
+) -> None:
+    """Admin review 2 item 1 (B-1624): a platform administrator synced at sign-in into an
+    IdP-mapped group bound in A is `identity.group.members_changed` (counts only) and
+    `tenancy.platform_admin.self_added` in A; nothing is filed in B, where the group is not
+    bound; leaving the group at the next sign-in is a removal in A."""
+    idp, iss = _sync_idp(owner_session, "inst")
+    admin = _staff(owner_session, "padmin")
+    owner_session.execute(
+        text("UPDATE shifde.users SET is_platform_admin = true WHERE id = :u"), {"u": admin}
+    )
+    oidc_flow.owner_identity(owner_session, admin, idp, iss, "padmin")
+    owner_session.commit()
+    with admin_session(app_db, None) as s:
+        readers = _group(s, "readers", idp=idp, external="Readers")
+        s.commit()
+    with admin_session(app_db, world.a.tenant) as s:
+        _bind_group(s, world.a.tenant, readers)
+        s.commit()
+    fake = oidc_flow.provider()
+
+    def sign_in(code: str, groups: list[str]) -> None:
+        with oidc_flow.oidc_client(settings, fake) as c:
+            r = oidc_flow.sign_in(c, fake, idp, iss, code=code, sub="padmin", groups=groups)
+            assert r.headers["location"] == "/", r.headers
+
+    def rows(tenant: UUID) -> list[tuple[str, str | None, dict[str, object]]]:
+        found = owner_session.execute(
+            text(
+                "SELECT action, target_id, details FROM shifde.audit_events "
+                "WHERE tenant_id = :t AND action IN ('identity.group.members_changed', "
+                "'tenancy.platform_admin.self_added') ORDER BY occurred_at, id"
+            ),
+            {"t": tenant},
+        ).all()
+        owner_session.rollback()
+        return [(r[0], None if r[1] is None else str(r[1]), dict(r[2])) for r in found]
+
+    sign_in("c1", ["Readers"])
+    got = rows(world.a.tenant)
+    assert [(a, t) for a, t, _ in got] == [
+        ("identity.group.members_changed", str(readers)),
+        ("tenancy.platform_admin.self_added", str(admin)),
+    ]
+    changed = got[0][2]
+    assert changed["added_count"] == 1 and changed["removed_count"] == 0
+    assert str(admin) not in str(changed)  # counts only (B-1408)
+    assert got[1][2]["through_group_id"] == str(readers)
+    assert rows(world.b.tenant) == []
+    sign_in("c2", ["Readers"])  # unchanged: nothing new
+    assert len(rows(world.a.tenant)) == 2
+    sign_in("c3", [])
+    last = rows(world.a.tenant)[-1]
+    assert last[0] == "identity.group.members_changed"
+    assert last[2]["added_count"] == 0 and last[2]["removed_count"] == 1
+    assert rows(world.b.tenant) == []

@@ -1,8 +1,8 @@
 """Request/response DTOs for the admin API (contract: SETH docs/api/PHASE_2_CONTRACT.md).
 
 Ported from SETH 3ba0e06 `admin/schemas.py`, part 1 (IAM: permissions, users, roles, role
-bindings, groups) and part 2 (service accounts, API keys; B-1601); IdPs, secrets and audit come
-with part 3.
+bindings, groups), part 2 (service accounts, API keys; B-1601) and part 3a (IdPs, B-1621);
+secrets and audit come with part 3b.
 Changes (DECISIONS B-1401..B-1404): groups are platform-level (design 5.3). A client sees a
 group it has bound only as `BoundGroupOut` (id and name, B-930); `GroupRef` in a user's entry
 loses `slug`; the full group shapes (`GroupOut`, `GroupDetailOut`) are the platform
@@ -19,7 +19,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SLUG_PATTERN = r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
 Strict = ConfigDict(extra="forbid")
@@ -280,3 +280,80 @@ class ApiKeyOut(BaseModel):
 class ApiKeyCreated(BaseModel):
     api_key: ApiKeyOut
     secret: str  # shown exactly once, in this response only
+
+
+# ------------------------------------------------------------------ identity providers (part 3a)
+class IdpCreate(BaseModel):
+    model_config = Strict
+    display_name: str = Field(min_length=1, max_length=200)
+    issuer: str = Field(min_length=1, max_length=2000)
+    discovery_url: str = Field(min_length=1, max_length=2000)
+    client_id: str = Field(min_length=1, max_length=500)
+    client_secret: str | None = Field(default=None, min_length=1, max_length=4096)
+    scopes: list[str] = Field(default_factory=lambda: ["openid", "email", "profile"], max_length=30)
+    claim_mappings: dict[str, str] = Field(
+        default_factory=lambda: {"email": "email", "groups": "groups"}
+    )
+    jit: Literal["off", "create_user", "create_and_join"] = "off"
+    group_sync: Literal["off", "sync"] = "off"
+    status: Literal["active", "disabled"] = "active"
+
+    @field_validator("claim_mappings")
+    @classmethod
+    def _claims(cls, value: dict[str, str]) -> dict[str, str]:
+        return _check_claims(value)
+
+
+class IdpPatch(BaseModel):
+    model_config = Strict
+    display_name: str | None = Field(default=None, min_length=1, max_length=200)
+    issuer: str | None = Field(default=None, min_length=1, max_length=2000)
+    discovery_url: str | None = Field(default=None, min_length=1, max_length=2000)
+    client_id: str | None = Field(default=None, min_length=1, max_length=500)
+    client_secret: str | None = Field(default=None, min_length=1, max_length=4096)
+    scopes: list[str] | None = Field(default=None, max_length=30)
+    claim_mappings: dict[str, str] | None = None
+    jit: Literal["off", "create_user", "create_and_join"] | None = None
+    group_sync: Literal["off", "sync"] | None = None
+    status: Literal["active", "disabled"] | None = None
+    row_version: int
+
+    @field_validator("claim_mappings")
+    @classmethod
+    def _claims(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        return None if value is None else _check_claims(value)
+
+
+def _check_claims(value: dict[str, str]) -> dict[str, str]:
+    if len(value) > 10 or any(len(k) > 50 or len(v) > 200 for k, v in value.items()):
+        raise ValueError("claim_mappings is too large")
+    return value
+
+
+class IdpOut(BaseModel):
+    id: UUID
+    tenant_id: UUID | None
+    display_name: str
+    issuer: str
+    discovery_url: str
+    client_id: str
+    client_secret_set: bool
+    scopes: list[str]
+    claim_mappings: dict[str, str]
+    jit: str
+    group_sync: str
+    status: str
+    row_version: int
+    created_at: datetime
+    updated_at: datetime | None
+
+
+class IdpCheck(BaseModel):
+    name: str
+    ok: bool
+    detail: str
+
+
+class IdpTestOut(BaseModel):
+    ok: bool
+    checks: list[IdpCheck]
