@@ -7,6 +7,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any  # Any: JSON bodies, TestClient options
+from uuid import UUID
 
 from fastapi import Depends
 from fastapi.testclient import TestClient
@@ -17,6 +18,7 @@ from shifde.governance import api
 from shifde.identity.dependencies import require_auth
 from tests.connections.routes import post
 from tests.identity import harness
+from tests.tenancy.conftest import Client
 
 PLATFORM = "/api/v1/platform"
 CURRENCY = "XTS"  # ISO 4217 code reserved for testing: never a real currency
@@ -83,4 +85,43 @@ def rate_version(
     if effective_to:
         body["effective_to"] = effective_to
     out: dict[str, Any] = post(client, f"{base}/rate-cards/{card_id}/versions", h, body, status)
+    return out
+
+
+def tenant_scope(c: Client) -> dict[str, str]:
+    """SETH `p4util.tenant_scope`, for one client of the tenancy world."""
+    return {"type": "tenant", "id": str(c.tenant)}
+
+
+def project_scope(c: Client) -> dict[str, str]:
+    """SETH `p8util.project_scope`: the client's project."""
+    return {"type": "project", "id": str(c.project)}
+
+
+def workspace_scope(workspace: UUID) -> dict[str, str]:
+    return {"type": "workspace", "id": str(workspace)}
+
+
+def budget(
+    client: TestClient,
+    h: dict[str, str],
+    base: str,
+    scope: dict[str, str],
+    *,
+    metric: str = "tokens",
+    amount: float = 100000,
+    period: str = "daily",
+    status: int = 201,
+    **extra: Any,
+) -> dict[str, Any]:
+    """SETH `p8util.budget` (`base` is the organization path instead of the module constant)."""
+    body: dict[str, Any] = {
+        "scope": scope,
+        "period": period,
+        "amount": amount,
+        "metric": metric,
+        **({"currency": CURRENCY} if metric == "cost" else {}),
+        **extra,
+    }
+    out: dict[str, Any] = post(client, f"{base}/budgets", h, body, status)
     return out

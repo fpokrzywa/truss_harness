@@ -128,15 +128,25 @@ def insert_version(session: Session, v: Mapping[str, Any]) -> Row:  # Any: colum
 
 
 # ------------------------------------------------------------------ usage events
-EVENT_SELECT = (
+_EVENT_COLUMNS = (
     "SELECT u.id, u.event_key, u.occurred_at, u.event_type, u.status, u.run_id, u.root_run_id, "
-    "u.step_id, rs.name AS step_name, u.attempt, u.workspace_id, u.project_id, u.principal_id, "
-    "u.agent_id, u.model_id, u.provider_key, u.model_key, u.is_test, u.input_tokens, "
-    "u.output_tokens, u.cached_read_tokens, u.cached_write_tokens, u.call_count, u.duration_ms, "
-    "u.cost_amount, u.currency, u.cost_kind, u.rate_card_version_id, u.rate_snapshot, "
-    "u.corrects_event_id FROM shifde.usage_events u "
-    "LEFT JOIN shifde.run_steps rs ON rs.id = u.step_id AND rs.tenant_id = u.tenant_id "
+    "u.step_id, {step_name} AS step_name, u.attempt, u.workspace_id, u.project_id, "
+    "u.principal_id, u.agent_id, u.model_id, u.provider_key, u.model_key, u.is_test, "
+    "u.input_tokens, u.output_tokens, u.cached_read_tokens, u.cached_write_tokens, u.call_count, "
+    "u.duration_ms, u.cost_amount, u.currency, u.cost_kind, u.rate_card_version_id, "
+    "u.rate_snapshot, u.corrects_event_id FROM shifde.usage_events u "
 )
+
+
+def event_select(session: Session) -> str:
+    """The usage-event SELECT. The step name comes from `run_steps`, a runtime table: until the
+    runtime module is ported (B-1812) the column is NULL when that table does not exist."""
+    has_steps = session.execute(text("SELECT to_regclass('shifde.run_steps') IS NOT NULL")).scalar()
+    if has_steps:
+        return _EVENT_COLUMNS.format(step_name="rs.name") + (
+            "LEFT JOIN shifde.run_steps rs ON rs.id = u.step_id AND rs.tenant_id = u.tenant_id "
+        )
+    return _EVENT_COLUMNS.format(step_name="CAST(NULL AS text)")
 
 
 def list_events(
@@ -170,7 +180,10 @@ def list_events(
         params["before"] = before
     return list(
         session.execute(
-            text(f"{EVENT_SELECT}WHERE {' AND '.join(where)} ORDER BY u.id DESC LIMIT :limit"),
+            text(
+                f"{event_select(session)}WHERE {' AND '.join(where)} "
+                "ORDER BY u.id DESC LIMIT :limit"
+            ),
             params,
         )
         .mappings()
@@ -183,7 +196,7 @@ def run_events(session: Session, tenant_id: UUID, run_id: UUID, vis: Visibility)
     return list(
         session.execute(
             text(
-                f"{EVENT_SELECT}WHERE u.tenant_id = :t AND (u.root_run_id = :run "
+                f"{event_select(session)}WHERE u.tenant_id = :t AND (u.root_run_id = :run "
                 f"OR u.run_id = :run) AND {vis.clause(params, 'u.')} "
                 "ORDER BY u.occurred_at, u.id"
             ),
@@ -221,7 +234,7 @@ def export_events(
     return list(
         session.execute(
             text(
-                f"{EVENT_SELECT}WHERE u.tenant_id = :t AND u.occurred_at >= :start "
+                f"{event_select(session)}WHERE u.tenant_id = :t AND u.occurred_at >= :start "
                 f"AND u.occurred_at < :end AND {vis.clause(params, 'u.')}{extra} "
                 "ORDER BY u.occurred_at, u.id LIMIT :limit"
             ),
