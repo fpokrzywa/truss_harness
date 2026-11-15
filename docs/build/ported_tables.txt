@@ -47,3 +47,5 @@ model_allowlist_models  # models_admin
 model_routes  # models_admin
 rate_limit_windows  # models_admin
 concurrency_leases  # models_admin
+governance_policies  # governance
+retention_policies  # governance
