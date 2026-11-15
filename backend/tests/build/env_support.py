@@ -44,6 +44,8 @@ class RepoEnv:
             artifact_key=a["key"],
             artifact_name=a["name"],
             artifact_status=a["status"],
+            workspace_id=a["workspace_id"],
+            project_id=a["project_id"],
         )
 
     def latest(self, artifact_id: UUID) -> VersionRef | None:
@@ -92,8 +94,24 @@ class RepoEnv:
                 return McpDiscovery(exists=True, tool=tool)
         return McpDiscovery(exists=True, tool=None)
 
+    def schema_discovery(self, connection_id: UUID) -> dict[str, Any] | None:
+        found = conn_repo.latest_discovery(self.session, connection_id, tenant_id=self.tenant_id)
+        return None if found is None else dict(found["payload"])
+
     def executor_maturity(self, executor: str) -> str:
         return "ready"
+
+    def permits(self, action: str, ref: VersionRef) -> bool:
+        """The principal's own permission is the service's decision. What this env decides is that
+        `ref` names an artifact of the caller's client, in the scope `ref` claims: the artifact is
+        read again with the client id and its workspace and project must be the ones `ref` carries
+        (a forged or foreign `VersionRef` gets False)."""
+        a = repo.get_artifact(self.session, self.tenant_id, ref.artifact_id)
+        return (
+            a is not None
+            and a["workspace_id"] == ref.workspace_id
+            and a["project_id"] == ref.project_id
+        )
 
 
 def add_published(

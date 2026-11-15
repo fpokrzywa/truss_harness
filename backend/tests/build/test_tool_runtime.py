@@ -31,6 +31,7 @@ from shifde.core.db import Database, set_principal, set_tenant
 from shifde.core.errors import AppError, Forbidden, NotFound
 from shifde.core.settings import Settings
 from shifde.tenancy.scope import TenantScope
+from tests._support.tenants import bind_user
 from tests.build.conftest import World
 from tests.connections.conftest import client, people, rest_server
 from tests.connections.routes import (
@@ -43,7 +44,8 @@ from tests.connections.routes import (
     rest_body,
     secret,
 )
-from tests.tenancy.conftest import app_session
+from tests.identity.harness import person
+from tests.tenancy.conftest import app_session, owner_member
 from tests.tenancy.routes import People
 
 __all__ = ["client", "people", "rest_server"]
@@ -213,7 +215,9 @@ def _service(
         yield ConnectionService(scope, IntegrationRuntime(settings=settings, registry=REGISTRY))
 
 
-def _spec(connection_id: UUID, side: str = "read", **extra: Any) -> dict[str, Any]:
+def _spec(
+    connection_id: UUID, side: str = "read", *, timeout_s: int = 5, **extra: Any
+) -> dict[str, Any]:
     return {
         "executor": "rest.http",
         "binding": {
@@ -224,7 +228,7 @@ def _spec(connection_id: UUID, side: str = "read", **extra: Any) -> dict[str, An
             **extra,
         },
         "side_effect_class": side,
-        "timeout_s": 5,
+        "timeout_s": timeout_s,
         "retry": {"max_attempts": 1, "backoff_s": 0},
         "idempotency": "none",
     }
@@ -258,11 +262,16 @@ def _connection_row(owner_db: Database, connection_id: UUID) -> tuple[Any, ...]:
         )
 
 
-def _run(conns: ConnectionService, call: str, spec: dict[str, Any]) -> Any:
+# positive controls run under a generous deadline (a loaded machine, `pytest -n 8`, can take
+# seconds); the refusal tests keep the short one: they prove nothing is sent at all
+GENEROUS = 60
+
+
+def _run(conns: ConnectionService, call: str, spec: dict[str, Any], deadline: float = 5.0) -> Any:
     if call == "execute":
         return tool_runtime.execute(conns, spec, {"n": 1}, purpose="t", idempotency_key="k")
     return tool_runtime.invoke_once(
-        conns, spec, {"n": 1}, purpose="t", idempotency_key="k", deadline=5.0
+        conns, spec, {"n": 1}, purpose="t", idempotency_key="k", deadline=deadline
     )
 
 
@@ -278,7 +287,7 @@ def test_a_tool_runs_through_its_own_clients_connection_and_secret(
 ) -> None:
     a, b = two.a, two.b
     with _service(app_db, owner_db, settings, a, a.email) as conns:
-        out = _run(conns, call, _spec(a.connection))
+        out = _run(conns, call, _spec(a.connection, timeout_s=GENEROUS), GENEROUS)
     status = out.output["status"] if call == "execute" else out["status"]
     assert status == 200
     assert [r["path"] for r in a.server.requests] == ["/echo"]
@@ -315,7 +324,9 @@ def test_the_connection_is_looked_up_in_the_session_client_not_the_spec(
     nothing: A's context with a spec that claims B's client still gets the unknown-id outcome."""
     a, b = two.a, two.b
     with _service(app_db, owner_db, settings, b, b.email) as conns:
-        assert _run(conns, "execute", _spec(b.connection)).output["status"] == 200
+        assert (
+            _run(conns, "execute", _spec(b.connection, timeout_s=GENEROUS)).output["status"] == 200
+        )
     assert [r["authenticated"] for r in b.server.requests] == [True]
     claimed = {**_spec(b.connection, tenant_id=str(b.tenant)), "tenant_id": str(b.tenant)}
     with _service(app_db, owner_db, settings, a, a.email) as conns:
@@ -333,6 +344,7 @@ def test_binding_fields_cannot_redirect_a_call_to_another_host(
     before = _connection_row(owner_db, a.connection)
     spec = _spec(
         a.connection,
+        timeout_s=GENEROUS,
         base_url=b.server.base_url,
         url=b.server.base_url + "/echo",
         host="127.0.0.1",
@@ -354,7 +366,9 @@ def test_a_write_tool_needs_a_read_write_connection(
         assert _refusal(conns, "execute", _spec(a.connection, side))[0] is Forbidden
         assert _refusal(conns, "invoke_once", _spec(a.connection, side))[0] is Forbidden
         # control: the same connection serves a read class
-        assert _run(conns, "execute", _spec(a.connection)).output["status"] == 200
+        assert (
+            _run(conns, "execute", _spec(a.connection, timeout_s=GENEROUS)).output["status"] == 200
+        )
     assert [r["method"] for r in a.server.requests] == ["GET"]  # no write reached the target
 
 
@@ -367,3 +381,41 @@ def test_a_principal_without_connection_use_is_refused_before_any_call(
         refused = _refusal(conns, "execute", _spec(a.connection, side))
     assert refused[0] in (Forbidden, NotFound)
     assert a.server.requests == [] and _accesses(owner_db, a) == 0
+
+
+@pytest.mark.parametrize("as_owner", [False, True], ids=["as-app-role", "as-owner-no-rls"])
+@pytest.mark.parametrize("call", ["execute", "invoke_once"])
+@pytest.mark.parametrize("side", sorted(tool_runtime.WRITE_CLASSES))
+def test_a_write_tool_on_a_read_write_connection_needs_connection_write(
+    side: str,
+    call: str,
+    as_owner: bool,
+    two: Two,
+    app_db: Database,
+    owner_db: Database,
+    settings: Settings,
+) -> None:
+    """A developer holds `connection:use` but not `connection:write`: on a read_write connection a
+    write class is refused and nothing is sent; the owner (who holds both) writes (control)."""
+    a = two.a
+    email = f"developer-{uuid.uuid4().hex[-12:]}@route.test"
+    with owner_db.session() as o:
+        user = person(o, email)
+        owner_member(o, a.tenant, user)
+        bind_user(o, a.tenant, user, "developer")
+        o.execute(
+            text("UPDATE shifde.connections SET access_mode = 'read_write' WHERE id = :i"),
+            {"i": a.connection},
+        )
+        o.commit()
+    with _service(app_db, owner_db, settings, a, email, as_owner=as_owner) as conns:
+        assert _refusal(conns, call, _spec(a.connection, side))[0] is Forbidden
+        # control: the same developer reads through the same connection
+        assert (
+            _run(conns, "execute", _spec(a.connection, timeout_s=GENEROUS)).output["status"] == 200
+        )
+    assert [r["method"] for r in a.server.requests] == ["GET"]  # no write reached the target
+    with _service(app_db, owner_db, settings, a, a.email, as_owner=as_owner) as conns:
+        written = _run(conns, "execute", _spec(a.connection, side, timeout_s=GENEROUS))
+    assert written.output["status"] == 200
+    assert [r["method"] for r in a.server.requests] == ["GET", "POST"]

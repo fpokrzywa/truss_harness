@@ -59,6 +59,10 @@ def test_contract_permissions_exist_and_roles_hold_them(owner_session: Session) 
         )
 
     assert wanted <= role_keys("tenant_administrator") - {"tool:invoke", "agent:execute"} | wanted
+    # the same intent, parenthesised so that it can fail (above, `-` binds before `|` and the
+    # right-hand `| wanted` makes it always true): the administrator holds every wanted key
+    # except possibly the two named
+    assert wanted - {"tool:invoke", "agent:execute"} <= role_keys("tenant_administrator")
     for admin in ("tenant_administrator", "workspace_administrator", "project_administrator"):
         assert {"tool:create", "tool:test_side_effects", "agent:activate"} <= role_keys(admin), (
             admin
