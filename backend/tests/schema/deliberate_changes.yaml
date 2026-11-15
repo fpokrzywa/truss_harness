@@ -520,3 +520,43 @@
   path: [indexes, pipeline_validation_reports_pkey]
   reason: "client-keyed primary key closes an existence and lock oracle: with a key on the version id alone, an INSERT ... ON CONFLICT DO NOTHING under client A's context conflicted with client B's row (silent success where an unknown id gives 23503) and waited on B's uncommitted insert (55P03). Build isolation review 1, item 1, B-1905."
   migration: build_0001
+
+- table: prompt_test_runs
+  path: [columns, own_model_id]
+  reason: "shared SHI models (models.tenant_id NULL, design 5.3) never match a composite (tenant_id, model_id) key; own_model_id carries the model id for the client's own model only (NULL for a shared one), so the composite key keeps integrity for own models and trg_build_model_ref_guard checks the rest (B-1940)"
+  migration: build_0002
+
+- table: prompt_test_runs
+  path: [constraints, ck_prompt_test_runs__own_model]
+  reason: "own_model_id is NULL or equals model_id (B-1940)"
+  migration: build_0002
+
+- table: prompt_test_runs
+  path: [constraints, fk_prompt_test_runs__model]
+  reason: "composite key now on (tenant_id, own_model_id): checked for the client's own model, skipped (MATCH SIMPLE) for a shared one, which trg_build_model_ref_guard checks (B-1940)"
+  migration: build_0002
+
+- table: prompt_test_runs
+  path: [triggers, trg_build_model_ref_guard]
+  reason: "sets own_model_id and refuses another client's model and an unknown id alike (23503, no lock wait) while accepting the client's own and shared models (B-1940)"
+  migration: build_0002
+
+- table: pipeline_version_refs
+  path: [columns, own_model_id]
+  reason: "shared SHI models (models.tenant_id NULL, design 5.3) never match a composite (tenant_id, model_id) key; own_model_id carries the model id for the client's own model only (NULL for a shared one), so the composite key keeps integrity for own models and trg_build_model_ref_guard checks the rest (B-1941)"
+  migration: build_0002
+
+- table: pipeline_version_refs
+  path: [constraints, ck_pipeline_version_refs__own_model]
+  reason: "own_model_id is NULL or equals model_id (B-1941)"
+  migration: build_0002
+
+- table: pipeline_version_refs
+  path: [constraints, fk_pipeline_refs__model]
+  reason: "composite key now on (tenant_id, own_model_id): checked for the client's own model, skipped (MATCH SIMPLE) for a shared one, which trg_build_model_ref_guard checks (B-1941)"
+  migration: build_0002
+
+- table: pipeline_version_refs
+  path: [triggers, trg_build_model_ref_guard]
+  reason: "sets own_model_id and refuses another client's model and an unknown id alike (23503, no lock wait) while accepting the client's own and shared models (B-1941)"
+  migration: build_0002

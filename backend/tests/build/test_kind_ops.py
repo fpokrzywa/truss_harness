@@ -413,9 +413,32 @@ def test_a_client_with_the_shi_switch_off_cannot_reach_shi_through_the_panels(
             {"t": world.b.tenant, "m": shi.model},
         ).scalar_one()
     assert denied == 0
-    # A (switch on) reaches SHI's endpoint through the agent panel (the prompt panel cannot
-    # store a run of a shared model yet: carry_forward, build 4b)
+    # A (switch on) reaches SHI's endpoint through the prompt panel and stores the run of the
+    # shared model (build_0002: B-1940), then through the agent panel
     ha = as_user(c, people.owner_a)
+    prompt_ok = c.post(
+        f"{A}/prompts/{sides['a'][0]}/test",
+        json={
+            "version_id": sides["a"][3],
+            "variables": {"message": "hi shi prompt"},
+            "model_id": shi.model,
+        },
+        headers=ha,
+    )
+    assert prompt_ok.status_code == 200, prompt_ok.text
+    assert "hi shi prompt" in str(server.bodies[0])
+    a_runs = c.get(f"{A}/prompts/{sides['a'][0]}/test-runs", headers=ha).json()["items"]
+    assert [r["model_id"] for r in a_runs] == [shi.model]
+    with owner_db.session() as o:
+        stored = o.execute(
+            text(
+                "SELECT model_id::text, own_model_id FROM shifde.prompt_test_runs "
+                "WHERE tenant_id = :t"
+            ),
+            {"t": world.a.tenant},
+        ).one()
+    assert stored == (shi.model, None)  # shared: guarded by the trigger, no own-model key
+    server.bodies.clear()
     draft = c.get(f"{A}/agents/{sides['a'][1]}/draft", headers=ha).json()
     edit(
         c,
