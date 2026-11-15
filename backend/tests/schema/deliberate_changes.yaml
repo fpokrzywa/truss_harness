@@ -418,8 +418,8 @@
 
 - table: model_providers
   path: [constraints, ck_model_providers__platform]
-  reason: "the SHI-wide model provider and its models are shared rows (tenant NULL) every client reads and only the platform administrator context writes (design 3 and 5.3, DECISIONS B-1701, B-1702): a NULL-tenant provider has the fixed id SHI_PROVIDER_ID (at most one) and no connection; a client provider always has one."
-  migration: models_admin_0001
+  reason: "the SHI-wide model provider and its models are shared rows (tenant NULL) every client reads and only the platform administrator context writes (design 3 and 5.3, DECISIONS B-1701, B-1702): a NULL-tenant provider has the fixed id SHI_PROVIDER_ID (at most one) and no connection; a client provider always has one. Rewritten by models_admin_0002 (review 1 item 1, B-1711): SHI_PROVIDER_ID is reserved for the NULL-tenant row even while none exists."
+  migration: models_admin_0001, models_admin_0002
 
 - table: model_providers
   path: [constraints, ck_model_providers__shared_client_safe]
@@ -480,3 +480,13 @@
   path: [policies, write_own]
   reason: "the SHI-wide model provider and its models are shared rows (tenant NULL) every client reads and only the platform administrator context writes (design 3 and 5.3, DECISIONS B-1701, B-1702): writes need the client's own rows, or tenant NULL together with the platform administrator context."
   migration: models_admin_0001
+
+- table: model_allowlist_models
+  path: [constraints, model_allowlist_models_pkey]
+  reason: "models_admin isolation review 1 item 7 (DECISIONS B-1735): the member key includes tenant_id, (tenant_id, allowlist_id, model_id), so holding another client's ids gives no 23505 / 23503 difference."
+  migration: models_admin_0003
+
+- table: model_allowlist_models
+  path: [indexes, model_allowlist_models_pkey]
+  reason: "models_admin isolation review 1 item 7 (DECISIONS B-1735): the primary key's index follows the key, (tenant_id, allowlist_id, model_id)."
+  migration: models_admin_0003

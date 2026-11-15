@@ -27,11 +27,24 @@ from shifde.core.db import Database, platform_admin_context
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.models_admin import repository
+from tests.conftest import CLEAN_TABLES
 from tests.connections.conftest import owner_vendor
 from tests.tenancy.conftest import Client, World, app_session, world
 from tests.tenancy.routes import People, make_people
 
 __all__ = ["world"]
+
+# part 2b: an invoke writes usage rows and (on a budget refusal) authorization decisions; the
+# pricing tests add rate cards. Truncated with the rest before each test.
+for _table in (
+    "usage_rollups_daily",
+    "usage_events",
+    "rate_card_versions",
+    "rate_cards",
+    "policy_decisions",
+):
+    if _table not in CLEAN_TABLES:
+        CLEAN_TABLES.append(_table)
 
 MODULE_TABLES = (
     "model_allowlist_models",

@@ -179,6 +179,12 @@ class Settings(BaseSettings):
     oidc_rate_per_minute: int = 20
     # Hard overall deadline of one governed model call; concurrency leases outlive it.
     model_call_deadline_seconds: float = 120.0
+    # The SHI-wide model provider's endpoint and key (design 5.3, DECISIONS B-1712, B-1732):
+    # installation configuration, never in a client-readable row. `SHIFDE_SHI_PROVIDER_CONFIG` is
+    # the adapter's connection config as JSON (e.g. {"base_url": ...}); the key is sent with the
+    # adapter's first non-"none" auth method. Read only on the call path of a shared SHI model.
+    shi_provider_config: dict[str, Any] | None = None  # Any: adapter config JSON
+    shi_provider_api_key: SecretStr | None = None
     # Hard overall deadline of one direct connection invoke (REST / MCP / SQL) through the API.
     connection_call_deadline_seconds: float = 60.0
     # P5 runtime

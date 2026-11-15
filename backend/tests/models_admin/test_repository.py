@@ -68,7 +68,9 @@ def test_ensure_shi_provider_is_idempotent_and_disabled(app_db: Database, pair: 
         assert row["tenant_id"] is None and row["adapter_key"] == "fake"  # read back
         s.commit()
     with app_session(app_db, pair.a.tenant) as s:
-        row = repository.get_provider(s, repository.SHI_PROVIDER_ID, tenant_id=pair.a.tenant)
+        row = repository.get_provider(
+            s, repository.SHI_PROVIDER_ID, tenant_id=pair.a.tenant, shared=True
+        )
         assert row is not None
         assert (row["tenant_id"], row["adapter_key"], row["status"]) == (None, "fake", "disabled")
 

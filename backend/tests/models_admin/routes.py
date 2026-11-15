@@ -1,4 +1,4 @@
-"""models_admin part 2a: the provider, model and SHI routes over a minimal FastAPI app (B-1020).
+"""models_admin parts 2a and 2b: the provider, model, allowlist, route, invoke and SHI routes over a minimal FastAPI app (B-1020).
 
 The app is the connections route harness (`tests/connections/routes.py`: identity harness, the
 integration runtime) plus `models_admin.api.router` behind `require_auth`; the `app` port mounts the
@@ -54,12 +54,19 @@ def fake_model_stack(
     lifecycle: str = "active",
     conn_name: str = "fake-conn",
     vendor_id: str | None = None,
+    config: dict[str, Any] | None = None,
+    rate_limits: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """SETH `p3util.fake_model_stack`: active fake connection -> provider -> model; their ids."""
     conn = connection(
         client,
         h,
-        {"name": conn_name, "connection_type": "model_api", "adapter_key": "fake", "config": {}},
+        {
+            "name": conn_name,
+            "connection_type": "model_api",
+            "adapter_key": "fake",
+            "config": config or {},
+        },
         base,
     )
     activate(client, h, conn["id"], base)
@@ -83,6 +90,7 @@ def fake_model_stack(
             "context_window": 8192,
             "max_output_tokens": 1024,
             "lifecycle": lifecycle,
+            **({"rate_limits": rate_limits} if rate_limits else {}),
         },
     )
     return {"connection": conn["id"], "provider": provider["id"], "model": model["id"]}
@@ -105,3 +113,11 @@ def switch(client: TestClient, platform: str, slug: str, enabled: bool) -> Any: 
     )
     assert r.status_code == 200, r.text
     return r.json()
+
+
+def invoke_body(text: str = "hello world", max_tokens: int | None = None) -> dict[str, Any]:
+    """SETH `p3util.invoke_body`."""
+    body: dict[str, Any] = {"messages": [{"role": "user", "content": text}]}
+    if max_tokens is not None:
+        body["max_tokens"] = max_tokens
+    return body

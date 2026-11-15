@@ -138,9 +138,11 @@ def price_model_usage(
     """(cost, provider_key, model_key) of one model call. A provider-reported amount wins; the
     calculated rate (if any) is then still kept as the snapshot for comparison. `estimated`: the
     token counts are the platform's estimate (priced as kind `estimated`, not `calculated`)."""
-    keys = pricing.model_keys(session, tenant_id, model_id) if model_id is not None else None
+    keys = pricing.rate_keys(session, tenant_id, model_id) if model_id is not None else None
     version = (
-        pricing.resolve(session, tenant_id, keys[0], keys[1], at or utcnow()) if keys else None
+        pricing.resolve(session, tenant_id, keys[0], keys[1], at or utcnow(), global_only=keys[2])
+        if keys
+        else None
     )
     calculated = pricing.price(version, usage, estimated=estimated)
     if provider_reported_cost is not None:

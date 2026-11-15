@@ -112,28 +112,35 @@ def test_a_reads_and_lists_only_its_own_rows_and_the_shared_ones(
     a, b = pair.a.tenant, pair.b.tenant
     with app_session(app_db, a) as s:
         own = ids["a"]
-        assert repository.get_provider(s, own["provider"], tenant_id=a) is not None
-        assert repository.get_model(s, own["model"], tenant_id=a) is not None
+        assert repository.get_provider(s, own["provider"], tenant_id=a, shared=True) is not None
+        assert repository.get_model(s, own["model"], tenant_id=a, shared=True) is not None
         assert repository.get_route(s, own["route"], tenant_id=a) is not None
         for tenant in (a, b):  # B's ids are invisible whichever client the key names
-            assert repository.get_provider(s, ids["b"]["provider"], tenant_id=tenant) is None
-            assert repository.get_model(s, ids["b"]["model"], tenant_id=tenant) is None
-            assert repository.get_models(s, [ids["b"]["model"]], tenant_id=tenant) == []
+            assert (
+                repository.get_provider(s, ids["b"]["provider"], tenant_id=tenant, shared=True)
+                is None
+            )
+            assert repository.get_model(s, ids["b"]["model"], tenant_id=tenant, shared=True) is None
+            assert (
+                repository.get_models(s, [ids["b"]["model"]], tenant_id=tenant, shared=True) == []
+            )
             assert repository.get_route(s, ids["b"]["route"], tenant_id=tenant) is None
             assert repository.allowlist_model_ids(s, ids["b"]["allowlist"], tenant_id=tenant) == []
         assert repository.get_allowlist(s, "tenant", b, tenant_id=a) is None
         assert repository.get_allowlist(s, "tenant", b, tenant_id=b) is None
-        providers = repository.list_providers(s, None, 500, tenant_id=a)
+        providers = repository.list_providers(s, None, 500, tenant_id=a, shared=True)
         assert sorted(r["id"] for r in providers) == sorted([own["provider"], SHI])
         models = repository.list_models(
-            s, tenant_id=a, provider_id=None, lifecycle=None, after=None, limit=500
+            s, tenant_id=a, provider_id=None, lifecycle=None, after=None, limit=500, shared=True
         )
         assert sorted(r["id"] for r in models) == sorted([own["model"], shared_model])
         assert [r["id"] for r in repository.list_routes(s, None, 500, tenant_id=a)] == [
             own["route"]
         ]
         # keyed to B under A's row-level security: only the shared rows
-        assert [r["id"] for r in repository.list_providers(s, None, 500, tenant_id=b)] == [SHI]
+        assert [
+            r["id"] for r in repository.list_providers(s, None, 500, tenant_id=b, shared=True)
+        ] == [SHI]
         assert repository.list_routes(s, None, 500, tenant_id=b) == []
         assert (
             repository.list_models(
@@ -143,6 +150,7 @@ def test_a_reads_and_lists_only_its_own_rows_and_the_shared_ones(
                 lifecycle=None,
                 after=None,
                 limit=500,
+                shared=True,
             )
             == []
         )
@@ -272,8 +280,8 @@ def test_a_client_cannot_create_or_change_the_shared_provider(
         before = [tuple(r) for r in o.execute(text("SELECT * FROM shifde.model_providers"))]
         models_before = [tuple(r) for r in o.execute(text("SELECT * FROM shifde.models"))]
     with app_session(app_db, a) as s:
-        assert repository.get_provider(s, SHI, tenant_id=a) is not None  # readable
-        assert repository.get_model(s, shared_model, tenant_id=a) is not None
+        assert repository.get_provider(s, SHI, tenant_id=a, shared=True) is not None  # readable
+        assert repository.get_model(s, shared_model, tenant_id=a, shared=True) is not None
         assert (
             repository.update_provider(s, SHI, None, {"status": "active"}, tenant_id=None) is None
         )

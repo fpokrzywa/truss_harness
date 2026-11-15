@@ -24,8 +24,15 @@ from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.models_admin import api as models_api
 from shifde.models_admin import repository
+from tests.connections.conftest import owner_vendor
 from tests.connections.routes import as_user, org
-from tests.models_admin.routes import PLATFORM, fake_model_stack, shared_model, switch
+from tests.models_admin.routes import (
+    PLATFORM,
+    fake_model_stack,
+    invoke_body,
+    shared_model,
+    switch,
+)
 from tests.tenancy.conftest import World
 from tests.tenancy.routes import People
 
@@ -137,6 +144,17 @@ ROUTE_TESTS = {
     ),
     ("PUT", "/api/v1/platform/orgs/{org}/shi-provider-access"): (
         "test_a_client_cannot_flip_any_switch"
+    ),
+    # part 2b (B-1731); `test_bs_organization_is_unknown_to_a_on_the_2b_routes` covers B's slug
+    ("GET", "/api/v1/orgs/{org}/model-allowlists"): "test_a_cannot_reach_bs_allowlists",
+    ("PUT", "/api/v1/orgs/{org}/model-allowlists"): "test_a_cannot_reach_bs_allowlists",
+    ("GET", "/api/v1/orgs/{org}/models/effective"): "test_a_lists_only_its_own_2b_rows",
+    ("POST", "/api/v1/orgs/{org}/models/{model_id}/invoke"): "test_a_cannot_invoke_bs_model",
+    ("GET", "/api/v1/orgs/{org}/model-routes"): "test_a_lists_only_its_own_2b_rows",
+    ("POST", "/api/v1/orgs/{org}/model-routes"): "test_a_cannot_reach_or_name_bs_routes",
+    ("GET", "/api/v1/orgs/{org}/model-routes/{route_id}"): "test_a_cannot_reach_or_name_bs_routes",
+    ("PATCH", "/api/v1/orgs/{org}/model-routes/{route_id}"): (
+        "test_a_cannot_reach_or_name_bs_routes"
     ),
 }
 
@@ -355,4 +373,232 @@ def test_a_client_cannot_flip_any_switch(
             put = client.put(target, headers=h, json={"enabled": True})
             assert (got.status_code, put.status_code) == (403, 403), (email, slug, put.text)
             assert put.json()["detail"] == got.json()["detail"]  # nothing said about `slug`
+    assert _rows(owner_db, two) == before
+
+
+# ------------------------------------------------------------------ part 2b routes
+def _b_route_and_allowlist(client: TestClient, two: Two) -> str:
+    """B's owner gives B a route and an enabled tenant allowlist; returns the route id."""
+    hb = as_user(client, two.b.email)
+    r = client.put(
+        f"{two.b.base}/model-allowlists",
+        headers=hb,
+        params={"scope_type": "tenant", "scope_id": str(two.b.tenant)},
+        json={"enabled": True, "model_ids": [two.b.model]},
+    )
+    assert r.status_code == 200, r.text
+    route = client.post(
+        f"{two.b.base}/model-routes",
+        headers=hb,
+        json={
+            "name": "b-route",
+            "scope": {"type": "tenant", "id": str(two.b.tenant)},
+            "primary_model_id": two.b.model,
+        },
+    )
+    assert route.status_code == 201, route.text
+    return str(route.json()["id"])
+
+
+def _route_body(two: Two, primary: str, fallbacks: list[str], name: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "scope": {"type": "tenant", "id": str(two.a.tenant)},
+        "primary_model_id": primary,
+        "fallback_model_ids": fallbacks,
+    }
+
+
+def _b_workspace(owner_db: Database, two: Two) -> UUID:
+    with owner_db.session() as o:
+        return UUID(
+            str(
+                o.execute(
+                    text("SELECT id FROM shifde.workspaces WHERE tenant_id = :b LIMIT 1"),
+                    {"b": two.b.tenant},
+                ).scalar_one()
+            )
+        )
+
+
+def test_bs_organization_is_unknown_to_a_on_the_2b_routes(client: TestClient, two: Two) -> None:
+    b_route = _b_route_and_allowlist(client, two)
+    h = as_user(client, two.a.email)
+    unknown = org(f"no-such-{uuid7().hex[-12:]}")
+    scope = f"scope_type=tenant&scope_id={two.b.tenant}"
+    route = _route_body(two, two.b.model, [], "x")
+    for method, path, payload in (
+        ("GET", f"/model-allowlists?{scope}", None),
+        ("PUT", f"/model-allowlists?{scope}", {"enabled": False, "model_ids": []}),
+        ("GET", "/models/effective", None),
+        ("POST", f"/models/{two.b.model}/invoke", invoke_body()),
+        ("GET", "/model-routes", None),
+        ("POST", "/model-routes", route),
+        ("GET", f"/model-routes/{b_route}", None),
+        ("PATCH", f"/model-routes/{b_route}", {"name": "stolen"}),
+    ):
+        missing = client.request(method, f"{unknown}{path}", headers=h, json=payload)
+        _same(client.request(method, f"{two.b.base}{path}", headers=h, json=payload), missing)
+
+
+def test_a_lists_only_its_own_2b_rows(client: TestClient, two: Two) -> None:
+    _b_route_and_allowlist(client, two)
+    h = as_user(client, two.a.email)
+    own = client.post(
+        f"{two.a.base}/model-routes", headers=h, json=_route_body(two, two.a.model, [], "a-route")
+    )
+    assert own.status_code == 201, own.text
+    routes = client.get(f"{two.a.base}/model-routes", headers=h).json()["items"]
+    assert [r["id"] for r in routes] == [own.json()["id"]]
+    effective = client.get(f"{two.a.base}/models/effective", headers=h).json()["items"]
+    assert {m["id"] for m in effective} == {two.a.model, two.shared_model}  # A's switch is on
+    hb = as_user(client, two.b.email)
+    effective = client.get(f"{two.b.base}/models/effective", headers=hb).json()["items"]
+    assert {m["id"] for m in effective} == {two.b.model}  # B's switch is off: no SHI model
+
+
+def test_a_cannot_reach_bs_allowlists(client: TestClient, owner_db: Database, two: Two) -> None:
+    _b_route_and_allowlist(client, two)
+    b_ws = _b_workspace(owner_db, two)
+    h = as_user(client, two.a.email)
+    url = f"{two.a.base}/model-allowlists"
+    own = {"scope_type": "tenant", "scope_id": str(two.a.tenant)}
+    assert client.get(url, headers=h, params=own).status_code == 200
+    put = client.put(url, headers=h, params=own, json={"enabled": False, "model_ids": []})
+    assert put.status_code == 200, put.text
+    before = _rows(owner_db, two)
+    body = {"enabled": True, "model_ids": [two.a.model]}
+    for scope_type, theirs_id in (("tenant", two.b.tenant), ("workspace", b_ws)):
+        for method, payload in (("GET", None), ("PUT", body)):
+            missing = client.request(
+                method,
+                url,
+                headers=h,
+                params={"scope_type": scope_type, "scope_id": str(uuid7())},
+                json=payload,
+            )
+            theirs = client.request(
+                method,
+                url,
+                headers=h,
+                params={"scope_type": scope_type, "scope_id": str(theirs_id)},
+                json=payload,
+            )
+            _same(theirs, missing)
+    # naming B's model or a shared SHI model (B-1733) is refused like an unknown model id
+    for model in (two.b.model, two.shared_model):
+        missing = client.put(
+            url, headers=h, params=own, json={"enabled": True, "model_ids": [str(uuid7())]}
+        )
+        theirs = client.put(
+            url, headers=h, params=own, json={"enabled": True, "model_ids": [model]}
+        )
+        _same(theirs, missing, 422)
+    assert _rows(owner_db, two) == before
+
+
+def test_a_cannot_invoke_bs_model(client: TestClient, owner_db: Database, two: Two) -> None:
+    h = as_user(client, two.a.email)
+    own = client.post(f"{two.a.base}/models/{two.a.model}/invoke", headers=h, json=invoke_body())
+    assert own.status_code == 200, own.text
+    before = _rows(owner_db, two)
+    missing = client.post(f"{two.a.base}/models/{uuid7()}/invoke", headers=h, json=invoke_body())
+    theirs = client.post(f"{two.a.base}/models/{two.b.model}/invoke", headers=h, json=invoke_body())
+    _same(theirs, missing)
+    assert _rows(owner_db, two) == before
+    with owner_db.session() as o:
+        b_usage = o.execute(
+            text("SELECT count(*) FROM shifde.usage_events WHERE tenant_id = :b"),
+            {"b": two.b.tenant},
+        ).scalar_one()
+    assert b_usage == 0
+
+
+def test_a_cannot_reach_or_name_bs_routes(client: TestClient, owner_db: Database, two: Two) -> None:
+    b_route = _b_route_and_allowlist(client, two)
+    h = as_user(client, two.a.email)
+    created = client.post(
+        f"{two.a.base}/model-routes", headers=h, json=_route_body(two, two.a.model, [], "mine")
+    )
+    assert created.status_code == 201, created.text
+    own = f"{two.a.base}/model-routes/{created.json()['id']}"
+    assert client.get(own, headers=h).status_code == 200
+    assert client.patch(own, headers=h, json={"name": "mine-2"}).status_code == 200
+    before = _rows(owner_db, two)
+    for method, payload in (("GET", None), ("PATCH", {"name": "stolen"})):
+        missing = client.request(
+            method, f"{two.a.base}/model-routes/{uuid7()}", headers=h, json=payload
+        )
+        theirs = client.request(
+            method, f"{two.a.base}/model-routes/{b_route}", headers=h, json=payload
+        )
+        _same(theirs, missing)
+    # B's model or a shared SHI model as the primary or any fallback: an unknown model's 422
+    unknown = str(uuid7())
+    for name, (primary, fallbacks), (ref_primary, ref_fallbacks) in (
+        ("p-b", (two.b.model, []), (unknown, [])),
+        ("f-b", (two.a.model, [two.b.model]), (two.a.model, [unknown])),
+        ("p-shi", (two.shared_model, []), (unknown, [])),
+        ("f-shi", (two.a.model, [two.shared_model]), (two.a.model, [unknown])),
+    ):
+        missing = client.post(
+            f"{two.a.base}/model-routes",
+            headers=h,
+            json=_route_body(two, ref_primary, ref_fallbacks, name),
+        )
+        theirs = client.post(
+            f"{two.a.base}/model-routes",
+            headers=h,
+            json=_route_body(two, primary, fallbacks, name),
+        )
+        _same(theirs, missing, 422)
+        patched_missing = client.patch(
+            own,
+            headers=h,
+            json={"primary_model_id": ref_primary, "fallback_model_ids": ref_fallbacks},
+        )
+        patched = client.patch(
+            own, headers=h, json={"primary_model_id": primary, "fallback_model_ids": fallbacks}
+        )
+        _same(patched, patched_missing, 422)
+    assert _rows(owner_db, two) == before
+    with owner_db.session() as o:
+        b_routes = o.execute(
+            text(
+                "SELECT name, primary_model_id, fallback_model_ids FROM shifde.model_routes "
+                "WHERE tenant_id = :b"
+            ),
+            {"b": two.b.tenant},
+        ).all()
+    assert [tuple(r) for r in b_routes] == [("b-route", UUID(two.b.model), [])]
+
+
+def test_a_provider_naming_bs_private_vendor_is_answered_like_an_unknown_vendor(
+    client: TestClient, owner_db: Database, two: Two
+) -> None:
+    """Isolation review 2 item 3: B's private vendor, active or disabled, is an unknown vendor
+    id to A on `POST /model-providers`."""
+    with owner_db.session() as o:
+        active, disabled = owner_vendor(o, two.b.tenant), owner_vendor(o, two.b.tenant)
+        o.execute(
+            text("UPDATE shifde.vendors SET status = 'disabled' WHERE id = :i"), {"i": disabled}
+        )
+        o.commit()
+    h = as_user(client, two.a.email)
+    url = f"{two.a.base}/model-providers"
+
+    def body(vendor: object, name: str) -> dict[str, Any]:
+        return {
+            "name": name,
+            "adapter_key": "fake",
+            "connection_id": two.a.connection,
+            "vendor_id": str(vendor),
+        }
+
+    before = _rows(owner_db, two)
+    for n, vendor in enumerate((active, disabled)):
+        missing = client.post(url, headers=h, json=body(uuid7(), f"v-{n}"))
+        assert missing.status_code in (404, 422), missing.text
+        theirs = client.post(url, headers=h, json=body(vendor, f"v-{n}"))
+        _same(theirs, missing, missing.status_code)
     assert _rows(owner_db, two) == before
