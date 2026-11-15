@@ -263,7 +263,7 @@ def test_a_client_cannot_create_or_change_the_shared_provider(
 ) -> None:
     a = pair.a.tenant
     with app_session(app_db, a) as s:
-        shi = dict(adapter_key="fake", settings={}, created_by=None)
+        shi = dict(adapter_key="fake", created_by=None)
         assert _refused(s, lambda: repository.ensure_shi_provider(s, **shi))[0] == "42501"
         stray = provider_values(None, None)
         assert _refused(s, lambda: repository.insert_provider(s, stray))[0] == "42501"
@@ -288,9 +288,9 @@ def test_a_client_cannot_create_or_change_the_shared_provider(
             assert s.execute(text(stmt)).rowcount == 0, stmt
         more = model_values(None, SHI)
         assert _refused(s, lambda: repository.insert_model(s, more))[0] == "42501"
-        # claiming the shared row's id for a client row collides only on the server-minted id
+        # the shared row's id is reserved for it (review 1 item 1, models_admin_0002)
         clash = provider_values(a, pair.a.connection, id=SHI)
-        assert _refused(s, lambda: repository.insert_provider(s, clash))[0] == "23505"
+        assert _refused(s, lambda: repository.insert_provider(s, clash))[0] == "23514"
         s.commit()
     with owner_db.session() as o:
         assert [tuple(r) for r in o.execute(text("SELECT * FROM shifde.model_providers"))] == before
@@ -301,22 +301,21 @@ def test_only_the_platform_administrator_switches_the_shared_provider_for_a_clie
     app_db: Database, pair: Pair
 ) -> None:
     a, b = pair.a.tenant, pair.b.tenant
-    with app_session(app_db, a) as s:
+    member, staff = pair.a.c.member, pair.a.c.staff  # a person of A; the acting administrator
+    with app_session(app_db, a, member) as s:
         assert repository.shi_enabled(s, tenant_id=a) is False  # off by default
-        on = dict(tenant_id=a, enabled=True, changed_by=None, expected=None)
+        on = dict(tenant_id=a, enabled=True, expected=None)
         assert _refused(s, lambda: repository.set_shi_access(s, **on))[0] == "42501"
-    with app_session(app_db, a) as s, platform_admin_context(s):
-        row = repository.set_shi_access(
-            s, tenant_id=a, enabled=True, changed_by=None, expected=None
-        )
+    with app_session(app_db, a, staff) as s, platform_admin_context(s):
+        row = repository.set_shi_access(s, tenant_id=a, enabled=True, expected=None)
         assert row is not None and row["enabled"] is True
         s.commit()
         # even the platform administrator writes a client's switch only in that client's context
-        other = dict(tenant_id=b, enabled=True, changed_by=None, expected=None)
+        other = dict(tenant_id=b, enabled=True, expected=None)
         assert _refused(s, lambda: repository.set_shi_access(s, **other))[0] == "42501"
-    with app_session(app_db, a) as s:
+    with app_session(app_db, a, member) as s:
         assert repository.shi_enabled(s, tenant_id=a) is True  # the owner sees the switch
-        off = dict(tenant_id=a, enabled=False, changed_by=None, expected=None)
+        off = dict(tenant_id=a, enabled=False, expected=None)
         assert _refused(s, lambda: repository.set_shi_access(s, **off))[0] == "42501"
         stmt = "UPDATE shifde.shi_provider_access SET enabled = false WHERE tenant_id = :a"
         assert s.execute(text(stmt), {"a": a}).rowcount == 0
@@ -361,6 +360,20 @@ def test_the_keys_hold_without_the_guard_or_rls(
                 ),
             ),
             ("23514", lambda: repository.insert_provider(o, provider_values(a, None))),
+            # the SHI id is reserved for the shared row even while none exists (review 1 item 1)
+            (
+                "23514",
+                lambda: repository.insert_provider(
+                    o, provider_values(a, pair.a.connection, id=SHI)
+                ),
+            ),
+            # the shared row's client-readable columns carry nothing (review 1 item 4)
+            (
+                "23514",
+                lambda: repository.insert_provider(
+                    o, provider_values(None, None, id=SHI, settings={"endpoint": "https://x"})
+                ),
+            ),
             ("23514", lambda: repository.insert_model(o, model_values(None, ids["a"]["provider"]))),
             ("23514", lambda: repository.insert_model(o, model_values(None, SHI))),  # no SHI row
         ]

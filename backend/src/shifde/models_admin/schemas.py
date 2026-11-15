@@ -36,7 +36,7 @@ class ProviderOut(BaseModel):
     id: UUID
     name: str
     adapter_key: str
-    connection_id: UUID
+    connection_id: UUID | None  # None only on the shared SHI provider (DECISIONS B-1716)
     vendor_id: UUID | None
     settings: dict[str, Any]
     status: str
@@ -115,6 +115,38 @@ class ModelOut(BaseModel):
     pricing_ref: str | None
     row_version: int
     created_at: datetime
+
+
+# ------------------------------------------------------------------ the SHI-wide provider
+class ShiProviderPut(BaseModel):
+    """The platform administrator creates (first PUT) or changes the shared SHI provider. It has
+    no settings: SHI's endpoint and key reference are installation configuration (B-1712)."""
+
+    model_config = Strict
+    adapter_key: str = Field(min_length=1, max_length=100)
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    status: Literal["active", "disabled"] | None = None
+    row_version: int | None = None
+
+
+class ShiAccessPut(BaseModel):
+    model_config = Strict
+    enabled: bool
+    row_version: int | None = None
+
+
+class ShiAccessOut(BaseModel):
+    """A client's own switch for the SHI provider (shown to its owner). Who changed it is a
+    platform administrator, not a person of the client: the client's audit trail names them."""
+
+    enabled: bool
+    changed_at: datetime | None
+    row_version: int | None
+
+
+class PlatformShiAccessOut(ShiAccessOut):
+    org: str
+    changed_by: UUID | None
 
 
 # ------------------------------------------------------------------ allowlists / routes

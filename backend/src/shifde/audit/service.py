@@ -101,6 +101,11 @@ ADMIN_INSTALLATION_ACTIONS: frozenset[str] = frozenset(
         # administrator (`vendors.service`, `platform:admin`); no client is the subject (B-1304)
         "vendor.created",
         "vendor.updated",
+        # the SHI-wide model provider (design 3 and 5.3, models_admin part 2a, DECISIONS B-1717):
+        # configured by the platform administrator with no client context; each per-client switch
+        # change is also recorded in that client's own trail
+        "model.shi_provider.configured",
+        "model.shi_provider.access_changed",
     }
 )
 INSTALLATION_ACTIONS: frozenset[str] = PRE_TENANT_ACTIONS | ADMIN_INSTALLATION_ACTIONS
