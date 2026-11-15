@@ -82,7 +82,7 @@ def revoke_api_key(org: UUID, key_id: UUID, auth: AuthDep, session: SessionDep) 
     # the service rule (carry_forward): load the row in the caller's client before the mutator
     if repository.get_api_key(session, org, key_id) is None:
         raise NotFound("API key not found")
-    repository.revoke_api_key(session, key_id, auth.principal.principal_id, utcnow())
+    repository.revoke_api_key(session, key_id, auth.principal.principal_id, utcnow(), tenant_id=org)
     session.commit()
 
 

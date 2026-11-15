@@ -185,9 +185,9 @@ def test_service_accounts_and_keys_in_own_client(world: World, app_db: Database)
             limit=10,
         )
         assert [k.id for k in listed] == [key]
-        assert repository.touch_api_key(s, key, now, 60)
-        assert not repository.touch_api_key(s, key, now, 60)  # throttled
-        repository.shorten_api_key_expiry(s, key, now + timedelta(hours=1))
+        assert repository.touch_api_key(s, key, now, 60, tenant_id=a.tenant)
+        assert not repository.touch_api_key(s, key, now, 60, tenant_id=a.tenant)  # throttled
+        repository.shorten_api_key_expiry(s, key, now + timedelta(hours=1), tenant_id=a.tenant)
         s.commit()  # keep the key across the refused statement's rollback
         with pytest.raises(DBAPIError, match="API key expiry can only be shortened"):
             s.execute(
@@ -197,8 +197,8 @@ def test_service_accounts_and_keys_in_own_client(world: World, app_db: Database)
                 {"k": key},
             )
         s.rollback()
-        assert repository.revoke_api_key(s, key, a.member, now)
-        assert not repository.revoke_api_key(s, key, a.member, now)
+        assert repository.revoke_api_key(s, key, a.member, now, tenant_id=a.tenant)
+        assert not repository.revoke_api_key(s, key, a.member, now, tenant_id=a.tenant)
         s.commit()
         with pytest.raises(DBAPIError, match="a revoked API key cannot be changed"):
             s.execute(

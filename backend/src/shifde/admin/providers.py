@@ -1,10 +1,10 @@
-"""Identity-provider configuration (admin part 3a).
+"""Identity-provider configuration (admin part 3a), secrets metadata/rotation and the audit read
+API (part 3b).
 
 IdP client secrets are write-only: they are stored through the secrets module (envelope
 encrypted) and referenced by id; responses only say `client_secret_set`.
 
-Ported from SETH 3ba0e06 `admin/providers.py` lines 1-347 (secrets and the audit read API come
-with part 3b). Changes (DECISIONS B-1621..):
+Ported from SETH 3ba0e06 `admin/providers.py`. Changes (DECISIONS B-1621.., B-1641..):
 
 * The installation scope is the platform administrator's only, through
   `tenancy.service.require_platform_admin` (B-1011: one 403 for everyone else whatever the id);
@@ -23,6 +23,13 @@ with part 3b). Changes (DECISIONS B-1621..):
 * A client's IdP never syncs groups (`ck_idp_configs__group_sync_installation_only`, B-932) and
   never provisions people (`ck_idp_configs__tenant_no_jit`): both are a 422 here, before the
   database refuses.
+* Secrets (B-1641): every lookup names the scope's client (`get_secret(..., tenant_id=)`,
+  B-802) and responses are built from `SecretMeta` (B-803), so another client's secret id is
+  exactly an unknown id and a client never reaches an installation secret. Values never reach a
+  response or an audit payload.
+* Audit (B-1642): events and the chain check are the scope's client's only
+  (`audit.list_events(tenant_id=)`, `audit.verify_chain(tenant_id)`, under row-level security
+  as well).
 """
 
 from __future__ import annotations
@@ -30,6 +37,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
@@ -57,11 +65,13 @@ from shifde.identity import service as identity
 from shifde.identity.oidc import OidcClient
 from shifde.identity.service import IdpConfig
 from shifde.secrets import service as secrets_service
+from shifde.secrets.service import SecretMeta
 from shifde.tenancy import service as tenancy
 from shifde.tenancy.scope import TenantScope
 
 IDP_CONFLICT = "the identity provider conflicts with another identity provider in this scope"
 IDP_NOT_FOUND = "identity provider not found"
+SECRET_NOT_FOUND = "secret not found"
 
 
 @dataclass
@@ -179,9 +189,9 @@ def list_idps(sc: IdpScope, *, limit: int, cursor: str | None) -> Page[s.IdpOut]
         )
         page, more = paginate(rows, limit)
         items = [_idp_out(r) for r in page]
-    return Page[s.IdpOut](
-        items=items, next_cursor=encode_cursor(page[-1].id) if more and page else None
-    )
+        # read inside the context too (B-1020a): an installation row is not readable after it
+        next_cursor = encode_cursor(page[-1].id) if more and page else None
+    return Page[s.IdpOut](items=items, next_cursor=next_cursor)
 
 
 def get_idp(sc: IdpScope, idp_id: UUID) -> s.IdpOut:
@@ -370,3 +380,191 @@ def test_idp(sc: IdpScope, client: OidcClient, idp_id: UUID) -> s.IdpTestOut:
         )
     iam.commit(sc.session, "identity provider")
     return s.IdpTestOut(ok=ok, checks=[s.IdpCheck(name=n, ok=o, detail=d) for n, o, d in results])
+
+
+# ================================================================== secrets (part 3b)
+def _secret_out(sec: SecretMeta) -> s.SecretOut:
+    scope = (
+        None
+        if sec.scope_type == "tenant"
+        else s.SecretScope.model_validate({"type": sec.scope_type, "id": sec.scope_id})
+    )
+    return s.SecretOut(
+        id=sec.id,
+        name=sec.name,
+        kind=sec.kind,
+        scope=scope,
+        status=sec.status,
+        version=sec.secret_version,
+        created_at=sec.created_at,
+        rotated_at=sec.rotated_at,
+        last_used_at=sec.last_used_at,
+        row_version=sec.row_version,
+    )
+
+
+def list_secrets(scope: TenantScope, *, limit: int, cursor: str | None) -> Page[s.SecretOut]:
+    scope.pdp.require("secret:read", scope.tenant_ref)
+    rows = secrets_service.list_secrets(
+        scope.session, tenant_id=scope.tenant_id, after=decode_cursor(cursor), limit=limit + 1
+    )
+    page, more = paginate(rows, limit)
+    return Page[s.SecretOut](
+        items=[_secret_out(r) for r in page],
+        next_cursor=encode_cursor(page[-1].id) if more and page else None,
+    )
+
+
+def _get_secret(scope: TenantScope, secret_id: UUID) -> SecretMeta:
+    """The secret if this client owns it: another client's id, an installation secret and an
+    unknown id are one answer (B-802)."""
+    sec = secrets_service.get_secret(scope.session, secret_id, tenant_id=scope.tenant_id)
+    if sec is None:
+        raise NotFound(SECRET_NOT_FOUND)
+    return sec
+
+
+def _secret_ref(scope: TenantScope, scope_type: str, scope_id: UUID | None) -> ResourceRef:
+    if scope_id is None:
+        return scope.tenant_ref
+    return tenancy.resolve_scope_ref(scope, scope_type, scope_id)
+
+
+def create_secret(scope: TenantScope, settings: Settings, body: s.SecretCreate) -> s.SecretOut:
+    scope_type = body.scope.type if body.scope else "tenant"
+    scope_id = body.scope.id if body.scope else None
+    if (scope_type == "tenant") != (scope_id is None):
+        raise ValidationFailed("scope.id is required for workspace/project scopes only")
+    try:
+        ref = _secret_ref(scope, scope_type, scope_id)
+    except NotFound as exc:  # another client's workspace or project is an unknown one
+        raise ValidationFailed("scope not found in this organization") from exc
+    scope.pdp.require("secret:manage", ref)
+    iam.assert_active(scope)
+    sec = secrets_service.create_secret(
+        scope.session,
+        settings.keyring,
+        tenant_id=scope.tenant_id,
+        name=body.name,
+        value=body.value,
+        kind=body.kind,
+        scope_type=scope_type,
+        scope_id=scope_id,
+        created_by=scope.principal.principal_id,
+    )
+    iam.record(
+        scope,
+        "secret.created",
+        target_type="secret",
+        target_id=sec.id,
+        label=f"secret:{body.name}",
+        details={"name": body.name, "kind": body.kind, "scope_type": scope_type},
+    )
+    iam.commit(scope.session, "secret")
+    return _secret_out(sec)
+
+
+def rotate_secret(
+    scope: TenantScope, settings: Settings, secret_id: UUID, body: s.SecretRotate
+) -> s.SecretOut:
+    scope.pdp.require("secret:manage", scope.tenant_ref)  # tenant-level, before any lookup
+    sec = _get_secret(scope, secret_id)
+    iam.assert_active(scope)
+    updated = secrets_service.rotate_secret(
+        scope.session, settings.keyring, sec, value=body.value, expected_version=body.row_version
+    )
+    iam.record(
+        scope,
+        "secret.rotated",
+        target_type="secret",
+        target_id=sec.id,
+        label=f"secret:{sec.name}",
+        details={"version": updated.secret_version},
+    )
+    iam.commit(scope.session, "secret")
+    return _secret_out(updated)
+
+
+def disable_secret(scope: TenantScope, secret_id: UUID, body: s.SecretPatch) -> s.SecretOut:
+    scope.pdp.require("secret:manage", scope.tenant_ref)  # tenant-level, before any lookup
+    sec = _get_secret(scope, secret_id)
+    iam.assert_active(scope)
+    updated = secrets_service.disable_secret(scope.session, sec, expected_version=body.row_version)
+    iam.record(
+        scope,
+        "secret.disabled",
+        target_type="secret",
+        target_id=sec.id,
+        label=f"secret:{sec.name}",
+        details={},
+    )
+    iam.commit(scope.session, "secret")
+    return _secret_out(updated)
+
+
+# ================================================================== audit (part 3b)
+def _event_out(e: audit.EventRow) -> s.AuditEventOut:
+    return s.AuditEventOut(
+        id=e.id,
+        occurred_at=e.occurred_at,
+        actor=e.actor,
+        actor_id=e.actor_id,
+        actor_type=e.actor_type,
+        action=e.action,
+        target=e.target,
+        target_type=e.target_type,
+        target_id=e.target_id,
+        outcome=e.outcome,
+        request_id=e.request_id,
+        auth_method=e.auth_method,
+        actor_ip=e.actor_ip,
+        workspace_id=e.workspace_id,
+        project_id=e.project_id,
+        details=e.details,
+        chain_seq=e.chain_seq,
+        hash=e.hash_hex,
+    )
+
+
+def list_audit_events(
+    scope: TenantScope,
+    *,
+    category: str | None,
+    actor: str | None,
+    action: str | None,
+    occurred_from: datetime | None,
+    occurred_to: datetime | None,
+    limit: int,
+    cursor: str | None,
+) -> Page[s.AuditEventOut]:
+    sf = scope.pdp.visible_scopes("audit:read")
+    limited = not sf.tenant_wide
+    if limited and not sf.workspace_ids and not sf.project_ids:
+        scope.pdp.require("audit:read", scope.tenant_ref)  # the standard 403
+    rows = audit.list_events(
+        scope.session,
+        tenant_id=scope.tenant_id,
+        category=category,
+        actor=actor,
+        action=action,
+        occurred_from=occurred_from,
+        occurred_to=occurred_to,
+        before=decode_cursor(cursor),
+        limit=limit + 1,
+        # scoped visibility (FR-AUD-007): a workspace / project auditor sees only its scopes
+        workspace_ids=sf.workspace_ids if limited else None,
+        project_ids=sf.project_ids if limited else None,
+    )
+    page, more = paginate(rows, limit)
+    return Page[s.AuditEventOut](
+        items=[_event_out(e) for e in page],
+        next_cursor=encode_cursor(page[-1].id) if more and page else None,
+    )
+
+
+def verify_audit(scope: TenantScope) -> s.AuditVerifyOut:
+    scope.pdp.require("audit:read", scope.tenant_ref)
+    result = audit.verify_chain(scope.session, scope.tenant_id)
+    return s.AuditVerifyOut(
+        ok=result.ok, checked=result.checked, first_broken_id=result.first_broken_id
+    )

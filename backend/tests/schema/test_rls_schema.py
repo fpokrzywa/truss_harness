@@ -1372,9 +1372,11 @@ PLAIN_FOREIGN_KEYS: dict[str, str] = {
         "own; trg_usage_events_version_scope (BEFORE INSERT) refuses another client's version "
         "with the message it gives an unknown id"
     ),
-    "shifde.secret_access_log.secret_access_log_secret_id_fkey": (
-        "SETH's key, kept for installation secrets (tenant NULL) beside the composite "
-        "fk_secret_access_log__secret that checks every client row (B-801)"
+    "shifde.secret_access_log.fk_secret_access_log__installation_secret": (
+        "installation rows (tenant NULL) name installation secrets: both generated columns are "
+        "NULL on every client row, which the composite fk_secret_access_log__secret checks "
+        "alone, so B's secret id and an unknown id fail on the same key (B-1645; replaces "
+        "SETH's plain secret_access_log_secret_id_fkey, B-801)"
     ),
     "shifde.idp_configs.idp_configs_client_secret_ref_id_fkey": (
         "installation IdPs (tenant NULL) name installation secrets; client IdPs are checked by "
@@ -1419,6 +1421,10 @@ _CLIENT_FOREIGN_KEYS = text(
 # duplicate-key error is raised as the owner and would tell a client that another client holds
 # the value). Primary keys are not listed: they are server-minted ids (B-1007).
 UNIQUE_WITHOUT_TENANT: dict[str, str] = {
+    "shifde.secrets.uq_secrets__installation_secret_id": (
+        "a generated copy of the server-minted primary key on installation secrets (tenant "
+        "NULL), NULL on every client row: no client value can collide (B-1645)"
+    ),
     "shifde.api_keys.uq_api_keys__prefix": (
         "server-generated public prefix, looked up before a client is known (B-903)"
     ),

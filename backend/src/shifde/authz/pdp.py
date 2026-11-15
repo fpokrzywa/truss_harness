@@ -163,6 +163,11 @@ class PDP:
         self._grants: list[repository.GrantRow] | None = None
         self._privileged: frozenset[str] | None = None
 
+    @property
+    def tenant_id(self) -> UUID | None:
+        """The client this PDP decides in (None: no client)."""
+        return self._tenant_id
+
     # ------------------------------------------------------------------ grants
     def _load(self) -> list[repository.GrantRow]:
         if self._grants is None:

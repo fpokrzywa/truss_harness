@@ -123,10 +123,14 @@ def update_service_account(
             scope.session, scope.tenant_id, "service_account", [sa.id]
         )
         iam.guard_bindings(scope, bindings, action="re-enable")
+    # always conditioned on the row read above, so a concurrent disable between the read and the
+    # write (which the re-enable guard did not see) is a conflict (admin review 3 item 1, B-1647)
+    if body.row_version is not None and body.row_version != sa.row_version:
+        raise Conflict("row_version mismatch: the service account was modified; reload and retry")
     try:
         with scope.session.begin_nested():
             updated = identity.update_service_account(
-                scope.session, scope.tenant_id, sa.id, body.row_version, values
+                scope.session, scope.tenant_id, sa.id, sa.row_version, values
             )
     except IntegrityError as exc:  # the name is taken in this client (its own list shows it)
         raise Conflict(SA_NAME_TAKEN) from exc
@@ -333,8 +337,10 @@ def rotate_api_key(
         created_by=scope.principal.principal_id,
         rotated_from_id=old.id,
     )
-    # id-only mutator: `old` was loaded in this client above (carry_forward row 87)
-    identity.shorten_api_key_expiry(scope.session, old.id, now + timedelta(hours=body.grace_hours))
+    # `old` was loaded in this client above (carry_forward row 87); keyed by it too (B-1646)
+    identity.shorten_api_key_expiry(
+        scope.session, old.id, now + timedelta(hours=body.grace_hours), tenant_id=scope.tenant_id
+    )
     iam.record(
         scope,
         "identity.api_key.rotated",
@@ -355,8 +361,10 @@ def rotate_api_key(
 def revoke_api_key(scope: TenantScope, key_id: UUID) -> s.ApiKeyOut:
     scope.pdp.require("apikey:manage", scope.tenant_ref)
     iam.assert_active(scope)
-    key = _get_key(scope, key_id)  # loaded in this client first: the mutator filters by id only
-    changed = identity.revoke_api_key(scope.session, key.id, scope.principal.principal_id, utcnow())
+    key = _get_key(scope, key_id)  # loaded in this client first, and the mutator keyed by it
+    changed = identity.revoke_api_key(
+        scope.session, key.id, scope.principal.principal_id, utcnow(), tenant_id=scope.tenant_id
+    )
     if changed:
         iam.record(
             scope,
