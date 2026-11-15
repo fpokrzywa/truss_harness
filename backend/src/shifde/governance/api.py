@@ -1,7 +1,8 @@
 """Governance routes. Part 1 (DECISIONS B-1801): the rate-card routes, platform and client.
 
-Part 2 (B-1811) adds usage, budgets, quotas and the audit export; policies, retention, decisions,
-overview, performance and platform health come with part 3. The `app` port mounts `router` (B-501).
+Part 2 (B-1811) adds usage, budgets, quotas and the audit export; part 3 (B-1821..B-1825) adds
+policies, retention, decisions, overview, performance and platform health details. The `app` port
+mounts `router` (B-501).
 
 Every `{org}` route resolves the client through `tenancy.dependencies.resolve_org`
 (`ScopeDep`): an organization the caller has no binding in answers like an unknown one.
@@ -13,12 +14,13 @@ from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 
-from shifde.core.deps import RequestCtxDep, SessionDep
+from shifde.authz import service as authz
+from shifde.core.deps import RequestCtxDep, SessionDep, SettingsDep
 from shifde.core.pagination import DEFAULT_LIMIT, Page
 from shifde.governance import schemas as s
-from shifde.governance.service import GovernanceService, PricingService
+from shifde.governance.service import GovernanceService, PricingService, health_details
 from shifde.identity.dependencies import AuthDep
 from shifde.tenancy.dependencies import CursorQuery, LimitQuery, ScopeDep
 
@@ -36,8 +38,9 @@ def _platform_pricing(auth: AuthDep, session: SessionDep, ctx: RequestCtxDep) ->
     return PricingService.for_platform(session, ctx, auth.principal)
 
 
-def _gov(scope: ScopeDep) -> GovernanceService:
-    return GovernanceService(scope)
+def _gov(scope: ScopeDep, request: Request) -> GovernanceService:
+    # the integration runtime is only used by model policies (the allowlist write-through)
+    return GovernanceService(scope, getattr(request.app.state, "integration", None))
 
 
 TenantPricing = Annotated[PricingService, Depends(_tenant_pricing)]
@@ -68,6 +71,15 @@ def create_platform_version(
     return svc.create_version(card_id, body)
 
 
+# ---------------------------------------------------------------- platform health
+@router.get("/platform/health-details", tags=["platform"])
+def platform_health(
+    auth: AuthDep, session: SessionDep, settings: SettingsDep
+) -> s.HealthDetailsOut:
+    authz.new_pdp(session, auth.principal, None).require("platform:admin")
+    return health_details(session, settings, auth.principal)
+
+
 # ---------------------------------------------------------------- rate cards (client)
 @router.get("/orgs/{org}/rate-cards", tags=["pricing"])
 def list_cards(svc: TenantPricing) -> Page[s.RateCardOut]:
@@ -82,11 +94,12 @@ def create_card(svc: TenantPricing, body: s.RateCardCreate) -> s.RateCardOut:
 @router.get("/orgs/{org}/rate-cards/resolve", tags=["pricing"])
 def resolve_rate(
     svc: TenantPricing,
-    provider_key: Annotated[str, Query(min_length=1, max_length=100)],
-    model_key: Annotated[str, Query(min_length=1, max_length=300)],
+    provider_key: Annotated[str | None, Query(min_length=1, max_length=100)] = None,
+    model_key: Annotated[str | None, Query(min_length=1, max_length=300)] = None,
+    model_id: UUID | None = None,
     at: datetime | None = None,
 ) -> s.ResolvedRateOut:
-    return svc.resolve(provider_key, model_key, at)
+    return svc.resolve(provider_key, model_key, at, model_id)
 
 
 @router.get("/orgs/{org}/rate-cards/{card_id}/versions", tags=["pricing"])
@@ -233,3 +246,71 @@ def export_audit(
     if truncated:
         headers["X-Export-Truncated"] = "true"
     return Response(body, media_type=media, headers=headers)
+
+
+# ---------------------------------------------------------------- governance
+@router.get("/orgs/{org}/governance/policies", tags=["governance"])
+def list_policies(
+    svc: Gov, kind: Annotated[str | None, Query(max_length=30)] = None
+) -> Page[s.PolicyOut]:
+    return svc.list_policies(kind)
+
+
+@router.post("/orgs/{org}/governance/policies", status_code=201, tags=["governance"])
+def create_policy(svc: Gov, body: s.PolicyCreate) -> s.PolicyOut:
+    return svc.create_policy(body)
+
+
+@router.get("/orgs/{org}/governance/policies/{policy_id}", tags=["governance"])
+def get_policy(svc: Gov, policy_id: UUID) -> s.PolicyOut:
+    return svc.get_policy(policy_id)
+
+
+@router.patch("/orgs/{org}/governance/policies/{policy_id}", tags=["governance"])
+def update_policy(svc: Gov, policy_id: UUID, body: s.PolicyPatch) -> s.PolicyOut:
+    return svc.update_policy(policy_id, body)
+
+
+@router.get("/orgs/{org}/governance/retention", tags=["governance"])
+def get_retention(svc: Gov) -> s.RetentionOut:
+    return svc.get_retention()
+
+
+@router.put("/orgs/{org}/governance/retention", tags=["governance"])
+def put_retention(svc: Gov, body: s.RetentionPut) -> s.RetentionOut:
+    return svc.put_retention(body)
+
+
+@router.post("/orgs/{org}/governance/retention/preview", tags=["governance"])
+def preview_retention(svc: Gov, body: s.RetentionPut | None = None) -> s.RetentionPreviewOut:
+    return svc.preview_retention(body)
+
+
+@router.get("/orgs/{org}/governance/decisions", tags=["governance"])
+def list_decisions(
+    svc: Gov,
+    run_id: UUID | None = None,
+    decision: Annotated[str | None, Query(max_length=10)] = None,
+    action: Annotated[str | None, Query(max_length=100)] = None,
+    limit: LimitQuery = DEFAULT_LIMIT,
+    cursor: CursorQuery = None,
+) -> Page[s.DecisionOut]:
+    return svc.list_decisions(
+        run_id=run_id, decision=decision, action=action, limit=limit, cursor=cursor
+    )
+
+
+@router.get("/orgs/{org}/governance/overview", tags=["governance"])
+def overview(svc: Gov) -> s.OverviewOut:
+    return svc.overview()
+
+
+# ---------------------------------------------------------------- observability
+@router.get("/orgs/{org}/observability/performance", tags=["observability"])
+def performance(
+    svc: Gov,
+    group_by: Annotated[str, Query(max_length=20)] = "agent",
+    from_: FromQuery = None,
+    to: ToQuery = None,
+) -> s.PerformanceOut:
+    return svc.performance(group_by=group_by, start=from_, end=to)

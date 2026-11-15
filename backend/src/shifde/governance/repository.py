@@ -749,7 +749,19 @@ def denials_since(session: Session, tenant_id: UUID, since: datetime) -> int:
     )
 
 
+def _exists(session: Session, table: str) -> bool:
+    """Runtime tables (`approvals`, `runs`, `run_artifacts`, ...) arrive with the runtime module;
+    until then the code asks (DECISIONS B-1812, B-1824) and counts nothing."""
+    return bool(
+        session.execute(
+            text("SELECT to_regclass(:name) IS NOT NULL"), {"name": f"shifde.{table}"}
+        ).scalar_one()
+    )
+
+
 def pending_approvals(session: Session, tenant_id: UUID) -> int:
+    if not _exists(session, "approvals"):
+        return 0
     return int(
         session.execute(
             text(
@@ -800,6 +812,8 @@ RETENTION_TABLES = {
 
 def count_older_than(session: Session, tenant_id: UUID, data_class: str, cutoff: datetime) -> int:
     table, column, extra = RETENTION_TABLES[data_class]
+    if not _exists(session, table):
+        return 0
     return int(
         session.execute(
             text(
@@ -820,6 +834,8 @@ def performance(
     end: datetime,
     vis: Visibility,
 ) -> list[Row]:
+    if not (_exists(session, "runs") and _exists(session, "run_steps")):
+        return []
     params: Params = {"t": tenant_id, "a": start, "b": end}
     quant = (
         "percentile_cont(0.5) WITHIN GROUP (ORDER BY dur) AS p50, "

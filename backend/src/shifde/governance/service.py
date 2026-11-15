@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import Any  # Any: rows / JSON documents
+from typing import Any, cast  # Any: rows / JSON documents
 from uuid import UUID
 
 from sqlalchemy import text
@@ -27,6 +27,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from shifde import ledger
+from shifde.adapters.runtime import IntegrationRuntime
 from shifde.audit import service as audit
 from shifde.authz import service as authz
 from shifde.authz.service import PDP, ResourceRef
@@ -38,8 +39,16 @@ from shifde.core.ids import uuid7
 from shifde.core.pagination import Page, decode_cursor, encode_cursor, paginate
 from shifde.governance import repository as repo
 from shifde.governance import schemas as s
+from shifde.governance.validation import (
+    RETENTION_DEFAULTS,
+    RETENTION_FLOORS,
+    enforcement_of,
+    validate_definition,
+)
 from shifde.ledger import budgeting
 from shifde.ledger.usage import ALL, Visibility
+from shifde.models_admin import schemas as ms
+from shifde.models_admin.service import ModelService
 from shifde.observability import tracing
 from shifde.tenancy.scope import TenantScope
 
@@ -299,13 +308,33 @@ class PricingService:
         return self.version_out(row)
 
     # ------------------------------------------------------------------ resolve
-    def resolve(self, provider_key: str, model_key: str, at: datetime | None) -> s.ResolvedRateOut:
+    def resolve(
+        self,
+        provider_key: str | None,
+        model_key: str | None,
+        at: datetime | None,
+        model_id: UUID | None = None,
+    ) -> s.ResolvedRateOut:
+        """The rate in force for adapter + model key, or for a model of this client.
+
+        By `model_id` the answer is what pricing really uses (B-1822): a shared SHI model is
+        priced from global cards only, so the client's own card for the same keys is not shown
+        for it. By keys the client's own card wins over the global one, as for its own models.
+        """
         self._require("pricing:read")
         if self.tenant_id is None:
             raise NotFound("rate card not found")
+        global_only = False
+        if model_id is not None:
+            keys = ledger.pricing.rate_keys(self.session, self.tenant_id, model_id)
+            if keys is None:
+                raise NotFound("model not found")
+            provider_key, model_key, global_only = keys
+        elif provider_key is None or model_key is None:
+            raise ValidationFailed("give model_id, or provider_key and model_key")
         moment = _aware(at) if at else utcnow()
         version = ledger.pricing.resolve(
-            self.session, self.tenant_id, provider_key, model_key, moment
+            self.session, self.tenant_id, provider_key, model_key, moment, global_only=global_only
         )
         if version is None:
             raise NotFound("no rate card version is in force for this model at that time")
@@ -325,8 +354,11 @@ class PricingService:
 
 # ====================================================================== governance
 class GovernanceService:
-    def __init__(self, scope: TenantScope) -> None:
+    def __init__(self, scope: TenantScope, runtime: IntegrationRuntime | None = None) -> None:
+        """`runtime` is only needed by model policies, which write through to the model
+        allowlist (`models_admin`); without it they answer 422 (SETH's behaviour)."""
         self.sc = scope
+        self.runtime = runtime
 
     @property
     def session(self) -> Session:
@@ -1333,3 +1365,535 @@ class GovernanceService:
         )  # fmt: skip
         self.session.commit()
         return self._quota_out(row)
+
+    # ================================================================== policies
+    def _policy_out(self, r: Mapping[str, Any]) -> s.PolicyOut:  # Any: row
+        definition = dict(r["definition"] or {})
+        if r["kind"] == "model_policy" and self.runtime is not None:
+            definition = self._live_model_policy(r, definition)
+        return s.PolicyOut(
+            id=r["id"],
+            kind=r["kind"],
+            name=r["name"],
+            scope=None
+            if r["scope_type"] is None
+            else s.GovScope(type=r["scope_type"], id=r["scope_id"]),
+            definition=definition,
+            status=r["status"],
+            version=r["version"],
+            row_version=r["row_version"],
+            enforcement=enforcement_of(r["kind"]),
+            created_at=r["created_at"],
+        )
+
+    def _live_model_policy(
+        self, r: Mapping[str, Any], definition: dict[str, Any]
+    ) -> dict[str, Any]:  # Any: JSON
+        """The P3 allowlist is the source of truth for model policies: show what is in force."""
+        assert self.runtime is not None
+        st = r["scope_type"] or "tenant"
+        sid = r["scope_id"] or self.tenant_id
+        try:
+            current = ModelService(self.sc, self.runtime).get_allowlist(cast(ms.ScopeType, st), sid)
+        except (Forbidden, NotFound):
+            return definition
+        return {
+            **definition,
+            "enabled": current.enabled,
+            "allowed_model_ids": [str(m) for m in current.model_ids],
+        }
+
+    def list_policies(self, kind: str | None) -> Page[s.PolicyOut]:
+        vis = self._vis("governance:read")
+        rows = [
+            r
+            for r in repo.list_policies(self.session, self.tenant_id, kind)
+            if (r["scope_type"] is None and vis.all)
+            or (
+                r["scope_type"] is not None
+                and self._row_visible(vis, r["scope_type"], r["scope_id"])
+            )
+        ]
+        return Page(items=[self._policy_out(r) for r in rows])
+
+    def _policy(self, policy_id: UUID) -> Mapping[str, Any]:  # Any: row
+        row = repo.get_policy(self.session, self.tenant_id, policy_id)
+        if row is None:
+            raise NotFound("policy not found")
+        return row
+
+    def get_policy(self, policy_id: UUID) -> s.PolicyOut:
+        row = self._policy(policy_id)
+        ref = self._policy_ref(row)[0]
+        self._require("governance:read", ref)
+        return self._policy_out(row)
+
+    def _policy_ref(
+        self, row: Mapping[str, Any]
+    ) -> tuple[ResourceRef, UUID | None, UUID | None]:  # Any: row
+        if row["scope_type"] is None:
+            return self.sc.tenant_ref, None, None
+        return self._scope_ref(row["scope_type"], row["scope_id"])
+
+    def _check_policy(
+        self, kind: str, definition: dict[str, Any], scope: s.GovScope | None
+    ) -> dict[str, Any]:  # Any: JSON
+        if kind == "model_policy" and (
+            scope is not None and scope.type not in ("tenant", "workspace", "project")
+        ):
+            raise ValidationFailed("a model_policy scope must be tenant, workspace or project")
+        known = {r[0] for r in self._permission_keys()}
+        return validate_definition(kind, definition, known_permissions=known)
+
+    def _permission_keys(self) -> list[tuple[str]]:
+        rows = self.session.execute(
+            text("SELECT key FROM shifde.permissions WHERE key <> 'platform:admin'")
+        )
+        return [(r[0],) for r in rows]
+
+    def _sync_model_policy(
+        self, scope: s.GovScope | None, definition: dict[str, Any]
+    ) -> None:  # Any: JSON
+        """Write the policy through to the P3 allowlist (needs `model:manage` as well)."""
+        if self.runtime is None:
+            raise ValidationFailed("model policies are not available in this context")
+        # `_check_policy` has already limited a model policy's scope to these three types
+        scope_type = cast(ms.ScopeType, scope.type if scope else "tenant")
+        scope_id = scope.id if scope else self.tenant_id
+        ModelService(self.sc, self.runtime).put_allowlist(
+            scope_type,
+            scope_id,
+            ms.AllowlistPut(
+                enabled=bool(definition.get("enabled", True)),
+                model_ids=[UUID(str(m)) for m in definition.get("allowed_model_ids", [])],
+            ),
+        )
+
+    def create_policy(self, body: s.PolicyCreate) -> s.PolicyOut:
+        if body.scope is not None:
+            ref, ws, proj = self._scope_ref(body.scope.type, body.scope.id)
+        else:
+            ref, ws, proj = self.sc.tenant_ref, None, None
+        self._require_manage("governance:manage", ref)
+        definition = self._check_policy(body.kind, body.definition, body.scope)
+        if body.kind == "model_policy":
+            self._sync_model_policy(body.scope, definition)
+        policy_id = uuid7()
+        row = repo.insert_policy(
+            self.session,
+            {
+                "id": policy_id,
+                "tenant_id": self.tenant_id,
+                "kind": body.kind,
+                "name": body.name,
+                "scope_type": body.scope.type if body.scope else None,
+                "scope_id": body.scope.id if body.scope else None,
+                "definition": definition,
+                "status": body.status,
+                "created_by": self.sc.principal.principal_id,
+            },
+        )
+        self._audit(
+            "governance.policy.created",
+            "governance_policy",
+            policy_id,
+            f"policy:{body.kind}:{policy_id}",
+            {"kind": body.kind, "status": body.status, "definition": definition,
+             "scope": None if body.scope is None else f"{body.scope.type}:{body.scope.id}"},
+            workspace_id=ws,
+            project_id=proj,
+        )  # fmt: skip
+        self.session.commit()
+        return self._policy_out(row)
+
+    def update_policy(self, policy_id: UUID, body: s.PolicyPatch) -> s.PolicyOut:
+        before = self._policy(policy_id)
+        ref, ws, proj = self._policy_ref(before)
+        self._require_manage("governance:manage", ref)
+        scope = (
+            None
+            if before["scope_type"] is None
+            else s.GovScope(type=before["scope_type"], id=before["scope_id"])
+        )
+        self._immutable(("kind", body.kind, before["kind"]), ("scope", body.scope, scope))
+        values: dict[str, Any] = {}  # Any: column values
+        if body.name is not None:
+            values["name"] = body.name
+        if body.status is not None:
+            values["status"] = body.status
+        if body.definition is not None:
+            definition = self._check_policy(before["kind"], body.definition, scope)
+            values["definition"] = definition
+            values["version"] = before["version"] + 1
+            if before["kind"] == "model_policy":
+                self._sync_model_policy(scope, definition)
+        if not values:
+            raise ValidationFailed("no updatable fields supplied")
+        row = repo.update_row(
+            self.session,
+            self.tenant_id,
+            "governance_policies",
+            repo.POLICY_COLUMNS,
+            repo.POLICY_UPDATABLE,
+            policy_id,
+            body.row_version,
+            values,
+            json_columns=frozenset({"definition"}),
+        )
+        if row is None:
+            self.session.rollback()
+            raise Conflict("the policy was changed by someone else; reload and retry")
+        self._audit(
+            "governance.policy.updated",
+            "governance_policy",
+            policy_id,
+            f"policy:{before['kind']}:{policy_id}",
+            {
+                "kind": before["kind"],
+                "changed": sorted(values),
+                "before": {"status": before["status"], "definition": before["definition"]},
+                "after": {"status": row["status"], "definition": row["definition"]},
+            },
+            workspace_id=ws,
+            project_id=proj,
+        )
+        self.session.commit()
+        return self._policy_out(row)
+
+    # ================================================================== decisions / overview
+    def list_decisions(
+        self,
+        *,
+        run_id: UUID | None,
+        decision: str | None,
+        action: str | None,
+        limit: int,
+        cursor: str | None,
+    ) -> Page[s.DecisionOut]:
+        self._require("governance:read")
+        if decision is not None and decision not in ("allow", "deny"):
+            raise ValidationFailed("decision must be allow or deny")
+        rows = repo.list_decisions(
+            self.session,
+            self.tenant_id,
+            run_id=run_id,
+            decision=decision,
+            action=action,
+            before=decode_cursor(cursor),
+            limit=limit + 1,
+        )
+        page, more = paginate(rows, limit)
+        items = [
+            s.DecisionOut(
+                id=r["id"],
+                at=r["at"],
+                occurred_at=r["at"],
+                decision=r["decision"],
+                action=r["action"],
+                resource=(
+                    f"{r['resource_type']}:{r['resource_id']}"
+                    if r["resource_type"]
+                    else r["resource_id"]
+                ),
+                reason_codes=list(r["reason_codes"] or []),
+                reason_code=(r["reason_codes"] or [None])[0],
+                policy_ids=list(r["policy_ids"] or []),
+                run_id=r["run_id"],
+                principal=r["principal"],
+            )
+            for r in page
+        ]
+        return Page(
+            items=items, next_cursor=encode_cursor(page[-1]["id"]) if more and page else None
+        )
+
+    def overview(self) -> s.OverviewOut:
+        self._require("governance:read")
+        budgets: list[s.OverviewBudget] = []
+        for r in repo.list_budgets(self.session, self.tenant_id)[:200]:
+            if r["status"] != "active":
+                continue
+            st = self.budget_status(r["id"])
+            out = self._budget_out(r)
+            budgets.append(
+                s.OverviewBudget(
+                    id=r["id"],
+                    name=out.name,
+                    scope=out.scope,
+                    metric=out.metric,
+                    currency=out.currency,
+                    utilization=st.utilization,
+                    enforcement=out.enforcement,
+                    alert_thresholds=out.alert_thresholds,
+                )
+            )
+        end = utcnow()
+        summary = self.summary(
+            group_by="project", start=end - timedelta(days=30), end=end, workspace=None,
+            project=None, cost_kind=None, currency=None,
+        )  # fmt: skip
+        spenders = [
+            s.OverviewSpender(
+                key=g.key,
+                label=g.label,
+                cost_total_known=g.cost.total_known,
+                cost=g.cost,
+                currency=g.currency,
+                tokens=g.input_tokens + g.output_tokens,
+            )
+            for g in summary.groups[:5]
+        ]
+        return s.OverviewOut(
+            budgets=budgets,
+            top_spenders=spenders,
+            denials_7d=repo.denials_since(self.session, self.tenant_id, end - timedelta(days=7)),
+            pending_approvals=repo.pending_approvals(self.session, self.tenant_id),
+            policy_counts=repo.policy_counts(self.session, self.tenant_id),
+        )
+
+    # ================================================================== retention
+    def _retention_items(
+        self, override: list[s.RetentionItem] | None = None
+    ) -> list[s.RetentionItemOut]:
+        stored = {r["data_class"]: r for r in repo.retention_rows(self.session, self.tenant_id)}
+        given = {i.data_class: i for i in override or []}
+        out: list[s.RetentionItemOut] = []
+        for data_class, default in RETENTION_DEFAULTS.items():
+            if data_class in given:
+                days, hold, is_default = (
+                    given[data_class].retain_days,
+                    given[data_class].legal_hold,
+                    False,
+                )
+            elif data_class in stored:
+                days, hold, is_default = (
+                    stored[data_class]["retain_days"],
+                    stored[data_class]["legal_hold"],
+                    False,
+                )
+            else:
+                days, hold, is_default = default, False, True
+            out.append(
+                s.RetentionItemOut(
+                    data_class=data_class,
+                    retain_days=days,
+                    legal_hold=hold,
+                    floor_days=RETENTION_FLOORS[data_class],
+                    default_days=default,
+                    is_default=is_default,
+                )
+            )
+        return out
+
+    RETENTION_NOTE = (
+        "These are SETTINGS. The purge job is not implemented in this release: nothing is deleted "
+        "automatically; the preview counts what a purge would remove."
+    )
+
+    def get_retention(self) -> s.RetentionOut:
+        self._require("governance:read")
+        return s.RetentionOut(items=self._retention_items(), note=self.RETENTION_NOTE)
+
+    @staticmethod
+    def _check_retention(items: list[s.RetentionItem]) -> None:
+        seen: set[str] = set()
+        for i in items:
+            if i.data_class in seen:
+                raise ValidationFailed(f"data_class {i.data_class} is listed twice")
+            seen.add(i.data_class)
+            floor = RETENTION_FLOORS[i.data_class]
+            if i.retain_days < floor:
+                raise ValidationFailed(
+                    f"retain_days for {i.data_class} must be at least {floor} (platform floor)"
+                )
+
+    def put_retention(self, body: s.RetentionPut) -> s.RetentionOut:
+        self._require_manage("governance:manage")
+        self._check_retention(body.items)
+        before = {i.data_class: (i.retain_days, i.legal_hold) for i in self._retention_items()}
+        for item in body.items:
+            repo.upsert_retention(
+                self.session,
+                self.tenant_id,
+                item.data_class,
+                item.retain_days,
+                item.legal_hold,
+                self.sc.principal.principal_id,
+            )
+        self._audit(
+            "governance.retention.updated",
+            "retention",
+            self.tenant_id,
+            "retention",
+            {
+                "changes": {
+                    i.data_class: {
+                        "before": list(before[i.data_class]),
+                        "after": [i.retain_days, i.legal_hold],
+                    }
+                    for i in body.items
+                },
+                "purge": "not_implemented",
+            },
+        )
+        self.session.commit()
+        return s.RetentionOut(items=self._retention_items(), note=self.RETENTION_NOTE)
+
+    def preview_retention(self, body: s.RetentionPut | None) -> s.RetentionPreviewOut:
+        self._require("governance:read")
+        items = body.items if body else []
+        self._check_retention(items)
+        now = utcnow()
+        out: list[s.RetentionPreviewItem] = []
+        for it in self._retention_items(items):
+            cutoff = now - timedelta(days=it.retain_days)
+            count = (
+                0
+                if it.legal_hold
+                else repo.count_older_than(self.session, self.tenant_id, it.data_class, cutoff)
+            )
+            out.append(
+                s.RetentionPreviewItem(
+                    data_class=it.data_class,
+                    count=count,
+                    cutoff=cutoff,
+                    on_legal_hold=it.legal_hold,
+                )
+            )
+        return s.RetentionPreviewOut(items=out, note=self.RETENTION_NOTE)
+
+    # ================================================================== observability
+    def performance(
+        self, *, group_by: str, start: datetime | None, end: datetime | None
+    ) -> s.PerformanceOut:
+        if group_by not in ("agent", "model", "pipeline"):
+            raise ValidationFailed("group_by must be agent, model or pipeline")
+        vis = self._vis("ops:read")
+        end_at = _aware(end) if end else utcnow()
+        start_at = _aware(start) if start else end_at - timedelta(days=7)
+        if start_at >= end_at:
+            raise ValidationFailed("`from` must be before `to`")
+        rows = repo.performance(self.session, self.tenant_id, group_by, start_at, end_at, vis)
+        names = repo.labels(self.session, self.tenant_id, group_by, [str(r["key"]) for r in rows])
+        groups = [
+            s.PerfGroupOut(
+                key=str(r["key"]),
+                label=names.get(str(r["key"])),
+                runs=int(r["n"]),
+                count=int(r["n"]),
+                error_count=int(r["errors"]),
+                p50_ms=float(r["p50"] or 0),
+                p95_ms=float(r["p95"] or 0),
+                p99_ms=float(r["p99"] or 0),
+                error_rate=(int(r["errors"]) / int(r["n"])) if int(r["n"]) else 0.0,
+            )
+            for r in rows
+        ]
+        groups.sort(key=lambda g: -g.runs)
+        return s.PerformanceOut(
+            groups=groups,
+            group_by=group_by,
+            note=(
+                "Latency is wall-clock from start to finish of "
+                + ("each model call attempt" if group_by == "model" else "each finished run")
+                + "; cancelled runs are excluded; errors are failed / timed-out runs or failed "
+                "attempts."
+            ),
+        )
+
+
+_RUNTIME_PENDING = {"available": False, "reason": "needs the runtime module (not installed yet)"}
+
+
+def health_details(
+    session: Session,
+    settings: Any,  # Any: Settings
+    principal: Principal,
+) -> s.HealthDetailsOut:
+    """Platform health for `platform:admin` (the route has already checked the permission).
+
+    The worker, queue and run-failure sections read `workers` and `shifde_ops_stats(int)`, which
+    belong to runtime (DECISIONS B-1824): until both exist they answer `available: false`.
+    """
+    from shifde.core.health import database_reachable, migration_state
+    from shifde.observability import metrics
+
+    reachable = database_reachable(session)
+    state = migration_state(session)
+    http = {
+        "api_process_requests_total": metrics.registry.total("shifde_http_requests_total"),
+        "api_process_http_errors_total": metrics.registry.total("shifde_http_errors_total"),
+        "api_process_note": "request counters are for this API process since it started",
+    }
+    telemetry = tracing.tracer.status() | {"metrics": "prometheus text at /api/metrics"}
+    have_runtime = bool(
+        session.execute(
+            text(
+                "SELECT to_regclass('shifde.workers') IS NOT NULL "
+                "AND to_regprocedure('shifde.shifde_ops_stats(integer)') IS NOT NULL"
+            )
+        ).scalar_one()
+    )
+    migrations = {"status": state.status, "revision": state.revision, "head": state.head}
+    if not have_runtime:
+        return s.HealthDetailsOut(
+            database={"reachable": reachable},
+            migrations=migrations,
+            workers=dict(_RUNTIME_PENDING),
+            queue=dict(_RUNTIME_PENDING),
+            reaper=dict(_RUNTIME_PENDING),
+            recent_error_rates={"window_seconds": 900, **http},
+            telemetry=telemetry,
+        )
+    stats = repo.ops_stats(session, 900)
+    workers = repo.workers(session)
+    now = utcnow()
+    horizon = max(settings.worker_lease_seconds * 3, 15)
+    live = [
+        w
+        for w in workers
+        if w["status"] == "running" and (now - w["heartbeat_at"]).total_seconds() <= horizon
+    ]
+    reaps = [w["last_reap_at"] for w in workers if w["last_reap_at"] is not None]
+    finished = sum(int(r["count"]) for r in stats["runs"])
+    failed = sum(int(r["count"]) for r in stats["runs"] if r["status"] in ("failed", "timed_out"))
+    return s.HealthDetailsOut(
+        database={"reachable": reachable},
+        migrations=migrations,
+        workers={
+            "running": len(live),
+            "known": len(workers),
+            "items": [
+                {
+                    "id": w["id"],
+                    "host": w["hostname"],
+                    "status": w["status"],
+                    "version": w["version"],
+                    "last_heartbeat_at": w["heartbeat_at"].isoformat(),
+                }
+                for w in workers[:20]
+            ],
+        },
+        queue={
+            "queued": stats["queue"]["queued"],
+            "leased": stats["queue"]["leased"],
+            "dead_in_window": stats["queue"]["dead"],
+            "oldest_queued_age_seconds": stats["queue"]["oldest_queued_age_seconds"],
+        },
+        reaper={
+            "last_run_at": max(reaps).isoformat() if reaps else None,
+            "status": "ok" if reaps and (now - max(reaps)).total_seconds() <= horizon else "stale",
+        },
+        recent_error_rates={
+            "window_seconds": 900,
+            "runs_finished": finished,
+            "runs_failed": failed,
+            "run_failure_rate": (failed / finished) if finished else 0.0,
+            "budget_denials": stats["budget_denials"],
+            **http,
+        },
+        telemetry=telemetry,
+    )
+
+
+__all__ = ["GovernanceService", "PricingService", "health_details"]
