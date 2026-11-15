@@ -684,7 +684,7 @@ BEGIN
     INSERT INTO shifde.jobs (id, tenant_id, kind, run_id, dedupe_key)
     VALUES (gen_random_uuid(), r.tid, 'run.advance', r.rid,
             'run:' || r.rid::text || ':' || v_sv::text)
-    ON CONFLICT DO NOTHING;
+    ON CONFLICT (tenant_id, kind, dedupe_key) WHERE status IN ('queued', 'leased') DO NOTHING;
     tenant_id := r.tid; run_id := r.rid; reason := 'children_finished'; RETURN NEXT;
   END LOOP;
 END $$"""
