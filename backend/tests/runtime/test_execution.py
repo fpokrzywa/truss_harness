@@ -275,6 +275,56 @@ def test_a_runs_env_refuses_another_clients_run_and_a_run_of_another_artifact(
         assert build_repo.pin_closure(s, a.tenant, b.agent_version) == set()
 
 
+def test_a_runs_env_has_no_latest_and_permits_only_the_versions_the_run_executes(
+    seeds: tuple[Seed, Seed], opened: Any, settings: Settings
+) -> None:
+    """Runtime isolation review 3 items 1 and 2: in a run's env `latest()` answers None (a run
+    executes pinned versions) and `permits` is False for a version outside the run's pins; the
+    same calls in a publisher's env answer, so neither assertion is vacuous."""
+    a, _ = seeds
+    with opened(a.tenant) as s:
+        svc = service_for(s, a.tenant, a.user, settings, set_context=False)
+        art = _agent_art(a.tenant, a.agent)
+        free = svc.env(art)
+        assert free.latest(a.agent) is not None and free.latest(a.unpinned_art) is not None
+        run_env = svc.env(art, run_of=run_row(s, a.tenant, a.running))
+        assert run_env.latest(a.agent) is None
+        assert run_env.latest(a.unpinned_art) is None
+        unpinned = free.version(a.unpinned)
+        pinned = run_env.version(a.prompt)
+        assert unpinned is not None and pinned is not None
+        assert free.permits("prompt:read", unpinned) and free.permits("prompt:read", pinned)
+        assert run_env.permits("prompt:read", pinned)
+        assert not run_env.permits("prompt:read", unpinned)
+        assert run_env.version(a.unpinned) is None
+
+
+def test_a_runs_env_holds_the_stored_artifact_row_not_the_callers_mapping(
+    seeds: tuple[Seed, Seed], opened: Any, settings: Settings
+) -> None:
+    """Runtime isolation review 3 item 3: `_run_env` re-reads the artifact; a mapping forged with
+    another workspace, project, key or status does not reach the env (its scope feeds the model
+    checks)."""
+    a, b = seeds
+    with opened(a.tenant) as s:
+        svc = service_for(s, a.tenant, a.user, settings, set_context=False)
+        own = run_row(s, a.tenant, a.running)
+        stored = build_repo.get_artifact(s, a.tenant, a.agent)
+        assert stored is not None
+        forged = {**_agent_art(a.tenant, a.agent), "workspace_id": own["workspace_id"],
+                  "project_id": own["project_id"], "key": "forged", "status": "archived"}  # fmt: skip
+        assert (stored["workspace_id"], stored["project_id"]) != (
+            forged["workspace_id"],
+            forged["project_id"],
+        )
+        env = svc.env(forged, run_of=own)
+        assert dict(env.art) == dict(stored)
+        assert svc.scope_ref_of(env.art) == svc.scope_ref_of(stored)
+        # a mapping naming B's artifact id under A's client is still the unknown run
+        with pytest.raises(NotFound, match="run not found"):
+            svc.env({**forged, "id": b.agent}, run_of=own)
+
+
 # ------------------------------------------------------------------ cross-client cases
 @dataclass(frozen=True)
 class Target:
