@@ -152,6 +152,15 @@ def test_another_tenants_usage_budgets_and_holds_are_ignored(owner_session: Sess
     _spend(s, b, 5000, "b-usage")
     budget_a = add_budget(s, a, amount="1000")
     _spend(s, a, 100, "a-usage")
+    run_b = add_run(s, b)  # B's live hold on B's own run (isolation review 1, F1)
+    s.execute(
+        text(
+            "INSERT INTO shifde.budget_reservations (id, tenant_id, run_id, step_key, "
+            "budget_ids, amount, status, expires_at) VALUES (:i, :t, :r, 'b-hold', '{}', 5000, "
+            "'held', now() + interval '1 hour')"
+        ),
+        {"i": uuid7(), "t": b, "r": run_b},
+    )
     ev = evaluate(s, _scope(a), 900, None)
     assert ev.applicable == [budget_a]
     used, held = budgeting.used_and_held(
@@ -163,6 +172,15 @@ def test_another_tenants_usage_budgets_and_holds_are_ignored(owner_session: Sess
         since=budgeting.period_start("daily"),
     )
     assert (used, held) == (Decimal(100), Decimal(0))
+    _, held_b = budgeting.used_and_held(
+        s,
+        b,
+        None,
+        {"scope_type": "tenant", "scope_id": b, "period": "daily", "currency": None},
+        metric="tokens",
+        since=budgeting.period_start("daily"),
+    )
+    assert held_b == Decimal(5000)  # the hold is real: B's own status counts it
     assert [x["id"] for x in enforcement.budgets_in_scope(s, _scope(a))] == [budget_a]
     assert [x["id"] for x in enforcement.budgets_in_scope(s, _scope(b))] == [budget_b]
 

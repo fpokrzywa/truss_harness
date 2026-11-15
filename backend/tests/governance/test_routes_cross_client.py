@@ -25,6 +25,7 @@ from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.governance import api as governance_api
 from shifde.models_admin.repository import SHI_PROVIDER_ID
+from tests._support.runs import add_run
 from tests.connections.routes import as_user, org
 from tests.governance.routes import (
     CURRENCY,
@@ -36,7 +37,9 @@ from tests.governance.routes import (
     tenant_scope,
     workspace_scope,
 )
-from tests.tenancy.conftest import World
+from tests.governance.runtime_rows import HOLD, OLD_DAYS, RuntimeRows, seed_runtime
+from tests.ledger.util import add_budget
+from tests.tenancy.conftest import Client, World
 from tests.tenancy.routes import People
 
 _VARYING = {"instance", "request_id"}
@@ -404,14 +407,18 @@ def test_a_cannot_scope_a_budget_or_quota_to_bs_scopes(
 def test_usage_reads_and_exports_hold_only_as_own(
     client: TestClient, world: World, two: Two, owner_session: Session
 ) -> None:
-    run_b = uuid7()
+    def run_of(c: Client) -> UUID:
+        return add_run(owner_session, c.tenant, workspace_id=c.ws, project_id=c.project)
+
+    run_b = run_of(world.b)  # a real run of B (runtime_0001), with one usage event
+    idle_b, idle_a = run_of(world.b), run_of(world.a)  # real runs with no usage event
     for c, key in ((world.a, "a-1"), (world.b, "b-1"), (world.b, "b-2")):
         ledger.record(
             owner_session,
             {"tenant_id": c.tenant, "event_key": key, "event_type": "tool_call",
              "workspace_id": c.ws, "input_tokens": 100, "call_count": 1},
         )  # fmt: skip
-    # `ledger.record` looks a run up in `runs` (runtime, not ported): B's run is a raw row
+    # B's usage event on B's run, written as a raw row
     owner_session.execute(
         text(
             "INSERT INTO shifde.usage_events (id, tenant_id, event_key, event_type, workspace_id, "
@@ -434,6 +441,14 @@ def test_usage_reads_and_exports_hold_only_as_own(
         client.get(f"{base}/usage/runs/{uuid7()}", headers=h),
     )
     assert client.get(f"{base}/usage/events?run_id={run_b}", headers=h).json()["items"] == []
+    # A's own run with no usage yet is A's (200, no events); B's such run is an unknown id
+    own_idle = client.get(f"{base}/usage/runs/{idle_a}", headers=h)
+    assert own_idle.status_code == 200, own_idle.text
+    assert own_idle.json()["run_id"] == str(idle_a) and own_idle.json()["events"] == []
+    _same(
+        client.get(f"{base}/usage/runs/{idle_b}", headers=h),
+        client.get(f"{base}/usage/runs/{uuid7()}", headers=h),
+    )
     # a rebuild by A leaves B's rollups alone and B's rows out of the answer
     sql = "SELECT sum(input_tokens) FROM shifde.usage_rollups_daily WHERE tenant_id = :t"
     before = owner_session.execute(text(sql), {"t": world.b.tenant}).scalar_one()
@@ -462,6 +477,69 @@ def test_usage_reads_and_exports_hold_only_as_own(
         client.post(f"{two.b.base}/usage/rollups/rebuild", headers=h),
         client.post(f"{missing}/usage/rollups/rebuild", headers=h),
     )
+
+
+def _seed_both(owner: Session, world: World) -> tuple[RuntimeRows, RuntimeRows, UUID]:
+    """Runtime rows of A (one of each) and B (two of each), committed; the model id is shared."""
+    model = uuid7()
+    rows_a = seed_runtime(owner, world.a.tenant, world.a.ws, world.a.project, n=1, model=model)
+    rows_b = seed_runtime(owner, world.b.tenant, world.b.ws, world.b.project, n=2, model=model)
+    owner.commit()
+    return rows_a, rows_b, model
+
+
+def test_a_usage_event_naming_bs_step_lists_no_step_name(
+    client: TestClient, world: World, two: Two, owner_session: Session
+) -> None:
+    """The step name comes from the event's own client's steps: an event of A whose `step_id`
+    is B's step shows no name (isolation review 1, F1)."""
+    rows_a, rows_b, _ = _seed_both(owner_session, world)
+    for key, step in (("own-step", rows_a.steps[0]), ("bs-step", rows_b.steps[0])):
+        owner_session.execute(
+            text(
+                "INSERT INTO shifde.usage_events (id, tenant_id, event_key, event_type, "
+                "workspace_id, run_id, root_run_id, step_id) "
+                "VALUES (:i, :t, :k, 'tool_call', :w, :r, :r, :s)"
+            ),
+            {"i": uuid7(), "t": world.a.tenant, "k": key, "w": world.a.ws,
+             "r": rows_a.runs[0], "s": step},
+        )  # fmt: skip
+    owner_session.commit()
+    h = as_user(client, two.a.email)
+    listed = client.get(f"{two.a.base}/usage/events", headers=h)
+    on_run = client.get(f"{two.a.base}/usage/runs/{rows_a.runs[0]}", headers=h)
+    assert listed.status_code == on_run.status_code == 200, (listed.text, on_run.text)
+    for events in (listed.json()["items"], on_run.json()["events"]):
+        by_key = {e["event_key"]: e for e in events}
+        assert set(by_key) == {"own-step", "bs-step"}
+        assert by_key["own-step"]["step_name"] == rows_a.step_name
+        assert by_key["bs-step"]["step_id"] == str(rows_b.steps[0])
+        assert by_key["bs-step"]["step_name"] is None, by_key["bs-step"]
+    assert rows_b.step_name not in listed.text + on_run.text
+
+
+def test_budget_status_counts_only_the_clients_own_runs_and_holds(
+    client: TestClient, world: World, two: Two, gov: Gov, owner_session: Session
+) -> None:
+    """Held reservations, stale holds and the run count of a run budget come from the client's
+    own runs only (isolation review 1, F1)."""
+    rows_a, rows_b, _ = _seed_both(owner_session, world)
+    runs_budget = {c.tenant: add_budget(owner_session, c.tenant, metric="runs", amount="100")
+                   for c in (world.a, world.b)}  # fmt: skip
+    owner_session.commit()
+    for side, c, rows, tokens_budget in (
+        (two.a, world.a, rows_a, gov.a_budget),
+        (two.b, world.b, rows_b, gov.b_budget),
+    ):
+        h = as_user(client, side.email)
+        held = client.get(f"{side.base}/budgets/{tokens_budget}/status", headers=h)
+        assert held.status_code == 200, held.text
+        n = len(rows.runs)
+        assert held.json()["reserved"] == HOLD * n and held.json()["stale_holds"] == n, held.text
+        runs = client.get(f"{side.base}/budgets/{runs_budget[c.tenant]}/status", headers=h)
+        assert runs.status_code == 200, runs.text
+        assert runs.json()["metric"] == "runs" and runs.json()["settled"] == rows.root_runs
+    assert (rows_a.root_runs, rows_b.root_runs) == (3, 5)
 
 
 def test_the_audit_export_holds_only_the_callers_chain(
@@ -652,7 +730,10 @@ def test_a_cannot_reach_bs_policies(client: TestClient, world: World, two: Two) 
         )
 
 
-def test_retention_is_per_client(client: TestClient, world: World, two: Two) -> None:
+def test_retention_is_per_client(
+    client: TestClient, world: World, two: Two, owner_session: Session
+) -> None:
+    _seed_both(owner_session, world)  # old run artifacts: A one of each kind, B two
     h = as_user(client, two.a.email)
     put = client.put(
         f"{two.a.base}/governance/retention",
@@ -663,13 +744,19 @@ def test_retention_is_per_client(client: TestClient, world: World, two: Two) -> 
     got = client.get(f"{two.a.base}/governance/retention", headers=h).json()["items"]
     own = {i["data_class"]: i for i in got}
     assert own["audit_events"]["retain_days"] == 100 and own["audit_events"]["legal_hold"] is True
-    assert client.post(f"{two.a.base}/governance/retention/preview", headers=h).status_code == 200
+    a_prev = client.post(f"{two.a.base}/governance/retention/preview", headers=h)
+    assert a_prev.status_code == 200
+    a_counts = {i["data_class"]: i["count"] for i in a_prev.json()["items"]}
+    assert (a_counts["run_artifacts"], a_counts["run_steps_content"]) == (1, 1), a_counts
     hb = as_user(client, two.b.email)
     got_b = client.get(f"{two.b.base}/governance/retention", headers=hb).json()["items"]
     theirs = {i["data_class"]: i for i in got_b}
     assert theirs["audit_events"]["is_default"] is True and not theirs["audit_events"]["legal_hold"]
     b_prev = client.post(f"{two.b.base}/governance/retention/preview", headers=hb).json()["items"]
     assert not {i["data_class"]: i for i in b_prev}["audit_events"]["on_legal_hold"]
+    b_counts = {i["data_class"]: i["count"] for i in b_prev}
+    assert (b_counts["run_artifacts"], b_counts["run_steps_content"]) == (2, 2), b_counts
+    assert max(i["retain_days"] for i in got_b if i["data_class"].startswith("run_")) < OLD_DAYS
     h = as_user(client, two.a.email)
     nobody_org = org(f"no-such-{uuid7().hex[-12:]}")
     items = {"items": [{"data_class": "usage_events", "retain_days": 60, "legal_hold": False}]}
@@ -750,6 +837,12 @@ def test_decisions_and_overview_hold_only_as_own(
     hb = as_user(client, two.b.email)
     b_ov = client.get(f"{two.b.base}/governance/overview", headers=hb).json()
     assert b_ov["denials_7d"] == 2 and b_ov["policy_counts"] == {"data_export": 2}
+    # pending approvals on real runs: A has one (and one decided), B two
+    _seed_both(owner_session, world)
+    for side, expected in ((two.a, 1), (two.b, 2)):
+        hx = as_user(client, side.email)
+        pending = client.get(f"{side.base}/governance/overview", headers=hx).json()
+        assert pending["pending_approvals"] == expected, pending
     h = as_user(client, two.a.email)
     nobody_org = org(f"no-such-{uuid7().hex[-12:]}")
     for path in ("governance/decisions", "governance/overview"):
@@ -759,11 +852,23 @@ def test_decisions_and_overview_hold_only_as_own(
         )
 
 
-def test_performance_is_scoped_to_the_organization(client: TestClient, two: Two) -> None:
+def test_performance_is_scoped_to_the_organization(
+    client: TestClient, world: World, two: Two, owner_session: Session
+) -> None:
     h = as_user(client, two.a.email)
     for group in ("agent", "model", "pipeline"):
         r = client.get(f"{two.a.base}/observability/performance?group_by={group}", headers=h)
         assert r.status_code == 200 and r.json()["groups"] == [], r.text  # no runs yet
+    # real finished runs and model steps: A one of each, B two; both call the same model id
+    rows_a, rows_b, model = _seed_both(owner_session, world)
+    for side, rows in ((two.a, rows_a), (two.b, rows_b)):
+        hx = as_user(client, side.email)
+        for group, key in (("agent", rows.agent), ("model", model), ("pipeline", rows.pipeline)):
+            r = client.get(f"{side.base}/observability/performance?group_by={group}", headers=hx)
+            assert r.status_code == 200, r.text
+            got = [(g["key"], g["runs"], g["error_count"]) for g in r.json()["groups"]]
+            assert got == [(str(key), len(rows.runs), 0)], (group, got)
+    h = as_user(client, two.a.email)
     bad = client.get(f"{two.a.base}/observability/performance?group_by=user", headers=h)
     assert bad.status_code == 422
     nobody_org = org(f"no-such-{uuid7().hex[-12:]}")

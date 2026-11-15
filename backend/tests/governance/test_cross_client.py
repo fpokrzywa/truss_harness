@@ -8,6 +8,7 @@ context of the wrong client and with no row-level security reach: the owner sess
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from uuid import UUID
 
 import pytest
@@ -19,7 +20,9 @@ from shifde.core.clock import utcnow
 from shifde.core.db import Database, platform_admin_context
 from shifde.core.ids import uuid7
 from shifde.governance import repository as repo
+from shifde.ledger.usage import ALL
 from tests.governance.conftest import World
+from tests.governance.runtime_rows import seed_runtime
 from tests.ledger.util import add_budget, add_rate_card, add_version
 from tests.tenancy.conftest import app_session
 
@@ -268,4 +271,79 @@ def test_without_a_client_context_no_governance_row_is_visible(
     with app_session(app_db, None) as s:
         for table in ("governance_policies", "retention_policies", "budgets", "quotas"):
             assert s.execute(text(f"SELECT count(*) FROM shifde.{table}")).scalar_one() == 0
+        s.rollback()
+
+
+# ------------------------------------------------------------------ runtime reads (B-2105)
+def _performance(s: Session, tenant: UUID, group_by: str) -> list[tuple[str, int]]:
+    end = utcnow() + timedelta(minutes=1)
+    rows = repo.performance(s, tenant, group_by, end - timedelta(days=7), end, ALL)
+    return [(str(r["key"]), int(r["n"])) for r in rows]
+
+
+def test_the_runtime_reads_filter_on_the_tenant_without_row_level_security(
+    owner_db: Database, world: World
+) -> None:
+    """The reads B-2105 turned on, as the schema owner over real runs of both clients: only each
+    query's own tenant condition keeps B's runs, steps, approvals, artifacts and holds out of A's
+    answer (isolation review 1, F1)."""
+    a, b, model = world.a, world.b, uuid7()
+    with owner_db.session() as s:
+        ra = seed_runtime(s, a.tenant, a.ws, a.project, n=1, model=model)
+        rb = seed_runtime(s, b.tenant, b.ws, b.project, n=2, model=model)
+        assert (repo.pending_approvals(s, a.tenant), repo.pending_approvals(s, b.tenant)) == (1, 2)
+        cutoff = utcnow() - timedelta(days=90)
+        for data_class in ("run_artifacts", "run_steps_content"):
+            assert repo.count_older_than(s, a.tenant, data_class, cutoff) == 1, data_class
+            assert repo.count_older_than(s, b.tenant, data_class, cutoff) == 2, data_class
+        assert (repo.stale_holds(s, a.tenant), repo.stale_holds(s, b.tenant)) == (1, 2)
+        for group_by, key_a, key_b in (
+            ("agent", ra.agent, rb.agent),
+            ("model", model, model),
+            ("pipeline", ra.pipeline, rb.pipeline),
+        ):
+            assert _performance(s, a.tenant, group_by) == [(str(key_a), 1)], group_by
+            assert _performance(s, b.tenant, group_by) == [(str(key_b), 2)], group_by
+        for key, step in (("own", ra.steps[0]), ("theirs", rb.steps[0])):
+            s.execute(
+                text(
+                    "INSERT INTO shifde.usage_events (id, tenant_id, event_key, event_type, "
+                    "step_id) VALUES (:i, :t, :k, 'tool_call', :s)"
+                ),
+                {"i": uuid7(), "t": a.tenant, "k": key, "s": step},
+            )
+        names = dict(
+            s.execute(
+                text(f"SELECT q.event_key, q.step_name FROM ({repo.event_select(s)}"
+                     "WHERE u.tenant_id = :t) q"),
+                {"t": a.tenant},
+            ).all()
+        )  # fmt: skip
+        assert names == {"own": ra.step_name, "theirs": None}
+        s.rollback()
+
+
+def test_performance_joins_a_step_to_a_run_of_its_own_client_only(
+    owner_db: Database, world: World
+) -> None:
+    """F2: the model grouping joins `runs` on (id, tenant_id). The composite key
+    `fk_run_steps__run` already refuses a step of A naming B's run; with it dropped in this
+    rolled-back transaction, such a step still counts nowhere for A."""
+    a, b, model = world.a, world.b, uuid7()
+    with owner_db.session() as s:
+        seed_runtime(s, a.tenant, a.ws, a.project, n=1, model=model)
+        rb = seed_runtime(s, b.tenant, b.ws, b.project, n=2, model=model)
+        s.execute(text("ALTER TABLE shifde.run_steps DROP CONSTRAINT fk_run_steps__run"))
+        now = utcnow()
+        s.execute(
+            text(
+                "INSERT INTO shifde.run_steps (id, tenant_id, run_id, seq, kind, name, status, "
+                "model_id, started_at, finished_at) VALUES (:i, :t, :r, 9, 'model_call', 'x', "
+                "'succeeded', :m, :s, :f)"
+            ),
+            {"i": uuid7(), "t": a.tenant, "r": rb.runs[0], "m": model,
+             "s": now - timedelta(hours=2), "f": now - timedelta(hours=1)},
+        )  # fmt: skip
+        assert _performance(s, a.tenant, "model") == [(str(model), 1)]
+        assert _performance(s, b.tenant, "model") == [(str(model), 2)]
         s.rollback()

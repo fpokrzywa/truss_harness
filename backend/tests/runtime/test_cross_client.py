@@ -263,3 +263,33 @@ def test_settle_functions_do_nothing_to_bs_run_under_as_context(
             text("SELECT error_class FROM shifde.runs WHERE id = :r"), {"r": two.b.run}
         ).scalar_one()
     assert (inv, approvals, error) == ("started", 1, None)
+
+
+def test_unknown_outcome_text_reads_only_the_runs_own_client(owner_db: Database, two: Two) -> None:
+    """F4: the approvals, run_events and runs lookups name the run's own client (the reaper calls
+    the function as the schema owner, outside row-level security). The composite keys already
+    refuse B's rows naming A's run; with them dropped in this rolled-back transaction, B's open
+    decision and B's cause still do not reach A's run's message."""
+    a, b = two.a, two.b
+    with owner_db.session() as o:
+        for table, fk in (("approvals", "fk_approvals__run"), ("run_events", "fk_run_events__run")):
+            o.execute(text(f"ALTER TABLE shifde.{table} DROP CONSTRAINT {fk}"))
+        for c, tool in ((a, "a-tool"), (b, "b-secret-tool")):
+            insert(o, "approvals", id=uuid7(), tenant_id=c.tenant, run_id=a.run,
+                   workspace_id=c.workspace, project_id=c.project, call_ref=f"u-{tool}",
+                   reason="indeterminate_side_effect", tool_key=tool, requested_by=uuid7(),
+                   expires_at=utcnow() + timedelta(hours=1))  # fmt: skip
+        insert(o, "run_events", id=uuid7(), tenant_id=b.tenant, run_id=a.run, seq=99,
+               type="outcome_unknown", details='{"previous_message": "b-secret-cause"}')  # fmt: skip
+        got = o.execute(
+            text("SELECT shifde.unknown_outcome_text(:r, NULL)"), {"r": a.run}
+        ).scalar_one()
+        unknown = o.execute(
+            text("SELECT shifde.unknown_outcome_text(:r, NULL)"), {"r": uuid7()}
+        ).scalar_one()
+        o.rollback()
+    assert got == (
+        "a write may have been delivered before this run ended (pending); its outcome is "
+        "unknown until an operator resolves the approval (a-tool)"
+    ), got
+    assert unknown is None
