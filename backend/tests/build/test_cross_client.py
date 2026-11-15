@@ -350,11 +350,16 @@ def test_a_cannot_reference_bs_rows(app_db: Database, seed: Seed) -> None:
         )
 
 
-_ORACLE_WRITES: dict[str, Callable[[Session, UUID, UUID], None]] = {
-    "report": lambda s, t, v: repo.insert_validation_report(s, t, v, {"x": 1}, []),
-    "pin": lambda s, t, v: repo.insert_pins(s, t, v, [(v, "tool")]),
-    "ref": lambda s, t, v: repo.insert_pipeline_refs(s, t, v, [("n", "model", uuid7())]),
-}
+_KINDS = ("pin", "ref", "report")
+
+
+def _oracle_write(kind: str, b: Side, role: str) -> Callable[[Session, UUID, UUID], None]:
+    """A's write of exactly B's key (B's seeded or uncommitted row) for the version `v` tried."""
+    if kind == "pin":
+        return lambda s, t, v: repo.insert_pins(s, t, v, [(b.published, role)])
+    if kind == "ref":
+        return lambda s, t, v: repo.insert_pipeline_refs(s, t, v, [("n1", "model", b.model)])
+    return lambda s, t, v: repo.insert_validation_report(s, t, v, {"x": 1}, [])
 
 
 def _state_of(
@@ -364,7 +369,7 @@ def _state_of(
         return _state_of_in(s, tenant, write, v)
 
 
-@pytest.mark.parametrize("kind", sorted(_ORACLE_WRITES))
+@pytest.mark.parametrize("kind", _KINDS)
 def test_bs_version_and_an_unknown_id_give_a_the_same_outcome(
     app_db: Database, seed: Seed, kind: str
 ) -> None:
@@ -372,14 +377,14 @@ def test_bs_version_and_an_unknown_id_give_a_the_same_outcome(
     without one, and an id that exists nowhere all fail the same way (23503), whatever the
     `ON CONFLICT DO NOTHING` could have told."""
     a, b = seed.a, seed.b
-    write = _ORACLE_WRITES[kind]
+    write = _oracle_write(kind, b, "prompt")  # B seeded the pin (b.draft, b.published, prompt)
     outcomes = {
         _state_of(app_db, a.tenant, write, v) for v in (b.pipeline_version, b.draft, uuid7())
     }
     assert outcomes == {"23503"}
 
 
-@pytest.mark.parametrize("kind", sorted(_ORACLE_WRITES))
+@pytest.mark.parametrize("kind", _KINDS)
 def test_a_does_not_wait_on_bs_uncommitted_insert(
     app_db: Database, owner_db: Database, seed: Seed, kind: str
 ) -> None:
@@ -392,7 +397,7 @@ def test_a_does_not_wait_on_bs_uncommitted_insert(
         "pin": "INSERT INTO shifde.artifact_version_pins (tenant_id, version_id, "
         "pinned_version_id, role) VALUES (:t, :v, :p, 'tool')",
         "ref": "INSERT INTO shifde.pipeline_version_refs (tenant_id, pipeline_version_id, "
-        "node_id, ref_type, ref_id, model_id) VALUES (:t, :v, 'n', 'model', :m, :m)",
+        "node_id, ref_type, ref_id, model_id) VALUES (:t, :v, 'n1', 'model', :m, :m)",
     }[kind]
     with owner_db.session() as o:
         spare = _artifact(o, b.tenant, "pipelines", "pipeline-spare")
@@ -409,7 +414,7 @@ def test_a_does_not_wait_on_bs_uncommitted_insert(
         )  # not committed: holds the key
         with app_session(app_db, a.tenant) as s:
             s.execute(text("SET LOCAL lock_timeout = '500ms'"))
-            assert _state_of_in(s, a.tenant, _ORACLE_WRITES[kind], version) == "23503"
+            assert _state_of_in(s, a.tenant, _oracle_write(kind, b, "tool"), version) == "23503"
         o.rollback()
 
 
