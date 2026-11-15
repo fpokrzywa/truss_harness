@@ -392,6 +392,11 @@
   migration: models_admin_0001
 
 - table: model_providers
+  path: [constraints, ck_model_providers__shared_client_safe]
+  reason: "every client reads the shared SHI provider row (read_global_or_own), so its client-readable columns carry nothing: settings stay {} and health_detail NULL; SHI's endpoint, deployment and key reference are installation configuration (models_admin isolation review 1 item 4, DECISIONS B-1712)."
+  migration: models_admin_0002
+
+- table: model_providers
   path: [policies, tenant_isolation]
   reason: "the SHI-wide model provider and its models are shared rows (tenant NULL) every client reads and only the platform administrator context writes (design 3 and 5.3, DECISIONS B-1701, B-1702): replaced by read_global_or_own and write_own, as egress_policies (B-1501)."
   migration: models_admin_0001

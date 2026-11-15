@@ -58,6 +58,8 @@ ACCESS_COLUMNS = "tenant_id, enabled, changed_by, changed_at, row_version, creat
 
 # own rows and the shared rows of the SHI provider
 _VISIBLE = "(tenant_id = :t OR tenant_id IS NULL)"
+# own rows, and the shared rows only when `:shared` (the service: the client's switch is on)
+_OWN_OR_SHARED = "(tenant_id = :t OR (tenant_id IS NULL AND CAST(:shared AS boolean)))"
 
 
 def _update_owned(
@@ -94,14 +96,16 @@ def _update_owned(
 
 
 # ------------------------------------------------------------------ providers
-def get_provider(session: Session, provider_id: UUID, *, tenant_id: UUID) -> Row | None:
+def get_provider(
+    session: Session, provider_id: UUID, *, tenant_id: UUID, shared: bool = True
+) -> Row | None:
     return (
         session.execute(
             text(
                 f"SELECT {PROVIDER_COLUMNS} FROM shifde.model_providers "
-                f"WHERE id = :id AND {_VISIBLE}"
+                f"WHERE id = :id AND {_OWN_OR_SHARED}"
             ),
-            {"id": provider_id, "t": tenant_id},
+            {"id": provider_id, "t": tenant_id, "shared": shared},
         )
         .mappings()
         .first()
@@ -109,15 +113,15 @@ def get_provider(session: Session, provider_id: UUID, *, tenant_id: UUID) -> Row
 
 
 def list_providers(
-    session: Session, after: UUID | None, limit: int, *, tenant_id: UUID
+    session: Session, after: UUID | None, limit: int, *, tenant_id: UUID, shared: bool = True
 ) -> list[Row]:
     return list(
         session.execute(
             text(
-                f"SELECT {PROVIDER_COLUMNS} FROM shifde.model_providers WHERE {_VISIBLE} "
+                f"SELECT {PROVIDER_COLUMNS} FROM shifde.model_providers WHERE {_OWN_OR_SHARED} "
                 "AND (CAST(:after AS uuid) IS NULL OR id > :after) ORDER BY id LIMIT :n"
             ),
-            {"t": tenant_id, "after": after, "n": limit},
+            {"t": tenant_id, "shared": shared, "after": after, "n": limit},
         )
         .mappings()
         .all()
@@ -136,28 +140,38 @@ def insert_provider(session: Session, values: Mapping[str, Any]) -> None:
 
 
 def ensure_shi_provider(
-    session: Session,
-    *,
-    adapter_key: str,
-    settings: Mapping[str, Any],
-    created_by: UUID | None,
-    name: str = "SHI",
-) -> None:
-    """Create the SHI-wide provider row if it is missing (disabled until configured). Row-level
-    security admits it only in the platform administrator context."""
+    session: Session, *, adapter_key: str, created_by: UUID | None, name: str = "SHI"
+) -> Row:
+    """Create the SHI-wide provider row if it is missing (disabled until configured, no settings:
+    `ck_model_providers__shared_client_safe`) and return it. Row-level security admits the insert
+    only in the platform administrator context; the row read back must be the shared one (tenant
+    NULL), which `ck_model_providers__platform` alone may give the reserved id (review 1 item 1)."""
     session.execute(
         text(
             "INSERT INTO shifde.model_providers (id, tenant_id, name, adapter_key, settings, "
-            "status, created_by) VALUES (:id, NULL, :name, :adapter_key, "
-            "CAST(:settings AS jsonb), 'disabled', :created_by) ON CONFLICT (id) DO NOTHING"
+            "status, created_by) VALUES (:id, NULL, :name, :adapter_key, '{}'::jsonb, "
+            "'disabled', :created_by) ON CONFLICT (id) DO NOTHING"
         ),
-        {
-            "id": SHI_PROVIDER_ID,
-            "name": name,
-            "adapter_key": adapter_key,
-            "settings": json.dumps(dict(settings)),
-            "created_by": created_by,
-        },
+        {"id": SHI_PROVIDER_ID, "name": name, "adapter_key": adapter_key, "created_by": created_by},
+    )
+    row = get_shi_provider(session)
+    if row is None:
+        raise RuntimeError("the SHI provider id is held by a row that is not the shared provider")
+    return row
+
+
+def get_shi_provider(session: Session) -> Row | None:
+    """The shared SHI provider row (tenant NULL), or None if it does not exist yet."""
+    return (
+        session.execute(
+            text(
+                f"SELECT {PROVIDER_COLUMNS} FROM shifde.model_providers "
+                "WHERE id = :id AND tenant_id IS NULL"
+            ),
+            {"id": SHI_PROVIDER_ID},
+        )
+        .mappings()
+        .first()
     )
 
 
@@ -183,11 +197,13 @@ def update_provider(
 
 
 # ------------------------------------------------------------------ models
-def get_model(session: Session, model_id: UUID, *, tenant_id: UUID) -> Row | None:
+def get_model(
+    session: Session, model_id: UUID, *, tenant_id: UUID, shared: bool = True
+) -> Row | None:
     return (
         session.execute(
-            text(f"SELECT {MODEL_COLUMNS} FROM shifde.models WHERE id = :id AND {_VISIBLE}"),
-            {"id": model_id, "t": tenant_id},
+            text(f"SELECT {MODEL_COLUMNS} FROM shifde.models WHERE id = :id AND {_OWN_OR_SHARED}"),
+            {"id": model_id, "t": tenant_id, "shared": shared},
         )
         .mappings()
         .first()
@@ -216,17 +232,19 @@ def list_models(
     lifecycle: str | None,
     after: UUID | None,
     limit: int,
+    shared: bool = True,
 ) -> list[Row]:
     return list(
         session.execute(
             text(
-                f"SELECT {MODEL_COLUMNS} FROM shifde.models WHERE {_VISIBLE} "
+                f"SELECT {MODEL_COLUMNS} FROM shifde.models WHERE {_OWN_OR_SHARED} "
                 "AND (CAST(:provider AS uuid) IS NULL OR provider_id = :provider) "
                 "AND (CAST(:lifecycle AS text) IS NULL OR lifecycle = :lifecycle) "
                 "AND (CAST(:after AS uuid) IS NULL OR id > :after) ORDER BY id LIMIT :n"
             ),
             {
                 "t": tenant_id,
+                "shared": shared,
                 "provider": provider_id,
                 "lifecycle": lifecycle,
                 "after": after,
@@ -427,22 +445,23 @@ def set_shi_access(
     *,
     tenant_id: UUID,
     enabled: bool,
-    changed_by: UUID | None,
     expected: int | None,
 ) -> Row | None:
     """Turn the SHI provider on or off for one client (row-level security admits it only in the
-    platform administrator context, in that client's context). None when `expected` is stale."""
+    platform administrator context, in that client's context). The author is the database's
+    acting principal (`current_principal_id()`, required by the policies, review 1 item 5). None
+    when `expected` is stale."""
     return (
         session.execute(
             text(
                 "INSERT INTO shifde.shi_provider_access AS a (tenant_id, enabled, changed_by) "
-                "VALUES (:t, :e, :by) ON CONFLICT (tenant_id) DO UPDATE "
-                "SET enabled = :e, changed_by = :by, changed_at = now(), "
-                "row_version = a.row_version + 1 "
+                "VALUES (:t, :e, shifde.current_principal_id()) ON CONFLICT (tenant_id) DO UPDATE "
+                "SET enabled = :e, changed_by = shifde.current_principal_id(), "
+                "changed_at = now(), row_version = a.row_version + 1 "
                 "WHERE CAST(:expected AS int) IS NULL OR a.row_version = :expected "
                 f"RETURNING {ACCESS_COLUMNS}"
             ),
-            {"t": tenant_id, "e": enabled, "by": changed_by, "expected": expected},
+            {"t": tenant_id, "e": enabled, "expected": expected},
         )
         .mappings()
         .first()

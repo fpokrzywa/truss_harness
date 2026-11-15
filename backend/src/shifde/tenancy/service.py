@@ -186,10 +186,11 @@ def list_all_orgs(
         )
         page, more = paginate(rows, limit)
         items = [_summary(t.id, t.slug, t.name, t.status) for t in page]
+        # Read the cursor inside the context: after the rollback the rows are expired and
+        # reloading one outside the platform-admin context finds nothing under RLS.
+        next_cursor = encode_cursor(page[-1].id) if more and page else None
     session.rollback()
-    return Page[OrgSummaryOut](
-        items=items, next_cursor=encode_cursor(page[-1].id) if more and page else None
-    )
+    return Page[OrgSummaryOut](items=items, next_cursor=next_cursor)
 
 
 def _require_some_grant(scope: TenantScope) -> None:
