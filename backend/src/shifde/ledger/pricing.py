@@ -107,9 +107,17 @@ def _version(row: Mapping[Any, Any]) -> RateVersion:  # Any: RowMapping
 
 
 def resolve(
-    session: Session, tenant_id: UUID, provider_key: str, model_key: str, at: datetime
+    session: Session,
+    tenant_id: UUID,
+    provider_key: str,
+    model_key: str,
+    at: datetime,
+    *,
+    global_only: bool = False,
 ) -> RateVersion | None:
-    """The version in force at `at` for the model: a tenant card overrides the global one."""
+    """The version in force at `at` for the model: a tenant card overrides the global one.
+    `global_only` (a shared SHI model, models_admin review 1 item 2): global cards only, so a
+    client cannot price the shared provider's calls for itself."""
     row = (
         session.execute(
             text(
@@ -118,11 +126,11 @@ def resolve(
                 "FROM shifde.rate_card_versions v "
                 "JOIN shifde.rate_cards c ON c.id = v.rate_card_id "
                 "WHERE c.provider_key = :p AND c.model_key = :m "
-                "AND (c.tenant_id = :t OR c.tenant_id IS NULL) "
+                "AND (c.tenant_id IS NULL OR (c.tenant_id = :t AND NOT CAST(:g AS boolean))) "
                 "AND v.effective_from <= :at AND (v.effective_to IS NULL OR v.effective_to > :at) "
                 "ORDER BY (c.tenant_id IS NULL), v.version_no DESC LIMIT 1"
             ),
-            {"p": provider_key, "m": model_key, "t": tenant_id, "at": at},
+            {"p": provider_key, "m": model_key, "t": tenant_id, "at": at, "g": global_only},
         )
         .mappings()
         .first()
@@ -184,13 +192,20 @@ def model_keys(session: Session, tenant_id: UUID, model_id: UUID) -> tuple[str, 
     """(provider_key, model_key) of a model the tenant may name: its own, or a shared model of the
     SHI-wide provider (tenant NULL, DECISIONS B-1705). The provider's adapter key and the model's
     own key are what a rate card names. Another client's model gives None."""
+    keys = rate_keys(session, tenant_id, model_id)
+    return (keys[0], keys[1]) if keys else None
+
+
+def rate_keys(session: Session, tenant_id: UUID, model_id: UUID) -> tuple[str, str, bool] | None:
+    """`model_keys` plus whether the model is a shared SHI model (priced from global rate cards
+    only, `resolve(global_only=True)`, B-1734)."""
     row = session.execute(
         text(
-            "SELECT p.adapter_key, m.model_key FROM shifde.models m "
+            "SELECT p.adapter_key, m.model_key, m.tenant_id IS NULL FROM shifde.models m "
             "JOIN shifde.model_providers p ON p.id = m.provider_id "
             "AND p.tenant_id IS NOT DISTINCT FROM m.tenant_id "
             "WHERE m.id = :id AND (m.tenant_id = :t OR m.tenant_id IS NULL)"
         ),
         {"id": model_id, "t": tenant_id},
     ).first()
-    return (str(row[0]), str(row[1])) if row else None
+    return (str(row[0]), str(row[1]), bool(row[2])) if row else None

@@ -56,8 +56,6 @@ ROUTE_COLUMNS = (
 ROUTE_UPDATABLE = frozenset({"name", "primary_model_id", "fallback_model_ids", "conditions"})
 ACCESS_COLUMNS = "tenant_id, enabled, changed_by, changed_at, row_version, created_at, updated_at"
 
-# own rows and the shared rows of the SHI provider
-_VISIBLE = "(tenant_id = :t OR tenant_id IS NULL)"
 # own rows, and the shared rows only when `:shared` (the service: the client's switch is on)
 _OWN_OR_SHARED = "(tenant_id = :t OR (tenant_id IS NULL AND CAST(:shared AS boolean)))"
 
@@ -97,7 +95,7 @@ def _update_owned(
 
 # ------------------------------------------------------------------ providers
 def get_provider(
-    session: Session, provider_id: UUID, *, tenant_id: UUID, shared: bool = True
+    session: Session, provider_id: UUID, *, tenant_id: UUID, shared: bool
 ) -> Row | None:
     return (
         session.execute(
@@ -113,7 +111,7 @@ def get_provider(
 
 
 def list_providers(
-    session: Session, after: UUID | None, limit: int, *, tenant_id: UUID, shared: bool = True
+    session: Session, after: UUID | None, limit: int, *, tenant_id: UUID, shared: bool
 ) -> list[Row]:
     return list(
         session.execute(
@@ -197,9 +195,7 @@ def update_provider(
 
 
 # ------------------------------------------------------------------ models
-def get_model(
-    session: Session, model_id: UUID, *, tenant_id: UUID, shared: bool = True
-) -> Row | None:
+def get_model(session: Session, model_id: UUID, *, tenant_id: UUID, shared: bool) -> Row | None:
     return (
         session.execute(
             text(f"SELECT {MODEL_COLUMNS} FROM shifde.models WHERE id = :id AND {_OWN_OR_SHARED}"),
@@ -210,14 +206,18 @@ def get_model(
     )
 
 
-def get_models(session: Session, model_ids: Sequence[UUID], *, tenant_id: UUID) -> list[Row]:
+def get_models(
+    session: Session, model_ids: Sequence[UUID], *, tenant_id: UUID, shared: bool
+) -> list[Row]:
+    """The client's own models among `model_ids`, and the shared SHI models among them only when
+    `shared` (the service passes the caller's switch, or False where only own models count)."""
     return list(
         session.execute(
             text(
                 f"SELECT {MODEL_COLUMNS} FROM shifde.models "
-                f"WHERE id = ANY(CAST(:ids AS uuid[])) AND {_VISIBLE}"
+                f"WHERE id = ANY(CAST(:ids AS uuid[])) AND {_OWN_OR_SHARED}"
             ),
-            {"ids": list(model_ids), "t": tenant_id},
+            {"ids": list(model_ids), "t": tenant_id, "shared": shared},
         )
         .mappings()
         .all()
@@ -232,7 +232,7 @@ def list_models(
     lifecycle: str | None,
     after: UUID | None,
     limit: int,
-    shared: bool = True,
+    shared: bool,
 ) -> list[Row]:
     return list(
         session.execute(
