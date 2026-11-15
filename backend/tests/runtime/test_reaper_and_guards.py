@@ -15,7 +15,7 @@ from sqlalchemy.exc import DBAPIError
 
 from shifde.core.db import Database
 from shifde.runtime import state
-from tests.runtime.conftest import Two, app_session
+from tests.runtime.conftest import Client, Two, app_session
 
 SETUPS = {
     # the lease expires with attempts left (run -> pending), then the cancel finalizes it
@@ -39,10 +39,13 @@ SETUPS = {
 }
 
 
-def _crash_during_approved_write(owner_db: Database, two: Two, setup: str) -> None:
-    """A's run is `running` under job `two.a.job`, its write invocation `started`, its tool step
-    `running` (the approval for it was granted), and the worker died: the lease has expired."""
-    a = two.a
+def _crash_during_approved_write(
+    owner_db: Database, two: Two, setup: str, client: Client | None = None
+) -> None:
+    """A's run (or `client`'s) is `running` under its job, its write invocation `started`, its
+    tool step `running` (the approval for it was granted), and the worker died: the lease has
+    expired."""
+    a = client or two.a
     with owner_db.session() as o:
         o.execute(
             text(
@@ -131,6 +134,64 @@ def test_a_crash_during_an_approved_write_is_an_unknown_outcome_not_a_plain_end(
             {"r": two.b.run},
         ).one()
     assert tuple(b) == ("pending", None, "queued", "started")
+
+
+def test_both_clients_crash_in_one_reaper_pass_and_each_gets_its_own_decision(
+    app_db: Database, owner_db: Database, two: Two
+) -> None:
+    """Suggested by isolation review 1 (F6): A's and B's workers die during an approved write,
+    A's run is cancelled and B's passes its deadline; one reaper pass settles both, and each
+    client gets its own approval, tool key and message, and sees nothing of the other's."""
+    _crash_during_approved_write(owner_db, two, "cancel", two.a)
+    _crash_during_approved_write(owner_db, two, "deadline", two.b)
+    with app_session(app_db, None) as s:
+        reaped = s.execute(text("SELECT * FROM shifde.shifde_reap_expired_leases()")).all()
+        s.commit()
+    assert {(r.tenant_id, r.run_id, r.reason) for r in reaped} >= {
+        (two.a.tenant, two.a.run, "unknown_outcome"),
+        (two.b.tenant, two.b.run, "unknown_outcome"),
+    }
+    with owner_db.session() as o:
+        tool_keys = dict(
+            o.execute(
+                text(
+                    "SELECT v.id, a.key FROM shifde.artifact_versions v JOIN shifde.artifacts a "
+                    "ON a.id = v.artifact_id AND a.tenant_id = v.tenant_id WHERE v.id = ANY(:v)"
+                ),
+                {"v": [two.a.tool_version, two.b.tool_version]},
+            ).all()
+        )
+    assert len(set(tool_keys.values())) == 2
+    for c, other, cause in ((two.a, two.b, "cancelled"), (two.b, two.a, "the run deadline passed")):
+        with app_session(app_db, c.tenant) as s:
+            opened = s.execute(
+                text(
+                    "SELECT tenant_id, run_id, tool_version_id, tool_key, status FROM "
+                    "shifde.approvals WHERE reason = 'indeterminate_side_effect'"
+                )
+            ).all()
+            message = s.execute(
+                text("SELECT error_message FROM shifde.runs WHERE id = :r"), {"r": c.run}
+            ).scalar_one()
+            s.rollback()
+        own_key, other_key = tool_keys[c.tool_version], tool_keys[other.tool_version]
+        assert [tuple(o) for o in opened] == [
+            (c.tenant, c.run, c.tool_version, own_key, "pending")
+        ], opened
+        assert message.startswith(
+            f"a write may have been delivered before this run ended ({cause})"
+        )
+        assert message.endswith(f"resolves the approval ({own_key})"), message
+        assert other_key not in message
+    with owner_db.session() as o:  # exactly one decision per client, on that client's own run
+        per_client = o.execute(
+            text(
+                "SELECT a.tenant_id, count(*) FROM shifde.approvals a JOIN shifde.runs r "
+                "ON r.id = a.run_id AND r.tenant_id = a.tenant_id "
+                "WHERE a.reason = 'indeterminate_side_effect' GROUP BY a.tenant_id"
+            )
+        ).all()
+    assert dict(per_client) == {two.a.tenant: 1, two.b.tenant: 1}
 
 
 def test_reaping_again_changes_nothing(app_db: Database, owner_db: Database, two: Two) -> None:

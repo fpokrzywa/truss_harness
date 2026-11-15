@@ -240,26 +240,35 @@ TEXT = r"""CREATE FUNCTION shifde.unknown_outcome_text(p_run uuid, p_cause text)
 LANGUAGE plpgsql STABLE SET search_path = pg_catalog, pg_temp AS
 $$
 DECLARE
+  v_tenant uuid;
   v_open int;
   v_names text;
   v_cause text := p_cause;
 BEGIN
+  -- Every lookup names the run's own client (B-2101; isolation review 1, F4): the reaper calls
+  -- this as the schema owner, which row-level security does not restrict.
+  SELECT tenant_id INTO v_tenant FROM shifde.runs WHERE id = p_run;
+  IF NOT FOUND THEN
+    RETURN NULL;
+  END IF;
   SELECT count(*),
          string_agg(DISTINCT COALESCE(a.tool_key, a.call_ref), ', '
                     ORDER BY COALESCE(a.tool_key, a.call_ref))
     INTO v_open, v_names
     FROM shifde.approvals a
-   WHERE a.run_id = p_run AND a.reason = 'indeterminate_side_effect' AND a.status = 'pending';
+   WHERE a.run_id = p_run AND a.tenant_id = v_tenant
+     AND a.reason = 'indeterminate_side_effect' AND a.status = 'pending';
   IF v_open = 0 THEN
     RETURN NULL;
   END IF;
   IF v_cause IS NULL THEN
     SELECT COALESCE(details->>'previous_message', details->>'previous_error_class')
       INTO v_cause FROM shifde.run_events
-     WHERE run_id = p_run AND type = 'outcome_unknown' ORDER BY seq LIMIT 1;
+     WHERE run_id = p_run AND tenant_id = v_tenant AND type = 'outcome_unknown'
+     ORDER BY seq LIMIT 1;
   END IF;
   IF v_cause IS NULL THEN
-    SELECT status INTO v_cause FROM shifde.runs WHERE id = p_run;
+    SELECT status INTO v_cause FROM shifde.runs WHERE id = p_run AND tenant_id = v_tenant;
   END IF;
   RETURN 'a write may have been delivered before this run ended (' || v_cause
          || '); its outcome is unknown until an operator resolves '

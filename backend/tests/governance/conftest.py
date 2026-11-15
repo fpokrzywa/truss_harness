@@ -36,6 +36,7 @@ for _table in (
     "rate_card_versions",
     "rate_cards",
     "policy_decisions",
+    "runs",  # runtime rows of tests.governance.runtime_rows (and every table keyed to a run)
 ):
     if _table not in CLEAN_TABLES:
         CLEAN_TABLES.append(_table)
