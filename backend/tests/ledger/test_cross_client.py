@@ -334,6 +334,97 @@ def test_a_tenant_cannot_close_a_global_version_through_the_guard(
         s.rollback()
 
 
+# ---- governance isolation review 1, item 1 (ledger_0002, B-611): with no client context
+# `NEW.tenant_id = current_tenant_id()` was NULL, so the guard's first check was skipped and the
+# definer locked B's card, read it, closed B's open-ended version and ran the overlap check
+# before WITH CHECK refused: three different errors (B's card ids and ranges leak) and a lock
+# that delayed B's own writes. A raw insert, not `add_version`: its `_seed_context` would give a
+# session without a context the row's own tenant.
+_PROBE = text(
+    "INSERT INTO shifde.rate_card_versions (id, rate_card_id, tenant_id, version_no, "
+    "effective_from, currency, unit, input_rate, output_rate, source, revision) "
+    "VALUES (:i, :c, :t, 2, :f, 'USD', 'per_1m_tokens', 1, 1, 'probe', 'r1')"
+)
+
+
+def _versions(db: Database) -> list[tuple[object, ...]]:
+    with db.session() as s:
+        rows = s.execute(
+            text(
+                "SELECT id, rate_card_id, tenant_id, version_no, effective_from, effective_to "
+                "FROM shifde.rate_card_versions ORDER BY id"
+            )
+        )
+        return [tuple(r) for r in rows]
+
+
+def _refusal(err: pytest.ExceptionInfo[DBAPIError]) -> tuple[object, object]:
+    orig = err.value.orig
+    return getattr(orig, "sqlstate", None), getattr(
+        getattr(orig, "diag", None), "message_primary", None
+    )
+
+
+@pytest.mark.parametrize("context", ["none", "tenant_a"])
+@pytest.mark.parametrize("row_tenant", ["b", "global"])
+def test_a_version_outside_the_callers_context_gets_one_answer_whatever_the_card(
+    app_db: Database, owner_db: Database, world: World, context: str, row_tenant: str
+) -> None:
+    """B's real card (a start in the past, which overlapped; a start in the future, which RLS
+    refused after the guard closed B's version) and an unknown card id answer the same refusal,
+    with no client context and in A's; likewise a global row without the platform administrator
+    context. Nothing of B's (or the global card's) changes."""
+    tenant = world.b if row_tenant == "b" else None
+    card = _card_of(owner_db, world.version_b if row_tenant == "b" else world.global_version)
+    before = _versions(owner_db)
+    answers = set()
+    for card_id in (card, uuid7()):
+        for start in (utcnow() - timedelta(days=1), utcnow() + timedelta(days=1)):
+            with _as(app_db, world.a if context == "tenant_a" else None) as s:
+                with pytest.raises(DBAPIError) as err:
+                    s.execute(_PROBE, {"i": uuid7(), "c": card_id, "t": tenant, "f": start})
+                answers.add(_refusal(err))
+                s.rollback()
+    assert answers == {("42501", "rate card version is outside the caller's tenant")}
+    assert _versions(owner_db) == before
+
+
+@pytest.mark.parametrize("context", ["none", "tenant_a"])
+def test_a_refused_version_does_not_queue_on_another_tenants_card_lock(
+    app_db: Database, app_url: str, owner_db: Database, world: World, context: str
+) -> None:
+    """B adds a version to its own card and keeps its transaction open, so B holds the card's
+    guard lock and its open-ended version row. A probe naming B's card, with a short lock
+    timeout, gets the generic refusal at once: before the fix the guard queued on B's lock and
+    answered 55P03 (an oracle: the card exists and B is writing it), and a guard that got the
+    lock held it, and B's version row, while it read and closed B's version. (A refused
+    statement's locks go when its transaction aborts, so B's lock is the one to probe.) B's
+    write then goes on unaffected."""
+    card_b = _card_of(owner_db, world.version_b)
+    later = utcnow() + timedelta(days=1)
+    writer_db = Database(app_url, pool_size=1, max_overflow=0)  # B's own, second connection
+    try:
+        with _as(writer_db, world.b) as writer:
+            add_version(writer, card_b, world.b, 2, frm=later)  # B's guard holds the lock now
+            with _as(app_db, world.a if context == "tenant_a" else None) as prober:
+                prober.execute(text("SET LOCAL lock_timeout = '500ms'"))
+                with pytest.raises(DBAPIError) as err:
+                    prober.execute(_PROBE, {"i": uuid7(), "c": card_b, "t": world.b, "f": later})
+                assert _refusal(err) == (
+                    "42501",
+                    "rate card version is outside the caller's tenant",
+                )
+                prober.rollback()
+            closed = writer.execute(
+                text("SELECT effective_to FROM shifde.rate_card_versions WHERE id = :v"),
+                {"v": world.version_b},
+            ).scalar_one()
+            assert closed == later  # B's own guard closed B's version; B's transaction is live
+            writer.rollback()
+    finally:
+        writer_db.dispose()
+
+
 # ---- isolation review 1, item 2 (blocking): constraints bypass RLS, so a budget_alerts row of
 # tenant A naming tenant B's budget id used to be accepted (or collide with B's slot and, with
 # governance's ON CONFLICT DO NOTHING, silently stop B's alert).

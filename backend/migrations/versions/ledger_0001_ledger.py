@@ -85,7 +85,8 @@ def _global_or_own(table: str) -> list[str]:
 # statement refuses anything outside the caller's tenant (or, for a global version, a caller that
 # is not the platform administrator) with 42501, before any lock or lookup: no oracle on another
 # tenant's cards and no owner UPDATE on rows the caller may not touch (isolation review 1,
-# item 1). (1) the version belongs to the card's tenant (NULL-safe: global cards have no
+# item 1; with no client context the condition below is NULL and the refusal is skipped:
+# replaced by ledger_0002, which fails closed, B-611). (1) the version belongs to the card's tenant (NULL-safe: global cards have no
 # tenant). (2) a version that would close an open-ended predecessor must not start in the past
 # (it would change how earlier instants resolve). (3) a new version starting AFTER an open-ended
 # one supersedes it: the predecessor's NULL effective_to is closed at the successor's start (the

@@ -18,7 +18,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from shifde.core.clock import utcnow
-from shifde.core.db import Database, platform_admin_context
+from shifde.core.db import Database, platform_admin_context, set_tenant
 from shifde.core.ids import uuid7
 from shifde.governance import service as gov_service
 from tests.connections.routes import as_user, limited_user, org, post
@@ -165,13 +165,18 @@ def test_only_the_guard_may_close_a_version_and_a_version_belongs_to_its_cards_t
         "effective_from, currency, unit, input_rate, output_rate, source, revision) "
         "VALUES (:i, :c, :t, 1, '2000-01-01', 'XTS', 'per_1m_tokens', 1, 1, 's', 'r')"
     )
+    # In the wrong tenant's own context (as tests.ledger.util._seed_context): since ledger_0002
+    # the guard refuses a client row outside the caller's context before this check, owner
+    # sessions included (governance isolation review 1, item 1; B-611)
     for card_id, wrong_tenant in ((UUID(card["id"]), other), (global_card, tid)):
+        set_tenant(owner_session, wrong_tenant)
         with pytest.raises(DBAPIError, match="does not match its rate card"):
             owner_session.execute(insert, {"i": uuid7(), "c": card_id, "t": wrong_tenant})
         owner_session.rollback()
+    set_tenant(owner_session, None)
     # NULL-safe: a global card's version without a tenant is accepted (since ledger isolation
     # review 1, item 1, in the platform administrator context: the guard refuses a row outside
-    # the caller's context, owner sessions included, B-601)
+    # the caller's context, owner sessions included, B-601, B-611)
     with platform_admin_context(owner_session):
         owner_session.execute(insert, {"i": uuid7(), "c": global_card, "t": None})
         owner_session.commit()

@@ -103,7 +103,10 @@ def add_rate_card(
 
 def _seed_context(s: Session, tenant_id: UUID | None) -> None:
     """The version guard (isolation review 1, item 1) refuses a row outside the caller's context,
-    owner sessions included. A session without a client context gets the row's own
+    owner sessions included: a global row without the platform-administrator context since
+    ledger_0001, a client row without that client's context only since ledger_0002 (before it a
+    session with no client context skipped the check, governance isolation review 1 item 1,
+    B-611). A session without a client context gets the row's own
     (transaction-local) and the helper re-points what it set for the next row; a context the test
     set itself is kept, so the tests that expect the guard to refuse still do."""
     seeded = s.info.get("seeded_context")  # what this helper last set on the session
