@@ -1,83 +1,59 @@
-# Handoff — 2026-11-14, end of session 4 (lead)
+# Handoff — 2026-11-15, end of session 5 (lead)
 
-Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md`, then this file. Session 4 handed off at about 255k lead tokens (`scripts/context_size.py`), between units, with no agent running and no merge half done. The next unit (connections follow-ups, then admin part 2), with builder, gates and review, does not fit under the 300k line in charter §10.
+Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md`, then this file. Session 5 handed off at about 250k lead tokens (`scripts/context_size.py`), between units, with no agent running and no merge half done. Governance part 3 with its gates would have crossed the 300k line.
 
-## Finished in session 4
+## Finished in session 5
 
-All units below are merged to `main` and pushed. Main is at the commit that carries this handoff. Flaky under load (passes alone): `tests/connections/test_api.py::test_connection_call_deadline_applies_to_direct_invokes`.
+All merged to `main` and pushed; main is at the commit that carries this handoff.
 
 | Unit | Merged | Review |
 |---|---|---|
-| installation (minimal) | `34612b8` | none: no migration, not critical (B-1101..B-1106) |
-| front-end areas 1: login, setup, platform settings | `4bcc1fb` | n/a (B-1107) |
-| tenancy part 2a: service, `tenancy_0002` | `2c3b4b4` | review 2 APPROVED |
-| tenancy fixtures: authz/secrets fixtures on real rows | `970cf60` | none: tests only (B-1201) |
-| tenancy part 2b: routes, `tenancy_0003` | `b291be3` | review 3 APPROVED. **tenancy is done** |
-| vendors | `ccb64c7` | review 1 APPROVED (B-1301..B-1304). **vendors is done** |
-| admin part 1: IAM routes | `0071471` + fix `31f1b0b` | review 1 BLOCKED, then review 2 APPROVED (B-1401..B-1410, `tenancy_0004`) |
-| connections part 1: data layer, `connections_0001` | `60074c3` | review 1 APPROVED (B-1501..B-1504) |
-| connections part 2: service, routes, C2 | `04440d9` | review 2 APPROVED (B-1505..B-1510). **C2 confirmed by test. connections is done** |
+| models_admin part 1 (data layer, `models_admin_0001`) | `4b08a71` | review 1 APPROVED, 8 follow-ups (closed or decided in 2a/2b) |
+| admin part 2 (service accounts, API keys, platform group-binding route) | `dfa2f0b` | review 3 APPROVED, follow-ups closed in 3b |
+| models_admin part 2a (providers, models, SHI switch, `models_admin_0002`) | `ba349a6` | review 2 APPROVED |
+| tenancy fix B-1020a (client-list cursor read after rollback: 500 on a non-last page) | `64a5f5c` (lead) | read in admin review 4 |
+| admin part 3a (IdP admin, `identity_0006`, IdP-sync audit) | `c192ecb` | review 4 APPROVED |
+| models_admin part 2b (allowlists, routes, invoke, SHI call-time gate, `models_admin_0003`) | `a543c0a` | review 3 APPROVED. **models_admin is done**; plan Review Focus 5 pinned in `tests/models_admin/test_shi_gate.py` |
+| admin part 3b (secret and audit routes, `secrets_0002`) | `9d9f100` | review 5 APPROVED (schema test confirmed not loosened). **admin is done** |
+| governance part 1 (data layer, `governance_0001`, pricing, rate-card routes) | `cc6be1a` | review 1 APPROVED |
+| governance part 2 (usage, budgets, quotas, exports; no migration) | `fb9f9f0` | none needed (not critical, no migration) |
 
-The last clean-checkout gate run was `gates.py --ref connections --workers 6` at `8cd03b8`, which is main's code: 13/13 passed, pytest 1001 passed in 292.6 s, front end 0. Later commits change docs only.
+Last clean-checkout gate run: `gates.py --ref governance --workers 6 --no-frontend` at `eab1f68` (main's code): 8/8, pytest 1140 passed in 295.2 s. Front end not re-run this session (no front-end change since `4bcc1fb`).
 
 ## The exact next step
 
-1. **Connections follow-up unit: done after the first handoff** (`a19c1f1` + `4ddce65`, merged; review 3 BLOCKED on an R+1 race variant, review 4 APPROVED; 1006 tests, 13/13 gates). The session was kept open by its stop hook, and context was still under 300k, so this unit ran after the first handoff. Start at step 2.
-2. **`admin` part 2: service accounts and API keys.** Opus. Reuse branch `admin` from main, with SETH `admin/credentials.py` and the service-account and api-key routes of `api.py`.
-   - Close the carry_forward rows naming admin for these routes: the `test_p2_credentials.py` remainder, `revoke_api_key`/`touch_api_key` mutators, and `created_by` = caller (B-921).
-   - Possibly add a platform-admin route for binding a group into a client (new row).
-3. **`admin` part 3: identity providers, secrets, audit routes.** Opus. SETH `admin/providers.py` plus the idp, secrets and audit routes.
-   - Close the IdP rows (identity review 4 items 5/7, `test_p2_review` OIDC tests).
-   - Close the secret routes (B-802/B-803, secrets review 1 items 1-2, `create_secret` error mapping) and the audit routes.
-   - **Close the IdP-sync self-add row before `app` mounts OIDC** (admin review 2 item 1).
-4. **`models_admin`.** Opus. Covers:
-   - the platform-level SHI provider, off per client by default, with an audited switch shown to the owner and a gate at call time (plan Task 14, Review Focus 5);
-   - FKs to `vendors`;
-   - `require_active_vendor`;
-   - Items 9, 11 and 15.
-5. **Then, in this order:**
-   1. `governance` (sonnet, 3532 lines: split)
-   2. `build` (sonnet, 8881 lines: split into about 4)
-   3. `ontology` (sonnet)
-   4. `runtime` (opus, 8806 lines: split; C1 confirmed by test before acceptance)
-   5. `app`/`cli`/`main` (mount every router; the deferred SETH tests listed in `carry_forward.md`)
-   6. the two-org proof (local cluster, S-002)
-   7. the remaining front-end areas
-   8. update STATUS "Known defects" (filled in session 4) as modules close findings
-   9. the factory install (charter §6)
-
-**Front-end areas follow routes, not modules (B-1107).** Most SETH screens call `/api/v1/orgs/{org}/...` routes that only exist once admin, tenancy and the rest are mounted by `app`. Port the remaining front-end areas after `app`, or after each admin part, against routes that exist.
+1. **governance part 3** (sonnet, `module-builder`). Reuse branch `governance` (worktree `.worktrees/governance` exists, at main's code; run `git merge --ff-only main` first). Scope: SETH `governance/service.py` from `list_policies` (line 1347) to the end (policies, decisions, overview, retention get/put/preview, performance, `health_details`) and their routes; `shifde_ops_stats(int)` needs `jobs`/`runs` (runtime), so carry it. Close governance review 1 item 2 (`rate-cards/resolve` for shared SHI models; carry_forward row "governance (part 2/3)"). Decisions B-1821 on. If it adds a migration, isolation review. Then STATUS: governance done.
+2. **Ledger guard fix, must land before runtime** (carry_forward row "ledger (follow-up, must fix before runtime)"; `docs/build/reviews/governance-isolation-review-1.md` item 1). Opus `module-builder-critical` (SECURITY DEFINER change), small: new ledger migration, the test run in the wrong tenant's context, isolation review. Can run in parallel with governance part 3.
+3. **Then, in this order** (unchanged from session 4):
+   1. `build` (sonnet, 8881 lines: split into about 4)
+   2. `ontology` (sonnet; candidate for the charter §10 haiku trial if mostly a copy)
+   3. `runtime` (opus, 8806 lines: split; C1 confirmed by test before acceptance; remove governance's `to_regclass` guards, B-1812; budget alert insert conflict target with the budget's own tenant, B-607; runtime halves of Items 9, 11, 15)
+   4. `app`/`cli`/`main` (mount every router; deferred SETH tests in `carry_forward.md`; close identity review 4 item 5 (B-1625) before OIDC is mounted)
+   5. the two-org proof (local cluster, S-002)
+   6. the remaining front-end areas (B-1107: after `app`)
+   7. update STATUS "Known defects"
+   8. the factory install (charter §6)
 
 ## Open branches, worktrees and databases
 
 | Item | State |
 |---|---|
 | `main` (local and origin) | Up to date with this handoff commit |
-| `installation`, `fe-areas-1`, `tenancy`, `tenancy-fixtures`, `vendors`, `admin`, `connections` (origin) | Merged. Worktrees removed. `admin` can be reused for parts 2-3 (`git worktree add .worktrees/admin admin`, then `git merge main`) |
-| `.worktrees/verify`, `verify2`, `verify3` | Detached checkouts used by `gates.py --name`. The lead uses `verify`; builders use `verify2` or `verify3` |
-| `.worktrees/fe-areas-1`, `.worktrees/secrets`, `.worktrees/skeleton` | Leftover directories Windows would not delete (locked `node_modules`); git no longer tracks them. Delete them by hand |
-| `observe/` (untracked, main checkout) | **Not created by this build.** It appeared at 08:37 and holds a usage dashboard (`server.py`, `dashboard.html`); it probably belongs to the supervising process. Do not commit or delete it. It is listed in the local-only `.git/info/exclude` (not committed), so `git status` is clean; remove that line if the owner wants it tracked |
-| Local cluster | PostgreSQL 17 on 127.0.0.1:55450, running. Leftover `shifde_<worktree>`, `shifde_review` and `shifdet_*` databases are harmless |
-| Scratch directories outside the repo | `S:/tmp_identity_scratch` and `S:/tmp_identity_tools` (from session 3). Delete them by hand |
+| `governance` (origin) | At `eab1f68`, merged into main; reuse for part 3 (`.worktrees/governance`, `.devdata/dev.env` written, db `shifde_governance`) |
+| `admin`, `models_admin` (origin) | Merged; done. Worktrees unregistered. The `.worktrees/admin` directory is left on disk (Windows "Permission denied"); delete by hand |
+| `governance-1` (local only) | Pointer to `cc6be1a` used for gating; `git branch -D governance-1` |
+| `.worktrees/verify`, `verify2`, `verify3` | Detached checkouts for `gates.py --name` |
+| Leftovers | `.worktrees/fe-areas-1`, `.worktrees/secrets`, `.worktrees/skeleton`, `.worktrees/_scratch_admin`, `.worktrees/usage.txt`, `S:/tmp_identity_scratch`, `S:/tmp_identity_tools`, `S:/Development_2026/scratch_models_admin`: delete by hand |
+| `observe/` (untracked, main checkout) | Not this build's; leave it (listed in `.git/info/exclude`) |
+| Local cluster | PostgreSQL 17 on 127.0.0.1:55450, running. Reviewer scratch databases `shifde_tmp_review_*` are harmless |
 | Background agents | None running |
 
 ## Learned, not recorded elsewhere
 
-- **The cluster is shared, and load causes flakes.** With three suites running at once (two agents and the lead), one run failed a setup with `psycopg ConnectionTimeout`. Run `gates.py --workers 6` while agents run, and tell builders and reviewers "`pytest -n 6` at most". Two known timing flakes recurred under load, and each passed on rerun:
-  - the cookie-expiry comparison in `tests/identity/test_cross_client.py` `_same_failure` (carry_forward identity row);
-  - `tests/audit/test_service.py::test_concurrent_appends_keep_one_linear_chain`.
-
-  Rerun a gate only when the failing test is one of these.
-- **Critical builders run over the sizing.** Opus builders took 206-238k tokens per part, even with tight scope. Split critical modules into parts of about 500 source lines plus their tests. Units given a fix round always had their fix round run by a fresh agent, because the builder was over 200k.
-- **Reviews.**
-  - A resumed reviewer (SendMessage with the fix diff) costs about 25k and works well.
-  - Reviewers are read-only and will not write the review file. The lead saves it to `docs/build/reviews/<unit>-isolation-review-<n>.md` from the report.
-  - Admin part 1 was the only BLOCKED review this session: a platform admin joining a group before the group was bound.
-- **Merging main into a branch.** `DECISIONS.md` and `carry_forward.md` conflict nearly every time. A union of both sides works, but:
-  - drop the side's copy of a row the other side narrowed or closed. Example: the "vendors, audit (follow-up)" row was narrowed to "vendors (follow-up)" by admin;
-  - drop rows a branch closed, such as "connections (part 2)".
-
-  Check for duplicate rows afterwards with a `Counter` over table lines.
-- **`gates.py` accepts `--workers N`.**
-- **Wall time.** The full backend suite takes 225-297 s for 954-1001 tests with `-n 6` under load. That is far under the 20-minute target.
-- **Spend.** The usage report shows $222.35 estimated at list price in total, up from $137.70 at the start of session 4.
+- **Overlap pattern that worked:** gate and isolation-review a fixed commit (`git branch -f <unit>-N <sha>`, `gates.py --ref <unit>-N --name verify2`) while the next part builds on the same branch; send the review's follow-ups to that builder with SendMessage. Tell reviewers to read files with `git show <sha>:<path>` and run tests in their own scratch worktree.
+- **After merging a branch into main with a real merge commit, gate main before pushing.** Admin part 2 and models_admin 2a were combined untested once, and that run exposed B-1020a.
+- **B-1020a lesson:** a "flake" that recurs in the same test is a bug until shown otherwise. `ObjectDeletedError` after `session.rollback()` on an RLS-scoped object means an expired attribute was reloaded outside the context that made the row visible.
+- **Docs merge conflicts** (`DECISIONS.md`, `carry_forward.md`): union, but where the branch narrowed or closed a row, take the branch's row and drop main's; check for duplicates with a `Counter` over table lines.
+- **Git Bash here:** `/tmp` is not writable (use `.worktrees/`, gitignored), and long multi-heredoc commands can fail to parse; write files with the editor tool instead.
+- **Spend:** the usage report shows $285.17 estimated at list price, up from $222.35 at the start of session 5. It also lists `claude-fable-5-2` at $19.50 (80 requests). No agent this session used Fable. The charter forbids Fable for agents, so if that figure grows, check the agent files in `.claude/agents/` and any `model` overrides.
+- Opus builders again ran 195-230k tokens per part even at 350-550 SETH lines; keep parts that size or smaller.
