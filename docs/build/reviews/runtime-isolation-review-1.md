@@ -38,3 +38,15 @@ Replacing `"shifde.runs"` with `"shifde.installation_profile"` in `test_rls_sche
 - F5 into `carry_forward.md` (RT-3).
 - F6: lead confirms the reading (DECISIONS B-2150).
 - B-2107: owner decision; reviewer recommends the one-token change plus a comment.
+
+## Round 2 (`git diff 7878762 0ced96d`, fix round B-2110..B-2114): APPROVED
+
+Same reviewer, 2026-11-15. At 0ced96d in verify3: `tests/runtime tests/governance tests/ledger tests/schema/test_function_schema.py` 244 passed.
+
+1. No assertion removed or weakened: the random `run_b` is now a real run of B; the retention preview check gains counts; two signatures only gained fixtures; `_crash_during_approved_write` takes an optional client defaulting to A; the pre-seed checks ("no runs yet", `pending_approvals == 0`) are kept.
+2. F1 closed, non-vacuous: `seed_runtime` gives A one of each row and B two, with a shared model id, so a leaked count reads 2 or 3 instead of 1. Route tests: A's event-less run 200 vs B's same as unknown; retention 1/1 vs 2/2; `pending_approvals` 1 vs 2; performance for agent, model, pipeline; `step_name` null on an event naming B's step; budget status reserved, stale holds, run count (3 vs 5). Route tests run under RLS; the owner-level `tests/governance/test_cross_client.py` checks each query's own client condition without RLS (B-2110).
+3. F2 closed: `governance/repository.py:830-831` joins on `(id, tenant_id)`; test drops `fk_run_steps__run` in a rolled-back owner transaction.
+4. F3 closed: `held_amount(b, run_b) == 5`, A's 0; `test_enforcement` gains B's 5000 hold with B's own status as positive control.
+5. F4 SQL right (`runtime_0001_runtime.py:240-272`): `v_tenant` read from `runs` by id (NULL if not found; under the app role B's run is not found); all three lookups add `tenant_id = v_tenant`; invoker, pinned search path. Editing the unmerged migration in place is acceptable (B-2113, precedent B-936).
+6. C1 two-client test (B-2114) sound: each client sees exactly one approval on its own run with its own tool version, key and cause; owner side one approval per client. Behavioural only.
+7. Still open, not new: F5 (carry_forward, RT-3), F6 (B-2151), B-2107 (owner).
