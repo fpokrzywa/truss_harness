@@ -37,6 +37,7 @@ from shifde.adapters.base import AdapterFailure, ConnectionSession, SourceQueryP
 from shifde.authz import service as authz
 from shifde.build import ontologies, ontology_ops
 from shifde.build import ontology_expr as expr
+from shifde.build.executors import ONTOLOGY_QUERY
 from shifde.build.service import ArtifactService
 from shifde.connections.service import failure_to_error
 from shifde.core.errors import (
@@ -109,12 +110,21 @@ class OntologyService:
 
     # ================================================================== loading
     def _artifact(
-        self, ontology_id: UUID, *, api: bool, run_id: UUID | None = None
+        self,
+        ontology_id: UUID,
+        *,
+        api: bool,
+        run_id: UUID | None = None,
+        version_id: UUID | None = None,
     ) -> Mapping[str, Any]:  # Any: row
-        self._anchor_run(run_id, api=api)
+        run = self._anchor_run(run_id, api=api)
         if api:
             return self.arts.artifact(KIND, ontology_id)  # 404 unless visible
-        return self.arts.artifact_row(KIND, ontology_id)
+        art = self.arts.artifact_row(KIND, ontology_id)
+        if run is None:  # `_anchor_run` already refuses the unchecked path without a run
+            raise NotFound("run not found")
+        self._run_reads(run, art, version_id)
+        return art
 
     def _version(self, art: Mapping[str, Any], version_id: UUID | None) -> Mapping[str, Any]:
         if art["status"] != "active":
@@ -312,22 +322,55 @@ class OntologyService:
         self.session.commit()
         return lineage_id
 
-    def _anchor_run(self, run_id: UUID | None, *, api: bool) -> None:
+    def _anchor_run(self, run_id: UUID | None, *, api: bool) -> Mapping[str, Any] | None:
         """A run id a caller names must be a run of this client (it ends up in the lineage row
         and the usage event; ontology review 1 F4). The unchecked path (`api=False`: the
         Execution Gate authorized the caller before the runtime called in) exists only for a run
         of this client, so it is anchored to one the way build's `approval_of` is anchored to a
-        request: no run row of the scope's client, no unchecked call (B-1933, B-2008)."""
+        request: no run row of the scope's client, no unchecked call (B-1933, B-2008). Returns
+        the run's target row (`ArtifactService.run_target`), None when no run is named."""
         if run_id is None:
             if api:
+                return None
+            raise NotFound("run not found")
+        found = self.arts.run_target(run_id)
+        if found is None or found["tenant_id"] != self.sc.tenant_id:
+            raise NotFound("run not found")
+        return found
+
+    def _run_reads(
+        self,
+        run: Mapping[str, Any],  # Any: run target row
+        art: Mapping[str, Any],  # Any: artifact row
+        version_id: UUID | None,
+    ) -> None:
+        """The unchecked path reads this ontology only for a run that executes it (ontology
+        review 2 G2, the `run_of` contract of B-1933): the version read must be the run's own
+        pinned version or one it pins (an ontology action run of this ontology, a pipeline
+        whose `ontology_query` node pins this version), or the run is an agent run whose own
+        version pins the `ontology.query` tool (the model names the ontology at run time; the
+        Execution Gate checked the grant and visibility). Anything else - another artifact's
+        run, another version of this ontology - is the unknown-run answer."""
+        tenant = self.sc.tenant_id
+        versions = self.arts.run_versions(run)
+        vid = version_id or art["latest_published_version_id"]
+        for v in versions:
+            if v["tenant_id"] != tenant:
+                continue
+            if v["id"] == vid and v["artifact_id"] == art["id"] and v["kind"] == KIND:
                 return
-            raise NotFound("run not found")
-        found = self.session.execute(
-            text("SELECT 1 FROM shifde.runs WHERE id = :r AND tenant_id = :t"),
-            {"r": run_id, "t": self.sc.tenant_id},
-        ).first()
-        if found is None:
-            raise NotFound("run not found")
+        if run["kind"] == "agent":
+            for v in versions:
+                spec = v["spec"] or {}
+                binding = spec.get("binding") or {}
+                if (
+                    v["tenant_id"] == tenant
+                    and v["kind"] == "tools"
+                    and spec.get("executor") == "builtin.function"
+                    and binding.get("function_key") == ONTOLOGY_QUERY
+                ):
+                    return
+        raise NotFound("run not found")
 
     def _usage(
         self,
@@ -396,7 +439,7 @@ class OntologyService:
         consts: Mapping[str, Any] | None = None,  # Any: pipeline `params.*` constants
         purpose: str | None = None,
     ) -> s.QueryOut:
-        art = self._artifact(ontology_id, api=api, run_id=run_id)
+        art = self._artifact(ontology_id, api=api, run_id=run_id, version_id=body.version_id)
         planner: engine.Planner | None = None
         try:
             self._authorize_call(art, api=api)
@@ -523,7 +566,7 @@ class OntologyService:
         purpose: str | None = None,
     ) -> s.ObjectOut:
         """Resolve one identifier to the object (permitted properties) and its relationships."""
-        art = self._artifact(ontology_id, api=api, run_id=run_id)
+        art = self._artifact(ontology_id, api=api, run_id=run_id, version_id=version_id)
         planner: engine.Planner | None = None
         try:
             self._authorize_call(art, api=api)
@@ -954,7 +997,7 @@ class OntologyService:
         """(action spec, the version's object type, the object's permitted properties the
         action maps) for one object, resolved as the calling principal: policies and row filters
         apply, a property the principal may not read cannot feed an action parameter."""
-        art = self._artifact(ontology_id, api=api, run_id=run_id)
+        art = self._artifact(ontology_id, api=api, run_id=run_id, version_id=version_id)
         self._authorize_call(art, api=api)
         version = self._version(art, version_id)
         spec, _ = self._frozen(version)

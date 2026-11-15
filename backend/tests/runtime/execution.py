@@ -49,6 +49,7 @@ class Seed:
     pipeline_child: UUID  # running agent child of `pipeline`, root `pipeline`
     ended: UUID  # cancelled run with a started write and a pending tool approval
     other_run: UUID  # run of `other_agent`
+    unpinned_art: UUID  # artifact of `unpinned`
 
 
 def _write_in_flight(s: Session, tenant: UUID, run: UUID, tool_version: UUID) -> None:
@@ -72,8 +73,12 @@ def seed_client(s: Session, tenant: UUID) -> Seed:
     user = add_person(s, tenant, "runner", "tenant_administrator")
     _, composed = add_published(s, tenant, "prompts", f"composed-{uuid7().hex}", {})
     _, prompt = add_published(s, tenant, "prompts", f"prompt-{uuid7().hex}", {})
-    _, unpinned = add_published(s, tenant, "prompts", f"unpinned-{uuid7().hex}", {})
+    unpinned_art, unpinned = add_published(s, tenant, "prompts", f"unpinned-{uuid7().hex}", {})
     agent, agent_version = add_published(s, tenant, "agents", f"agent-{uuid7().hex}", {})
+    # a latest published version for each, so `latest()` has something to refuse in a run's env
+    # (runtime isolation review 3 item 1)
+    for artifact in (agent, unpinned_art):
+        build_repo.refresh_latest_published(s, tenant, artifact)
     other_agent, other_version = add_published(s, tenant, "agents", f"other-{uuid7().hex}", {})
     build_repo.insert_pins(s, tenant, prompt, [(composed, "composed_prompt")])
     build_repo.insert_pins(s, tenant, agent_version, [(prompt, "prompt")])
@@ -101,7 +106,7 @@ def seed_client(s: Session, tenant: UUID) -> Seed:
     other_run = add_run(s, tenant, agent_id=other_agent, agent_version_id=other_version)
     return Seed(tenant, user, agent, agent_version, prompt, composed, unpinned, other_agent,
                 other_version, token, running, child, waiting, finished_child, pipeline,
-                pipeline_child, ended, other_run)  # fmt: skip
+                pipeline_child, ended, other_run, unpinned_art)  # fmt: skip
 
 
 def run_row(s: Session, tenant: UUID, run: UUID) -> dict[str, Any]:  # Any: run row
