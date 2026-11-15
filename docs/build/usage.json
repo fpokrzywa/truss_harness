@@ -1,26 +1,26 @@
 {
-  "generated": "2026-11-14T17:15:39+00:00",
+  "generated": "2026-11-15T03:45:10+00:00",
   "note": "est_usd is an estimate at list price, not a bill",
   "totals": {
     "all": "all",
-    "input": 7298,
-    "output": 3659484,
+    "input": 7442,
+    "output": 3675248,
     "cache_write_5m": 10603866,
-    "cache_write_1h": 2724087,
-    "cache_read": 463981700,
-    "requests": 3575,
-    "est_usd": 229.6399
+    "cache_write_1h": 3027494,
+    "cache_read": 474792577,
+    "requests": 3623,
+    "est_usd": 234.5452
   },
   "by_model": [
     {
       "model": "claude-opus-5-5",
-      "input": 6104,
-      "output": 2896440,
+      "input": 6248,
+      "output": 2912204,
       "cache_write_5m": 7812247,
-      "cache_write_1h": 2306166,
-      "cache_read": 400298536,
-      "requests": 2979,
-      "est_usd": 195.5235
+      "cache_write_1h": 2609573,
+      "cache_read": 411109413,
+      "requests": 3027,
+      "est_usd": 200.4288
     },
     {
       "model": "claude-fable-5-2",
@@ -66,13 +66,13 @@
     },
     {
       "agent_type": "lead",
-      "input": 1528,
-      "output": 719558,
+      "input": 1672,
+      "output": 735322,
       "cache_write_5m": 0,
-      "cache_write_1h": 2724087,
-      "cache_read": 137861621,
-      "requests": 719,
-      "est_usd": 70.4208
+      "cache_write_1h": 3027494,
+      "cache_read": 148672498,
+      "requests": 767,
+      "est_usd": 75.3261
     },
     {
       "agent_type": "isolation-reviewer",
@@ -158,13 +158,13 @@
   "by_unit": [
     {
       "unit": "lead",
-      "input": 1528,
-      "output": 719558,
+      "input": 1672,
+      "output": 735322,
       "cache_write_5m": 0,
-      "cache_write_1h": 2724087,
-      "cache_read": 137861621,
-      "requests": 719,
-      "est_usd": 70.4208
+      "cache_write_1h": 3027494,
+      "cache_read": 148672498,
+      "requests": 767,
+      "est_usd": 75.3261
     },
     {
       "unit": "identity",
@@ -370,25 +370,25 @@
     },
     {
       "sub_project": "lead",
-      "input": 1528,
-      "output": 719558,
+      "input": 1672,
+      "output": 735322,
       "cache_write_5m": 0,
-      "cache_write_1h": 2724087,
-      "cache_read": 137861621,
-      "requests": 719,
-      "est_usd": 70.4208
+      "cache_write_1h": 3027494,
+      "cache_read": 148672498,
+      "requests": 767,
+      "est_usd": 75.3261
     }
   ],
   "by_day": [
     {
       "day": "2026-11-14",
-      "input": 5808,
-      "output": 2638779,
+      "input": 5922,
+      "output": 2645851,
       "cache_write_5m": 7732424,
-      "cache_write_1h": 1601011,
-      "cache_read": 366706290,
-      "requests": 2841,
-      "est_usd": 165.3597
+      "cache_write_1h": 1732276,
+      "cache_read": 375802168,
+      "requests": 2874,
+      "est_usd": 168.3709
     },
     {
       "day": "2026-11-13",
@@ -399,6 +399,16 @@
       "cache_read": 97275410,
       "requests": 734,
       "est_usd": 64.2802
+    },
+    {
+      "day": "2026-11-15",
+      "input": 30,
+      "output": 8692,
+      "cache_write_5m": 0,
+      "cache_write_1h": 172142,
+      "cache_read": 1714999,
+      "requests": 15,
+      "est_usd": 1.8941
     }
   ],
   "rounds_per_unit": [

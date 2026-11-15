@@ -181,13 +181,15 @@ def price(v: RateVersion | None, usage: Usage, *, estimated: bool = False) -> Co
 
 
 def model_keys(session: Session, tenant_id: UUID, model_id: UUID) -> tuple[str, str] | None:
-    """(provider_key, model_key) of a registered model of the tenant: the provider's adapter key
-    and the model's own key, which is what a rate card names."""
+    """(provider_key, model_key) of a model the tenant may name: its own, or a shared model of the
+    SHI-wide provider (tenant NULL, DECISIONS B-1705). The provider's adapter key and the model's
+    own key are what a rate card names. Another client's model gives None."""
     row = session.execute(
         text(
             "SELECT p.adapter_key, m.model_key FROM shifde.models m "
-            "JOIN shifde.model_providers p ON p.id = m.provider_id AND p.tenant_id = m.tenant_id "
-            "WHERE m.id = :id AND m.tenant_id = :t"
+            "JOIN shifde.model_providers p ON p.id = m.provider_id "
+            "AND p.tenant_id IS NOT DISTINCT FROM m.tenant_id "
+            "WHERE m.id = :id AND (m.tenant_id = :t OR m.tenant_id IS NULL)"
         ),
         {"id": model_id, "t": tenant_id},
     ).first()
