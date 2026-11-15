@@ -12,7 +12,6 @@ from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import event, text
-from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from shifde.build import repository as build_repo
@@ -23,6 +22,7 @@ from shifde.ontology import engine
 from shifde.ontology import repository as repo
 from shifde.ontology import schemas as s
 from shifde.ontology.service import OntologyService
+from tests._support.runs import add_run
 from tests.build.conftest import opener
 from tests.build.service_support import service_for
 from tests.ontology.test_routes_cross_client import TYPE, Side, Two, two
@@ -96,11 +96,18 @@ def test_a_policy_of_another_ontology_cannot_be_rewritten_or_deleted(
 
 # ------------------------------------------------------------------ F2
 def test_usage_reads_a_run_with_the_client_id(
-    opener: Opener, two: Two, settings: Settings, monkeypatch: pytest.MonkeyPatch
+    opener: Opener, two: Two, settings: Settings, owner_db: Database
 ) -> None:
-    """`runs` is the runtime's table (not yet there): with the table assumed present the
-    statement `_usage` sends names `tenant_id`, and without it no run is read at all."""
-    a = two.a
+    """The statement `_usage` sends to `runs` names `tenant_id`: a run of A attributes the usage
+    event to its root run and agent, a run of B attributes nothing (runtime_0001: `runs` exists,
+    the `to_regclass` guard is gone, ontology review 2 G2)."""
+    a, b = two.a, two.b
+    with owner_db.session() as o:
+        run_a, run_b = add_run(o, a.tenant), add_run(o, b.tenant)
+        agent_a = o.execute(
+            text("SELECT agent_id FROM shifde.runs WHERE id = :r"), {"r": run_a}
+        ).scalar_one()
+        o.commit()
     seen: list[str] = []
     with opener(a.tenant) as session:
         svc = _service(session, a, settings)
@@ -111,17 +118,67 @@ def test_usage_reads_a_run_with_the_client_id(
             seen.append(statement)
 
         event.listen(bind, "before_cursor_execute", record)
+        lineage_a, lineage_b = uuid4(), uuid4()
         try:
-            svc._usage(art, uuid4(), uuid4(), "success", 1)  # no `runs` table: skipped
-            assert not any("SELECT root_run_id" in q for q in seen)
-            monkeypatch.setattr(OntologyService, "_has_runs_table", lambda self: True)
-            with pytest.raises(DBAPIError):  # the table does not exist yet
-                svc._usage(art, uuid4(), uuid4(), "success", 1)
+            svc._usage(art, lineage_a, run_a, "success", 1)
+            svc._usage(art, lineage_b, run_b, "success", 1)
         finally:
             event.remove(bind, "before_cursor_execute", record)
-            session.rollback()
+        got = {
+            key: (root, agent)
+            for key, root, agent in session.execute(
+                text(
+                    "SELECT event_key, root_run_id, agent_id FROM shifde.usage_events "
+                    "WHERE tenant_id = :t AND event_key = ANY (:k)"
+                ),
+                {
+                    "t": a.tenant,
+                    "k": [f"ontology_query:{lineage_a}", f"ontology_query:{lineage_b}"],
+                },
+            )
+        }
+        session.rollback()
+    assert got == {
+        f"ontology_query:{lineage_a}": (run_a, agent_a),
+        f"ontology_query:{lineage_b}": (None, None),
+    }
     runs = [q for q in seen if "shifde.runs" in q and "SELECT root_run_id" in q]
     assert runs and all("tenant_id" in q for q in runs), seen
+
+
+def test_a_run_of_the_client_anchors_the_unchecked_path_and_a_run_of_b_does_not(
+    opener: Opener, two: Two, settings: Settings, owner_db: Database
+) -> None:
+    """Ontology review 2 G2 and B-2008 with `runs` present: a run of A anchors `api=False` and a
+    named `run_id`; B's run is refused like an unknown id on `query`, `get_object` and
+    `action_inputs`, before the ontology is read, and no lineage row is written."""
+    a, b = two.a, two.b
+    body = s.QueryIn(object_type=TYPE, select=["id"])
+    with owner_db.session() as o:
+        run_a, run_b = add_run(o, a.tenant), add_run(o, b.tenant)
+        o.commit()
+        count = text("SELECT count(*) FROM shifde.ontology_query_lineage WHERE tenant_id = :t")
+        before = o.execute(count, {"t": a.tenant}).scalar_one()
+    with opener(a.tenant) as session:
+        svc = _service(session, a, settings)
+        svc._anchor_run(run_a, api=False)  # control: a run of the client anchors the call
+        svc._anchor_run(run_a, api=True)
+        for api in (True, False):
+            with pytest.raises(NotFound):
+                svc._anchor_run(run_b, api=api)
+        version = svc._version(svc.arts.artifact("ontologies", UUID(a.ontology)), None)
+        gone = "run not found"
+        with pytest.raises(NotFound, match=gone):
+            svc.query(UUID(a.ontology), body, run_id=run_b)
+        with pytest.raises(NotFound, match=gone):
+            svc.query(UUID(a.ontology), body, api=False, run_id=run_b)
+        with pytest.raises(NotFound, match=gone):
+            svc.get_object(UUID(a.ontology), TYPE, "1", api=False, run_id=run_b)
+        with pytest.raises(NotFound, match=gone):
+            svc.action_inputs(UUID(a.ontology), version["id"], "act", "1", api=False, run_id=run_b)
+        session.rollback()
+    with owner_db.session() as o:
+        assert o.execute(count, {"t": a.tenant}).scalar_one() == before
 
 
 def test_a_run_id_must_be_a_run_of_the_client_and_the_unchecked_path_needs_one(

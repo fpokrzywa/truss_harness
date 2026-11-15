@@ -59,6 +59,13 @@ _GROUP_DEFINER = (
     "identity_0005 (B-928..B-932): owned by shifde_owner, search_path pg_catalog, pg_temp, every "
     "object schema-qualified, EXECUTE for shifde_app only, writes no app.* setting"
 )
+_RUNTIME_DEFINER = (
+    "runtime_0001 (B-2103): owned by shifde_owner, search_path pg_catalog, pg_temp, every relation "
+    "schema-qualified (builtins resolve in pg_catalog), EXECUTE for shifde_app only, writes no "
+    "app.* setting, refuses (42501) "
+    "inside a client context (app.tenant_id set): only the worker's context-free transaction or "
+    "a platform view may call it"
+)
 SECURITY_DEFINER_ALLOWLIST: dict[str, str] = {
     "shifde.shifde_resolve_local_login(text)": (
         f"{_IDENTITY_DEFINER}. Pre-tenant login lookup: users and local_credentials are not "
@@ -200,6 +207,24 @@ SECURITY_DEFINER_ALLOWLIST: dict[str, str] = {
         "updates only rows of the NEW row's own rate_card_id after checking that the card "
         "belongs to NEW.tenant_id (review 1, item 1). It pins search_path "
         "(shifde, pg_catalog, pg_temp), and is executable by the owner only."
+    ),
+    "shifde.shifde_claim_jobs(text, integer, integer, integer)": (
+        f"{_RUNTIME_DEFINER}. The worker's queue claim: leases up to p_max queued jobs of every "
+        "client (FOR UPDATE SKIP LOCKED, optional per-client in-flight cap) and returns only "
+        "(job_id, tenant_id, kind, run_id) of the jobs it leased; the worker then sets that job's "
+        "own client before it reads the run (the composite key ties run_id to tenant_id)."
+    ),
+    "shifde.shifde_reap_expired_leases": (
+        f"{_RUNTIME_DEFINER}. The worker's reaper: requeues expired leases, ends runs past their "
+        "deadline, finalizes cancellations, wakes parents of finished children and calls "
+        "settle_ended_run on each run it ends (C1: a write in flight becomes an unknown outcome "
+        "with an open decision, never a plain cancel). Every statement keys the run by its own "
+        "(tenant_id, id); returns only (tenant_id, run_id, reason)."
+    ),
+    "shifde.shifde_ops_stats(integer)": (
+        f"{_RUNTIME_DEFINER}. Aggregate counters across clients for the platform health view and "
+        "the metrics endpoint (queue depth and age, run outcomes by kind/status/class, model "
+        "calls by provider, budget denials); returns no client id, run id or content."
     ),
 }
 
@@ -386,8 +411,9 @@ def test_allowlist_has_no_stale_entries(owner_engine: Engine) -> None:
 
 
 def test_identity_definers_are_on_the_allowlist_by_signature(owner_engine: Engine) -> None:
-    """identity_0002..0005 (B-909, B-915, B-922, B-928) and tenancy_0001..0004 (B-1006, B-1010,
-    B-1016, B-1407): each identity and tenancy definer is listed under its full signature."""
+    """identity_0002..0005 (B-909, B-915, B-922, B-928), tenancy_0001..0004 (B-1006, B-1010,
+    B-1016, B-1407) and runtime_0001 (B-2103): each identity, tenancy and runtime definer is
+    listed under its full signature."""
     with owner_engine.connect() as c:
         rows = [
             row
@@ -416,6 +442,9 @@ def test_identity_definers_are_on_the_allowlist_by_signature(owner_engine: Engin
         "shifde.shifde_may_bind_group(uuid, uuid)",
         "shifde.shifde_is_client_owner(uuid)",
         "shifde.shifde_bound_group_admin_ids(uuid)",
+        "shifde.shifde_claim_jobs(text, integer, integer, integer)",
+        "shifde.shifde_reap_expired_leases",
+        "shifde.shifde_ops_stats(integer)",
     }
     assert all(row.owner == "shifde_owner" for row in rows)
     assert all(_search_path(row.proconfig) == "pg_catalog, pg_temp" for row in rows)

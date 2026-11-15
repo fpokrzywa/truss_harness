@@ -1,1 +1,1 @@
-"""Not yet ported from SETH 3ba0e06; see docs/build/STATUS.md."""
+"""P5 execution harness: runs, worker, gate, agent loop, graph executor, approvals."""

@@ -312,13 +312,6 @@ class OntologyService:
         self.session.commit()
         return lineage_id
 
-    def _has_runs_table(self) -> bool:
-        """`runs` belongs to the runtime module (not ported yet, B-2007): until its migration
-        exists no run does either. Remove with the guard in `governance` (B-1812)."""
-        return bool(
-            self.session.execute(text("SELECT to_regclass('shifde.runs') IS NOT NULL")).scalar_one()
-        )
-
     def _anchor_run(self, run_id: UUID | None, *, api: bool) -> None:
         """A run id a caller names must be a run of this client (it ends up in the lineage row
         and the usage event; ontology review 1 F4). The unchecked path (`api=False`: the
@@ -328,8 +321,6 @@ class OntologyService:
         if run_id is None:
             if api:
                 return
-            raise NotFound("run not found")
-        if not self._has_runs_table():
             raise NotFound("run not found")
         found = self.session.execute(
             text("SELECT 1 FROM shifde.runs WHERE id = :r AND tenant_id = :t"),
@@ -351,7 +342,7 @@ class OntologyService:
         duration and outcome, with cost kind `unmeasured`."""
         root_run_id: UUID | None = None
         agent_id: UUID | None = None
-        if run_id is not None and self._has_runs_table():
+        if run_id is not None:
             row = self.session.execute(
                 text(
                     "SELECT root_run_id, agent_id FROM shifde.runs WHERE id = :r AND tenant_id = :t"
