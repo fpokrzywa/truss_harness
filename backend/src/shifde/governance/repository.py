@@ -139,14 +139,10 @@ _EVENT_COLUMNS = (
 
 
 def event_select(session: Session) -> str:
-    """The usage-event SELECT. The step name comes from `run_steps`, a runtime table: until the
-    runtime module is ported (B-1812) the column is NULL when that table does not exist."""
-    has_steps = session.execute(text("SELECT to_regclass('shifde.run_steps') IS NOT NULL")).scalar()
-    if has_steps:
-        return _EVENT_COLUMNS.format(step_name="rs.name") + (
-            "LEFT JOIN shifde.run_steps rs ON rs.id = u.step_id AND rs.tenant_id = u.tenant_id "
-        )
-    return _EVENT_COLUMNS.format(step_name="CAST(NULL AS text)")
+    """The usage-event SELECT; the step name comes from the event's own client's `run_steps`."""
+    return _EVENT_COLUMNS.format(step_name="rs.name") + (
+        "LEFT JOIN shifde.run_steps rs ON rs.id = u.step_id AND rs.tenant_id = u.tenant_id "
+    )
 
 
 def list_events(
@@ -749,19 +745,7 @@ def denials_since(session: Session, tenant_id: UUID, since: datetime) -> int:
     )
 
 
-def _exists(session: Session, table: str) -> bool:
-    """Runtime tables (`approvals`, `runs`, `run_artifacts`, ...) arrive with the runtime module;
-    until then the code asks (DECISIONS B-1812, B-1824) and counts nothing."""
-    return bool(
-        session.execute(
-            text("SELECT to_regclass(:name) IS NOT NULL"), {"name": f"shifde.{table}"}
-        ).scalar_one()
-    )
-
-
 def pending_approvals(session: Session, tenant_id: UUID) -> int:
-    if not _exists(session, "approvals"):
-        return 0
     return int(
         session.execute(
             text(
@@ -812,8 +796,6 @@ RETENTION_TABLES = {
 
 def count_older_than(session: Session, tenant_id: UUID, data_class: str, cutoff: datetime) -> int:
     table, column, extra = RETENTION_TABLES[data_class]
-    if not _exists(session, table):
-        return 0
     return int(
         session.execute(
             text(
@@ -834,8 +816,6 @@ def performance(
     end: datetime,
     vis: Visibility,
 ) -> list[Row]:
-    if not (_exists(session, "runs") and _exists(session, "run_steps")):
-        return []
     params: Params = {"t": tenant_id, "a": start, "b": end}
     quant = (
         "percentile_cont(0.5) WITHIN GROUP (ORDER BY dur) AS p50, "

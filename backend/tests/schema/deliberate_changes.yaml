@@ -11,11 +11,6 @@
 # An entry whose path does not actually differ from SETH fails the test (remove it).
 
 
-- table: budget_reservations
-  path: [constraints, fk_budget_reservations__run]
-  reason: "foreign key to shifde.runs, a table of the runtime module that is not ported yet; the runtime migration adds it (docs/build/carry_forward.md)"
-  migration: ledger_0001
-
 - table: usage_events
   path: [constraints, usage_events_cost_kind_check]
   reason: "cost_kind admits 'estimated': a cost priced from token counts the platform estimated because the provider reported none (findings Item 11, DECISIONS B-602); SETH stored such usage as 0 tokens labelled calculated"
@@ -591,7 +586,67 @@
   reason: "client-keyed unique key closes an existence and lock oracle: with a key that omits tenant_id, an INSERT ... ON CONFLICT under client A's context could conflict with client B's row (silent outcome where an unknown id gives 23503) and wait on B's uncommitted insert (55P03). Build isolation review 1, item 2, B-1905, B-2001. Index of uq_ontology_materializations__type."
   migration: ontology_0001
 
-- table: ontology_query_lineage
-  path: [constraints, fk_ontology_lineage__run]
-  reason: "foreign key (tenant_id, run_id) to shifde.runs, a table of the runtime module that is not ported yet; the runtime migration adds it (docs/build/carry_forward.md)"
-  migration: ontology_0001
+- table: run_events
+  path: [constraints, uq_run_events__seq, definition]
+  reason: "client-keyed unique key closes an existence and lock oracle: with a key that omits tenant_id, an insert under client A's context naming client B's run id hits B's row in the unique index (23505, or a wait on B's uncommitted insert) before the composite foreign key refuses it (23503), which tells B's run ids apart from unknown ones. Build isolation review 1 item 2, B-1905, B-2102. Key is (tenant_id, run_id, seq)."
+  migration: runtime_0001
+
+- table: run_events
+  path: [indexes, uq_run_events__seq]
+  reason: "client-keyed unique key closes an existence and lock oracle: with a key that omits tenant_id, an insert under client A's context naming client B's run id hits B's row in the unique index (23505, or a wait on B's uncommitted insert) before the composite foreign key refuses it (23503), which tells B's run ids apart from unknown ones. Build isolation review 1 item 2, B-1905, B-2102. Index of uq_run_events__seq."
+  migration: runtime_0001
+
+- table: run_steps
+  path: [constraints, uq_run_steps__attempt, definition]
+  reason: "client-keyed unique key closes an existence and lock oracle: with a key that omits tenant_id, an insert under client A's context naming client B's run id hits B's row in the unique index (23505, or a wait on B's uncommitted insert) before the composite foreign key refuses it (23503), which tells B's run ids apart from unknown ones. Build isolation review 1 item 2, B-1905, B-2102. Key is (tenant_id, run_id, seq, attempt)."
+  migration: runtime_0001
+
+- table: run_steps
+  path: [indexes, uq_run_steps__attempt]
+  reason: "client-keyed unique key closes an existence and lock oracle: with a key that omits tenant_id, an insert under client A's context naming client B's run id hits B's row in the unique index (23505, or a wait on B's uncommitted insert) before the composite foreign key refuses it (23503), which tells B's run ids apart from unknown ones. Build isolation review 1 item 2, B-1905, B-2102. Index of uq_run_steps__attempt."
+  migration: runtime_0001
+
+- table: runs
+  path: [constraints, fk_runs__root]
+  reason: "client-keyed composite foreign key where SETH had a bare id column: constraints bypass row-level security, so without it a row of client A could name client B's object and a later join on the id alone would read B's row (B-116 item 9, B-607, B-2102). (tenant_id, root_run_id) -> runs (tenant_id, id): the usage ledger, budgets and approval walks read the root run by this id."
+  migration: runtime_0001
+
+- table: run_steps
+  path: [constraints, fk_run_steps__child_run]
+  reason: "client-keyed composite foreign key where SETH had a bare id column: constraints bypass row-level security, so without it a row of client A could name client B's object and a later join on the id alone would read B's row (B-116 item 9, B-607, B-2102). (tenant_id, child_run_id) -> runs: the runtime reads finished awaited children through this id."
+  migration: runtime_0001
+
+- table: run_steps
+  path: [constraints, fk_run_steps__tool_invocation]
+  reason: "client-keyed composite foreign key where SETH had a bare id column: constraints bypass row-level security, so without it a row of client A could name client B's object and a later join on the id alone would read B's row (B-116 item 9, B-607, B-2102). (tenant_id, tool_invocation_id) -> tool_invocations (tenant_id, id): settle_ended_run and land_verdicts join steps to invocations by this id."
+  migration: runtime_0001
+
+- table: run_steps
+  path: [constraints, fk_run_steps__tool_version]
+  reason: "client-keyed composite foreign key where SETH had a bare id column: constraints bypass row-level security, so without it a row of client A could name client B's object and a later join on the id alone would read B's row (B-116 item 9, B-607, B-2102). (tenant_id, tool_version_id) -> artifact_versions (tenant_id, id)."
+  migration: runtime_0001
+
+- table: tool_invocations
+  path: [constraints, uq_tool_invocations__tenant_id_id]
+  reason: "target of the composite foreign key fk_run_steps__tool_invocation (B-2102)."
+  migration: runtime_0001
+
+- table: tool_invocations
+  path: [indexes, uq_tool_invocations__tenant_id_id]
+  reason: "index of uq_tool_invocations__tenant_id_id, target of fk_run_steps__tool_invocation (B-2102)."
+  migration: runtime_0001
+
+- table: approvals
+  path: [constraints, fk_approvals__workspace]
+  reason: "client-keyed composite foreign key where SETH had a bare id column: constraints bypass row-level security, so without it a row of client A could name client B's object and a later join on the id alone would read B's row (B-116 item 9, B-607, B-2102). (tenant_id, workspace_id) -> workspaces: approvals are listed and authorized by workspace."
+  migration: runtime_0001
+
+- table: approvals
+  path: [constraints, fk_approvals__project]
+  reason: "client-keyed composite foreign key where SETH had a bare id column: constraints bypass row-level security, so without it a row of client A could name client B's object and a later join on the id alone would read B's row (B-116 item 9, B-607, B-2102). (tenant_id, project_id) -> projects: approvals are listed and authorized by project."
+  migration: runtime_0001
+
+- table: approvals
+  path: [constraints, fk_approvals__tool_version]
+  reason: "client-keyed composite foreign key where SETH had a bare id column: constraints bypass row-level security, so without it a row of client A could name client B's object and a later join on the id alone would read B's row (B-116 item 9, B-607, B-2102). (tenant_id, tool_version_id) -> artifact_versions (tenant_id, id)."
+  migration: runtime_0001

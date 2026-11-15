@@ -22,7 +22,7 @@ from shifde.core.ids import uuid7
 from shifde.ledger import estimate
 from shifde.ledger.enforcement import BudgetDenied, BudgetScope, ReserveDetail, evaluate
 from tests._support.tenants import add_tenants
-from tests.ledger.util import add_budget, add_model, add_rate, add_tenant, create_stand_ins
+from tests.ledger.util import add_budget, add_model, add_rate, add_tenant
 
 
 def _today() -> date:
@@ -36,7 +36,6 @@ def _scope(tenant_id: UUID) -> BudgetScope:
 @pytest.fixture
 def world(owner_session: Session) -> tuple[Session, UUID, UUID]:
     s = owner_session
-    create_stand_ins(s)
     t = add_tenant(s)
     return s, t, add_model(s, t)
 
@@ -61,7 +60,6 @@ def test_a_hold_below_the_calls_token_ceiling_cannot_overshoot_a_hard_budget(
     """Before: a caller holding 10 tokens for a call that may produce up to 950 passed a 500-token
     budget. The ledger now holds at least input + output ceiling."""
     s = owner_session
-    create_stand_ins(s)
     t = add_tenant(s)
     add_budget(s, t, amount="500")
     detail = ReserveDetail(model_id=None, est_input_tokens=100, est_output_tokens=850)
@@ -71,7 +69,6 @@ def test_a_hold_below_the_calls_token_ceiling_cannot_overshoot_a_hard_budget(
 
 def test_the_evaluation_reports_the_hold_the_caller_must_store(owner_session: Session) -> None:
     s = owner_session
-    create_stand_ins(s)
     t = add_tenant(s)
     add_budget(s, t, amount="5000")
     detail = ReserveDetail(model_id=None, est_input_tokens=100, est_output_tokens=850)

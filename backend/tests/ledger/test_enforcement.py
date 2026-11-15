@@ -1,6 +1,6 @@
 """Budget and quota evaluation (SETH 3ba0e06 p08): hard and soft rules, cost and token metrics,
-held reservations, tenant scoping. Runs as the schema owner on stand-in tables of later modules
-(tests/ledger/util.py); the cross-client tests run the same queries as the application role."""
+held reservations, tenant scoping. Runs as the schema owner on real runs (tests/ledger/util.py);
+the cross-client tests run the same queries as the application role."""
 
 from __future__ import annotations
 
@@ -23,13 +23,11 @@ from tests.ledger.util import (
     add_rate,
     add_run,
     add_tenant,
-    create_stand_ins,
 )
 
 
 @pytest.fixture
 def tenant(owner_session: Session) -> UUID:
-    create_stand_ins(owner_session)
     return add_tenant(owner_session)
 
 
@@ -122,7 +120,6 @@ def test_an_unpriced_model_follows_the_tenants_unknown_cost_policy(
     owner_session: Session,
 ) -> None:
     s = owner_session
-    create_stand_ins(s)
     allow = add_tenant(s)
     deny = add_tenant(s, settings='{"unknown_cost_policy": "deny"}')
     detail_for = {t: ReserveDetail(add_model(s, t), 10, 10) for t in (allow, deny)}
@@ -150,7 +147,6 @@ def test_a_token_quota_is_a_hard_daily_rule(owner_session: Session, tenant: UUID
 
 def test_another_tenants_usage_budgets_and_holds_are_ignored(owner_session: Session) -> None:
     s = owner_session
-    create_stand_ins(s)
     a, b = add_tenant(s), add_tenant(s)
     budget_b = add_budget(s, b, amount="10")  # B's budget does not apply to A
     _spend(s, b, 5000, "b-usage")

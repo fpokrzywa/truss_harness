@@ -17,7 +17,7 @@ from shifde.core.clock import utcnow
 from shifde.core.ids import uuid7
 from shifde.ledger import pricing
 from tests._support.tenants import add_tenants
-from tests.ledger.util import add_model, add_rate, add_tenant, create_stand_ins
+from tests.ledger.util import add_model, add_rate, add_tenant
 
 
 def _event(tenant: UUID, key: str, **kw: Any) -> dict[str, Any]:  # Any: column values
@@ -123,7 +123,6 @@ def test_an_unpriced_model_is_unmeasured_with_no_amount_never_zero(
     owner_session: Session,
 ) -> None:
     s = owner_session
-    create_stand_ins(s)
     t = add_tenant(s)
     model = add_model(s, t)
     costed, provider_key, model_key = ledger.price_model_usage(
@@ -138,7 +137,6 @@ def test_an_unpriced_model_is_unmeasured_with_no_amount_never_zero(
 
 def test_a_priced_call_keeps_the_rate_snapshot(owner_session: Session) -> None:
     s = owner_session
-    create_stand_ins(s)
     t = add_tenant(s)
     model = add_model(s, t)
     version = add_rate(s, t, input_rate="2", output_rate="4")
@@ -157,7 +155,6 @@ def test_a_priced_call_keeps_the_rate_snapshot(owner_session: Session) -> None:
 
 def test_a_provider_reported_cost_wins_over_the_calculated_one(owner_session: Session) -> None:
     s = owner_session
-    create_stand_ins(s)
     t = add_tenant(s)
     model = add_model(s, t)
     add_rate(s, t)

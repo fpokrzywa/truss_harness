@@ -1,13 +1,15 @@
 """Ledger lookups name their tenant (isolation review 1, item 6): they did not lean on
 row-level security alone. These probes run as the schema owner (no RLS), so only the query's own
-`tenant_id` condition keeps another tenant's rows out. Stand-in tables of later modules are
-created in the test's transaction and rolled back (tests/ledger/util.py)."""
+`tenant_id` condition keeps another tenant's rows out. Runs are real rows (runtime_0001,
+`tests/ledger/util.py`) created in the test's transaction and rolled back."""
 
 from __future__ import annotations
 
 from uuid import UUID
 
+import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from shifde import ledger
@@ -15,7 +17,7 @@ from shifde.core.ids import uuid7
 from shifde.ledger import budgeting, enforcement, estimate
 from tests._support.tenants import add_tenants
 from tests.build.env_support import add_published
-from tests.ledger.util import add_budget, add_model, add_rate, add_run, create_stand_ins
+from tests.ledger.util import add_budget, add_model, add_rate, add_run
 
 
 def _scope(tenant: UUID, project: UUID | None = None) -> enforcement.BudgetScope:
@@ -51,7 +53,6 @@ def test_quotas_in_scope_ignores_another_tenants_quota_on_a_shared_scope_id(
 
 
 def test_a_model_of_another_tenant_is_not_priced(owner_session: Session) -> None:
-    create_stand_ins(owner_session)
     a, b = uuid7(), uuid7()
     add_tenants(owner_session, a, b)
     add_rate(owner_session, a, input_rate="1")
@@ -63,7 +64,6 @@ def test_a_model_of_another_tenant_is_not_priced(owner_session: Session) -> None
 def test_an_event_does_not_inherit_attribution_from_another_tenants_run(
     owner_session: Session,
 ) -> None:
-    create_stand_ins(owner_session)
     a, b, pipeline = uuid7(), uuid7(), uuid7()
     add_tenants(owner_session, a, b)
     run_b = add_run(owner_session, b, pipeline_id=pipeline)
@@ -109,17 +109,21 @@ def test_an_event_does_not_inherit_a_prompt_from_another_tenants_artifact_versio
 def test_held_amount_does_not_count_a_reservation_on_another_tenants_run(
     owner_session: Session,
 ) -> None:
-    create_stand_ins(owner_session)
     a, b = uuid7(), uuid7()
     add_tenants(owner_session, a, b)
     run_b = add_run(owner_session, b)
-    owner_session.execute(
-        text(
-            "INSERT INTO shifde.budget_reservations (id, tenant_id, run_id, step_key, budget_ids,"
-            " amount, expires_at) VALUES (:i, :t, :r, 'k', '{}', 5, now() + interval '1 hour')"
-        ),
-        {"i": uuid7(), "t": a, "r": run_b},
-    )
+    # Since runtime_0001 the composite key fk_budget_reservations__run refuses the row itself
+    # (23503), the schema owner included; the held amount stays 0 either way.
+    with pytest.raises(IntegrityError) as err, owner_session.begin_nested():
+        owner_session.execute(
+            text(
+                "INSERT INTO shifde.budget_reservations (id, tenant_id, run_id, step_key,"
+                " budget_ids, amount, expires_at)"
+                " VALUES (:i, :t, :r, 'k', '{}', 5, now() + interval '1 hour')"
+            ),
+            {"i": uuid7(), "t": a, "r": run_b},
+        )
+    assert getattr(err.value.orig, "sqlstate", None) == "23503"
     budget = {"scope_type": "tenant", "scope_id": a, "period": "run", "currency": None}
     held = budgeting.held_amount(owner_session, a, run_b, budget, metric="tokens", since=None)
     assert held == 0

@@ -23,7 +23,7 @@ from shifde.core.db import Database, set_platform_admin, set_tenant
 from shifde.core.ids import uuid7
 from shifde.ledger import budgeting, enforcement, pricing
 from tests._support.tenants import add_tenants
-from tests.ledger.util import add_budget, add_rate, add_rate_card, add_version
+from tests.ledger.util import add_budget, add_rate, add_rate_card, add_run, add_version
 
 TABLES = (
     "usage_events",
@@ -69,7 +69,7 @@ def _seed(s: Session, t: UUID, tag: str) -> UUID:
             "INSERT INTO shifde.budget_reservations (id, tenant_id, run_id, step_key, budget_ids, "
             "amount, expires_at) VALUES (:i, :t, :r, 'k', '{}', 1, now() + interval '1 hour')"
         ),
-        {"i": uuid7(), "t": t, "r": uuid7()},
+        {"i": uuid7(), "t": t, "r": add_run(s, t)},  # a run of t (fk_budget_reservations__run)
     )
     s.execute(
         text(

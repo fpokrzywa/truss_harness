@@ -63,3 +63,12 @@ ontology_access_policies  # ontology
 ontology_principal_attributes  # ontology
 ontology_query_lineage  # ontology
 ontology_materializations  # ontology
+run_state_transitions  # runtime
+workers  # runtime
+runs  # runtime
+run_events  # runtime
+run_artifacts  # runtime
+run_steps  # runtime
+tool_invocations  # runtime
+approvals  # runtime
+jobs  # runtime
