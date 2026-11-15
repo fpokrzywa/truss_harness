@@ -747,8 +747,11 @@ def _validate_relationship_mapping(
             )
             continue
         if ot is not None:
-            pk_prop = next(p for p in ot["properties"] if p["key"] == ot["primary_key"][0])
-            if not expr.type_compatible(pk_prop["type"], str(col.get("type", ""))):
+            # a primary key naming no property is reported with the model (invalid_primary_key)
+            pk_prop = next((p for p in ot["properties"] if p["key"] == ot["primary_key"][0]), None)
+            if pk_prop is not None and not expr.type_compatible(
+                pk_prop["type"], str(col.get("type", ""))
+            ):
                 _mapping_error(
                     report,
                     kind,
