@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any  # Any: rows / provider JSON
 from uuid import UUID
 
@@ -39,6 +40,7 @@ from shifde.adapters.base import (
     ConnectionConfig,
     Credential,
     ExecContext,
+    Usage,
 )
 from shifde.adapters.registry import AdapterRegistry
 from shifde.adapters.runtime import IntegrationRuntime
@@ -136,6 +138,17 @@ def _route_out(r: Mapping[str, Any]) -> s.RouteOut:
         conditions=r["conditions"] or {},
         row_version=r["row_version"],
     )
+
+
+@dataclass(frozen=True)
+class RunInvoke:
+    """A run's model call (`ModelService.invoke_for_run`): the answer, what the provider itself
+    reported (`None` counts = not reported; the runtime estimates those and labels the usage
+    estimated, carry_forward Item 11) and the output ceiling sent (Item 9)."""
+
+    out: s.InvokeOut
+    reported: Usage
+    max_tokens: int
 
 
 def _access_out(r: Mapping[str, Any] | None) -> s.ShiAccessOut:
@@ -1026,6 +1039,57 @@ class ModelService:
         agent_id: UUID | None = None,
         run_id: UUID | None = None,
     ) -> s.InvokeOut:
+        return self._invoke_at(
+            ref,
+            model_id,
+            body,
+            max_deadline=max_deadline,
+            record_usage=record_usage,
+            usage_event_type=usage_event_type,
+            is_test=is_test,
+            agent_id=agent_id,
+            run_id=run_id,
+        ).out
+
+    def invoke_for_run(
+        self,
+        ref: ResourceRef,
+        model_id: UUID,
+        body: s.InvokeIn,
+        *,
+        run_id: UUID,
+        max_deadline: float | None = None,
+    ) -> RunInvoke:
+        """The runtime's governed call (one per attempt): `invoke_at` with `record_usage=False`
+        (the run journals its own per-attempt usage event) and `run_id` on `model.invoked`
+        (Item 15). `body.max_tokens` is required (the run's budget hold covers it, Item 9) and is
+        only ever lowered, to the model's `max_output_tokens`."""
+        if body.max_tokens is None:
+            raise ValueError("a run's model call needs an output ceiling (max_tokens)")
+        return self._invoke_at(
+            ref,
+            model_id,
+            body,
+            max_deadline=max_deadline,
+            record_usage=False,
+            run_id=run_id,
+            cap_to_model=True,
+        )
+
+    def _invoke_at(
+        self,
+        ref: ResourceRef,
+        model_id: UUID,
+        body: s.InvokeIn,
+        *,
+        max_deadline: float | None = None,
+        record_usage: bool = True,
+        usage_event_type: str = "model_call",
+        is_test: bool = False,
+        agent_id: UUID | None = None,
+        run_id: UUID | None = None,
+        cap_to_model: bool = False,
+    ) -> RunInvoke:
         """Governed invoke at an already-resolved scope (prompt / agent tests, the runtime: one
         call per attempt, a route's primary and every fallback alike, so the SHI gate holds on
         each). `agent_id` (an agent test) puts the agent in the budget scope and on the usage
@@ -1058,6 +1122,8 @@ class ModelService:
         )
         reserve = self.runtime.settings.runtime_output_reserve_tokens
         max_tokens = body.max_tokens or min(reserve, model["max_output_tokens"] or reserve)
+        if cap_to_model and model["max_output_tokens"]:
+            max_tokens = min(max_tokens, int(model["max_output_tokens"]))
         if record_usage:  # run calls are reserved by the Execution Gate instead
             self._enforce_budgets(ref, model, est_input, max_tokens, is_test, agent_id, run_id)
         lease: UUID | None = None
@@ -1156,12 +1222,13 @@ class ModelService:
             self._session.commit()
         finally:
             limiter.release_lease(self._session, self.sc.tenant_id, lease)
-        return s.InvokeOut(
+        out = s.InvokeOut(
             output=response.output,
             usage=s.UsageOut(input_tokens=used.input_tokens, output_tokens=used.output_tokens),
             latency_ms=latency,
             provider_request_id=response.provider_request_id,
         )
+        return RunInvoke(out, response.usage, max_tokens)
 
     # ================================================================== the SHI switch
     def get_shi_access(self) -> s.ShiAccessOut:

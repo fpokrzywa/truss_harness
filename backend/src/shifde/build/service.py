@@ -710,13 +710,12 @@ class ArtifactService:
         this client (B-1933); empty for another client's run or an unknown one."""
         tenant = self.sc.tenant_id
         target = self.run_target(run["id"]) if run["tenant_id"] == tenant else None
-        own = (
-            next(
-                (target[c] for c in repository.RUN_TARGETS.values() if target[c] is not None), None
-            )
-            if target is not None
-            else None
+        # the column of the run's own kind, as `_run_env` (runtime isolation review 4 item 1):
+        # never the first non-null target column; a run whose own column is null executes nothing
+        column = (
+            repository.RUN_KIND_TARGETS.get(str(target["kind"])) if target is not None else None
         )
+        own = target[column] if target is not None and column is not None else None
         if own is None:
             return []
         rows = (
@@ -1438,8 +1437,19 @@ class _Env:
         if not self._same_client():
             return False
         # a run's env permits only what the run executes (runtime isolation review 3 item 2)
-        if self.only_versions is not None and ref.version_id not in self.only_versions:
-            return False
+        if self.only_versions is not None:
+            if ref.version_id not in self.only_versions:
+                return False
+            # and the pinned version is of the artifact `ref` names: a forged ref pairing a
+            # pinned version with an unpinned artifact is refused (runtime isolation review 4
+            # item 3)
+            pinned = repository.get_version(self.svc.session, self.tenant_id, ref.version_id)
+            if (
+                pinned is None
+                or pinned["tenant_id"] != self.tenant_id
+                or pinned["artifact_id"] != ref.artifact_id
+            ):
+                return False
         art = repository.get_artifact(self.svc.session, self.tenant_id, ref.artifact_id)
         if (
             art is None

@@ -18,6 +18,7 @@ from shifde.adapters.runtime import IntegrationRuntime
 from shifde.build import repository as build_repo
 from shifde.core.clock import utcnow
 from shifde.core.context import Principal
+from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.runtime import repository as repo
@@ -121,8 +122,10 @@ def run_context(
     run: dict[str, Any],  # Any: run row
     *,
     token: UUID | None = None,
+    db: Database | None = None,
 ) -> RunContext:
-    """A worker's context for `run` on `s` (the lease token defaults to the row's)."""
+    """A worker's context for `run` on `s` (the lease token defaults to the row's; `db` is the
+    worker's database for durable usage rows)."""
     principal = Principal(
         user_id=run["initiated_by_principal_id"], email="runner@shi.test", display_name="runner"
     )
@@ -138,6 +141,7 @@ def run_context(
         lease_lost=threading.Event(),
         principal=principal,
         tenant_header=("slug", "name", "active"),
+        db=db,
     )
 
 

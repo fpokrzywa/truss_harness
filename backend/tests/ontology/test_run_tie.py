@@ -144,6 +144,11 @@ def test_the_unchecked_path_reads_an_ontology_only_for_a_run_that_executes_it(
         "an agent run with another builtin tool": (ra.plain_tool, ra.version),
         "the action run with a version it does not run": (ra.action, _latest_of(owner_db, a)),
     }
+    if method != "query":
+        # the agent-tool rule opens `query` only (its Execution Gate checks visibility); an
+        # agent run reaches `get_object` / `action_inputs` only for a version it pins
+        # (runtime isolation review 4 item 2, B-2143)
+        refused["an agent run with the ontology tool"] = (ra.agent_tool, ra.version)
     before = _lineage(owner_db, a.tenant)
     with opener(a.tenant) as session:
         svc = OntologyService(service_for(session, a.tenant, a.user, settings))
@@ -154,9 +159,9 @@ def test_the_unchecked_path_reads_an_ontology_only_for_a_run_that_executes_it(
         tied = {
             "its action run": (ra.action, ra.version),
             "a pipeline pinning its version": (ra.pipeline, ra.version),
-            "an agent run with the ontology tool": (ra.agent_tool, ra.version),
         }
-        if method != "action_inputs":
+        if method == "query":
+            tied["an agent run with the ontology tool"] = (ra.agent_tool, ra.version)
             tied["an agent run with the tool, latest version"] = (ra.agent_tool, None)
         for name, (run, ver) in tied.items():
             assert _answer(session, call, svc, onto, run, ver) != GONE, name

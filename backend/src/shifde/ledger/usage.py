@@ -160,9 +160,25 @@ def price_model_usage(
     return calculated, keys[0] if keys else None, keys[1] if keys else None
 
 
+def _refuse_foreign_model_keys(session: Session, v: Mapping[str, Any]) -> None:  # Any: columns
+    """`provider_key` / `model_key` are the event model's own keys (the platform adapter key and
+    the model key), never a string the caller chose: `shifde_ops_stats` groups every client's
+    events by `provider_key` and `/api/metrics` exports it as a label, so a caller value would be a
+    channel between clients (runtime isolation review 3 follow-up, B-2118). A key that is not the
+    model's own, or a key without a model of the event's client, is refused."""
+    given = (v.get("provider_key"), v.get("model_key"))
+    if given == (None, None):
+        return
+    model_id = v.get("model_id")
+    keys = pricing.rate_keys(session, v["tenant_id"], model_id) if model_id is not None else None
+    if keys is None or given != keys[:2]:
+        raise ValueError("provider_key and model_key are the model's own keys, not the caller's")
+
+
 def record(session: Session, values: Mapping[str, Any]) -> EventResult:  # Any: column values
     """Insert one usage event (+ rollup). `values` may carry `costed` (a `pricing.Costed`)."""
     v: dict[str, Any] = dict(values)  # Any: column values
+    _refuse_foreign_model_keys(session, v)
     costed: pricing.Costed = v.pop("costed", None) or pricing.UNMEASURED
     reported = v.pop("provider_reported_usage", {})
     v["cost_kind"] = costed.kind
