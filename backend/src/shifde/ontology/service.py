@@ -116,14 +116,17 @@ class OntologyService:
         api: bool,
         run_id: UUID | None = None,
         version_id: UUID | None = None,
+        agent_tool: bool = False,
     ) -> Mapping[str, Any]:  # Any: row
+        """`agent_tool`: the call is the agent's `ontology.query` tool (`query` only), whose
+        Execution Gate (`ontology_exec.gate_query`) checked the grant and visibility."""
         run = self._anchor_run(run_id, api=api)
         if api:
             return self.arts.artifact(KIND, ontology_id)  # 404 unless visible
         art = self.arts.artifact_row(KIND, ontology_id)
         if run is None:  # `_anchor_run` already refuses the unchecked path without a run
             raise NotFound("run not found")
-        self._run_reads(run, art, version_id)
+        self._run_reads(run, art, version_id, agent_tool=agent_tool)
         return art
 
     def _version(self, art: Mapping[str, Any], version_id: UUID | None) -> Mapping[str, Any]:
@@ -343,14 +346,19 @@ class OntologyService:
         run: Mapping[str, Any],  # Any: run target row
         art: Mapping[str, Any],  # Any: artifact row
         version_id: UUID | None,
+        *,
+        agent_tool: bool = False,
     ) -> None:
         """The unchecked path reads this ontology only for a run that executes it (ontology
         review 2 G2, the `run_of` contract of B-1933): the version read must be the run's own
         pinned version or one it pins (an ontology action run of this ontology, a pipeline
         whose `ontology_query` node pins this version), or the run is an agent run whose own
         version pins the `ontology.query` tool (the model names the ontology at run time; the
-        Execution Gate checked the grant and visibility). Anything else - another artifact's
-        run, another version of this ontology - is the unknown-run answer."""
+        Execution Gate checked the grant and visibility). The agent-tool rule opens `query`
+        only (`agent_tool`): `get_object` and `action_inputs` have no such gate, so an agent run
+        reaches them only for a version it pins; an action goes through its own
+        `ontology_action` run (runtime isolation review 4 item 2, B-2143). Anything else -
+        another artifact's run, another version of this ontology - is the unknown-run answer."""
         tenant = self.sc.tenant_id
         versions = self.arts.run_versions(run)
         vid = version_id or art["latest_published_version_id"]
@@ -359,7 +367,7 @@ class OntologyService:
                 continue
             if v["id"] == vid and v["artifact_id"] == art["id"] and v["kind"] == KIND:
                 return
-        if run["kind"] == "agent":
+        if agent_tool and run["kind"] == "agent":
             for v in versions:
                 spec = v["spec"] or {}
                 binding = spec.get("binding") or {}
@@ -439,7 +447,9 @@ class OntologyService:
         consts: Mapping[str, Any] | None = None,  # Any: pipeline `params.*` constants
         purpose: str | None = None,
     ) -> s.QueryOut:
-        art = self._artifact(ontology_id, api=api, run_id=run_id, version_id=body.version_id)
+        art = self._artifact(
+            ontology_id, api=api, run_id=run_id, version_id=body.version_id, agent_tool=True
+        )
         planner: engine.Planner | None = None
         try:
             self._authorize_call(art, api=api)

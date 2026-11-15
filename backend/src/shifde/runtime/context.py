@@ -27,6 +27,7 @@ from shifde.build.env import Env
 from shifde.build.service import ArtifactService
 from shifde.core.clock import utcnow
 from shifde.core.context import Principal, RequestContext
+from shifde.core.db import Database
 from shifde.core.settings import Settings
 from shifde.runtime import repository as repo
 from shifde.runtime import state
@@ -60,6 +61,7 @@ class RunContext:
         lease_lost: threading.Event,
         principal: Principal,
         tenant_header: tuple[str, str, str],
+        db: Database | None = None,
     ) -> None:
         self.session = session
         self.settings = settings
@@ -71,6 +73,10 @@ class RunContext:
         self.stop = stop
         self.lease_lost = lease_lost
         self.principal = principal
+        # the worker's database: a model call's usage row is written in its own committed
+        # transaction the moment the provider answers (carry_forward Item 11); without one it is
+        # written in the step's transaction
+        self.db = db
         self.tenant_id: UUID = run["tenant_id"]
         self.scope = TenantScope(
             session=session,

@@ -18,6 +18,7 @@ import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from datetime import datetime
+from decimal import Decimal
 from typing import Any  # Any: column values / JSON documents
 from uuid import UUID
 
@@ -1098,8 +1099,23 @@ def insert_usage_event(session: Session, v: Mapping[str, Any]) -> bool:  # Any: 
     `provider_key` in `v` must stay the platform adapter key (the registry's provider key), never a
     string a client chooses: `shifde_ops_stats` groups every client's events by it and the
     metrics endpoint exports it as a label, so a client-chosen value would be a channel between
-    clients (isolation review 1 F5 (d))."""
+    clients (isolation review 1 F5 (d)). `ledger.record` refuses a `provider_key` / `model_key`
+    that is not the event model's own (runtime isolation review 3 follow-up, B-2141)."""
     return ledger.record(session, v).inserted
+
+
+def run_cost(session: Session, tenant_id: UUID, run_id: UUID, currency: str) -> Decimal:
+    """Known cost of one run of `tenant_id` in `currency` (its own usage events; unmeasured
+    events have no amount and add nothing): `limits.max_cost` (carry_forward Item 10)."""
+    return Decimal(
+        session.execute(
+            text(
+                "SELECT COALESCE(sum(cost_amount), 0) FROM shifde.usage_events "
+                "WHERE tenant_id = :t AND run_id = :r AND currency = :cur"
+            ),
+            {"t": tenant_id, "r": run_id, "cur": currency},
+        ).scalar_one()
+    )
 
 
 def root_pipeline_id(session: Session, tenant_id: UUID, root_run_id: UUID) -> UUID | None:

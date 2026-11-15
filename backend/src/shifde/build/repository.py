@@ -378,6 +378,13 @@ RUN_TARGETS = {
     "pipelines": "pipeline_version_id",
     "ontologies": "ontology_version_id",
 }
+# a run's own pinned version column by the run's kind (`runs.kind`, `ck_runs__target`)
+RUN_KIND_TARGETS = {
+    "agent": "agent_version_id",
+    "orchestration": "orchestration_version_id",
+    "pipeline": "pipeline_version_id",
+    "ontology_action": "ontology_version_id",
+}
 
 
 def run_target(session: Session, tenant_id: UUID, run_id: UUID) -> Row | None:
