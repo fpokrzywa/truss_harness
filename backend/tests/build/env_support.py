@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
@@ -10,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from shifde.build import repository as repo
-from shifde.build.env import ConnectionInfo, McpDiscovery, VersionRef
+from shifde.build.env import ConnectionInfo, Env, McpDiscovery, VersionRef
 from shifde.connections import repository as conn_repo
 from shifde.core.ids import uuid7
 from shifde.models_admin import repository as models_repo
@@ -112,6 +113,45 @@ class RepoEnv:
             and a["workspace_id"] == ref.workspace_id
             and a["project_id"] == ref.project_id
         )
+
+
+class Overriding:
+    """An `Env` answering as `inner` except for an overridden `version` (a test of what the
+    validators do should a lookup ever leak another client's object)."""
+
+    def __init__(
+        self, inner: Env, *, version: Callable[[UUID], VersionRef | None] | None = None
+    ) -> None:
+        self.inner = inner
+        self.reveal_names = inner.reveal_names
+        self._version = version or inner.version
+
+    def version(self, version_id: UUID) -> VersionRef | None:
+        return self._version(version_id)
+
+    def latest(self, artifact_id: UUID) -> VersionRef | None:
+        return self.inner.latest(artifact_id)
+
+    def model_problems(self, model_ids: list[UUID]) -> dict[UUID, str]:
+        return self.inner.model_problems(model_ids)
+
+    def route_model_ids(self, route_id: UUID) -> list[UUID] | None:
+        return self.inner.route_model_ids(route_id)
+
+    def connection(self, connection_id: UUID) -> ConnectionInfo | None:
+        return self.inner.connection(connection_id)
+
+    def mcp_tool(self, connection_id: UUID, tool_name: str) -> McpDiscovery:
+        return self.inner.mcp_tool(connection_id, tool_name)
+
+    def schema_discovery(self, connection_id: UUID) -> dict[str, Any] | None:
+        return self.inner.schema_discovery(connection_id)
+
+    def executor_maturity(self, executor: str) -> str:
+        return self.inner.executor_maturity(executor)
+
+    def permits(self, action: str, ref: VersionRef) -> bool:
+        return self.inner.permits(action, ref)
 
 
 def add_published(

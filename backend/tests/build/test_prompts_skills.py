@@ -37,8 +37,8 @@ from shifde.build.prompts import (
 from shifde.build.skills import dependency_closure, validate_skill
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
-from tests.build.conftest import World
-from tests.build.env_support import RepoEnv, add_published
+from tests.build.conftest import EnvFactory, World
+from tests.build.env_support import add_published
 from tests.tenancy.conftest import app_session
 
 PROMPT: dict[str, Any] = {
@@ -287,11 +287,13 @@ def _skill_with(version: UUID) -> dict[str, Any]:
 
 
 def test_a_prompt_composing_bs_version_gets_the_unknown_id_outcome(
-    seed: tuple[Side, Side], open_session: Callable[[UUID], AbstractContextManager[Session]]
+    seed: tuple[Side, Side],
+    open_session: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, b = seed
     with open_session(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
         theirs, unknown, own = Report(), Report(), Report()
         validate_prompt(_composed(b.prompt_version), env, theirs)
         validate_prompt(_composed(uuid7()), env, unknown)
@@ -303,11 +305,13 @@ def test_a_prompt_composing_bs_version_gets_the_unknown_id_outcome(
 
 
 def test_building_a_composition_tree_with_bs_version_fails_like_an_unknown_id(
-    seed: tuple[Side, Side], open_session: Callable[[UUID], AbstractContextManager[Session]]
+    seed: tuple[Side, Side],
+    open_session: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, b = seed
     with open_session(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
         messages = []
         for vid in (b.prompt_version, uuid7()):
             with pytest.raises(CompositionError) as raised:
@@ -319,11 +323,13 @@ def test_building_a_composition_tree_with_bs_version_fails_like_an_unknown_id(
 
 
 def test_a_skill_depending_on_bs_version_gets_the_unknown_id_outcome(
-    seed: tuple[Side, Side], open_session: Callable[[UUID], AbstractContextManager[Session]]
+    seed: tuple[Side, Side],
+    open_session: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, b = seed
     with open_session(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
         theirs, unknown, own = Report(), Report(), Report()
         _, pins_theirs = validate_skill(_skill_with(b.skill_version), env, theirs, uuid7())
         _, pins_unknown = validate_skill(_skill_with(uuid7()), env, unknown, uuid7())
@@ -336,11 +342,13 @@ def test_a_skill_depending_on_bs_version_gets_the_unknown_id_outcome(
 
 
 def test_the_dependency_closure_never_enters_bs_versions(
-    seed: tuple[Side, Side], open_session: Callable[[UUID], AbstractContextManager[Session]]
+    seed: tuple[Side, Side],
+    open_session: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, b = seed
     with open_session(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
         assert dependency_closure(env, [b.dependent_skill_version]) == []
         assert dependency_closure(env, [b.skill_version, uuid7()]) == []
         # control: the same shape in A is found, dependencies first
@@ -352,13 +360,15 @@ def test_the_dependency_closure_never_enters_bs_versions(
 
 
 def test_a_cycle_check_does_not_walk_through_bs_skills(
-    seed: tuple[Side, Side], open_session: Callable[[UUID], AbstractContextManager[Session]]
+    seed: tuple[Side, Side],
+    open_session: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     """A's own artifact id is B's skill's artifact id nowhere: B's rows cannot be used to probe
     whether an A artifact id exists in B (the answer is the unknown-id one)."""
     a, b = seed
     with open_session(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
         r = Report()
         validate_skill(_skill_with(b.dependent_skill_version), env, r, b.skill_artifact)
         assert [e.code for e in r.errors] == ["unresolved_reference"]
@@ -366,11 +376,13 @@ def test_a_cycle_check_does_not_walk_through_bs_skills(
 
 
 def test_the_refusal_is_the_same_for_every_kind_of_other_clients_version(
-    seed: tuple[Side, Side], open_session: Callable[[UUID], AbstractContextManager[Session]]
+    seed: tuple[Side, Side],
+    open_session: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, b = seed
     with open_session(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
         for vid in (b.prompt_version, b.skill_version, b.dependent_skill_version):
             assert env.version(vid) is None
             r = Report()
@@ -380,12 +392,15 @@ def test_the_refusal_is_the_same_for_every_kind_of_other_clients_version(
 
 
 def test_bs_context_does_not_resolve_as_ids(
-    seed: tuple[Side, Side], app_db: Database, world: World
+    seed: tuple[Side, Side],
+    app_db: Database,
+    world: World,
+    make_env: EnvFactory,
 ) -> None:
     """Neither client's id works under the other's context, with either tenant id."""
     a, b = seed
     with app_session(app_db, b.tenant) as s:
-        assert RepoEnv(s, a.tenant).version(a.prompt_version) is None
-        assert RepoEnv(s, b.tenant).version(a.prompt_version) is None
-        assert RepoEnv(s, b.tenant).version(b.prompt_version) is not None
+        assert make_env(s, a.tenant).version(a.prompt_version) is None
+        assert make_env(s, b.tenant).version(a.prompt_version) is None
+        assert make_env(s, b.tenant).version(b.prompt_version) is not None
         s.rollback()

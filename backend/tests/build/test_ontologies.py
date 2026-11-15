@@ -30,7 +30,7 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy.orm import Session
 
-from shifde.build.env import ConnectionInfo, VersionRef
+from shifde.build.env import ConnectionInfo, Env, VersionRef
 from shifde.build.issues import Issue, Report
 from shifde.build.ontologies import (
     OntologyResult,
@@ -42,8 +42,8 @@ from shifde.build.ontologies import (
     validate_query_shape,
 )
 from shifde.core.ids import uuid7
-from tests.build.conftest import Side
-from tests.build.env_support import RepoEnv
+from tests.build.conftest import EnvFactory, Side
+from tests.build.env_support import Overriding, RepoEnv
 
 CAPS = frozenset({"query.sql", "query.pushdown_join"})
 CUSTOMER, ACCOUNT, REL = "cs.customer", "cs.account", "cs.customer_accounts"
@@ -55,6 +55,11 @@ class OntoEnv(RepoEnv):
     def connection(self, connection_id: UUID) -> ConnectionInfo | None:
         info = super().connection(connection_id)
         return None if info is None else ConnectionInfo(**{**info.__dict__, "capabilities": CAPS})
+
+
+def _onto(make_env: EnvFactory) -> EnvFactory:
+    """`OntoEnv` for the stand-in; the service's own `Env` takes capabilities from the registry."""
+    return OntoEnv if make_env is RepoEnv else make_env
 
 
 def _prop(key: str, ptype: str, *, nullable: bool = False) -> dict[str, Any]:
@@ -138,7 +143,7 @@ def _sig(issues: list[Issue]) -> list[tuple[str, str, str]]:
 
 
 def _validate(
-    env: RepoEnv, spec: dict[str, Any], mappings: list[dict[str, Any]]
+    env: Env, spec: dict[str, Any], mappings: list[dict[str, Any]]
 ) -> tuple[Report, OntologyResult]:
     report = Report()
     return report, validate_ontology(spec, mappings, env, report)
@@ -148,10 +153,11 @@ def _validate(
 def test_a_complete_ontology_with_the_callers_own_mappings_validates(
     sides: tuple[Side, Side],
     opener: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, _ = sides
     with opener(a.tenant) as s:
-        env = OntoEnv(s, a.tenant)
+        env = _onto(make_env)(s, a.tenant)
         report, result = _validate(env, _spec(), _all_mappings(a))
         assert report.errors == [], _sig(report.errors)
         assert result.connection_ids == {a.connection}
@@ -166,10 +172,11 @@ def test_a_complete_ontology_with_the_callers_own_mappings_validates(
 def test_a_mapping_on_bs_connection_gets_the_unknown_id_outcome(
     sides: tuple[Side, Side],
     opener: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, b = sides
     with opener(a.tenant) as s:
-        env = OntoEnv(s, a.tenant)
+        env = _onto(make_env)(s, a.tenant)
         theirs = _object_mapping(b.connection, b.table)
         unknown = _object_mapping(uuid7(), b.table)
         their_report, their_result = _validate(env, _spec(), [theirs])
@@ -201,10 +208,11 @@ def _model() -> dict[str, dict[str, Any]]:
 def test_a_mapping_reads_the_callers_own_schema_discovery_only(
     sides: tuple[Side, Side],
     opener: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, b = sides
     with opener(a.tenant) as s:
-        env = OntoEnv(s, a.tenant)
+        env = _onto(make_env)(s, a.tenant)
         assert env.schema_discovery(a.connection) is not None
         assert env.schema_discovery(b.connection) is None
         assert env.schema_discovery(uuid7()) is None
@@ -222,10 +230,11 @@ def test_a_mapping_reads_the_callers_own_schema_discovery_only(
 def test_a_mapping_can_only_name_what_the_clients_own_discovery_lists(
     sides: tuple[Side, Side],
     opener: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, _ = sides
     with opener(a.tenant) as s:
-        env = OntoEnv(s, a.tenant)
+        env = _onto(make_env)(s, a.tenant)
         hostile_relations = [
             ("pg_catalog", "pg_authid"),
             ("shifde", "connections"),
@@ -274,10 +283,11 @@ def _action(tool_version: Any, **over: Any) -> dict[str, Any]:
 def test_an_action_naming_bs_tool_gets_the_unknown_id_outcome(
     sides: tuple[Side, Side],
     opener: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, b = sides
     with opener(a.tenant) as s:
-        env = OntoEnv(s, a.tenant)
+        env = _onto(make_env)(s, a.tenant)
         report, result = _validate(env, _spec([_action(a.tool_version)]), _all_mappings(a))
         assert report.errors == [], _sig(report.errors)
         assert [(p[0].version_id, p[1]) for p in result.pins] == [(a.tool_version, "action_tool")]
@@ -306,6 +316,7 @@ def test_an_action_on_a_forged_reference_to_bs_tool_is_not_permitted(
     sides: tuple[Side, Side],
     opener: Callable[[UUID], AbstractContextManager[Session]],
     owner_session: Session,
+    make_env: EnvFactory,
 ) -> None:
     """If a lookup ever returned B's version, `permits` (artifact read with A's client id and
     the scope the reference claims) still refuses it; the version is read here as B."""
@@ -313,12 +324,14 @@ def test_an_action_on_a_forged_reference_to_bs_tool_is_not_permitted(
     foreign: VersionRef | None = RepoEnv(owner_session, b.tenant).version(b.tool_version)
     assert foreign is not None
 
-    class Leaky(OntoEnv):
-        def version(self, version_id: UUID) -> VersionRef | None:
-            return foreign if version_id == b.tool_version else super().version(version_id)
+    def leaky(inner: Env) -> Env:
+        def version(version_id: UUID) -> VersionRef | None:
+            return foreign if version_id == b.tool_version else inner.version(version_id)
+
+        return Overriding(inner, version=version)
 
     with opener(a.tenant) as s:
-        env = Leaky(s, a.tenant)
+        env = leaky(_onto(make_env)(s, a.tenant))
         report, result = _validate(env, _spec([_action(b.tool_version)]), _all_mappings(a))
         assert [(e.path, e.message) for e in report.errors] == [
             ("actions[0].tool_version_id", "you may not use this tool")

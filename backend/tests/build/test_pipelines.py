@@ -25,15 +25,15 @@ from sqlalchemy.orm import Session
 from shifde.adapters.registry import AdapterRegistry
 from shifde.build import catalog
 from shifde.build import repository as repo
-from shifde.build.env import VersionRef
+from shifde.build.env import Env, VersionRef
 from shifde.build.issues import Issue, Report
 from shifde.build.pipelines import PipelineResult, validate_pipeline
 from shifde.connections import repository as conn_repo
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.models_admin import repository as models_repo
-from tests.build.conftest import World
-from tests.build.env_support import RepoEnv, add_published
+from tests.build.conftest import EnvFactory, World
+from tests.build.env_support import add_published
 from tests.connections.conftest import connection_values, discovery_values
 from tests.models_admin.conftest import model_values, owner_connection, provider_values
 from tests.tenancy.conftest import app_session
@@ -78,7 +78,9 @@ def seed(owner_db: Database, world: World) -> tuple[Side, Side]:
                 o, tenant, connection_type="database", adapter_key="postgres", config={}
             )
             conn_repo.insert_discovery(
-                o, {**discovery_values(tenant, db), "payload": {"owner": label}}
+                # a database's discovery is a schema discovery (the service's `Env` reads no other)
+                o,
+                {**discovery_values(tenant, db), "kind": "schema", "payload": {"owner": label}},
             )
             rest = _connection(o, tenant, access_mode="read_write")
             provider = provider_values(tenant, owner_connection(o, tenant))
@@ -135,7 +137,7 @@ def _spec(nodes: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _validate(
-    env: RepoEnv, nodes: list[dict[str, Any]], *, resolve: bool = True
+    env: Env, nodes: list[dict[str, Any]], *, resolve: bool = True
 ) -> tuple[Report, PipelineResult]:
     report = Report()
     return report, validate_pipeline(_spec(nodes), env, report, 4, resolve=resolve)
@@ -251,10 +253,11 @@ def test_a_pipeline_naming_bs_object_gets_the_unknown_id_outcome(
     own: Callable[[Side], str],
     builder: Callable[[Side], NodeFor],
     ref_type: str,
+    make_env: EnvFactory,
 ) -> None:
     a, b = seed
     with open_session(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
         node_for = builder(a)
         # A's own object resolves: no error at the reference, one typed reference recorded
         node, field = node_for(own(a))
@@ -279,10 +282,11 @@ def test_a_pipeline_naming_bs_object_gets_the_unknown_id_outcome(
 def test_a_prompt_node_naming_bs_model_gets_the_unknown_id_outcome(
     seed: tuple[Side, Side],
     open_session: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, b = seed
     with open_session(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
 
         def prompt_with(model: UUID) -> dict[str, Any]:
             cfg = {"prompt_version_id": str(a.prompt_version), "model_id": str(model)}
@@ -304,10 +308,11 @@ def test_a_prompt_node_naming_bs_model_gets_the_unknown_id_outcome(
 def test_a_published_pipeline_must_pin_and_never_resolves_latest(
     seed: tuple[Side, Side],
     open_session: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, b = seed
     with open_session(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
         for side in (a, b):
             node = _agent_node(f"latest:{side.agent_artifact}")[0]
             report, _ = _validate(env, [node], resolve=False)
@@ -320,10 +325,11 @@ def test_a_published_pipeline_must_pin_and_never_resolves_latest(
 def test_structural_errors_carry_paths_and_codes(
     seed: tuple[Side, Side],
     open_session: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, _ = seed
     with open_session(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
         report = Report()
         validate_pipeline({"schema_version": "2", "nodes": "x"}, env, report, 4)
         assert ("schema_version", "unsupported_schema_version") in {
@@ -374,10 +380,11 @@ def test_the_catalog_is_installation_level_and_names_no_client(
 def test_schema_discovery_of_bs_connection_gives_the_unknown_id_outcome(
     seed: tuple[Side, Side],
     open_session: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, b = seed
     with open_session(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
         assert env.schema_discovery(a.db_connection) == {"owner": "a"}  # control
         assert env.schema_discovery(b.db_connection) is None
         assert env.schema_discovery(uuid7()) is None
@@ -387,10 +394,11 @@ def test_schema_discovery_of_bs_connection_gives_the_unknown_id_outcome(
 def test_permits_is_false_for_an_artifact_outside_the_callers_client(
     seed: tuple[Side, Side],
     open_session: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, b = seed
     with open_session(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
         own = env.version(a.agent_version)
         assert own is not None and env.permits("agent:execute", own)  # control
         assert env.version(b.agent_version) is None
