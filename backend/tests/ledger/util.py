@@ -1,5 +1,5 @@
-"""Helpers shared by the ledger tests: a stand-in for a table of a module not ported yet, and
-direct inserts (as the schema owner) of models, rate cards and budgets."""
+"""Helpers shared by the ledger tests: direct inserts (as the schema owner) of runs, models, rate
+cards and budgets."""
 
 from __future__ import annotations
 
@@ -14,24 +14,9 @@ from sqlalchemy.orm import Session
 
 from shifde.core.clock import utcnow
 from shifde.core.ids import uuid7
-from tests._support import tenants
+from tests._support import runs, tenants
 
 PAST = utcnow() - timedelta(days=30)
-
-# The ledger reads `shifde.runs` (runtime). Until runtime is ported, a test that evaluates
-# budgets creates a minimal stand-in in its own transaction, which the test rolls back. Delete this
-# when the real table exists (carry_forward). `tenants` is real since tenancy_0001; `models` and
-# `model_providers` since models_admin_0001.
-STAND_INS = (
-    "CREATE TABLE IF NOT EXISTS shifde.runs (id uuid PRIMARY KEY, tenant_id uuid, "
-    "root_run_id uuid, workspace_id uuid, project_id uuid, agent_id uuid, pipeline_id uuid, "
-    "orchestration_id uuid, initiated_by_principal_id uuid)",
-)
-
-
-def create_stand_ins(s: Session) -> None:
-    for stmt in STAND_INS:
-        s.execute(text(stmt))
 
 
 def add_tenant(s: Session, tenant_id: UUID | None = None, settings: str = "{}") -> UUID:
@@ -74,17 +59,8 @@ def add_model(
 
 
 def add_run(s: Session, tenant_id: UUID, **cols: Any) -> UUID:  # Any: column values
-    run = uuid7()
-    values = {"root_run_id": run, **cols}
-    names = ["id", "tenant_id", *values]
-    s.execute(
-        text(
-            f"INSERT INTO shifde.runs ({', '.join(names)}) "
-            f"VALUES ({', '.join(':' + n for n in names)})"
-        ),
-        {"id": run, "tenant_id": tenant_id, **values},
-    )
-    return run
+    """A real run of `tenant_id` (runtime_0001): `tests._support.runs.add_run`."""
+    return runs.add_run(s, tenant_id, **cols)
 
 
 def add_rate_card(

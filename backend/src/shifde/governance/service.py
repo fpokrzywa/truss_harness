@@ -731,28 +731,18 @@ class GovernanceService:
             currency=currency,
         )
 
-    def _has_runs_table(self) -> bool:
-        return bool(
-            self.session.execute(text("SELECT to_regclass('shifde.runs') IS NOT NULL")).scalar_one()
-        )
-
     def run_usage(self, run_id: UUID) -> s.RunUsageOut:
         vis = self._vis("usage:read")
         events = repo.run_events(self.session, self.tenant_id, run_id, vis)
         if not events:
-            # A run with no usage yet is still a run of this client. `runs` belongs to the runtime
-            # module (not ported): without the table no run exists, so the id is unknown.
-            run = (
-                self.session.execute(
-                    text(
-                        "SELECT workspace_id, project_id FROM shifde.runs "
-                        "WHERE id = :r AND tenant_id = :t"
-                    ),
-                    {"r": run_id, "t": self.tenant_id},
-                ).first()
-                if self._has_runs_table()
-                else None
-            )
+            # A run with no usage yet is still a run of this client.
+            run = self.session.execute(
+                text(
+                    "SELECT workspace_id, project_id FROM shifde.runs "
+                    "WHERE id = :r AND tenant_id = :t"
+                ),
+                {"r": run_id, "t": self.tenant_id},
+            ).first()
             if run is None or not (
                 vis.all or run[0] in vis.workspace_ids or run[1] in vis.project_ids
             ):
@@ -1217,15 +1207,10 @@ class GovernanceService:
         elif metric == "runs":
             settled = Decimal(self._count_runs(row, since))
             reserved = Decimal(0)
-        elif self._has_runs_table():
+        else:
             settled, reserved = budgeting.used_and_held(
                 self.session, self.tenant_id, None, row, metric=metric, since=since
             )
-        else:  # holds join `runs` (runtime, not ported, B-1812): none can exist yet
-            settled = budgeting.used_amount(
-                self.session, self.tenant_id, None, row, metric=metric, since=since
-            )
-            reserved = Decimal(0)
         utilization = float(settled / limit) if limit else 0.0
         start = since or datetime(1970, 1, 1, tzinfo=UTC)
         return s.BudgetStatusOut(
@@ -1245,8 +1230,6 @@ class GovernanceService:
         )
 
     def _count_runs(self, rule: Mapping[str, Any], since: datetime | None) -> int:  # Any: row
-        if not self._has_runs_table():  # runtime not ported: no run exists
-            return 0
         return int(
             self.session.execute(
                 text(
@@ -1802,9 +1785,6 @@ class GovernanceService:
         )
 
 
-_RUNTIME_PENDING = {"available": False, "reason": "needs the runtime module (not installed yet)"}
-
-
 def health_details(
     session: Session,
     settings: Any,  # Any: Settings
@@ -1812,8 +1792,8 @@ def health_details(
 ) -> s.HealthDetailsOut:
     """Platform health for `platform:admin` (the route has already checked the permission).
 
-    The worker, queue and run-failure sections read `workers` and `shifde_ops_stats(int)`, which
-    belong to runtime (DECISIONS B-1824): until both exist they answer `available: false`.
+    The worker, queue and run-failure sections read `workers` and `shifde_ops_stats(int)`
+    (runtime_0001); the function refuses a client context, and this view runs without one.
     """
     from shifde.core.health import database_reachable, migration_state
     from shifde.observability import metrics
@@ -1826,25 +1806,7 @@ def health_details(
         "api_process_note": "request counters are for this API process since it started",
     }
     telemetry = tracing.tracer.status() | {"metrics": "prometheus text at /api/metrics"}
-    have_runtime = bool(
-        session.execute(
-            text(
-                "SELECT to_regclass('shifde.workers') IS NOT NULL "
-                "AND to_regprocedure('shifde.shifde_ops_stats(integer)') IS NOT NULL"
-            )
-        ).scalar_one()
-    )
     migrations = {"status": state.status, "revision": state.revision, "head": state.head}
-    if not have_runtime:
-        return s.HealthDetailsOut(
-            database={"reachable": reachable},
-            migrations=migrations,
-            workers=dict(_RUNTIME_PENDING),
-            queue=dict(_RUNTIME_PENDING),
-            reaper=dict(_RUNTIME_PENDING),
-            recent_error_rates={"window_seconds": 900, **http},
-            telemetry=telemetry,
-        )
     stats = repo.ops_stats(session, 900)
     workers = repo.workers(session)
     now = utcnow()

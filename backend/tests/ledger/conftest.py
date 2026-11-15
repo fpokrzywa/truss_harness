@@ -2,7 +2,7 @@
 
 The ledger tables are registered with the per-test cleanup (they are truncated as the owner
 before each test). `owner_session` is the schema owner (no row-level security) and is never
-committed by the tests that use stand-in tables, so the stand-ins vanish with the rollback.
+committed by most tests: their rows (runs included, `tests._support.runs`) vanish with the rollback.
 """
 
 from __future__ import annotations

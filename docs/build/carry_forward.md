@@ -262,3 +262,12 @@ Left, by name:
 - Installation-level `identity.group.members_changed` row for IdP-sync changes (B-1625, carry_forward 102): needs the administrator flag or a definer in the sign-in path.
 - `test_p2_review.py` `test_suspension_revokes_...` and `test_pinned_sessions_never_carry_platform_admin_...`: do not need OIDC; moved in app part 1b (`tests/app/test_identity_review.py`).
 - carry_forward 92: retention job for used or expired `oidc_auth_requests` (cli).
+
+## Runtime part 1 (B-2101..B-2107)
+
+- Done: the runtime rows on `fk_budget_reservations__run` (ledger stand-in deleted), `fk_ontology_lineage__run`, `fk_runs__pipeline_version`, `fk_runs__pipeline_of_version`, `fk_runs__ontology_of_version`, the `p07_0001` `runs` columns, `ck_runs__target`, `ix_runs__ontology`, `shifde_ops_stats(int)`, governance `to_regclass` guards (B-1812, B-1824) and the `health_details` guard, ontology `_has_runs_table` (review 2 G2, part), the `budget_alerts` conflict target (B-607), SELECT on `workers` (B-1105), Item 9 hold in `runtime/governance.py`, C1 SQL half (`tests/runtime/test_reaper_and_guards.py`).
+- OPEN (lead): `test_rls_schema.py` probe case naming `shifde.runs` fails (B-2107).
+- RT-3 (repository): decide keys for `runs.input_ref`/`output_ref`/`lease_job_id`/`api_key_id`/`agent_id`/`orchestration_id`/`prompt_version_id`, `run_events.step_id`, `run_artifacts.step_id`, `run_steps.model_id` (B-2101); every repository statement names `tenant_id` (B-1902 pattern); worker claim/reap run with no client context (B-2103).
+- RT-4/RT-5: ontology review 2 G2 remainder: `_anchor_run` checks only "a run of this client"; tie it to the run's own ontology/action/agent version through the `run_of` contract (B-1933), with a test for a run of another artifact of the same client. `installation.service._table_exists` still guards `workers` (harmless; remove with the overview's next change).
+- C1 Python half (RT-4 `settle.py` calls `settle_ended_run`; RT-6 `steps.py` write-ahead journal and `arguments`; RT-10 lifecycle) and the end-to-end crash test (`test_r1_unknown_outcome.py`, with the worker) stay with those parts; charter 5 item 3 is confirmed for the SQL half only.
+- SETH tests: none of RT-1's files has a SETH test that runs without the app or the worker (SETH's state-table check is rewritten directly as `tests/runtime/test_reaper_and_guards.py::test_allowed_transitions_match_the_table`); all runtime SETH tests stay deferred as listed above (`test_p5_*`, `test_p6_*`, `test_r1_*`, run-driven `test_p8_*`, `test_p9_config.py`).
