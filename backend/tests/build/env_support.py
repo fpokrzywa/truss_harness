@@ -10,12 +10,15 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from shifde.build import repository as repo
-from shifde.build.env import VersionRef
+from shifde.build.env import ConnectionInfo, McpDiscovery, VersionRef
+from shifde.connections import repository as conn_repo
 from shifde.core.ids import uuid7
+from shifde.models_admin import repository as models_repo
 
 
 class RepoEnv:
-    """Only `version` is implemented; the validators under test call nothing else."""
+    """The lookups the validators make, each through a repository with the caller's client id (as
+    the service's own `Env` must). Models: only the client's own (no SHI switch here)."""
 
     reveal_names = True
 
@@ -43,8 +46,54 @@ class RepoEnv:
             artifact_status=a["status"],
         )
 
+    def latest(self, artifact_id: UUID) -> VersionRef | None:
+        a = repo.get_artifact(self.session, self.tenant_id, artifact_id)
+        if a is None or a["latest_published_version_id"] is None:
+            return None
+        return self.version(a["latest_published_version_id"])
+
     def model_problems(self, model_ids: list[UUID]) -> dict[UUID, str]:
-        return {}
+        rows = models_repo.get_models(
+            self.session, model_ids, tenant_id=self.tenant_id, shared=False
+        )
+        found = {r["id"]: r for r in rows}
+        return {
+            m: ("model_not_found" if m not in found else "model_not_active")
+            for m in model_ids
+            if m not in found or found[m]["lifecycle"] != "active"
+        }
+
+    def route_model_ids(self, route_id: UUID) -> list[UUID] | None:
+        route = models_repo.get_route(self.session, route_id, tenant_id=self.tenant_id)
+        if route is None:
+            return None
+        return [route["primary_model_id"], *route["fallback_model_ids"]]
+
+    def connection(self, connection_id: UUID) -> ConnectionInfo | None:
+        row = conn_repo.get_connection(self.session, connection_id, tenant_id=self.tenant_id)
+        if row is None:
+            return None
+        return ConnectionInfo(
+            id=row["id"],
+            connection_type=row["connection_type"],
+            adapter_key=row["adapter_key"],
+            status=row["status"],
+            access_mode=row["access_mode"],
+            usable_by_publisher=True,
+            implemented=True,
+        )
+
+    def mcp_tool(self, connection_id: UUID, tool_name: str) -> McpDiscovery:
+        found = conn_repo.latest_discovery(self.session, connection_id, tenant_id=self.tenant_id)
+        if found is None:
+            return McpDiscovery(exists=False, tool=None)
+        for tool in found["payload"].get("tools", []):
+            if tool["name"] == tool_name:
+                return McpDiscovery(exists=True, tool=tool)
+        return McpDiscovery(exists=True, tool=None)
+
+    def executor_maturity(self, executor: str) -> str:
+        return "ready"
 
 
 def add_published(
