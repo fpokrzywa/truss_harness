@@ -1,13 +1,14 @@
 """Governance policies, retention settings and the data-export policy through the API, moved from
 SETH 3ba0e06 `test_p8_policies.py` (policy validation and audit, policy administration and
-tenant scope, retention settings, the data-export policy); assertions unchanged.
+tenant scope, retention settings, the data-export policy, and, with runtime part 5 (B-2134), the
+side-effect-class test); assertions unchanged.
 
 Setup changes only: SETH `login` / `user_session` become `as_user` on the tenancy route-test
 people, `limited_user` the connections helper, `tenant_scope` the helper in
 `tests.governance.routes`, and the old policy-decision row is written as the schema owner for
 the client of the tenancy world. Not moved: the approval-rule and cost-threshold tests and the
 decision-log test (they need runs, workers and approvals: runtime), the model-policy test (needs
-the models routes and an invoke: app) and the side-effect-class test (needs `build.executors`).
+the models routes and an invoke: app).
 """
 
 from __future__ import annotations
@@ -250,3 +251,10 @@ def test_a_data_export_policy_can_forbid_exports_and_exports_need_data_export(
         owner_session, "SELECT action FROM shifde.audit_events WHERE action LIKE '%.exported'"
     )
     assert ("governance.usage.exported",) in exported
+
+
+def test_governance_side_effect_classes_match_the_build_module() -> None:
+    from shifde.build.executors import SIDE_EFFECT_CLASSES
+    from shifde.governance.validation import SIDE_EFFECT_CLASSES as GOV_CLASSES
+
+    assert set(SIDE_EFFECT_CLASSES) == set(GOV_CLASSES)

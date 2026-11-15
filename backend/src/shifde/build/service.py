@@ -675,15 +675,55 @@ class ArtifactService:
         version = (
             repository.get_version(self.session, tenant, target) if target is not None else None
         )
+        # the stored artifact row, never the caller's mapping (its workspace and project scope
+        # the model checks; runtime isolation review 3 item 3)
+        stored = repository.get_artifact(self.session, tenant, art["id"])
         if (
             version is None
+            or stored is None
+            or stored["tenant_id"] != tenant
+            or stored["kind"] != art["kind"]
             or version["tenant_id"] != tenant
-            or version["artifact_id"] != art["id"]
-            or version["kind"] != art["kind"]
+            or version["artifact_id"] != stored["id"]
+            or version["kind"] != stored["kind"]
         ):
             raise NotFound("run not found")
         pinned = frozenset(repository.pin_closure(self.session, tenant, version["id"]))
-        return _Env(self, art, tenant, check_visibility=False, only_versions=pinned)
+        return _Env(
+            self,
+            stored,
+            tenant,
+            check_visibility=False,
+            only_versions=pinned,
+            run_version_id=version["id"],
+        )
+
+    def run_target(self, run_id: UUID) -> Mapping[str, Any] | None:
+        """The target columns of a run of this client (`repository.run_target`), else None."""
+        tenant = self.sc.tenant_id
+        run = repository.run_target(self.session, tenant, run_id)
+        return run if run is not None and run["tenant_id"] == tenant else None
+
+    def run_versions(self, run: Mapping[str, Any]) -> list[Mapping[str, Any]]:  # Any: rows
+        """The version rows a run executes: its own pinned version (agent, orchestration,
+        pipeline or ontology) and every version that one pins, directly or transitively, all of
+        this client (B-1933); empty for another client's run or an unknown one."""
+        tenant = self.sc.tenant_id
+        target = self.run_target(run["id"]) if run["tenant_id"] == tenant else None
+        own = (
+            next(
+                (target[c] for c in repository.RUN_TARGETS.values() if target[c] is not None), None
+            )
+            if target is not None
+            else None
+        )
+        if own is None:
+            return []
+        rows = (
+            repository.get_version(self.session, tenant, vid)
+            for vid in sorted(repository.pin_closure(self.session, tenant, own))
+        )
+        return [r for r in rows if r is not None and r["tenant_id"] == tenant]
 
     def prepare(
         self,
@@ -719,10 +759,16 @@ class ArtifactService:
             )
             pins = [(ref.version_id, role) for ref, role in orch_pins]
         elif kind == "ontologies":
-            draft_row = repository.get_draft(self.session, self.sc.tenant_id, art["id"])
+            # a run validates the mappings frozen with the version it executes, never the draft's
+            # (runtime isolation review 3 item 4); a publish validates the draft's
+            if env.run_version_id is not None:
+                mapped: UUID | None = env.run_version_id
+            else:
+                draft_row = repository.get_draft(self.session, self.sc.tenant_id, art["id"])
+                mapped = draft_row["id"] if draft_row else None
             mappings = (
-                repository.list_mappings(self.session, self.sc.tenant_id, draft_row["id"])
-                if draft_row
+                repository.list_mappings(self.session, self.sc.tenant_id, mapped)
+                if mapped is not None
                 else []
             )
             onto = ontology_spec.validate_ontology(
@@ -1238,6 +1284,7 @@ class _Env:
         *,
         check_visibility: bool,
         only_versions: frozenset[UUID] | None = None,
+        run_version_id: UUID | None = None,
     ) -> None:
         self.svc = svc
         self.art = art
@@ -1246,6 +1293,8 @@ class _Env:
         self.reveal_names = check_visibility
         # a run's env (`run_of`): only the run's pinned version and what it pins
         self.only_versions = only_versions
+        # a run's env: the run's own pinned version (`only_versions` holds it and its pins)
+        self.run_version_id = run_version_id
 
     def _same_client(self) -> bool:
         """The scope still names the client this env was built for (an env is never reused)."""
@@ -1387,6 +1436,9 @@ class _Env:
         project as stored (never the ones `ref` carries): a forged or foreign `VersionRef`, or one
         whose scope does not match the row, gets False."""
         if not self._same_client():
+            return False
+        # a run's env permits only what the run executes (runtime isolation review 3 item 2)
+        if self.only_versions is not None and ref.version_id not in self.only_versions:
             return False
         art = repository.get_artifact(self.svc.session, self.tenant_id, ref.artifact_id)
         if (
