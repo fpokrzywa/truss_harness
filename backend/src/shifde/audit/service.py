@@ -111,6 +111,10 @@ ADMIN_INSTALLATION_ACTIONS: frozenset[str] = frozenset(
         # change is also recorded in that client's own trail
         "model.shi_provider.configured",
         "model.shi_provider.access_changed",
+        # the platform price list (global rate cards, tenant_id NULL), written only by the
+        # platform administrator (`governance.service.PricingService.for_platform`, B-1803)
+        "governance.rate_card.created",
+        "governance.rate_card_version.created",
     }
 )
 INSTALLATION_ACTIONS: frozenset[str] = PRE_TENANT_ACTIONS | ADMIN_INSTALLATION_ACTIONS
