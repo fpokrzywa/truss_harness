@@ -310,6 +310,16 @@ def test_the_upgrade_fills_own_model_id_of_stored_rows(
                         text(f"SELECT model_id, own_model_id FROM shifde.{table}")
                     ).one()
                     assert row[0] == model and row[1] == model, table
+                # the migration disables the append-only trigger around the fill: enabled again
+                assert (
+                    s.execute(
+                        text(
+                            "SELECT tgenabled FROM pg_trigger "
+                            "WHERE tgname = 'trg_prompt_test_runs_append_only'"
+                        )
+                    ).scalar_one()
+                    == "O"
+                )
         finally:
             db.dispose()
     finally:

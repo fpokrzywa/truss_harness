@@ -703,8 +703,9 @@ class OntologyService:
             if authz.get_role(self.session, self.sc.tenant_id, subject.id) is None:
                 raise ValidationFailed("no such role")
         elif subject.type == "group":
-            # groups are platform-level (identity_0005, B-928): no client column to filter on
-            if authz.get_group(self.session, subject.id) is None:
+            # groups are platform-level (B-928): only a group bound in this client is known;
+            # one bound only elsewhere answers exactly like a missing one (B-930, B-2013)
+            if all(g.id != subject.id for g in authz.bound_groups(self.session)):
                 raise ValidationFailed("no such group")
         elif not identity.is_member(self.session, self.sc.tenant_id, subject.id):
             raise ValidationFailed("no such organization member")
