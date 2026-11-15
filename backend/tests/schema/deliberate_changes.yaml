@@ -538,7 +538,7 @@
 
 - table: prompt_test_runs
   path: [triggers, trg_build_model_ref_guard]
-  reason: "sets own_model_id and refuses another client's model and an unknown id alike (23503, no lock wait) while accepting the client's own and shared models (B-1940)"
+  reason: "sets own_model_id and refuses another client's model and an unknown id alike (23503, no lock wait) while accepting the client's own and shared models; refuses a row for another client than the session's with 42501, the owner too (B-1940)"
   migration: build_0002
 
 - table: pipeline_version_refs
@@ -558,5 +558,5 @@
 
 - table: pipeline_version_refs
   path: [triggers, trg_build_model_ref_guard]
-  reason: "sets own_model_id and refuses another client's model and an unknown id alike (23503, no lock wait) while accepting the client's own and shared models (B-1941)"
+  reason: "sets own_model_id and refuses another client's model and an unknown id alike (23503, no lock wait) while accepting the client's own and shared models; refuses a row for another client than the session's with 42501, the owner too (B-1941)"
   migration: build_0002
