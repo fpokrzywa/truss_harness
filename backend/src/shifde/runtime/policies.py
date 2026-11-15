@@ -24,7 +24,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from typing import Any  # Any: policy definition documents
+from typing import TYPE_CHECKING, Any  # Any: policy definition documents
 from uuid import UUID
 
 from sqlalchemy import text
@@ -34,6 +34,9 @@ from shifde import ledger
 from shifde.ledger.enforcement import scope_match, scope_params
 from shifde.runtime import gate
 from shifde.runtime.context import RunContext
+
+if TYPE_CHECKING:
+    from shifde.runtime.steps import ToolCall
 
 
 @dataclass(frozen=True)
@@ -90,9 +93,8 @@ def _rule_matches(ctx: RunContext, when: Mapping[str, Any], side: str) -> bool: 
     return True
 
 
-def tool_approval(ctx: RunContext, call: object, side: str) -> ApprovalRule | None:
-    """The governance approval a tool call needs, if any (None = no rule applies). `call` is
-    SETH's `steps.ToolCall` (unused here); typed `object` until `steps.py` ports (RT-6, B-2130)."""
+def tool_approval(ctx: RunContext, call: ToolCall, side: str) -> ApprovalRule | None:
+    """The governance approval a tool call needs, if any (None = no rule applies)."""
     matched: list[UUID] = []
     permission: str | None = None
     for pol in _policies(ctx, "approval_rule"):

@@ -142,3 +142,44 @@ def test_every_function_taking_an_ontology_is_a_case() -> None:
     }
     # pure: `is_ontology_tool` and `provenance` read a spec and an output, `query_in` a document
     assert public - set(CASES) == {"is_ontology_tool", "provenance", "query_in"}
+
+
+def _latest_version(o: Session, ontology: str) -> UUID:
+    vid: UUID = o.execute(
+        text(
+            "SELECT id FROM shifde.artifact_versions WHERE artifact_id = :o "
+            "ORDER BY version_no DESC LIMIT 1"
+        ),
+        {"o": UUID(ontology)},
+    ).scalar_one()
+    return vid
+
+
+def test_as_ontology_with_bs_version_gets_the_unknown_version_answer(
+    opener: Opener, two: Two, settings: Settings, owner_db: Database
+) -> None:
+    """Runtime isolation review 4 item 4: A's ontology named with B's version id answers like an
+    unknown version id, on `gate_query` and `run_query`; A's own version answers otherwise."""
+    a, b = two.a, two.b
+    with owner_db.session() as o:
+        run = _running_agent_run(o, a)
+        o.commit()
+        a_version, b_version = _latest_version(o, a.ontology), _latest_version(o, b.ontology)
+        b_before = _ontology_rows(o, b.tenant)
+    calls: dict[str, Callable[[Any, UUID], object]] = {
+        "gate_query": lambda ctx, v: ontology_exec.gate_query(ctx, UUID(a.ontology), v, "test"),
+        "run_query": lambda ctx, v: ontology_exec.run_query(
+            ctx, UUID(a.ontology), v, QUERY, channel="agent", purpose="test"
+        ),
+    }
+    with opener(a.tenant) as s:
+        set_tenant(s, a.tenant)
+        ctx = run_context(s, settings, run_row(s, a.tenant, run))
+        for name, call in calls.items():
+            for_b = _answer(s, call, ctx, b_version)
+            for_unknown = _answer(s, call, ctx, uuid7())
+            for_own = _answer(s, call, ctx, a_version)
+            assert for_b == for_unknown, (name, for_b, for_unknown)
+            assert for_own != for_unknown, (name, for_own)
+    with owner_db.session() as o:
+        assert _ontology_rows(o, b.tenant) == b_before, "B's rows changed"

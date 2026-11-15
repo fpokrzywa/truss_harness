@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -17,9 +18,11 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, NoResultFound
 from sqlalchemy.orm import Session
 
+from shifde import ledger
 from shifde.core.clock import utcnow
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
+from shifde.ledger import pricing
 from shifde.runtime import repository as repo
 from tests._support.runs import add_run
 from tests.build.env_support import add_published
@@ -109,6 +112,10 @@ def _seed_client(o: Session, c: Client) -> Ids:
     ).scalar_one()
     user = owner_person(o, "rt3-user")
     owner_member(o, t, user)
+    # a priced event of the run (`run_cost`, RT-6)
+    ledger.record(o, {"tenant_id": t, "event_key": f"cost-{c.run}", "event_type": "tool_call",
+                      "run_id": c.run, "root_run_id": c.run, "call_count": 1,
+                      "costed": pricing.Costed("calculated", Decimal("1.25"), "USD", None, None)})  # fmt: skip
     return Ids(t, c.run, c.job, queued_job, c.step, c.invocation, f"k-{c.invocation}",
                c.approval, artifact, child_pending, child_done, pipeline_run, c.workspace,
                principal, "idem", service_account, api_key, user)  # fmt: skip
@@ -199,6 +206,7 @@ CASES: dict[str, Case] = {
     "release_job": lambda s, t, x: repo.release_job(s, t, x.job, WORKER),
     "finish_run_jobs": lambda s, t, x: repo.finish_run_jobs(s, t, x.run),
     "root_pipeline_id": lambda s, t, x: repo.root_pipeline_id(s, t, x.pipeline_run),
+    "run_cost": lambda s, t, x: repo.run_cost(s, t, x.run, "USD"),
     # an unknown principal is displayed as its id: the answer is "fell back to the id"
     "principal_display": lambda s, t, x: (
         repo.principal_display(s, t, "service_account", x.service_account) == str(x.service_account)
