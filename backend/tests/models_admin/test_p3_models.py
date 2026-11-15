@@ -25,6 +25,7 @@ from shifde.core.db import Database
 from shifde.core.settings import Settings
 from shifde.secrets import service as secrets_service
 from tests.connections.routes import activate, as_user, connection, org, post, secret
+from tests.models_admin.conftest import start_of_window
 from tests.models_admin.routes import fake_model_stack, invoke_body
 from tests.tenancy.conftest import World, app_session
 from tests.tenancy.routes import People, project_slug, ws_slug
@@ -414,11 +415,12 @@ def test_model_routes_are_validated_against_scope_and_lifecycle(
 
 # ================================================================== limits
 def test_requests_per_minute_limit_is_enforced(
-    client: TestClient, world: World, people: People
+    client: TestClient, world: World, people: People, owner_session: Session
 ) -> None:
     A, h = org(world.a.slug), as_user(client, people.owner_a)
     ids = fake_model_stack(client, h, A, rate_limits={"rpm": 2})
     url = f"{A}/models/{ids['model']}/invoke"
+    start_of_window(owner_session)  # the three calls below must share one per-minute window
     assert [client.post(url, json=invoke_body(), headers=h).status_code for _ in range(2)] == [
         200,
         200,

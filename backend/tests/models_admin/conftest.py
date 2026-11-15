@@ -13,6 +13,7 @@ connection and every private vendor (the seeded global catalog stays).
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any  # Any: SQL parameter values
@@ -144,6 +145,21 @@ def route_values(tenant: UUID, primary: UUID, **over: Any) -> dict[str, Any]:
     }
     values.update(over)
     return values
+
+
+def start_of_window(owner: Session, margin_seconds: int = 30) -> None:
+    """Block until the DB clock is early in a minute (at least `margin_seconds` of it remain).
+
+    The limiter's window is `date_trunc('minute', now())` on the DB clock, which a test cannot pin;
+    a test that needs several calls to land in one window calls this first, so a slow run (load)
+    cannot roll the window over between them unless it takes longer than the margin.
+    """
+    seconds = float(
+        owner.execute(text("SELECT extract(second FROM clock_timestamp())")).scalar_one()
+    )
+    owner.rollback()
+    if seconds > 60 - margin_seconds:
+        time.sleep(60 - seconds + 0.2)
 
 
 def make_shi(app_db: Database, tenant: UUID | None = None) -> UUID:

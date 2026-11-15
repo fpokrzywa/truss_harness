@@ -14,6 +14,7 @@ from shifde.core import db as dbmod
 from shifde.core.db import Database
 from shifde.core.errors import ModelRateLimited
 from shifde.models_admin import limiter
+from tests.models_admin.conftest import start_of_window
 from tests.tenancy.conftest import World
 
 
@@ -22,6 +23,7 @@ def test_db_backed_limiter_counts_atomically_and_leases_expire(
 ) -> None:
     tid = world.a.tenant
     pool = Database(app_url, pool_size=3)
+    start_of_window(owner_session)  # the three take_request calls must share one minute window
     with pool.session() as s1, pool.session() as s2:
         dbmod.set_tenant(s1, tid)
         dbmod.set_tenant(s2, tid)
