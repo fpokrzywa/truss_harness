@@ -27,6 +27,7 @@ for _table in (
     "artifact_version_pins",
     "artifact_versions",
     "artifacts",
+    "model_routes",
     "models",
     "model_providers",
     "connections",
