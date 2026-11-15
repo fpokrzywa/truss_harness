@@ -1,6 +1,6 @@
 # Handoff — 2026-11-15, end of session 6 (lead)
 
-Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md`, then this file. Session 6 handed off at about 285k lead tokens (`scripts/context_size.py`): no agent running, no merge half done, `runtime` RT-1 blocked on an owner decision.
+Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md`, then this file. Session 6 handed off at 302,589 lead tokens (`scripts/context_size.py`: "HAND OFF NOW"): no agent running, no merge half done, `runtime` RT-1 blocked on an owner decision.
 
 ## Finished in session 6
 
