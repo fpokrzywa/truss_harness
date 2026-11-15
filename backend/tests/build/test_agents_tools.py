@@ -25,14 +25,15 @@ from sqlalchemy.orm import Session
 
 from shifde.build import repository as repo
 from shifde.build.agents import DEFAULT_MAXIMA, validate_agent
+from shifde.build.env import Env
 from shifde.build.issues import Issue, Report
 from shifde.build.tools import validate_tool
 from shifde.connections import repository as conn_repo
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.models_admin import repository as models_repo
-from tests.build.conftest import World
-from tests.build.env_support import RepoEnv, add_published
+from tests.build.conftest import EnvFactory, World
+from tests.build.env_support import add_published
 from tests.connections.conftest import connection_values, discovery_values
 from tests.models_admin.conftest import (
     model_values,
@@ -196,13 +197,13 @@ def _signature(issues: list[Issue]) -> list[tuple[str, str, str]]:
     return [(i.path, i.code, i.message) for i in issues]
 
 
-def _agent_report(env: RepoEnv, spec: dict[str, Any]) -> Report:
+def _agent_report(env: Env, spec: dict[str, Any]) -> Report:
     report = Report()
     validate_agent(spec, env, report, uuid7(), DEFAULT_MAXIMA)
     return report
 
 
-def _tool_report(env: RepoEnv, spec: dict[str, Any]) -> Report:
+def _tool_report(env: Env, spec: dict[str, Any]) -> Report:
     report = Report()
     validate_tool(deepcopy(spec), env, report)
     return report
@@ -210,11 +211,13 @@ def _tool_report(env: RepoEnv, spec: dict[str, Any]) -> Report:
 
 # ------------------------------------------------------------------ the structural rules
 def test_a_valid_agent_and_a_valid_tool_validate_cleanly(
-    seed: tuple[Side, Side], open_session: Callable[[UUID], AbstractContextManager[Session]]
+    seed: tuple[Side, Side],
+    open_session: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, _ = seed
     with open_session(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
         spec = _agent(
             a.prompt_version,
             {"model_id": str(a.model)},
@@ -232,11 +235,13 @@ def test_a_valid_agent_and_a_valid_tool_validate_cleanly(
 
 
 def test_agent_structure_errors_carry_paths_and_codes(
-    seed: tuple[Side, Side], open_session: Callable[[UUID], AbstractContextManager[Session]]
+    seed: tuple[Side, Side],
+    open_session: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, _ = seed
     with open_session(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
         good = _agent(a.prompt_version, {"model_id": str(a.model)})
         cases: list[tuple[dict[str, Any], str, str]] = [
             ({**good, "prompt_version_id": None}, "prompt_version_id", "required"),
@@ -278,11 +283,13 @@ def test_agent_structure_errors_carry_paths_and_codes(
 
 
 def test_tool_structure_errors_carry_paths_and_codes(
-    seed: tuple[Side, Side], open_session: Callable[[UUID], AbstractContextManager[Session]]
+    seed: tuple[Side, Side],
+    open_session: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, _ = seed
     with open_session(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
         good = _tool(a.rest_connection)
         cases: list[tuple[dict[str, Any], str, str]] = [
             ({**good, "executor": "ftp"}, "executor", "invalid_value"),
@@ -315,11 +322,13 @@ def _naming(a: Side, field: str, ref: UUID) -> dict[str, Any]:
 
 
 def test_an_agent_pinning_bs_versions_gets_the_unknown_id_outcome(
-    seed: tuple[Side, Side], open_session: Callable[[UUID], AbstractContextManager[Session]]
+    seed: tuple[Side, Side],
+    open_session: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, b = seed
     with open_session(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
         for field, theirs, own in (
             ("prompt_version_id", b.prompt_version, a.prompt_version),
             ("tool_version_ids", b.tool_version, a.tool_version),
@@ -334,11 +343,13 @@ def test_an_agent_pinning_bs_versions_gets_the_unknown_id_outcome(
 
 
 def test_a_latest_reference_to_bs_artifact_gets_the_unknown_id_outcome(
-    seed: tuple[Side, Side], open_session: Callable[[UUID], AbstractContextManager[Session]]
+    seed: tuple[Side, Side],
+    open_session: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, b = seed
     with open_session(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
         assert env.latest(b.prompt_artifact) is None
         assert env.latest(b.tool_artifact) is None
         assert env.latest(a.prompt_artifact) is not None  # control
@@ -355,11 +366,13 @@ def test_a_latest_reference_to_bs_artifact_gets_the_unknown_id_outcome(
 
 
 def test_an_agent_naming_bs_model_or_route_gets_the_unknown_id_outcome(
-    seed: tuple[Side, Side], open_session: Callable[[UUID], AbstractContextManager[Session]]
+    seed: tuple[Side, Side],
+    open_session: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, b = seed
     with open_session(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
         assert env.route_model_ids(b.route) is None and env.route_model_ids(uuid7()) is None
         assert env.route_model_ids(a.route) == [a.model]  # control
         assert env.model_problems([b.model]) == {b.model: "model_not_found"}
@@ -381,11 +394,13 @@ def test_an_agent_naming_bs_model_or_route_gets_the_unknown_id_outcome(
 
 
 def test_a_tool_naming_bs_connection_gets_the_unknown_id_outcome(
-    seed: tuple[Side, Side], open_session: Callable[[UUID], AbstractContextManager[Session]]
+    seed: tuple[Side, Side],
+    open_session: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, b = seed
     with open_session(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
         assert env.connection(b.rest_connection) is None
         assert env.connection(a.rest_connection) is not None  # control
         theirs = _tool_report(env, _tool(b.rest_connection))
@@ -397,11 +412,13 @@ def test_a_tool_naming_bs_connection_gets_the_unknown_id_outcome(
 
 
 def test_an_mcp_tool_discovered_on_bs_connection_is_not_seen_from_a(
-    seed: tuple[Side, Side], open_session: Callable[[UUID], AbstractContextManager[Session]]
+    seed: tuple[Side, Side],
+    open_session: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, b = seed
     with open_session(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
         # B's connection id is unknown to A: the validator stops at the connection
         theirs = _tool_report(env, _mcp_tool(b.mcp_connection, "lookup-b"))
         unknown = _tool_report(env, _mcp_tool(uuid7(), "lookup-b"))
@@ -417,15 +434,18 @@ def test_an_mcp_tool_discovered_on_bs_connection_is_not_seen_from_a(
 
 
 def test_bs_context_does_not_resolve_as_ids(
-    seed: tuple[Side, Side], app_db: Database, world: World
+    seed: tuple[Side, Side],
+    app_db: Database,
+    world: World,
+    make_env: EnvFactory,
 ) -> None:
     """Neither client's id works under the other's context, with either client id."""
     a, b = seed
     with app_session(app_db, b.tenant) as s:
-        assert RepoEnv(s, a.tenant).connection(a.rest_connection) is None
-        assert RepoEnv(s, b.tenant).connection(a.rest_connection) is None
-        assert RepoEnv(s, b.tenant).connection(b.rest_connection) is not None
-        assert RepoEnv(s, b.tenant).route_model_ids(a.route) is None
-        assert RepoEnv(s, a.tenant).route_model_ids(a.route) is None
-        assert RepoEnv(s, b.tenant).latest(a.prompt_artifact) is None
+        assert make_env(s, a.tenant).connection(a.rest_connection) is None
+        assert make_env(s, b.tenant).connection(a.rest_connection) is None
+        assert make_env(s, b.tenant).connection(b.rest_connection) is not None
+        assert make_env(s, b.tenant).route_model_ids(a.route) is None
+        assert make_env(s, a.tenant).route_model_ids(a.route) is None
+        assert make_env(s, b.tenant).latest(a.prompt_artifact) is None
         s.rollback()

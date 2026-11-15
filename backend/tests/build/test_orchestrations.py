@@ -19,11 +19,11 @@ from uuid import UUID
 import pytest
 from sqlalchemy.orm import Session
 
-from shifde.build.env import VersionRef
+from shifde.build.env import Env, VersionRef
 from shifde.build.issues import Issue, Report
 from shifde.build.orchestrations import template_exprs, validate_orchestration
 from shifde.core.ids import uuid7
-from tests.build.conftest import Side
+from tests.build.conftest import EnvFactory, Side
 from tests.build.env_support import RepoEnv
 
 LIMITS = {
@@ -58,7 +58,7 @@ def _tool(nid: str, ref: str) -> dict[str, Any]:
 
 
 def _run(
-    env: RepoEnv, spec: dict[str, Any], *, resolve: bool = True
+    env: Env, spec: dict[str, Any], *, resolve: bool = True
 ) -> tuple[Report, dict[str, Any], list[tuple[VersionRef, str]]]:
     report = Report()
     out, pins = validate_orchestration(spec, env, report, 8, resolve=resolve)
@@ -96,10 +96,11 @@ def test_a_node_naming_bs_version_gets_the_unknown_id_outcome(
     node: Callable[[str], dict[str, Any]],
     role: str,
     kind: str,
+    make_env: EnvFactory,
 ) -> None:
     a, b = sides
     with opener(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
         # A's own object: no error, pinned with its role, the stored spec names the version id
         report, out, pins = _run(env, _spec([node(own(a))]))
         assert report.errors == [], (label, _sig(report.errors))
@@ -125,10 +126,11 @@ def test_a_node_naming_bs_version_gets_the_unknown_id_outcome(
 def test_latest_is_never_resolved_for_a_published_orchestration(
     sides: tuple[Side, Side],
     opener: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, b = sides
     with opener(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
         for side in (a, b):
             report, _, pins = _run(
                 env, _spec([_agent("n", f"latest:{side.agent_artifact}")]), resolve=False
@@ -143,10 +145,11 @@ def test_latest_is_never_resolved_for_a_published_orchestration(
 def test_a_tool_version_given_where_an_agent_is_expected_is_refused_for_both_clients(
     sides: tuple[Side, Side],
     opener: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, b = sides
     with opener(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
         own, _, own_pins = _run(env, _spec([_agent("n", str(a.tool_version))]))
         theirs, _, pins = _run(env, _spec([_agent("n", str(b.tool_version))]))
         unknown, _, _ = _run(env, _spec([_agent("n", str(uuid7()))]))
@@ -161,10 +164,11 @@ def test_a_tool_version_given_where_an_agent_is_expected_is_refused_for_both_cli
 def test_a_whole_graph_pins_only_the_callers_objects(
     sides: tuple[Side, Side],
     opener: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
 ) -> None:
     a, b = sides
     with opener(a.tenant) as s:
-        env = RepoEnv(s, a.tenant)
+        env = make_env(s, a.tenant)
         spec = _spec(
             [_agent("one", str(a.agent_version)), _tool("two", str(b.tool_version))],
             [{"from": "one", "to": "two"}],
@@ -185,7 +189,7 @@ def _codes(report: Report) -> set[tuple[str, str]]:
     return {(e.path, e.code) for e in report.errors}
 
 
-def test_a_valid_graph_is_pinned_and_normalised(env: RepoEnv, sides: tuple[Side, Side]) -> None:
+def test_a_valid_graph_is_pinned_and_normalised(env: Env, sides: tuple[Side, Side]) -> None:
     a, _ = sides
     spec = _spec(
         [
@@ -296,7 +300,7 @@ STRUCTURE: list[tuple[str, Callable[[dict[str, Any]], object], set[tuple[str, st
 
 @pytest.mark.parametrize(("label", "mutate", "expected"), STRUCTURE, ids=[c[0] for c in STRUCTURE])
 def test_structural_errors_carry_paths_and_codes(
-    env: RepoEnv,
+    env: Env,
     sides: tuple[Side, Side],
     label: str,
     mutate: Callable[[dict[str, Any]], object],
@@ -308,7 +312,7 @@ def test_structural_errors_carry_paths_and_codes(
     assert expected <= _codes(report), (label, _codes(report))
 
 
-def test_parallel_node_rules(env: RepoEnv, sides: tuple[Side, Side]) -> None:
+def test_parallel_node_rules(env: Env, sides: tuple[Side, Side]) -> None:
     ref = str(sides[0].agent_version)
     good = _spec(
         [
@@ -349,7 +353,7 @@ def test_parallel_node_rules(env: RepoEnv, sides: tuple[Side, Side]) -> None:
 
 
 def test_tool_and_agent_input_maps_are_checked_against_the_pinned_spec(
-    env: RepoEnv, sides: tuple[Side, Side]
+    env: Env, sides: tuple[Side, Side]
 ) -> None:
     a, _ = sides
     spec = _spec(

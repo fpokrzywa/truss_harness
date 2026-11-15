@@ -17,14 +17,17 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from shifde.build import repository as build_repo
+from shifde.build.env import Env
 from shifde.connections import repository as conn_repo
 from shifde.core.db import Database
-from tests.build.env_support import add_published
+from shifde.core.settings import Settings
+from tests.build.env_support import RepoEnv, add_published
+from tests.build.service_support import add_person, service_env
 from tests.conftest import CLEAN_TABLES
 from tests.connections.conftest import connection_values, discovery_values, owner_vendor
 from tests.tenancy.conftest import World, app_session, world
 
-__all__ = ["World", "owner_vendor", "world"]
+__all__ = ["EnvFactory", "World", "owner_vendor", "world"]
 
 for _table in (
     "pipeline_schedules",
@@ -129,3 +132,31 @@ def opener(
 ) -> Callable[[UUID], AbstractContextManager[Session]]:
     make: Callable[[Database, Database, UUID], AbstractContextManager[Session]] = request.param
     return lambda tenant: make(app_db, owner_db, tenant)
+
+
+# ---- part 4a: the stand-in `RepoEnv` and the service's own `Env` answer the same questions
+
+EnvFactory = Callable[[Session, UUID], Env]
+
+
+@pytest.fixture
+def admins(owner_db: Database, world: World) -> dict[UUID, UUID]:
+    """{client id: a member bound as `tenant_administrator` there} for both clients."""
+    with owner_db.session() as o:
+        out = {
+            t: add_person(o, t, f"admin-{label}", "tenant_administrator")
+            for label, t in (("a", world.a.tenant), ("b", world.b.tenant))
+        }
+        o.commit()
+    return out
+
+
+@pytest.fixture(params=["repo-env", "service-env"])
+def make_env(
+    request: pytest.FixtureRequest, admins: dict[UUID, UUID], settings: Settings
+) -> EnvFactory:
+    """`make_env(session, client id)`: `RepoEnv`, or the production `ArtifactService.env` of the
+    client's administrator (build isolation review 2 F2: the production `Env` is proven too)."""
+    if request.param == "repo-env":
+        return RepoEnv
+    return lambda s, tenant: service_env(s, tenant, admins[tenant], settings)
