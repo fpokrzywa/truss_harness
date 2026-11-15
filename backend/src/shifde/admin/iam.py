@@ -500,6 +500,66 @@ def create_binding(scope: TenantScope, body: s.BindingCreate) -> s.BindingOut:
     return _binding_out(row, _subject_labels(scope.session, scope.tenant_id, [row]))
 
 
+def bind_group_as_platform_admin(
+    session: Session,
+    ctx: RequestContext,
+    principal: Principal,
+    org: str,
+    body: s.GroupBindingCreate,
+) -> s.BindingOut:
+    """The platform administrator binds a platform group to a role in client `org` without being
+    its owner (carry_forward row 109, B-1602). The administrator check comes first (one 403 for
+    everyone else whatever the slug, as `create_user`, B-1404); the client is then looked up by
+    slug under the flag. `tenancy.service.bind_group_as_platform_admin` writes, audits in that
+    client only (`authz.group.bound`, by_platform_administrator) and records a self-add for each
+    administrator in the group (B-1407); its refusals are one generic 403."""
+    tenancy.require_platform_admin(session, principal)
+    if body.scope.type == "resource":
+        raise ValidationFailed("a group is bound at organization, workspace or project scope")
+    if body.expires_at is not None and body.expires_at <= utcnow():
+        raise ValidationFailed("expires_at must be in the future")
+    try:
+        with db.platform_admin_context(session):
+            tenant_id = tenancy.tenant_id_by_slug(session, org)
+            if tenant_id is None:
+                raise NotFound(ORG_NOT_FOUND)
+            db.set_tenant(session, tenant_id)
+            header = tenancy.tenant_header(session, tenant_id)
+            if header is None:
+                raise NotFound(ORG_NOT_FOUND)
+            if header[2] != "active":
+                raise ScopeArchived("organization is archived")
+            _bindable_role(session, tenant_id, body.role_id)
+        session.rollback()
+    except BaseException:
+        session.rollback()
+        db.set_tenant(session, None)
+        raise
+    db.set_tenant(session, None)
+    binding_id = tenancy.bind_group_as_platform_admin(
+        session,
+        ctx,
+        principal,
+        tenant_id=tenant_id,
+        group_id=body.group_id,
+        role_id=body.role_id,
+        scope_type=body.scope.type,
+        scope_id=body.scope.id,
+        expires_at=body.expires_at,
+    )
+    try:
+        with db.platform_admin_context(session):
+            db.set_tenant(session, tenant_id)
+            row = authz.get_binding(session, tenant_id, binding_id)
+            if row is None:  # committed in this client a moment ago
+                raise NotFound("role binding not found")
+            out = _binding_out(row, _subject_labels(session, tenant_id, [row]))
+        session.rollback()
+    finally:
+        db.set_tenant(session, None)
+    return out
+
+
 def delete_binding(scope: TenantScope, binding_id: UUID) -> None:
     row = authz.get_binding(scope.session, scope.tenant_id, binding_id)
     if row is None:
@@ -737,6 +797,12 @@ def guard_target_privileges(
             )
         )
     bindings += authz.bindings_of_subject(scope.session, scope.tenant_id, "group", group_ids)
+    guard_bindings(scope, bindings, action=action)
+
+
+def guard_bindings(scope: TenantScope, bindings: Iterable[BindingRow], *, action: str) -> None:
+    """The actor must hold every permission each binding (of this client) grants, at its scope;
+    a scope no longer in this client is skipped (it grants nothing here)."""
     for b in bindings:
         try:
             ref = hold_ref(

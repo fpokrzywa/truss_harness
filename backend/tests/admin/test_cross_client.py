@@ -1,4 +1,5 @@
-"""Cross-client isolation of the admin IAM routes (admin part 1), through a minimal app.
+"""Cross-client isolation of the admin routes (part 1: IAM; part 2: service accounts, API keys
+and platform group bindings), through a minimal app.
 
 Every route of `admin.api.router` has a test here (`ROUTE_TESTS`). Each first gets the caller's
 own object (200/201), then asks for client B's object under A's org (exactly the answer a missing
@@ -9,6 +10,7 @@ id; `POST /orgs/{org}/users` is the platform administrator's.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Any  # Any: JSON bodies
 from uuid import UUID
 
@@ -16,12 +18,15 @@ import httpx
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from shifde.admin import api
+from shifde.admin import api, credentials
+from shifde.core.clock import utcnow
+from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
+from shifde.identity import apikeys
 from tests.admin.conftest import admin_client
 from tests.identity.harness import login
-from tests.tenancy.conftest import World
+from tests.tenancy.conftest import World, app_session
 from tests.tenancy.routes import People, ws_slug
 
 ROUTE_TESTS = {
@@ -61,6 +66,35 @@ ROUTE_TESTS = {
         "test_a_cannot_list_create_or_delete_bs_bindings"
     ),
     ("GET", "/api/v1/orgs/{org}/me/permissions"): "test_my_permissions_are_only_my_own_clients",
+    # admin part 2 (B-1601..)
+    ("POST", "/api/v1/platform/orgs/{org}/group-bindings"): (
+        "test_only_the_platform_administrator_binds_a_group_without_owning_the_client"
+    ),
+    ("GET", "/api/v1/orgs/{org}/service-accounts"): (
+        "test_a_cannot_list_read_or_change_bs_service_accounts"
+    ),
+    ("POST", "/api/v1/orgs/{org}/service-accounts"): (
+        "test_a_cannot_list_read_or_change_bs_service_accounts"
+    ),
+    ("GET", "/api/v1/orgs/{org}/service-accounts/{sa_id}"): (
+        "test_a_cannot_list_read_or_change_bs_service_accounts"
+    ),
+    ("PATCH", "/api/v1/orgs/{org}/service-accounts/{sa_id}"): (
+        "test_a_cannot_list_read_or_change_bs_service_accounts"
+    ),
+    (
+        "GET",
+        "/api/v1/orgs/{org}/api-keys",
+    ): "test_a_cannot_list_create_rotate_or_revoke_bs_api_keys",
+    ("POST", "/api/v1/orgs/{org}/api-keys"): (
+        "test_a_cannot_list_create_rotate_or_revoke_bs_api_keys"
+    ),
+    ("POST", "/api/v1/orgs/{org}/api-keys/{key_id}/rotate"): (
+        "test_a_cannot_list_create_rotate_or_revoke_bs_api_keys"
+    ),
+    ("POST", "/api/v1/orgs/{org}/api-keys/{key_id}/revoke"): (
+        "test_a_cannot_list_create_rotate_or_revoke_bs_api_keys"
+    ),
 }
 
 _VARYING = {"instance", "request_id"}
@@ -524,3 +558,321 @@ def test_my_permissions_are_only_my_own_clients(
     with admin_client(settings) as c:
         login(c, people.owner_b)
         assert "role:manage" in c.get(f"/api/v1/orgs/{b.slug}/me/permissions").json()["permissions"]
+
+
+# ------------------------------------------------------------------ admin part 2 (B-1601..)
+def _key_body(principal: UUID | str, **extra: Any) -> dict[str, Any]:
+    return {
+        "name": "k",
+        "principal_type": "service_account",
+        "principal_id": str(principal),
+        "scopes": ["workspace:read"],
+        "expires_in_days": 5,
+        **extra,
+    }
+
+
+def test_a_cannot_list_read_or_change_bs_service_accounts(
+    settings: Settings, world: World, people: People, owner_session: Session
+) -> None:
+    a, b = world.a, world.b
+    with admin_client(settings) as c:
+        headers = login(c, people.owner_a)
+        url = f"/api/v1/orgs/{a.slug}/service-accounts"
+        made = c.post(url, json={"name": "etl"}, headers=headers)
+        assert made.status_code == 201, made.text
+        own = made.json()["id"]
+        assert c.get(f"{url}/{own}").status_code == 200
+        patched = c.patch(f"{url}/{own}", json={"description": "d"}, headers=headers)
+        assert patched.status_code == 200 and patched.json()["description"] == "d"
+        listed = {i["id"] for i in c.get(f"{url}?limit=200").json()["items"]}
+        assert {own, str(a.service_account)} <= listed
+        assert str(b.service_account) not in listed
+        # B's service account under A's org: exactly a missing id
+        missing = uuid7()
+        _same(c.get(f"{url}/{b.service_account}"), c.get(f"{url}/{missing}"), 404)
+        body = {"name": "taken", "status": "disabled"}
+        _same(
+            c.patch(f"{url}/{b.service_account}", json=body, headers=headers),
+            c.patch(f"{url}/{missing}", json=body, headers=headers),
+            404,
+        )
+        # B's names are not taken in A (no existence oracle); A's own is one generic 409
+        a_name = owner_session.execute(
+            text("SELECT name FROM shifde.service_accounts WHERE id = :i"), {"i": a.service_account}
+        ).scalar_one()
+        owner_session.execute(
+            text(
+                "INSERT INTO shifde.service_accounts (id, tenant_id, name) "
+                "VALUES (:i, :t, 'only-in-b')"
+            ),
+            {"i": uuid7(), "t": b.tenant},
+        )
+        owner_session.commit()
+        r = c.patch(f"{url}/{own}", json={"name": "only-in-b"}, headers=headers)
+        assert r.status_code == 200, r.text
+        r = c.patch(f"{url}/{own}", json={"name": a_name}, headers=headers)
+        assert r.status_code == 409 and r.json()["detail"] == credentials.SA_NAME_TAKEN, r.text
+        # under B's org: exactly a missing org
+        gone = "/api/v1/orgs/no-such-client/service-accounts"
+        theirs = f"/api/v1/orgs/{b.slug}/service-accounts"
+        _same(c.get(theirs), c.get(gone), 404)
+        _same(c.get(f"{theirs}/{b.service_account}"), c.get(f"{gone}/{b.service_account}"), 404)
+        _same(
+            c.post(theirs, json={"name": "x"}, headers=headers),
+            c.post(gone, json={"name": "x"}, headers=headers),
+            404,
+        )
+        _same(
+            c.patch(f"{theirs}/{b.service_account}", json=body, headers=headers),
+            c.patch(f"{gone}/{b.service_account}", json=body, headers=headers),
+            404,
+        )
+    row = owner_session.execute(
+        text("SELECT status, name FROM shifde.service_accounts WHERE id = :i"),
+        {"i": b.service_account},
+    ).one()
+    assert tuple(row) == ("active", "sa")
+    assert (
+        owner_session.execute(
+            text("SELECT count(*) FROM shifde.service_accounts WHERE tenant_id = :t"),
+            {"t": b.tenant},
+        ).scalar_one()
+        == 2  # the world's and `only-in-b`: nothing created through A's or B's routes
+    )
+
+
+def test_a_cannot_list_create_rotate_or_revoke_bs_api_keys(
+    settings: Settings, world: World, people: People, owner_session: Session
+) -> None:
+    a, b = world.a, world.b
+    with admin_client(settings) as c:
+        hb = login(c, people.owner_b)
+        made_b = c.post(
+            f"/api/v1/orgs/{b.slug}/api-keys", json=_key_body(b.service_account), headers=hb
+        )
+        assert made_b.status_code == 201, made_b.text
+        b_key = made_b.json()["api_key"]
+    with admin_client(settings) as c:
+        headers = login(c, people.owner_a)
+        url = f"/api/v1/orgs/{a.slug}/api-keys"
+        made = c.post(url, json=_key_body(a.service_account), headers=headers)
+        assert made.status_code == 201, made.text
+        own = made.json()["api_key"]["id"]
+        listed = {i["id"] for i in c.get(f"{url}?limit=200").json()["items"]}
+        assert own in listed and b_key["id"] not in listed
+        # a filter naming B's principal lists what an unknown principal lists: nothing
+        for ptype, theirs in (("service_account", b.service_account), ("user", b.member)):
+            r = c.get(f"{url}?principal_type={ptype}&principal_id={theirs}")
+            assert r.status_code == 200 and r.json()["items"] == []
+        # B's service account, workspace or project in A's request: exactly a missing one
+        cases: list[tuple[str, Any, Any]] = [
+            ("principal_id", str(b.service_account), str(uuid7())),
+            ("resource_scope", {"workspace_ids": [str(b.ws)]}, {"workspace_ids": [str(uuid7())]}),
+            ("resource_scope", {"project_ids": [str(b.project)]}, {"project_ids": [str(uuid7())]}),
+        ]
+        for field, theirs_value, unknown in cases:
+            body = _key_body(a.service_account)
+            _same(
+                c.post(url, json={**body, field: theirs_value}, headers=headers),
+                c.post(url, json={**body, field: unknown}, headers=headers),
+                422,
+            )
+        # B's key under A's org: exactly a missing id
+        missing = uuid7()
+        actions: list[tuple[str, Any]] = [("rotate", {"grace_hours": 0}), ("revoke", None)]
+        for action, action_body in actions:
+            _same(
+                c.post(f"{url}/{b_key['id']}/{action}", json=action_body, headers=headers),
+                c.post(f"{url}/{missing}/{action}", json=action_body, headers=headers),
+                404,
+            )
+        rotated = c.post(f"{url}/{own}/rotate", json={"grace_hours": 0}, headers=headers)
+        assert rotated.status_code == 201, rotated.text
+        revoked = c.post(f"{url}/{rotated.json()['api_key']['id']}/revoke", headers=headers)
+        assert revoked.status_code == 200 and revoked.json()["status"] == "revoked"
+        # under B's org: exactly a missing org
+        theirs_url = f"/api/v1/orgs/{b.slug}/api-keys"
+        gone = "/api/v1/orgs/no-such-client/api-keys"
+        _same(c.get(theirs_url), c.get(gone), 404)
+        body = _key_body(b.service_account)
+        _same(
+            c.post(theirs_url, json=body, headers=headers),
+            c.post(gone, json=body, headers=headers),
+            404,
+        )
+        for action, action_body in actions:
+            _same(
+                c.post(f"{theirs_url}/{b_key['id']}/{action}", json=action_body, headers=headers),
+                c.post(f"{gone}/{b_key['id']}/{action}", json=action_body, headers=headers),
+                404,
+            )
+    rows = owner_session.execute(
+        text("SELECT revoked_at, expires_at FROM shifde.api_keys WHERE tenant_id = :t"),
+        {"t": b.tenant},
+    ).all()
+    assert len(rows) == 1 and rows[0].revoked_at is None  # B's one key, untouched
+    assert rows[0].expires_at == datetime.fromisoformat(b_key["expires_at"])
+    assert (
+        owner_session.execute(
+            text("SELECT count(*) FROM shifde.api_keys WHERE rotated_from_id = :k"),
+            {"k": b_key["id"]},
+        ).scalar_one()
+        == 0
+    )
+
+
+def test_a_key_or_service_account_of_a_never_acts_in_b(
+    settings: Settings, world: World, people: People, owner_session: Session, app_db: Database
+) -> None:
+    """A's service-account key, and the personal key in A of a person who is also a member of B,
+    address A only: in B every admin route answers like a missing org."""
+    a, b = world.a, world.b
+    with app_session(app_db, a.tenant, people.both_id) as s:
+        _, personal = apikeys.mint(
+            s,
+            settings,
+            tenant_id=a.tenant,
+            name="mine",
+            principal_type="user",
+            principal_id=people.both_id,
+            scopes=["workspace:read"],
+            resource_scope=None,
+            expires_at=utcnow() + timedelta(days=1),
+            created_by=people.both_id,
+        )
+        s.commit()
+    with admin_client(settings) as c:
+        headers = login(c, people.owner_a)
+        bound = c.post(
+            f"/api/v1/orgs/{a.slug}/role-bindings",
+            json={
+                "subject_type": "service_account",
+                "subject_id": str(a.service_account),
+                "role_id": str(_system_role(owner_session, "tenant_administrator")),
+                "scope": {"type": "tenant", "id": str(a.tenant)},
+            },
+            headers=headers,
+        )
+        assert bound.status_code == 201, bound.text
+        scopes = ["workspace:read", "apikey:manage", "apikey:read", "serviceaccount:read"]
+        machine = c.post(
+            f"/api/v1/orgs/{a.slug}/api-keys",
+            json=_key_body(a.service_account, scopes=scopes),
+            headers=headers,
+        )
+        assert machine.status_code == 201, machine.text
+        c.cookies.clear()
+        for secret in (personal, machine.json()["secret"]):
+            h = {"Authorization": f"Bearer {secret}"}
+            assert c.get(f"/api/v1/orgs/{a.slug}/workspaces", headers=h).status_code == 200
+            for path in ("service-accounts", "api-keys", f"service-accounts/{b.service_account}"):
+                _same(
+                    c.get(f"/api/v1/orgs/{b.slug}/{path}", headers=h),
+                    c.get(f"/api/v1/orgs/no-such-client/{path}", headers=h),
+                    404,
+                )
+            for body in (
+                _key_body(b.service_account),
+                _key_body(people.both_id, principal_type="user"),
+            ):
+                _same(
+                    c.post(f"/api/v1/orgs/{b.slug}/api-keys", json=body, headers=h),
+                    c.post("/api/v1/orgs/no-such-client/api-keys", json=body, headers=h),
+                    404,
+                )
+    assert (
+        owner_session.execute(
+            text("SELECT count(*) FROM shifde.api_keys WHERE tenant_id = :t"), {"t": b.tenant}
+        ).scalar_one()
+        == 0
+    )
+
+
+def test_only_the_platform_administrator_binds_a_group_without_owning_the_client(
+    settings: Settings, world: World, people: People, owner_session: Session
+) -> None:
+    a, b = world.a, world.b
+    viewer = _system_role(owner_session, "viewer")
+
+    def body(group: UUID, role: UUID, scope_type: str = "tenant", scope: UUID = a.tenant) -> Any:
+        return {
+            "group_id": str(group),
+            "role_id": str(role),
+            "scope": {"type": scope_type, "id": str(scope)},
+        }
+
+    with admin_client(settings) as c:
+        headers = login(c, people.owner_a)
+        refused = c.post(
+            f"/api/v1/platform/orgs/{a.slug}/group-bindings",
+            json=body(a.group, viewer),
+            headers=headers,
+        )
+        assert refused.status_code == 403  # even the owner of A: one answer whatever the slug
+        for slug in (b.slug, "no-such-client"):
+            _same(
+                c.post(
+                    f"/api/v1/platform/orgs/{slug}/group-bindings",
+                    json=body(b.group, viewer, scope=b.tenant),
+                    headers=headers,
+                ),
+                refused,
+                403,
+            )
+    b_role = uuid7()
+    owner_session.execute(
+        text(
+            "INSERT INTO shifde.roles (id, tenant_id, key, name, is_system, status) "
+            "VALUES (:i, :t, :k, 'b role', false, 'active')"
+        ),
+        {"i": b_role, "t": b.tenant, "k": f"b-{b_role.hex[-12:]}"},
+    )
+    owner_session.commit()
+    with admin_client(settings) as c:
+        headers = login(c, people.platform)
+        url = f"/api/v1/platform/orgs/{a.slug}/group-bindings"
+        made = c.post(url, json=body(b.group, viewer), headers=headers)
+        assert made.status_code == 201, made.text
+        assert made.json()["subject_id"] == str(b.group)
+        assert made.json()["scope"]["id"] == str(a.tenant)
+        missing = c.post(
+            "/api/v1/platform/orgs/no-such-client/group-bindings",
+            json=body(b.group, viewer),
+            headers=headers,
+        )
+        assert missing.status_code == 404
+        # B's role or workspace in A: refused like a missing one, nothing written
+        _same(
+            c.post(url, json=body(a.group, b_role), headers=headers),
+            c.post(url, json=body(a.group, uuid7()), headers=headers),
+            422,
+        )
+        _same(
+            c.post(url, json=body(a.group, viewer, "workspace", b.ws), headers=headers),
+            c.post(url, json=body(a.group, viewer, "workspace", uuid7()), headers=headers),
+            403,
+        )
+    rows = owner_session.execute(
+        text(
+            "SELECT tenant_id, subject_id FROM shifde.role_bindings "
+            "WHERE subject_type = 'group' AND tenant_id IN (:a, :b)"
+        ),
+        {"a": a.tenant, "b": b.tenant},
+    ).all()
+    assert [tuple(r) for r in rows] == [(a.tenant, b.group)]
+    audited = owner_session.execute(
+        text(
+            "SELECT tenant_id FROM shifde.audit_events WHERE action = 'authz.group.bound' "
+            "AND (tenant_id IN (:a, :b) OR tenant_id IS NULL)"
+        ),
+        {"a": a.tenant, "b": b.tenant},
+    ).all()
+    assert [r[0] for r in audited] == [a.tenant]
+    with admin_client(settings) as c:
+        login(c, people.owner_a)
+        items = c.get(f"/api/v1/orgs/{a.slug}/groups").json()["items"]
+        assert [g["id"] for g in items] == [str(b.group)]
+    with admin_client(settings) as c:
+        login(c, people.owner_b)
+        assert c.get(f"/api/v1/orgs/{b.slug}/groups").json()["items"] == []

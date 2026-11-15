@@ -1,7 +1,8 @@
 """Request/response DTOs for the admin API (contract: SETH docs/api/PHASE_2_CONTRACT.md).
 
 Ported from SETH 3ba0e06 `admin/schemas.py`, part 1 (IAM: permissions, users, roles, role
-bindings, groups); service accounts, API keys, IdPs, secrets and audit come with parts 2-3.
+bindings, groups) and part 2 (service accounts, API keys; B-1601); IdPs, secrets and audit come
+with part 3.
 Changes (DECISIONS B-1401..B-1404): groups are platform-level (design 5.3). A client sees a
 group it has bound only as `BoundGroupOut` (id and name, B-930); `GroupRef` in a user's entry
 loses `slug`; the full group shapes (`GroupOut`, `GroupDetailOut`) are the platform
@@ -85,6 +86,16 @@ class BindingCreate(BaseModel):
     model_config = Strict
     subject_type: Literal["user", "group", "service_account"]
     subject_id: UUID
+    role_id: UUID
+    scope: ScopeIn
+    expires_at: datetime | None = None
+
+
+class GroupBindingCreate(BaseModel):
+    """A platform group bound in a client by the platform administrator (B-1602)."""
+
+    model_config = Strict
+    group_id: UUID
     role_id: UUID
     scope: ScopeIn
     expires_at: datetime | None = None
@@ -202,3 +213,70 @@ class GroupMemberOut(BaseModel):
 
 class GroupDetailOut(GroupOut):
     members: list[GroupMemberOut]
+
+
+# ------------------------------------------------------------------ service accounts / keys
+class ServiceAccountCreate(BaseModel):
+    model_config = Strict
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+
+
+class ServiceAccountPatch(BaseModel):
+    model_config = Strict
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    status: Literal["active", "disabled"] | None = None
+    row_version: int | None = None
+
+
+class ServiceAccountOut(BaseModel):
+    id: UUID
+    name: str
+    description: str | None
+    status: str
+    row_version: int
+    created_at: datetime
+    updated_at: datetime | None
+
+
+class ResourceScopeIn(BaseModel):
+    model_config = Strict
+    workspace_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    project_ids: list[UUID] = Field(default_factory=list, max_length=100)
+
+
+class ApiKeyCreate(BaseModel):
+    model_config = Strict
+    name: str = Field(min_length=1, max_length=200)
+    principal_type: Literal["service_account", "user"]
+    principal_id: UUID
+    scopes: list[str] = Field(min_length=1, max_length=300)
+    resource_scope: ResourceScopeIn | None = None
+    expires_in_days: int = Field(ge=1)
+
+
+class ApiKeyRotate(BaseModel):
+    model_config = Strict
+    grace_hours: int = Field(default=24, ge=0, le=168)
+
+
+class ApiKeyOut(BaseModel):
+    id: UUID
+    name: str
+    prefix: str
+    principal_type: str
+    principal_id: UUID
+    scopes: list[str]
+    resource_scope: dict[str, list[str]] | None
+    expires_at: datetime
+    last_used_at: datetime | None
+    revoked_at: datetime | None
+    rotated_from_id: UUID | None
+    created_at: datetime
+    status: Literal["active", "revoked", "expired"]
+
+
+class ApiKeyCreated(BaseModel):
+    api_key: ApiKeyOut
+    secret: str  # shown exactly once, in this response only
