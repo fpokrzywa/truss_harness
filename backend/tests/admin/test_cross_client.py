@@ -1,5 +1,6 @@
 """Cross-client isolation of the admin routes (part 1: IAM; part 2: service accounts, API keys
-and platform group bindings), through a minimal app.
+and platform group bindings; part 3: identity providers, secrets and audit), through a minimal
+app.
 
 Every route of `admin.api.router` has a test here (`ROUTE_TESTS`). Each first gets the caller's
 own object (200/201), then asks for client B's object under A's org (exactly the answer a missing
@@ -26,6 +27,7 @@ from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.identity import apikeys
+from shifde.secrets.service import SECRET_NAME_CONFLICT
 from tests.admin.conftest import admin_client
 from tests.identity.harness import login
 from tests.tenancy.conftest import World, app_session
@@ -117,6 +119,23 @@ ROUTE_TESTS = {
     ),
     ("POST", "/api/v1/platform/idps/{idp_id}/test"): (
         "test_platform_idp_routes_reach_installation_idps_only"
+    ),
+    # admin part 3b (B-1641..)
+    ("GET", "/api/v1/orgs/{org}/secrets"): "test_a_cannot_list_create_rotate_or_disable_bs_secrets",
+    ("POST", "/api/v1/orgs/{org}/secrets"): (
+        "test_a_cannot_list_create_rotate_or_disable_bs_secrets"
+    ),
+    ("POST", "/api/v1/orgs/{org}/secrets/{secret_id}/rotate"): (
+        "test_a_cannot_list_create_rotate_or_disable_bs_secrets"
+    ),
+    ("PATCH", "/api/v1/orgs/{org}/secrets/{secret_id}"): (
+        "test_a_cannot_list_create_rotate_or_disable_bs_secrets"
+    ),
+    ("GET", "/api/v1/orgs/{org}/audit-events"): (
+        "test_a_lists_and_verifies_only_its_own_audit_events"
+    ),
+    ("GET", "/api/v1/orgs/{org}/audit-events/verify"): (
+        "test_a_lists_and_verifies_only_its_own_audit_events"
     ),
 }
 
@@ -851,6 +870,11 @@ def test_only_the_platform_administrator_binds_a_group_without_owning_the_client
         ),
         {"i": b_role, "t": b.tenant, "k": f"b-{b_role.hex[-12:]}"},
     )
+    platform_id = _uid(owner_session, people.platform)
+    owner_session.execute(  # the administrator is in the group: binding it is a self-add in A
+        text("INSERT INTO shifde.group_members (group_id, user_id) VALUES (:g, :u)"),
+        {"g": b.group, "u": platform_id},
+    )
     owner_session.commit()
     with admin_client(settings) as c:
         headers = login(c, people.platform)
@@ -876,6 +900,21 @@ def test_only_the_platform_administrator_binds_a_group_without_owning_the_client
             c.post(url, json=body(a.group, viewer, "workspace", uuid7()), headers=headers),
             403,
         )
+        # an organization-level binding naming B's id: the one generic 403 (admin review 3 item 2)
+        _same(
+            c.post(url, json=body(a.group, viewer, "tenant", b.tenant), headers=headers),
+            c.post(url, json=body(a.group, viewer, "tenant", uuid7()), headers=headers),
+            403,
+        )
+    self_adds = owner_session.execute(
+        text(
+            "SELECT tenant_id, target_id FROM shifde.audit_events "
+            "WHERE action = 'tenancy.platform_admin.self_added' "
+            "AND details->>'through_group_id' = :g"
+        ),
+        {"g": str(b.group)},
+    ).all()
+    assert [tuple(r) for r in self_adds] == [(a.tenant, str(platform_id))]
     rows = owner_session.execute(
         text(
             "SELECT tenant_id, subject_id FROM shifde.role_bindings "
@@ -1045,6 +1084,22 @@ def test_platform_idp_routes_reach_installation_idps_only(
         r = c.patch(f"{base}/{inst}", json={"display_name": "i2", "row_version": 1}, headers=hp)
         assert r.status_code == 200, r.text
         assert {i["id"] for i in c.get(f"{base}?limit=200").json()["items"]} == {inst}
+        # past the first page (admin isolation review 4 item 4: the cursor is read in context)
+        more = {inst}
+        for n in (2, 3):
+            r = c.post(base, json=_idp(f"https://inst{n}.test"), headers=hp)
+            assert r.status_code == 201, r.text
+            more.add(r.json()["id"])
+        paged: list[str] = []
+        cursor: str | None = None
+        while True:
+            page = c.get(base, params={"limit": 1, **({"cursor": cursor} if cursor else {})})
+            assert page.status_code == 200, page.text
+            paged += [i["id"] for i in page.json()["items"]]
+            cursor = page.json()["next_cursor"]
+            if not cursor:
+                break
+        assert len(paged) == len(set(paged)) and more <= set(paged) and b_idp not in paged
         missing = uuid7()
         body = {"display_name": "x", "row_version": 1}
         _same(c.get(f"{base}/{b_idp}"), c.get(f"{base}/{missing}"), 404)
@@ -1085,3 +1140,223 @@ def test_platform_idp_routes_reach_installation_idps_only(
         text("SELECT display_name FROM shifde.idp_configs WHERE id = :i"), {"i": b_idp}
     ).scalar_one()
     assert name == "corp"
+
+
+# ---------------------------------------------------------------- secrets and audit (part 3b)
+_A_VALUE, _A_ROTATED, _B_VALUE = "a-secret-value-71b3", "a-rotated-value-82c4", "b-secret-val-93d5"
+
+
+def _owner_secret(owner: Session, tenant: UUID | None, name: str) -> UUID:
+    """A secret row written as the owner (material is never decrypted by these routes)."""
+    sid = uuid7()
+    owner.execute(
+        text(
+            "INSERT INTO shifde.secrets (id, tenant_id, name, ciphertext, wrapped_dek, nonce, "
+            "kek_id) VALUES (:i, :t, :n, '\\x00', '\\x00', '\\x00', 'k')"
+        ),
+        {"i": sid, "t": tenant, "n": name},
+    )
+    owner.commit()
+    return sid
+
+
+def test_a_cannot_list_create_rotate_or_disable_bs_secrets(
+    settings: Settings,
+    world: World,
+    people: People,
+    owner_session: Session,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Carry_forward rows 79 and 104 (B-1641, B-1644): B's secret (and an installation secret)
+    under A's org is exactly a missing id, under B's org exactly a missing org; B's secrets are
+    absent from A's list and B's names are not taken in A; B's workspace or project as a scope
+    is an unknown one; values never reach a response, a log line or an audit row."""
+    a, b = world.a, world.b
+    installation = _owner_secret(owner_session, None, f"inst-{uuid7().hex[-12:]}")
+    with admin_client(settings) as c:
+        hb = login(c, people.owner_b)
+        theirs_made = c.post(
+            f"/api/v1/orgs/{b.slug}/secrets",
+            json={"name": "shared-name", "value": _B_VALUE},
+            headers=hb,
+        )
+        assert theirs_made.status_code == 201, theirs_made.text
+        b_id = theirs_made.json()["id"]
+        c.cookies.clear()
+        headers = login(c, people.owner_a)
+        url = f"/api/v1/orgs/{a.slug}/secrets"
+        made = c.post(url, json={"name": "shared-name", "value": _A_VALUE}, headers=headers)
+        assert made.status_code == 201, made.text  # B's name is not taken in A
+        own = made.json()["id"]
+        rot = c.post(f"{url}/{own}/rotate", json={"value": _A_ROTATED}, headers=headers)
+        assert rot.status_code == 200 and rot.json()["version"] == 2, rot.text
+        dup = c.post(url, json={"name": "shared-name", "value": "dup-value-1"}, headers=headers)
+        assert dup.status_code == 409 and dup.json()["detail"] == SECRET_NAME_CONFLICT, dup.text
+        listed = {i["id"] for i in c.get(f"{url}?limit=200").json()["items"]}
+        assert listed == {own}
+        # B's (or the installation's) secret under A's org: exactly a missing id
+        missing = uuid7()
+        patch = {"status": "disabled", "row_version": 1}
+        for theirs_id in (b_id, installation):
+            _same(
+                c.post(f"{url}/{theirs_id}/rotate", json={"value": "stolen-1"}, headers=headers),
+                c.post(f"{url}/{missing}/rotate", json={"value": "stolen-1"}, headers=headers),
+                404,
+            )
+            _same(
+                c.patch(f"{url}/{theirs_id}", json=patch, headers=headers),
+                c.patch(f"{url}/{missing}", json=patch, headers=headers),
+                404,
+            )
+        # B's workspace or project as the scope: exactly an unknown one
+        for scope_type, theirs_scope in (("workspace", b.ws), ("project", b.project)):
+
+            def scoped(scope_id: UUID, t: str = scope_type) -> dict[str, Any]:
+                return {"name": "n", "value": "v-1", "scope": {"type": t, "id": str(scope_id)}}
+
+            _same(
+                c.post(url, json=scoped(theirs_scope), headers=headers),
+                c.post(url, json=scoped(uuid7()), headers=headers),
+                422,
+            )
+        disabled = c.patch(
+            f"{url}/{own}",
+            json={"status": "disabled", "row_version": rot.json()["row_version"]},
+            headers=headers,
+        )
+        assert disabled.status_code == 200 and disabled.json()["status"] == "disabled"
+        # under B's org: exactly a missing org
+        gone = "/api/v1/orgs/no-such-client/secrets"
+        theirs = f"/api/v1/orgs/{b.slug}/secrets"
+        body = {"name": "x", "value": "x-value-1"}
+        _same(c.get(theirs), c.get(gone), 404)
+        _same(
+            c.post(theirs, json=body, headers=headers),
+            c.post(gone, json=body, headers=headers),
+            404,
+        )
+        _same(
+            c.post(f"{theirs}/{b_id}/rotate", json={"value": "s-1"}, headers=headers),
+            c.post(f"{gone}/{b_id}/rotate", json={"value": "s-1"}, headers=headers),
+            404,
+        )
+        _same(
+            c.patch(f"{theirs}/{b_id}", json=patch, headers=headers),
+            c.patch(f"{gone}/{b_id}", json=patch, headers=headers),
+            404,
+        )
+    row = owner_session.execute(
+        text("SELECT status, secret_version, row_version FROM shifde.secrets WHERE id = :i"),
+        {"i": b_id},
+    ).one()
+    assert tuple(row) == ("active", 1, 1)
+    assert (
+        owner_session.execute(
+            text("SELECT count(*) FROM shifde.secrets WHERE tenant_id = :t"), {"t": b.tenant}
+        ).scalar_one()
+        == 1
+    )
+    audited = owner_session.execute(
+        text(
+            "SELECT tenant_id, action, target_id, details::text FROM shifde.audit_events "
+            "WHERE action LIKE 'secret.%' AND tenant_id IN (:a, :b) ORDER BY occurred_at"
+        ),
+        {"a": a.tenant, "b": b.tenant},
+    ).all()
+    assert [(r[0], r[1], r[2]) for r in audited] == [
+        (b.tenant, "secret.created", b_id),
+        (a.tenant, "secret.created", own),
+        (a.tenant, "secret.rotated", own),
+        (a.tenant, "secret.disabled", own),
+    ]
+    seen = capsys.readouterr()
+    for needle in (_A_VALUE, _A_ROTATED, _B_VALUE, "dup-value-1", "stolen-1"):
+        assert needle not in seen.out and needle not in seen.err
+        assert all(needle not in r[3] for r in audited)
+
+
+def _all_events(c: Any, url: str) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    cursor = None
+    while True:
+        page = c.get(url, params={"limit": 200, **({"cursor": cursor} if cursor else {})}).json()
+        items += page["items"]
+        cursor = page["next_cursor"]
+        if not cursor:
+            return items
+
+
+def _chain(owner: Session, tenant: UUID) -> list[UUID]:
+    return list(
+        owner.execute(
+            text(
+                "SELECT id FROM shifde.audit_events WHERE tenant_id = :t "
+                "AND chain_seq IS NOT NULL ORDER BY chain_seq"
+            ),
+            {"t": tenant},
+        )
+        .scalars()
+        .all()
+    )
+
+
+def test_a_lists_and_verifies_only_its_own_audit_events(
+    settings: Settings, world: World, people: People, owner_session: Session
+) -> None:
+    """B-1642: A's audit list holds only A's events (none of B's, whatever the filter), A's
+    verify walks only A's chain (B's broken chain does not touch it), and B's org is exactly a
+    missing org."""
+    a, b = world.a, world.b
+    with admin_client(settings) as c:
+        hb = login(c, people.owner_b)
+        made = c.post(
+            f"/api/v1/orgs/{b.slug}/secrets", json={"name": "b-only", "value": "b-v-1"}, headers=hb
+        )
+        assert made.status_code == 201, made.text
+        c.cookies.clear()
+        headers = login(c, people.owner_a)
+        made = c.post(
+            f"/api/v1/orgs/{a.slug}/secrets",
+            json={"name": "a-only", "value": "a-v-1"},
+            headers=headers,
+        )
+        assert made.status_code == 201, made.text
+        url = f"/api/v1/orgs/{a.slug}/audit-events"
+        events = _all_events(c, url)
+        a_chain, b_chain = _chain(owner_session, a.tenant), _chain(owner_session, b.tenant)
+        owner_session.rollback()
+        assert a_chain and b_chain
+        assert {e["id"] for e in events} >= {str(i) for i in a_chain}
+        assert not {e["id"] for e in events} & {str(i) for i in b_chain}
+        assert str(b.tenant) not in str(events) and "b-only" not in str(events)
+        created = c.get(f"{url}?action=secret.created").json()["items"]
+        assert [e["target"] for e in created] == ["secret:a-only"]
+        verify = c.get(f"{url}/verify").json()
+        assert verify == {"ok": True, "checked": len(a_chain), "first_broken_id": None}
+        # under B's org: exactly a missing org
+        gone = "/api/v1/orgs/no-such-client/audit-events"
+        theirs = f"/api/v1/orgs/{b.slug}/audit-events"
+        _same(c.get(theirs), c.get(gone), 404)
+        _same(c.get(f"{theirs}/verify"), c.get(f"{gone}/verify"), 404)
+    # B's chain broken: A's verify is unaffected, B's reports its own event
+    victim = b_chain[-1]
+    owner_session.execute(text("ALTER TABLE shifde.audit_events DISABLE TRIGGER USER"))
+    try:
+        owner_session.execute(
+            text(
+                "UPDATE shifde.audit_events SET details = details || '{\"forged\": true}' "
+                "WHERE id = :i"
+            ),
+            {"i": victim},
+        )
+    finally:
+        owner_session.execute(text("ALTER TABLE shifde.audit_events ENABLE TRIGGER USER"))
+    owner_session.commit()
+    with admin_client(settings) as c:
+        login(c, people.owner_a)
+        verify = c.get(f"/api/v1/orgs/{a.slug}/audit-events/verify").json()
+        assert verify["ok"] is True and verify["checked"] >= len(a_chain)
+        c.cookies.clear()
+        login(c, people.owner_b)
+        broken = c.get(f"/api/v1/orgs/{b.slug}/audit-events/verify").json()
+        assert broken["ok"] is False and broken["first_broken_id"] == str(victim)

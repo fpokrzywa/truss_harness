@@ -384,6 +384,74 @@ def test_a_platform_administrator_binding_records_every_administrator_in_the_gro
     assert _self_adds(owner_session, world.b.tenant) == []
 
 
+def test_the_platform_administrator_binding_rechecks_client_group_and_role_when_writing(
+    world: World, app_db: Database, owner_session: Session
+) -> None:
+    """Admin review 3 item 3 (B-1648): an archived client, a disabled group, an inactive role or
+    another client's role is refused inside the writing transaction with the one generic 403,
+    whatever an earlier read said; nothing is written."""
+    caller = _admin(owner_session)
+    viewer = _role_id(owner_session, "viewer")
+    b_role = uuid7()
+    owner_session.execute(
+        text(
+            "INSERT INTO shifde.roles (id, tenant_id, key, name, is_system, status) "
+            "VALUES (:i, :t, :k, 'b role', false, 'active')"
+        ),
+        {"i": b_role, "t": world.b.tenant, "k": f"b-{b_role.hex[-12:]}"},
+    )
+    owner_session.commit()
+
+    def bind(group: UUID, role: UUID) -> str:
+        with app_session(app_db, None, caller) as s, pytest.raises(Forbidden) as err:
+            service.bind_group_as_platform_admin(
+                s,
+                CTX,
+                _p(caller, admin=True),
+                tenant_id=world.a.tenant,
+                group_id=group,
+                role_id=role,
+                scope_type="tenant",
+                scope_id=world.a.tenant,
+            )
+        return str(err.value)
+
+    refused = bind(uuid7(), viewer)  # an unknown group
+    assert refused == service.GROUP_BINDING_REFUSED
+    assert bind(world.a.group, b_role) == refused
+    assert bind(world.a.group, uuid7()) == refused
+    for table, row, column, value in (
+        ("groups", world.a.group, "status", "disabled"),
+        ("roles", viewer, "status", "disabled"),
+        ("tenants", world.a.tenant, "status", "archived"),
+    ):
+        old = owner_session.execute(
+            text(f"SELECT {column} FROM shifde.{table} WHERE id = :i"), {"i": row}
+        ).scalar_one()
+        owner_session.execute(
+            text(f"UPDATE shifde.{table} SET {column} = :v WHERE id = :i"), {"v": value, "i": row}
+        )
+        owner_session.commit()
+        try:
+            assert bind(world.a.group, viewer) == refused, table
+        finally:
+            owner_session.execute(
+                text(f"UPDATE shifde.{table} SET {column} = :v WHERE id = :i"),
+                {"v": old, "i": row},
+            )
+            owner_session.commit()
+    assert (
+        owner_session.execute(
+            text(
+                "SELECT count(*) FROM shifde.role_bindings "
+                "WHERE subject_type = 'group' AND subject_id = :g AND tenant_id = :t"
+            ),
+            {"g": world.a.group, "t": world.a.tenant},
+        ).scalar_one()
+        == 0
+    )
+
+
 def test_the_group_administrator_definer_answers_only_for_a_group_bound_in_the_current_client(
     world: World, app_db: Database, owner_session: Session
 ) -> None:

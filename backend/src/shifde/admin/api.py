@@ -1,9 +1,9 @@
 """Admin endpoints under /api/v1 (authentication is the app-level router dependency).
 
-Ported from SETH 3ba0e06 `admin/api.py`, part 1 (IAM) and part 2 (service accounts and API
-keys, B-1601) and part 3a (identity providers, B-1621); the `app` port mounts `router` (B-501).
-Secrets and audit (part 3b) are added to the same router by that part. Changes (DECISIONS
-B-1401..B-1406, B-1601.., B-1621..):
+Ported from SETH 3ba0e06 `admin/api.py`: part 1 (IAM), part 2 (service accounts and API
+keys, B-1601), part 3a (identity providers, B-1621) and part 3b (secrets and audit, B-1641);
+the `app` port mounts `router` (B-501). Changes (DECISIONS B-1401..B-1406, B-1601..,
+B-1621.., B-1641..):
 
 * Every `{org}` route resolves the client through `tenancy.dependencies.resolve_org` (B-1019),
   except `POST /orgs/{org}/users`: people are created by the platform administrator only
@@ -15,14 +15,17 @@ B-1401..B-1406, B-1601.., B-1621..):
   in a client without being its owner (B-1602).
 * `/platform/idps*` are the platform administrator's (one 403 for everyone else whatever the id)
   and reach installation IdPs only; `/orgs/{org}/idps*` reach that client's IdPs only (B-1621).
+* `/orgs/{org}/secrets*` and `/orgs/{org}/audit-events*` reach that client's secrets, events
+  and chain only (B-1641, B-1642).
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 
 from shifde.admin import credentials, iam, providers
 from shifde.admin import schemas as s
@@ -249,10 +252,6 @@ def revoke_api_key(scope: ScopeDep, key_id: UUID) -> s.ApiKeyOut:
     return credentials.revoke_api_key(scope, key_id)
 
 
-# ---------------------------------------------------------------- part 3
-# IdPs, secrets and audit (`providers`) are added here by admin part 3.
-
-
 # ---------------------------------------------------------------- identity providers (part 3a)
 def _tenant_idp_scope(scope: ScopeDep) -> providers.IdpScope:
     return providers.IdpScope.for_tenant(scope)
@@ -324,3 +323,57 @@ def update_tenant_idp(
 @router.post("/orgs/{org}/idps/{idp_id}/test", tags=["idps"])
 def test_tenant_idp(sc: TenantIdp, request: Request, idp_id: UUID) -> s.IdpTestOut:
     return providers.test_idp(sc, _oidc_client(request), idp_id)
+
+
+# ---------------------------------------------------------------- secrets (part 3b, B-1641)
+@router.get("/orgs/{org}/secrets", tags=["secrets"])
+def list_secrets(
+    scope: ScopeDep, limit: LimitQuery = DEFAULT_LIMIT, cursor: CursorQuery = None
+) -> Page[s.SecretOut]:
+    return providers.list_secrets(scope, limit=limit, cursor=cursor)
+
+
+@router.post("/orgs/{org}/secrets", status_code=201, tags=["secrets"])
+def create_secret(scope: ScopeDep, settings: SettingsDep, body: s.SecretCreate) -> s.SecretOut:
+    return providers.create_secret(scope, settings, body)
+
+
+@router.post("/orgs/{org}/secrets/{secret_id}/rotate", tags=["secrets"])
+def rotate_secret(
+    scope: ScopeDep, settings: SettingsDep, secret_id: UUID, body: s.SecretRotate
+) -> s.SecretOut:
+    return providers.rotate_secret(scope, settings, secret_id, body)
+
+
+@router.patch("/orgs/{org}/secrets/{secret_id}", tags=["secrets"])
+def patch_secret(scope: ScopeDep, secret_id: UUID, body: s.SecretPatch) -> s.SecretOut:
+    return providers.disable_secret(scope, secret_id, body)
+
+
+# ---------------------------------------------------------------- audit (part 3b, B-1642)
+@router.get("/orgs/{org}/audit-events", tags=["audit"])
+def list_audit_events(
+    scope: ScopeDep,
+    category: str | None = None,
+    actor: str | None = None,
+    action: str | None = None,
+    occurred_from: Annotated[datetime | None, Query(alias="from")] = None,
+    occurred_to: Annotated[datetime | None, Query(alias="to")] = None,
+    limit: LimitQuery = DEFAULT_LIMIT,
+    cursor: CursorQuery = None,
+) -> Page[s.AuditEventOut]:
+    return providers.list_audit_events(
+        scope,
+        category=category,
+        actor=actor,
+        action=action,
+        occurred_from=occurred_from,
+        occurred_to=occurred_to,
+        limit=limit,
+        cursor=cursor,
+    )
+
+
+@router.get("/orgs/{org}/audit-events/verify", tags=["audit"])
+def verify_audit(scope: ScopeDep) -> s.AuditVerifyOut:
+    return providers.verify_audit(scope)

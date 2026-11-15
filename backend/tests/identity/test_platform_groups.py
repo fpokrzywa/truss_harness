@@ -597,3 +597,77 @@ def test_idp_sync_changes_are_audited_in_bound_clients_and_an_administrator_is_a
     assert last[0] == "identity.group.members_changed"
     assert last[2]["added_count"] == 0 and last[2]["removed_count"] == 1
     assert rows(world.b.tenant) == []
+
+
+def test_idp_sync_rows_are_each_clients_own_and_name_no_person_but_a_self_add(
+    settings: Settings,
+    world: World,
+    app_db: Database,
+    owner_session: Session,
+) -> None:
+    """Admin isolation review 4 items 1-3 (B-1649): the group is bound in A and in B; each client
+    gets only its own counts-only row (no other client's id, no actor, address, user id or
+    e-mail); a synced non-administrator is no self-add; an administrator's self-add names the
+    directory e-mail, never the IdP's claim."""
+    tag = uuid7().hex[-8:]
+    idp, iss = _sync_idp(owner_session, f"inst-{tag}")
+    admin, staff = _staff(owner_session, f"padmin-{tag}"), _staff(owner_session, f"fde-{tag}")
+    owner_session.execute(
+        text("UPDATE shifde.users SET is_platform_admin = true WHERE id = :u"), {"u": admin}
+    )
+    oidc_flow.owner_identity(owner_session, admin, idp, iss, f"padmin-{tag}")
+    oidc_flow.owner_identity(owner_session, staff, idp, iss, f"fde-{tag}")
+    owner_session.commit()
+    emails = {
+        u: owner_session.execute(
+            text("SELECT primary_email FROM shifde.users WHERE id = :u"), {"u": u}
+        ).scalar_one()
+        for u in (admin, staff)
+    }
+    with admin_session(app_db, None) as s:
+        readers = _group(s, f"readers-{tag}", idp=idp, external="Readers")
+        s.commit()
+    for tenant in (world.a.tenant, world.b.tenant):
+        with admin_session(app_db, tenant) as s:
+            _bind_group(s, tenant, readers)
+            s.commit()
+    fake = oidc_flow.provider()
+
+    def sign_in(code: str, sub: str, claim_email: str) -> None:
+        with oidc_flow.oidc_client(settings, fake) as c:
+            r = oidc_flow.sign_in(
+                c, fake, idp, iss, code=code, sub=sub, groups=["Readers"], email=claim_email
+            )
+            assert r.headers["location"] == "/", r.headers
+
+    def rows(tenant: UUID) -> list[tuple[str, UUID | None, str | None, str]]:
+        found = owner_session.execute(
+            text(
+                "SELECT action, actor_id, actor_ip, details::text FROM shifde.audit_events "
+                "WHERE tenant_id = :t AND action IN ('identity.group.members_changed', "
+                "'tenancy.platform_admin.self_added') ORDER BY occurred_at, id"
+            ),
+            {"t": tenant},
+        ).all()
+        owner_session.rollback()
+        return [(r[0], r[1], r[2], r[3]) for r in found]
+
+    sign_in("s1", f"fde-{tag}", f"claim-fde-{tag}@idp.test")  # not an administrator
+    for tenant, other in ((world.a.tenant, world.b.tenant), (world.b.tenant, world.a.tenant)):
+        [(action, actor_id, actor_ip, details)] = rows(tenant)
+        assert action == "identity.group.members_changed"
+        assert actor_id is None and actor_ip is None
+        for needle in (str(other), str(staff), emails[staff], f"claim-fde-{tag}"):
+            assert needle not in details
+    sign_in("s2", f"padmin-{tag}", f"claim-padmin-{tag}@idp.test")
+    for tenant, other in ((world.a.tenant, world.b.tenant), (world.b.tenant, world.a.tenant)):
+        got = rows(tenant)
+        assert [r[0] for r in got] == [
+            "identity.group.members_changed",
+            "identity.group.members_changed",
+            "tenancy.platform_admin.self_added",
+        ]
+        assert got[1][1] is None and got[1][2] is None and str(admin) not in got[1][3]
+        self_add = got[2][3]
+        assert f"user:{emails[admin]}" in self_add and f"claim-padmin-{tag}" not in self_add
+        assert all(str(other) not in r[3] for r in got)

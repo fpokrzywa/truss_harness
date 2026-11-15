@@ -34,7 +34,7 @@ import json
 import re
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any  # Any: decoded JSON documents / JWT claims
 from urllib.parse import urlencode
 from uuid import UUID
@@ -55,6 +55,7 @@ from shifde.core.settings import Settings
 from shifde.core.ssrf import EgressViolation, OutboundHttp
 from shifde.identity import repository
 from shifde.identity import service as identity
+from shifde.identity.models import User
 from shifde.identity.repository import ResolvedIdp
 from shifde.secrets import service as secrets_service
 
@@ -434,7 +435,7 @@ def _sign_in(
     if idp.tenant_id is not None:
         _require_tenant_member(session, idp.tenant_id, user_id)
     elif idp.group_sync_mode == "sync":
-        _sync_groups(session, idp, user_id, _claim_groups(claims, idp), ctx=ctx, email=email)
+        _sync_groups(session, idp, user_id, _claim_groups(claims, idp), ctx=ctx)
     db.set_tenant(session, None)
     login = identity.establish_session(
         session,
@@ -470,7 +471,6 @@ def _sync_groups(
     names: list[str],
     *,
     ctx: RequestContext | None = None,
-    email: str | None = None,
 ) -> None:
     """Make the person's `idp_sync` memberships of the platform groups mapped to this
     installation IdP equal the claim (SETH synced per client and created groups; B-932). No
@@ -482,21 +482,35 @@ def _sync_groups(
     except DBAPIError as exc:
         raise OidcFailure("group_sync_refused") from exc
     if ctx is not None:
-        _audit_group_sync(session, ctx, user_id, email, changes)
+        _audit_group_sync(session, ctx, user_id, changes)
+
+
+def _directory_person(session: Session, user_id: UUID) -> User | None:
+    """The person who has just signed in, read as themself (`users_select`: own row), so the
+    audit names their directory e-mail rather than an IdP claim (B-1649)."""
+    previous = db.get_context(session).principal_id
+    db.set_principal(session, user_id)
+    try:
+        return repository.get_user(session, user_id)
+    finally:
+        db.set_principal(session, previous)
 
 
 def _audit_group_sync(
     session: Session,
     ctx: RequestContext,
     user_id: UUID,
-    email: str | None,
     changes: list[authz.IdpGroupChange],
 ) -> None:
     """Admin review 2 item 1 (B-1624): a sync change is `identity.group.members_changed` in each
     client where the group is bound, with counts only (B-1408: the person may belong to other
     clients), and a platform administrator synced into such a group is a
     `tenancy.platform_admin.self_added` there (B-1012, B-1407), read through
-    `shifde_bound_group_admin_ids` in that client's context. The context is cleared after."""
+    `shifde_bound_group_admin_ids` in that client's context. The context is cleared after.
+    The counts-only rows carry no actor, address or agent of the signing-in person (admin
+    isolation review 4 item 1, B-1649); a self-add names the person by their directory e-mail,
+    never by the IdP's claim (item 2)."""
+    counts_ctx = replace(ctx, client_ip=None, user_agent=None, principal=None)
     try:
         for change in changes:
             if change.change == "kept":
@@ -510,7 +524,7 @@ def _audit_group_sync(
                 name = names[change.group_id]
                 audit.record(
                     session,
-                    ctx,
+                    counts_ctx,
                     action="identity.group.members_changed",
                     tenant_id=tenant_id,
                     actor_label="idp_sync",
@@ -526,6 +540,7 @@ def _audit_group_sync(
                     },
                 )
                 if added and user_id in authz.bound_group_admin_ids(session, change.group_id):
+                    person = _directory_person(session, user_id)
                     audit.record(
                         session,
                         ctx,
@@ -534,7 +549,7 @@ def _audit_group_sync(
                         actor_id=user_id,
                         target_type="user",
                         target_id=user_id,
-                        target_label=f"user:{email}" if email else None,
+                        target_label=f"user:{person.primary_email}" if person else None,
                         details={
                             "group_membership": "added",
                             "through_idp_sync": True,

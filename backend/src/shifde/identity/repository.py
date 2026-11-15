@@ -641,22 +641,27 @@ def list_api_keys(
     return list(session.scalars(stmt.order_by(ApiKey.id).limit(limit)))
 
 
-def touch_api_key(session: Session, key_id: UUID, now: datetime, min_interval_seconds: int) -> bool:
-    """Throttled last-used update: at most once per interval per key."""
+def touch_api_key(
+    session: Session, key_id: UUID, now: datetime, min_interval_seconds: int, *, tenant_id: UUID
+) -> bool:
+    """Throttled last-used update: at most once per interval per key. Keyed by the key's client
+    as well as row-level security (admin review 3 item 4, B-1646)."""
     res = session.execute(
         text(
-            "UPDATE shifde.api_keys SET last_used_at = :now WHERE id = :id AND "
-            "(last_used_at IS NULL OR last_used_at < :now - make_interval(secs => :s))"
+            "UPDATE shifde.api_keys SET last_used_at = :now WHERE id = :id AND tenant_id = :t "
+            "AND (last_used_at IS NULL OR last_used_at < :now - make_interval(secs => :s))"
         ),
-        {"now": now, "id": key_id, "s": min_interval_seconds},
+        {"now": now, "id": key_id, "t": tenant_id, "s": min_interval_seconds},
     )
     return bool(res.rowcount)  # type: ignore[attr-defined]  # DML returns a CursorResult
 
 
-def revoke_api_key(session: Session, key_id: UUID, by: UUID | None, now: datetime) -> bool:
+def revoke_api_key(
+    session: Session, key_id: UUID, by: UUID | None, now: datetime, *, tenant_id: UUID
+) -> bool:
     res = session.execute(
         update(ApiKey)
-        .where(ApiKey.id == key_id, ApiKey.revoked_at.is_(None))
+        .where(ApiKey.id == key_id, ApiKey.tenant_id == tenant_id, ApiKey.revoked_at.is_(None))
         .values(revoked_at=now, revoked_by=by)
     )
     return bool(res.rowcount)  # type: ignore[attr-defined]  # DML returns a CursorResult
@@ -683,10 +688,12 @@ def revoke_keys_of_principal(
     return int(res.rowcount or 0)  # type: ignore[attr-defined]  # DML returns a CursorResult
 
 
-def shorten_api_key_expiry(session: Session, key_id: UUID, expires_at: datetime) -> None:
+def shorten_api_key_expiry(
+    session: Session, key_id: UUID, expires_at: datetime, *, tenant_id: UUID
+) -> None:
     session.execute(
         update(ApiKey)
-        .where(ApiKey.id == key_id, ApiKey.expires_at > expires_at)
+        .where(ApiKey.id == key_id, ApiKey.tenant_id == tenant_id, ApiKey.expires_at > expires_at)
         .values(expires_at=expires_at)
     )
 

@@ -755,13 +755,13 @@ def test_key_mutators_run_only_on_a_key_loaded_in_the_callers_client(
         (credentials.identity.shorten_api_key_expiry),
     )
 
-    def revoke(session: Session, key_id: UUID, *args: Any) -> bool:
+    def revoke(session: Session, key_id: UUID, *args: Any, **kwargs: Any) -> bool:
         seen.append(key_id)
-        return real_revoke(session, key_id, *args)
+        return real_revoke(session, key_id, *args, **kwargs)
 
-    def shorten(session: Session, key_id: UUID, *args: Any) -> None:
+    def shorten(session: Session, key_id: UUID, *args: Any, **kwargs: Any) -> None:
         seen.append(key_id)
-        real_shorten(session, key_id, *args)
+        real_shorten(session, key_id, *args, **kwargs)
 
     monkeypatch.setattr(credentials.identity, "revoke_api_key", revoke)
     monkeypatch.setattr(credentials.identity, "shorten_api_key_expiry", shorten)
@@ -843,3 +843,37 @@ def test_a_key_names_the_caller_as_its_creator(
         headers=admin,
     )
     assert smuggled.status_code == 422
+
+
+def test_reenabling_a_service_account_is_conditioned_on_the_row_it_read(
+    client: TestClient,
+    owner_session: Session,
+    w: Seth,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Admin isolation review 3 item 1 (B-1647): a disable landing between the re-enable's read
+    (and its guard) and its write, with no `row_version` sent, is a conflict; the account stays
+    disabled."""
+    admin = login(client, w.ADMIN)
+    sa = post(client, f"{w.A}/service-accounts", admin, {"name": "racer"})
+    off = client.patch(
+        f"{w.A}/service-accounts/{sa['id']}", json={"status": "disabled"}, headers=admin
+    )
+    assert off.status_code == 200, off.text
+    real_guard = credentials.iam.guard_bindings
+
+    def concurrent_disable(*args: Any, **kwargs: Any) -> None:
+        real_guard(*args, **kwargs)
+        owner_session.execute(
+            text("UPDATE shifde.service_accounts SET row_version = row_version + 1 WHERE id = :i"),
+            {"i": sa["id"]},
+        )
+        owner_session.commit()
+
+    monkeypatch.setattr(credentials.iam, "guard_bindings", concurrent_disable)
+    r = client.patch(f"{w.A}/service-accounts/{sa['id']}", json={"status": "active"}, headers=admin)
+    assert r.status_code == 409, r.text
+    status = owner_session.execute(
+        text("SELECT status FROM shifde.service_accounts WHERE id = :i"), {"i": sa["id"]}
+    ).scalar_one()
+    assert status == "disabled"

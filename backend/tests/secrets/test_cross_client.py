@@ -16,7 +16,7 @@ from dataclasses import dataclass, replace
 from uuid import UUID
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import Engine, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
@@ -27,6 +27,7 @@ from shifde.core.errors import AppError
 from shifde.core.ids import uuid7
 from shifde.secrets import service as secrets_service
 from shifde.secrets.service import SecretMeta, SecretProvider
+from tests._support.tenants import add_project, add_workspace
 from tests.secrets.conftest import Clients, app_session, caller
 
 B_VALUE = "b-client-secret-value-0001"
@@ -180,14 +181,21 @@ def test_a_cannot_use_bs_secret_and_the_refusal_matches_a_missing_id(
 
 
 def test_a_pdp_for_a_refuses_bs_secret_even_in_bs_database_context(
-    app_db: Database, keyring: KeyRing, world: World
+    app_db: Database, owner_db: Database, keyring: KeyRing, world: World
 ) -> None:
-    """A session whose context is B (a mis-set context) with A's principal and A's PDP: the PDP
-    refuses the cross-tenant resource and hides it."""
+    """A session whose context is B (a mis-set context) with A's principal and A's PDP: refused
+    before the lookup, exactly like an unknown id (secrets review 1 item 2, B-1643)."""
     with app_session(app_db, world.clients.b.tenant) as s:
         c = caller(s, keyring, world.clients.a.tenant, world.clients.a.admin)
         with pytest.raises(AppError, match="not found"):
             c.provider.resolve(world.b_secret.id, c.principal, "steal", pdp=c.pdp)
+        assert _refusal(
+            lambda: c.provider.resolve(world.b_secret.id, c.principal, "steal", pdp=c.pdp)
+        ) == _refusal(lambda: c.provider.resolve(uuid7(), c.principal, "steal", pdp=c.pdp))
+        s.rollback()
+    with owner_db.session() as o:
+        rows = o.execute(text("SELECT tenant_id FROM shifde.secret_access_log")).scalars().all()
+        assert rows == [world.clients.b.tenant]  # only B's own use
 
 
 def test_bs_envelope_copied_into_as_row_does_not_decrypt(
@@ -287,3 +295,74 @@ def test_as_access_log_cannot_name_bs_secret(a_session: Session, world: World) -
         )
     assert _sqlstate(err) == "23503"
     assert "fk_secret_access_log__secret" in str(err.value)
+    a_session.rollback()
+    # an unknown id fails on the same key: the error does not tell B's id from an unknown one
+    # (secrets review 1 item 1, B-1645)
+    for unknown in (uuid7(), world.installation.id):
+        with pytest.raises(DBAPIError) as other:
+            a_session.execute(
+                text(
+                    "INSERT INTO shifde.secret_access_log "
+                    "(id, tenant_id, secret_id, purpose, outcome) "
+                    "VALUES (gen_random_uuid(), :a, :s, 'p', 'success')"
+                ),
+                {"a": world.clients.a.tenant, "s": unknown},
+            )
+        assert _sqlstate(other) == "23503"
+        assert "fk_secret_access_log__secret" in str(other.value)
+        assert "installation_secret" not in str(other.value)
+        a_session.rollback()
+
+
+def test_installation_access_log_rows_name_installation_secrets_only(
+    app_db: Database, world: World
+) -> None:
+    """The plain key now checks installation rows (tenant NULL) only, against installation
+    secrets only (B-1645): a client's secret or an unknown id is refused, the installation's own
+    is accepted."""
+    insert = text(
+        "INSERT INTO shifde.secret_access_log (id, tenant_id, secret_id, purpose, outcome) "
+        "VALUES (gen_random_uuid(), NULL, :s, 'p', 'success')"
+    )
+    with app_session(app_db, None) as s, platform_admin_context(s):
+        for ref in (world.b_secret.id, uuid7()):
+            with pytest.raises(DBAPIError) as err:
+                s.execute(insert, {"s": ref})
+            assert _sqlstate(err) == "23503"
+            assert "fk_secret_access_log__installation_secret" in str(err.value)
+            s.rollback()
+    with app_session(app_db, None) as s, platform_admin_context(s):
+        s.execute(insert, {"s": world.installation.id})
+        s.rollback()
+
+
+def test_create_maps_every_integrity_refusal_to_one_name_conflict(
+    a_session: Session, seed_engine: Engine, keyring: KeyRing, world: World
+) -> None:
+    """Tenancy review 1 item 6 (B-1644): a duplicate name and the scope trigger refusing B's
+    workspace or project (or an unknown one) are the one name-conflict answer."""
+
+    def create(name: str, scope_type: str = "tenant", scope_id: UUID | None = None) -> object:
+        return secrets_service.create_secret(
+            a_session,
+            keyring,
+            tenant_id=world.clients.a.tenant,
+            name=name,
+            value="v",
+            scope_type=scope_type,
+            scope_id=scope_id,
+            created_by=None,
+        )
+
+    with seed_engine.begin() as c:
+        b_ws = add_workspace(c, world.clients.b.tenant)
+        b_project = add_project(c, world.clients.b.tenant, b_ws)
+    duplicate = _refusal(lambda: create("same-name"))
+    assert duplicate[1] == secrets_service.SECRET_NAME_CONFLICT
+    for scope_type, scope_id in (
+        ("workspace", b_ws),
+        ("workspace", uuid7()),
+        ("project", b_project),
+        ("project", uuid7()),
+    ):
+        assert _refusal(lambda t=scope_type, i=scope_id: create("fresh", t, i)) == duplicate

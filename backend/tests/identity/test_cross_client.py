@@ -146,9 +146,9 @@ def test_a_cannot_read_list_or_modify_b_api_keys(
     for key in (b.api_key, b.user_key):
         assert repository.get_api_key(s, b.tenant, key) is None
         assert repository.get_api_key(s, a.tenant, key) is None
-        assert not repository.revoke_api_key(s, key, a.member, utcnow())
-        assert not repository.touch_api_key(s, key, utcnow(), 0)
-        repository.shorten_api_key_expiry(s, key, utcnow())
+        assert not repository.revoke_api_key(s, key, a.member, utcnow(), tenant_id=b.tenant)
+        assert not repository.touch_api_key(s, key, utcnow(), 0, tenant_id=b.tenant)
+        repository.shorten_api_key_expiry(s, key, utcnow(), tenant_id=b.tenant)
     listed = repository.list_api_keys(
         s, tenant_id=b.tenant, principal_type=None, principal_id=None, after=None, limit=50
     )
@@ -158,6 +158,13 @@ def test_a_cannot_read_list_or_modify_b_api_keys(
     )
     assert revoked == 0
     s.commit()
+    # the id-only mutators are keyed by the client as well (admin review 3 item 4, B-1646): even
+    # without row-level security (the owner) naming A does not reach B's key
+    for key in (b.api_key, b.user_key):
+        assert not repository.revoke_api_key(owner_session, key, None, utcnow(), tenant_id=a.tenant)
+        assert not repository.touch_api_key(owner_session, key, utcnow(), 0, tenant_id=a.tenant)
+        repository.shorten_api_key_expiry(owner_session, key, utcnow(), tenant_id=a.tenant)
+    owner_session.commit()
     rows = owner_session.execute(
         text(
             "SELECT revoked_at, last_used_at, expires_at > now() + interval '1 day' "

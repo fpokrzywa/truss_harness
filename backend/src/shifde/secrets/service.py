@@ -37,6 +37,7 @@ from shifde.secrets.models import Secret
 
 __all__ = [
     "MAX_SECRET_BYTES",
+    "SECRET_NAME_CONFLICT",
     "SecretMeta",
     "SecretProvider",
     "SecretValue",
@@ -50,6 +51,7 @@ __all__ = [
 ]
 
 MAX_SECRET_BYTES = 16 * 1024
+SECRET_NAME_CONFLICT = "a secret with this name already exists"
 KINDS = frozenset({"generic", "api_key", "password", "token", "pem", "idp_client_secret"})
 
 
@@ -175,8 +177,11 @@ def create_secret(
         )
         session.flush()
     except IntegrityError as exc:
+        # every integrity refusal (the name index, the scope trigger `trg_secrets_scope`, a
+        # CHECK) is the one name-conflict answer: none says whether another client's workspace,
+        # project or name exists (tenancy review 1 item 6, B-1644)
         session.rollback()
-        raise Conflict("a secret with this name already exists") from exc
+        raise Conflict(SECRET_NAME_CONFLICT) from exc
     created = repository.get_secret(session, secret_id, tenant_id=tenant_id)
     if created is None:  # pragma: no cover
         raise NotFound("secret not found")
@@ -275,9 +280,11 @@ class SecretProvider:
         self, ref: UUID, principal: Principal, purpose: str, *, pdp: PDP, run_id: UUID | None = None
     ) -> SecretValue:
         """PDP-checked (``secret:use`` at the secret scope), audited resolution of a secret of
-        the session's tenant (installation-level secrets are never resolved for a principal)."""
+        the session's tenant (installation-level secrets are never resolved for a principal).
+        A session whose client is not the PDP's (a mis-set context) is refused before the lookup
+        with the answer an unknown id gets (secrets review 1 item 2, B-1643)."""
         tenant_id = get_context(self._session).tenant_id
-        if tenant_id is None:
+        if tenant_id is None or tenant_id != pdp.tenant_id:
             raise NotFound("secret not found")
         secret = repository.get_secret(self._session, ref, tenant_id=tenant_id)
         if secret is None or secret.tenant_id is None or secret.status != "active":

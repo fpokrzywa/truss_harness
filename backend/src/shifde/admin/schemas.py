@@ -1,8 +1,8 @@
 """Request/response DTOs for the admin API (contract: SETH docs/api/PHASE_2_CONTRACT.md).
 
 Ported from SETH 3ba0e06 `admin/schemas.py`, part 1 (IAM: permissions, users, roles, role
-bindings, groups), part 2 (service accounts, API keys; B-1601) and part 3a (IdPs, B-1621);
-secrets and audit come with part 3b.
+bindings, groups), part 2 (service accounts, API keys; B-1601), part 3a (IdPs, B-1621) and
+part 3b (secrets and the audit read API, B-1641).
 Changes (DECISIONS B-1401..B-1404): groups are platform-level (design 5.3). A client sees a
 group it has bound only as `BoundGroupOut` (id and name, B-930); `GroupRef` in a user's entry
 loses `slug`; the full group shapes (`GroupOut`, `GroupDetailOut`) are the platform
@@ -16,7 +16,7 @@ fields, so ids smuggled in bodies (e.g. a `tenant_id`) are a 422, never silently
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal  # Any: free-form audit details
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -357,3 +357,73 @@ class IdpCheck(BaseModel):
 class IdpTestOut(BaseModel):
     ok: bool
     checks: list[IdpCheck]
+
+
+# ------------------------------------------------------------------ secrets (part 3b)
+class SecretScope(BaseModel):
+    model_config = Strict
+    type: Literal["tenant", "workspace", "project"]
+    id: UUID | None = None
+
+
+class SecretCreate(BaseModel):
+    model_config = Strict
+    name: str = Field(min_length=1, max_length=200)
+    value: str = Field(min_length=1, max_length=16384)
+    kind: Literal["generic", "api_key", "password", "token", "pem"] = "generic"
+    scope: SecretScope | None = None  # omitted = organization-wide
+
+
+class SecretRotate(BaseModel):
+    model_config = Strict
+    value: str = Field(min_length=1, max_length=16384)
+    row_version: int | None = None
+
+
+class SecretPatch(BaseModel):
+    model_config = Strict
+    status: Literal["disabled"]
+    row_version: int
+
+
+class SecretOut(BaseModel):
+    """Metadata only: never the value, ciphertext or key material (B-803)."""
+
+    id: UUID
+    name: str
+    kind: str
+    scope: SecretScope | None
+    status: str
+    version: int
+    created_at: datetime
+    rotated_at: datetime | None
+    last_used_at: datetime | None
+    row_version: int
+
+
+# ------------------------------------------------------------------ audit (part 3b)
+class AuditEventOut(BaseModel):
+    id: UUID
+    occurred_at: datetime
+    actor: str | None
+    actor_id: UUID | None
+    actor_type: str
+    action: str
+    target: str | None
+    target_type: str | None
+    target_id: str | None
+    outcome: str
+    request_id: str | None
+    auth_method: str | None
+    actor_ip: str | None
+    workspace_id: UUID | None
+    project_id: UUID | None
+    details: dict[str, Any]
+    chain_seq: int | None
+    hash: str | None
+
+
+class AuditVerifyOut(BaseModel):
+    ok: bool
+    checked: int
+    first_broken_id: UUID | None = None

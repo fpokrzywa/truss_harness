@@ -1048,7 +1048,17 @@ def bind_group_as_platform_admin(
     try:
         with db.platform_admin_context(session):
             db.set_tenant(session, tenant_id)
-            if repository.get_tenant(session, tenant_id) is None:
+            # re-checked in the writing transaction (admin review 3 item 3, B-1648): an archived
+            # client, a disabled group or an inactive role (or one not of this client) is the
+            # one generic refusal, whatever the caller's earlier read said
+            tenant = repository.get_tenant(session, tenant_id)
+            if tenant is None or tenant.status != "active":
+                raise Forbidden(GROUP_BINDING_REFUSED)
+            group = authz.get_group(session, group_id)
+            if group is None or group.status != "active":
+                raise Forbidden(GROUP_BINDING_REFUSED)
+            role = authz.get_role(session, tenant_id, role_id)
+            if role is None or role.status != "active":
                 raise Forbidden(GROUP_BINDING_REFUSED)
             binding_id = _insert_group_binding(
                 session,

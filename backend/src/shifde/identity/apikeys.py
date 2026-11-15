@@ -261,7 +261,9 @@ def authenticate_bearer(
     )
     db.set_principal(session, principal.principal_id)
     db.set_tenant(session, row.tenant_id)
-    if repository.touch_api_key(session, row.key_id, now, LAST_USED_INTERVAL_SECONDS):
+    if repository.touch_api_key(
+        session, row.key_id, now, LAST_USED_INTERVAL_SECONDS, tenant_id=row.tenant_id
+    ):
         session.commit()  # throttled: at most one write per key per minute
     ctx.principal = principal
     ctx.tenant_id = row.tenant_id

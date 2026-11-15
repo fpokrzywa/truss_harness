@@ -72,8 +72,38 @@
 
 - table: secret_access_log
   path: [constraints, fk_secret_access_log__secret]
-  reason: "constraints bypass row-level security: an access-log row must name a secret of its own tenant, (tenant_id, secret_id) -> secrets (tenant_id, id) (B-116 item 9, B-801). SETH's plain secret_access_log_secret_id_fkey is kept for installation-level rows (tenant_id NULL), which the composite key does not check."
+  reason: "constraints bypass row-level security: an access-log row must name a secret of its own tenant, (tenant_id, secret_id) -> secrets (tenant_id, id) (B-116 item 9, B-801). Installation-level rows (tenant_id NULL), which the composite key does not check, are checked by fk_secret_access_log__installation_secret (secrets_0002)."
   migration: secrets_0001
+
+- table: secret_access_log
+  path: [constraints, secret_access_log_secret_id_fkey]
+  reason: "SETH's plain secret_id -> secrets (id) key fired before the composite key and told another client's secret id from an unknown one (a different constraint in the error). Replaced by fk_secret_access_log__installation_secret, which checks installation rows only (secrets isolation review 1 item 1, B-1645)."
+  migration: secrets_0002
+
+- table: secret_access_log
+  path: [constraints, fk_secret_access_log__installation_secret]
+  reason: "installation-level access-log rows (tenant_id NULL) name an installation secret: installation_secret_id -> secrets (installation_secret_id), both NULL on a client's rows, which the composite key checks alone (secrets isolation review 1 item 1, B-1645)."
+  migration: secrets_0002
+
+- table: secret_access_log
+  path: [columns, installation_secret_id]
+  reason: "generated column (secret_id on an installation row, NULL otherwise): the source of fk_secret_access_log__installation_secret (B-1645)."
+  migration: secrets_0002
+
+- table: secrets
+  path: [columns, installation_secret_id]
+  reason: "generated column (id on an installation secret, NULL otherwise): the target of fk_secret_access_log__installation_secret (B-1645)."
+  migration: secrets_0002
+
+- table: secrets
+  path: [constraints, uq_secrets__installation_secret_id]
+  reason: "target of fk_secret_access_log__installation_secret (B-1645)."
+  migration: secrets_0002
+
+- table: secrets
+  path: [indexes, uq_secrets__installation_secret_id]
+  reason: "index of uq_secrets__installation_secret_id (B-1645)."
+  migration: secrets_0002
 
 - table: users
   path: [policies, users_insert, with_check]
