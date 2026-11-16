@@ -24,8 +24,8 @@
         "cluster"
       ],
       "lead_model": "sonnet",
-      "status": "in_progress",
-      "brief": "docs/build/HANDOFF.md 'Exact next step' 1. Read the postgres log under the main checkout's .devdata/pg (never print cluster.env, .env.local or any secret), let crash recovery finish, `python scripts/dev_db.py start`, drop the ~317 leftover shifdet_* databases. Change code only if dev_db.py itself is at fault. Recovery and cleanup are done and pushed on `unit/cluster` (notes in docs/build/units/cluster.md). Only the merge is left: rebase onto origin/main after nextjs-security merges, run the 13 gates, merge."
+      "status": "done",
+      "brief": "docs/build/HANDOFF.md 'Exact next step' 1. Read the postgres log under the main checkout's .devdata/pg (never print cluster.env, .env.local or any secret), let crash recovery finish, `python scripts/dev_db.py start`, drop the ~317 leftover shifdet_* databases. Change code only if dev_db.py itself is at fault."
     },
     {
       "id": "suite-speed",
