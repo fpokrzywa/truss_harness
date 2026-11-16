@@ -789,6 +789,11 @@ def test_a_cannot_reach_bs_objects_by_id_or_list(
 
 
 # ------------------------------------------------------------------ OIDC routes (part 3a)
+pytestmark = pytest.mark.usefixtures(
+    "frozen_cookie_date"
+)  # B-2320: one clock for both Set-Cookie headers
+
+
 def _same_failure(r: Any, reference: Any) -> None:  # Any: httpx responses
     """A refusal that answers exactly like a missing IdP id: status, location, cookies."""
     assert r.status_code == reference.status_code == 302
