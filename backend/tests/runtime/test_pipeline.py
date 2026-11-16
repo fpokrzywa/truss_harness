@@ -19,6 +19,7 @@ two that need only ported files are moved below with their assertions unchanged.
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -34,6 +35,7 @@ from sqlalchemy.orm import Session
 from shifde.build import repository as build_repo
 from shifde.build.service import ArtifactService
 from shifde.connections import repository as conn_repo
+from shifde.connections.service import ConnectionService
 from shifde.core.clock import utcnow
 from shifde.core.db import Database
 from shifde.core.errors import NotFound
@@ -477,6 +479,58 @@ def test_a_run_session_re_reads_its_connection_at_the_runs_scope_only(
         for cid in (a.far_conn, b.conn):
             with pytest.raises(NotFound), conns.open_for_use(cid, "t", at=scope):
                 pass
+
+
+def test_the_named_connection_rule_alone_refuses_a_client_level_connection_no_spec_names(
+    pair: tuple[Client, Client], opened: Any, owner_db: Database, settings: Settings
+) -> None:
+    """Runtime isolation review 8 finding 3: a client-level connection of A (which
+    `run_connection`'s scope check would let through) that no pinned spec names is refused by
+    the named-connection rule like an unknown id."""
+    a, _ = pair
+    with owner_db.session() as o:
+        unnamed = _connection(o, a.tenant)
+        o.commit()
+    run = _pipe(owner_db, a, [_api("r", a.conn)])
+    with opened(a.tenant) as s:
+        runner = PipelineRunner(_ctx(s, settings, a, run))
+        runner._load()
+        runner._revalidate()
+        assert runner.ctx.artifacts.run_connection(run, unnamed) is not None  # scope: allowed
+        with pytest.raises(state.GateDenied) as denied:
+            runner._connection_gate("r", unnamed, write=False)
+    assert (denied.value.error_class, denied.value.message) == (
+        state.AUTHZ_DENIED,
+        "the connection is not available",
+    )
+
+
+def test_a_connection_node_opens_its_session_at_the_stored_runs_scope(
+    pair: tuple[Client, Client],
+    opened: Any,
+    owner_db: Database,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runtime isolation review 8 finding 2 (pipeline path): the node passes `at=` the stored
+    run's workspace and project to `open_for_use`, even when the context's mapping names
+    another scope."""
+    a, _ = pair
+    seen: list[tuple[UUID, Any]] = []
+
+    class Stop(Exception):
+        pass
+
+    def spy(self: Any, connection_id: UUID, purpose: str, write: bool = False,
+            deadline: float | None = None, *, at: Any = None) -> Any:  # fmt: skip
+        seen.append((connection_id, at))
+        raise Stop
+
+    monkeypatch.setattr(ConnectionService, "open_for_use", spy)
+    run = _pipe(owner_db, a, [_api("r", a.conn)])
+    with opened(a.tenant) as s, contextlib.suppress(Exception):
+        PipelineRunner(_ctx(s, settings, a, run, workspace_id=uuid7(), project_id=uuid7())).run()
+    assert seen == [(a.conn, (a.workspace, a.project))]
 
 
 # ------------------------------------------------------------------ C1: a write caught mid-write

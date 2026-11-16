@@ -690,6 +690,23 @@ class ArtifactService:
         ):
             raise NotFound("run not found")
         pinned = frozenset(repository.pin_closure(self.session, tenant, version["id"]))
+        run_spec: dict[str, Any] | None = None
+        if column == "pipeline_version_id":
+            # a draft test run executes the draft's spec as it was at start, resolved to the
+            # versions recorded with it (a draft has no pins of its own; B-2195, RT-11): the env
+            # answers for the version, those and what they pin, and names connections from that
+            # spec, never the draft's current one
+            recorded = repository.run_input(self.session, tenant, run["id"])
+            snapshot = recorded.get("spec_snapshot") if isinstance(recorded, dict) else None
+            if isinstance(snapshot, dict):
+                assert isinstance(recorded, dict)
+                run_spec = snapshot
+                extra: set[UUID] = set()
+                for item in recorded.get("pins") or []:
+                    vid = _as_uuid(item)
+                    if vid is not None:
+                        extra |= repository.pin_closure(self.session, tenant, vid)
+                pinned = pinned | frozenset(extra)
         return _Env(
             self,
             stored,
@@ -698,6 +715,7 @@ class ArtifactService:
             only_versions=pinned,
             run_version_id=version["id"],
             run_scope=(run["workspace_id"], run["project_id"]),
+            run_spec=run_spec,
         )
 
     def run_target(self, run_id: UUID) -> Mapping[str, Any] | None:
@@ -1315,6 +1333,7 @@ class _Env:
         only_versions: frozenset[UUID] | None = None,
         run_version_id: UUID | None = None,
         run_scope: tuple[UUID | None, UUID | None] | None = None,
+        run_spec: dict[str, Any] | None = None,
     ) -> None:
         self.svc = svc
         self.art = art
@@ -1327,6 +1346,8 @@ class _Env:
         self.run_version_id = run_version_id
         # a run's env: the stored run's (workspace id, project id); its connections must lie there
         self.run_scope = run_scope
+        # a draft test run's env: the spec the run executes for `run_version_id` (its snapshot)
+        self.run_spec = run_spec
         self._named_ids: dict[str, frozenset[str]] = {}
 
     def _named(self, key: str) -> frozenset[str]:
@@ -1349,6 +1370,9 @@ class _Env:
                         walk(item)
 
             for vid in sorted(self.only_versions or ()):
+                if vid == self.run_version_id and self.run_spec is not None:
+                    walk(self.run_spec)  # the draft as the test run started it (B-2195)
+                    continue
                 row = repository.get_version(self.svc.session, self.tenant_id, vid)
                 if row is not None and row["tenant_id"] == self.tenant_id:
                     walk(row["spec"])

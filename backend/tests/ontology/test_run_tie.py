@@ -27,6 +27,7 @@ from shifde.core.settings import Settings
 from shifde.ontology import schemas as s
 from shifde.ontology.service import OntologyService
 from tests._support.runs import add_run
+from tests._support.tenants import add_workspace
 from tests.build.conftest import opener
 from tests.build.env_support import add_published
 from tests.build.service_support import service_for
@@ -218,3 +219,36 @@ def test_preparing_an_ontology_for_its_run_validates_the_pinned_versions_mapping
 
 def _api_query(svc: OntologyService, onto: UUID, body: s.QueryIn, run: UUID) -> object:
     return svc.query(onto, body, run_id=run)
+
+
+def test_a_run_reads_a_mappings_connection_only_at_the_runs_own_scope(
+    opener: Opener, two: Two, settings: Settings, owner_db: Database
+) -> None:
+    """Runtime isolation review 8 finding 1: the unchecked path sets the anchored run's scope
+    (`OntologyService._run_scope`), so a frozen mapping whose connection lies in another
+    workspace of the client is the unknown-connection answer for that run; the same connection
+    at the client level is read (another answer: not vacuous)."""
+    a = two.a
+    with owner_db.session() as o:
+        ra = _runs(o, a)
+        [conn] = {r[0] for r in o.execute(
+            text("SELECT connection_id FROM shifde.ontology_source_mappings "
+                 "WHERE tenant_id = :t AND ontology_version_id = :v"), {"t": a.tenant, "v": ra.version})}  # fmt: skip
+        far = add_workspace(o, a.tenant)
+        o.commit()
+
+    def query() -> str:
+        with opener(a.tenant) as session:
+            svc = OntologyService(service_for(session, a.tenant, a.user, settings))
+            return _answer(session, CALLS["query"], svc, UUID(a.ontology), ra.pipeline, ra.version)
+
+    def place(workspace: UUID | None) -> None:
+        with owner_db.session() as o:
+            o.execute(text("UPDATE shifde.connections SET workspace_id = :w WHERE id = :c"),
+                      {"w": workspace, "c": conn})  # fmt: skip
+            o.commit()
+
+    place(far)
+    assert query() == "NotFound: connection not found"
+    place(None)
+    assert query() not in ("NotFound: connection not found", GONE)

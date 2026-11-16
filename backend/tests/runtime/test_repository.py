@@ -53,6 +53,7 @@ class Ids:
     service_account: UUID
     api_key: UUID
     user: UUID  # a person who is a member of this client only
+    project: UUID  # the run's project (in `workspace`)
 
 
 def _seed_client(o: Session, c: Client) -> Ids:
@@ -122,7 +123,7 @@ def _seed_client(o: Session, c: Client) -> Ids:
                       "costed": pricing.Costed("calculated", Decimal("1.25"), "USD", None, None)})  # fmt: skip
     return Ids(t, c.run, c.job, queued_job, c.step, c.invocation, f"k-{c.invocation}",
                c.approval, artifact, child_pending, child_done, pipeline_run, c.workspace,
-               principal, "idem", service_account, api_key, user)  # fmt: skip
+               principal, "idem", service_account, api_key, user, c.project)  # fmt: skip
 
 
 @pytest.fixture
@@ -226,6 +227,7 @@ CASES: dict[str, Case] = {
     "finished_awaited_children": lambda s, t, x: repo.finished_awaited_children(s, t, x.run),
     "job_of_run": lambda s, t, x: repo.job_of_run(s, t, x.run, x.job),
     "last_status_change": lambda s, t, x: repo.last_status_change(s, t, x.run),
+    "scope_statuses": lambda s, t, x: repo.scope_statuses(s, t, x.workspace, x.project),
 }
 
 _ROWS_OF = " UNION ALL ".join(

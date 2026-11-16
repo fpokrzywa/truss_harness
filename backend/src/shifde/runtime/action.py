@@ -230,6 +230,7 @@ def start_action_run(
             if not sc.pdp.authorize("run:read", svc._ref(existing)).allowed:
                 raise NotFound("run not found")
             return svc.run_out(existing), False
+    svc._active_scope(workspace_id, project_id)  # findings Item 12: not in an archived scope
     # resolve the object as the caller: unknown / hidden objects and denied properties fail HERE
     _, _, obj = onto.action_inputs(ontology_id, version["id"], action_key, body.object_pk, api=True)
     problems = [

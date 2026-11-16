@@ -1142,6 +1142,25 @@ def mark_reap(session: Session, worker_id: str) -> None:
     )
 
 
+def scope_statuses(
+    session: Session, tenant_id: UUID, workspace_id: UUID, project_id: UUID
+) -> tuple[str | None, str | None]:
+    """(workspace status, project status) of `tenant_id`'s workspace and of its project in that
+    workspace; None for an id that is not one (another client's or unknown) (findings Item 12)."""
+    ws = session.execute(
+        text("SELECT status FROM shifde.workspaces WHERE id = :w AND tenant_id = :t"),
+        {"w": workspace_id, "t": tenant_id},
+    ).scalar_one_or_none()
+    proj = session.execute(
+        text(
+            "SELECT status FROM shifde.projects WHERE id = :p AND tenant_id = :t "
+            "AND workspace_id = :w"
+        ),
+        {"p": project_id, "w": workspace_id, "t": tenant_id},
+    ).scalar_one_or_none()
+    return ws, proj
+
+
 def principal_display(
     session: Session, tenant_id: UUID, principal_type: str, principal_id: UUID
 ) -> str:
