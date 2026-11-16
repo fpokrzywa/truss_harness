@@ -73,6 +73,10 @@ def _seed_client(o: Session, c: Client) -> Ids:
         ),
         {"tok": TOKEN, "j": c.job, "p": principal, "r": c.run},
     )
+    # the claim's status event (`last_status_change`, RT-10)
+    insert(o, "run_events", id=uuid7(), tenant_id=t, run_id=c.run, seq=2, type="state_change",
+           from_status="pending", to_status="running")  # fmt: skip
+    o.execute(text("UPDATE shifde.runs SET event_seq = 2 WHERE id = :r"), {"r": c.run})
     queued_job = uuid7()
     insert(o, "jobs", id=queued_job, tenant_id=t, kind="run.advance", run_id=c.run,
            dedupe_key=f"run:{c.run}:99")  # fmt: skip
@@ -220,6 +224,8 @@ CASES: dict[str, Case] = {
     "request_cancel": lambda s, t, x: repo.request_cancel(s, t, x.run, uuid7()),
     "get_artifact_row": lambda s, t, x: repo.get_artifact_row(s, t, x.artifact),
     "finished_awaited_children": lambda s, t, x: repo.finished_awaited_children(s, t, x.run),
+    "job_of_run": lambda s, t, x: repo.job_of_run(s, t, x.run, x.job),
+    "last_status_change": lambda s, t, x: repo.last_status_change(s, t, x.run),
 }
 
 _ROWS_OF = " UNION ALL ".join(

@@ -1256,3 +1256,38 @@ def finished_awaited_children(session: Session, tenant_id: UUID, run_id: UUID) -
             {"t": tenant_id, "r": run_id},
         ).scalar_one()
     )
+
+
+# ------------------------------------------------------------------ lifecycle (RT-10)
+def job_of_run(session: Session, tenant_id: UUID, run_id: UUID, job_id: UUID) -> Row | None:
+    """`(status, lease_owner, traceparent)` of `job_id` when it is a `run.advance` job of
+    `tenant_id`'s run `run_id`; None for another client's job, another run's job or an unknown id
+    (B-2240)."""
+    return (
+        session.execute(
+            text(
+                "SELECT status, lease_owner, traceparent FROM shifde.jobs "
+                "WHERE id = :j AND tenant_id = :t AND run_id = :r AND kind = 'run.advance'"
+            ),
+            {"j": job_id, "t": tenant_id, "r": run_id},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def last_status_change(session: Session, tenant_id: UUID, run_id: UUID) -> Row | None:
+    """`(from_status, to_status)` of the run's latest status event (a transition or the reaper's
+    `lease_lost`), or None."""
+    return (
+        session.execute(
+            text(
+                "SELECT from_status, to_status FROM shifde.run_events "
+                "WHERE tenant_id = :t AND run_id = :r AND type IN ('state_change', 'lease_lost') "
+                "ORDER BY seq DESC LIMIT 1"
+            ),
+            {"t": tenant_id, "r": run_id},
+        )
+        .mappings()
+        .first()
+    )
