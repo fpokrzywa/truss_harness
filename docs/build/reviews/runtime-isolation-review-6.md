@@ -20,3 +20,15 @@ Checked: `tests/runtime tests/ledger tests/schema` at ac111ad in `.worktrees/ver
 - RT-10/RT-12: `RunContext(db=)` is the app-role database.
 - RT-11/RT-12: route cross-client tests for `start_action_run` (untested, B-2166), incl. a request body's workspace/project setting the run's scope.
 - Finding 2 decided before RT-10.
+
+## Round 2 (`git diff ac111ad 3199791`, fix round B-2170..B-2174): APPROVED
+
+Same reviewer, 2026-11-15. At 3199791 in verify3: `tests/runtime tests/ledger tests/schema tests/models_admin` 654 passed + the known B-2107 failure; `tests/build tests/governance tests/ontology` 823 passed.
+
+1. F2 closed on both paths: `steps._resource_state` (`steps.py:637`) and `_require_run_connection` before `invoke_once` (`:1168`) go through `ArtifactService.run_connection` (stored run re-read with the client id, connection read with the client id, `at_run_scope`); `invoke_once` uses the checked `spec["binding"]["connection_id"]` and `:1169` is its only caller; refusal is NotFound -> `AUTHZ_DENIED`, nothing sent, no retry. Proved by a test with `_resource_state` patched out and the four-scope test.
+2. F4 correct: run-env routes allowed only at client, run workspace or run project scope (matches `model_routes`); 5 route scopes each also known in the caller's own env; connection scopes covered.
+3. F3 correct: `ck_runs__target` requires `agent_id`/`orchestration_id` (justified `deliberate_changes` entry); two `fk_runs__orch_of_version` cases with controls; NULL-id test for both kinds.
+4. Nothing weakened: the changed runtime tests only supply the run's own `agent_id`; the fixture change (rest/rest.http/active) leaves RT-7 assertions unchanged.
+5. F1, F5 good: app-session test asserts `current_user = shifde_app`, 42501 for B's values, A's written, owner sees only A's row; real `_invocable_model` answers B's model id like an unknown one.
+
+Info: (1) ontology tools via `ontology_exec.tool_query` (`steps.py:~1164`) are not covered by `run_connection`; source-mapping connections are read through `OntologyService` (B-2161 leaves them un-narrowed; inside one client): narrow or confirm with RT-8/RT-9. (2) Check-then-open: `run_connection` checks the row, then `open_for_use` re-reads it; a scope change between the reads could bypass the check (negligible now); later pass the checked row or the run's scope into `open_for_use`.
