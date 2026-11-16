@@ -75,6 +75,10 @@ PRE_TENANT_ACTIONS: frozenset[str] = frozenset(
         # a bearer credential whose secret did not verify: no client is proven (findings Item 5c,
         # B-917); a verified but revoked/expired key is filed in the key's own client instead
         "identity.api_key.rejected",
+        # an installation IdP's client secret read at the token exchange of an unauthenticated
+        # sign-in through `shifde_installation_idp_secret` (secrets_0003, B-2260): no client and
+        # no administrator is known; the definer itself refuses a client context
+        "secret.idp_client_secret.resolved",
     }
 )
 # A person's own sign-in events: filed globally only with the acting person as the actor, read
@@ -87,9 +91,10 @@ ADMIN_INSTALLATION_ACTIONS: frozenset[str] = frozenset(
     {
         "egress.default.updated",
         "installation.profile.applied",
-        # an installation-level secret (tenant_id NULL, e.g. an installation IdP client secret)
-        # resolved by `secrets.service.SecretProvider.resolve_system` (B-805); its row is visible
-        # only under the platform-administrator context, so only that path reaches this action
+        # an installation-level secret (tenant_id NULL) resolved by
+        # `secrets.service.SecretProvider.resolve_system` (B-805); its row is visible only under
+        # the platform-administrator context, so only that path reaches this action (the
+        # installation IdP secret of a sign-in is `secret.idp_client_secret.resolved`, B-2260)
         "secret.resolved",
         # platform groups (design 5.3, admin part 1, DECISIONS B-1402): created, changed and
         # filled by the platform administrator with no client context; each change is also

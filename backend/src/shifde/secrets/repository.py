@@ -79,3 +79,37 @@ def insert_access(session: Session, values: dict[str, Any]) -> None:
         ),
         values,
     )
+
+
+def installation_idp_secret(session: Session, idp_id: UUID) -> Secret | None:
+    """The envelope of the active installation IdP `idp_id`'s client secret through
+    `shifde_installation_idp_secret` (secrets_0003, B-2260), which also writes the access-log row
+    and `last_used_at`. Refused (42501) under a client context; no row for a client's, disabled
+    or unknown IdP. The returned `Secret` is transient (never added to the session)."""
+    row = (
+        session.execute(
+            text(
+                "SELECT secret_id, secret_name, provider_key, external_ref, ciphertext, "
+                "wrapped_dek, nonce, kek_id, secret_version "
+                "FROM shifde.shifde_installation_idp_secret(:i)"
+            ),
+            {"i": idp_id},
+        )
+        .mappings()
+        .first()
+    )
+    if row is None:
+        return None
+    return Secret(
+        id=row["secret_id"],
+        tenant_id=None,
+        name=row["secret_name"],
+        provider_key=row["provider_key"],
+        external_ref=row["external_ref"],
+        ciphertext=row["ciphertext"],
+        wrapped_dek=row["wrapped_dek"],
+        nonce=row["nonce"],
+        kek_id=row["kek_id"],
+        secret_version=row["secret_version"],
+        status="active",
+    )

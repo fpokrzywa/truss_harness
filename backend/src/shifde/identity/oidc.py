@@ -393,16 +393,16 @@ def _client_secret(
     session: Session, settings: Settings, ctx: RequestContext, idp: ResolvedIdp
 ) -> secrets_service.SecretValue:
     """The IdP's client secret for the token exchange. The context is the IdP row's own scope
-    (from the database, never from the request) and is cleared before returning (B-922)."""
+    (from the database, never from the request) and is cleared before returning (B-922). An
+    installation IdP's secret is read with no client and no administrator context through
+    `shifde_installation_idp_secret` (identity review 4 item 5, B-2260)."""
     assert idp.client_secret_ref_id is not None
     provider = secrets_service.SecretProvider(session, settings.keyring, ctx)
     try:
         if idp.tenant_id is None:
-            with db.platform_admin_context(session):
-                value = provider.resolve_system(
-                    idp.client_secret_ref_id, "oidc.token_exchange", tenant_id=None
-                )
-                session.commit()
+            db.set_tenant(session, None)
+            value = provider.resolve_installation_idp(idp.id)
+            session.commit()
         else:
             db.set_tenant(session, idp.tenant_id)
             value = provider.resolve_system(
