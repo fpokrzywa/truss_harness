@@ -9,6 +9,7 @@ import importlib.util
 import subprocess
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -117,3 +118,31 @@ class EnsureRolesTests(unittest.TestCase):
             "ALTER ROLE shifde_app LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE", sql
         )
         self.assertIn("NOREPLICATION", sql)
+
+
+class WaitReadyTests(unittest.TestCase):
+    """A server replaying WAL after a crash is "running" but not ready; start must wait."""
+
+    def _cluster(self, ready: list[bool], running: bool = True) -> object:
+        cluster = dev_db.Cluster.__new__(dev_db.Cluster)
+        answers = iter(ready)
+        cluster.ready = lambda: next(answers)  # type: ignore[method-assign]
+        cluster.running = lambda: running  # type: ignore[method-assign]
+        cluster.log_file = Path("postgres.log")
+        return cluster
+
+    def test_waits_until_accepting_connections(self) -> None:
+        cluster = self._cluster([False, False, True])
+        with unittest.mock.patch.object(dev_db.time, "sleep"):
+            cluster.wait_ready(timeout=60)  # type: ignore[attr-defined]
+
+    def test_fails_when_the_server_died_during_startup(self) -> None:
+        cluster = self._cluster([False], running=False)
+        with self.assertRaises(dev_db.DevDbError):
+            cluster.wait_ready(timeout=60)  # type: ignore[attr-defined]
+
+    def test_fails_after_the_timeout(self) -> None:
+        cluster = self._cluster([False] * 10)
+        with unittest.mock.patch.object(dev_db.time, "sleep"):
+            with self.assertRaises(dev_db.DevDbError):
+                cluster.wait_ready(timeout=-1)  # type: ignore[attr-defined]
