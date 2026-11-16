@@ -137,9 +137,16 @@ def test_bs_idp_id_answers_like_an_unknown_id_on_login_and_callback(
     _same_failure(env.get(f"/api/auth/oidc/{b_off}/login", follow_redirects=False), missing)
     auth = start(env, provider, a_idp)
     provider.issue_code(auth, provider.claims_for(auth))
+    at_b = finish(env, b_idp, "c1", auth.state)  # A's binding cookie is still presented here
+    used = owner_session.execute(
+        text("SELECT used_at IS NOT NULL FROM shifde.oidc_auth_requests WHERE idp_config_id = :i"),
+        {"i": a_idp},
+    ).scalar_one()
+    owner_session.rollback()
+    assert used is False  # B's callback did not consume A's flow
     missing_cb = finish(env, unknown, "c1", auth.state)
     _same_failure(missing_cb, missing)
-    _same_failure(finish(env, b_idp, "c1", auth.state), missing_cb)
+    _same_failure(at_b, missing_cb)
     _same_failure(finish(env, b_off, "c1", auth.state), missing_cb)
     assert env.get("/api/auth/session").status_code == 401
     start(env, provider, b_idp)
