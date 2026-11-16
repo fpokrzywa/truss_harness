@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import uuid
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
@@ -34,9 +35,53 @@ from tests.conftest import (
     _with_db,
 )
 
+DROP_THREADS = 8  # per worker; the drops of all workers overlap at the end of the run
+
+
+class _Dropper:
+    """Collects the per-test databases a worker has finished with and drops them all at the end.
+
+    `DROP DATABASE` forces an immediate checkpoint. Run one per test, with eight busy workers,
+    those checkpoints queued behind one another and starved every other test of disk time (single
+    teardowns waited minutes; B-2330). Dropped together after the last test, concurrently so that
+    waiting drops share checkpoints, they cost a fraction. Every test still gets a database of its
+    own for its whole run, and none outlives it by more than the worker's session.
+    """
+
+    def __init__(self, admin_url: str) -> None:
+        self._names: list[str] = []
+        self._admin_url = admin_url
+
+    def drop(self, name: str) -> None:
+        self._names.append(name)
+
+    def close(self) -> None:
+        admin = create_engine(
+            self._admin_url,
+            isolation_level="AUTOCOMMIT",
+            poolclass=NullPool,
+        )
+
+        def one(name: str) -> None:
+            with contextlib.suppress(Exception), admin.connect() as c:
+                _drop_database(c, name)
+
+        try:
+            with ThreadPoolExecutor(max_workers=DROP_THREADS) as pool:
+                list(pool.map(one, self._names))
+        finally:
+            admin.dispose()
+
+
+@pytest.fixture(scope="session")
+def _dropper(admin_url: str) -> Iterator[_Dropper]:
+    dropper = _Dropper(admin_url)
+    yield dropper
+    dropper.close()
+
 
 @pytest.fixture
-def test_database(run_id: str, admin_url: str) -> Iterator[tuple[str, str]]:
+def test_database(run_id: str, admin_url: str, _dropper: _Dropper) -> Iterator[tuple[str, str]]:
     """(app_url, owner_url) of a database cloned from the run's template for this test alone."""
     app_url = _env("SHIFDE_TEST_DATABASE_URL")
     owner_url = _env("SHIFDE_TEST_MIGRATION_DATABASE_URL")
@@ -45,14 +90,13 @@ def test_database(run_id: str, admin_url: str) -> Iterator[tuple[str, str]]:
     name = f"{DB_PREFIX}{run_id}_a{uuid.uuid4().hex[:10]}"
     admin = create_engine(admin_url, isolation_level="AUTOCOMMIT", poolclass=NullPool)
     try:
-        with FileLock(str(_lock_path(run_id))):
+        with FileLock(str(_lock_path(run_id))):  # only the one-time template build is serial
             template = _ensure_template(admin, run_id, owner_url, app_role)
-            with admin.connect() as c:
-                _create_database(c, name, owner_role, app_role, template)
+        with admin.connect() as c:  # clones of a finished template can run side by side
+            _create_database(c, name, owner_role, app_role, template)
         yield _with_db(app_url, name), _with_db(owner_url, name)
     finally:
-        with contextlib.suppress(Exception), admin.connect() as c:
-            _drop_database(c, name)
+        _dropper.drop(name)
         admin.dispose()
 
 
