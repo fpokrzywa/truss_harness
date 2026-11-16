@@ -40,9 +40,15 @@ def _ip(app: FastAPI, peer: str, xff: str | None) -> str | None:
         return out
 
 
-def test_default_config_behind_a_loopback_frontend_proxy_records_the_forwarded_client() -> None:
+def test_default_config_does_not_believe_a_loopback_peers_forwarded_address() -> None:
     app = _app()
     assert app.state.settings.trusted_proxies == []
+    assert app.state.settings.trust_loopback_proxy is False  # B-2280
+    assert _ip(app, "127.0.0.1", "9.9.9.9") == "127.0.0.1"
+
+
+def test_loopback_proxy_trust_opted_in_records_the_forwarded_client() -> None:
+    app = _app(trust_loopback_proxy=True)
     ip = _ip(app, "127.0.0.1", "9.9.9.9")
     assert ip == "9.9.9.9"
     assert ip_limit_applies(ip, app.state.settings.trusted_proxies) is True  # the limit bites

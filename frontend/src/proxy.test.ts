@@ -79,6 +79,19 @@ describe('proxy()', () => {
     expect(bare.headers.get(`x-middleware-request-${VIA_HEADER}`)).toBe('web');
   });
 
+  it('does not forward the inbound X-Forwarded-For (a client cannot choose the address the API uses)', () => {
+    vi.stubEnv('SHIFDE_API_ORIGIN', 'https://api.example.test:8443');
+    const res = proxy(
+      new NextRequest('http://127.0.0.1:3710/api/auth/local/login', {
+        method: 'POST',
+        headers: { 'x-forwarded-for': '127.0.0.1', cookie: 'a=b' },
+      }),
+    );
+    expect(res.headers.get('x-middleware-request-x-forwarded-for')).toBeNull();
+    expect(res.headers.get('x-middleware-override-headers') ?? '').not.toContain('x-forwarded-for');
+    expect(res.headers.get('x-middleware-request-cookie')).toBe('a=b');
+  });
+
   it('does not leak the invalid origin value in the 500 body', async () => {
     vi.stubEnv('SHIFDE_API_ORIGIN', 'ftp://secret-host.internal');
     const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);

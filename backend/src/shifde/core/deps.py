@@ -38,6 +38,7 @@ def get_request_ctx(request: Request) -> RequestContext:
         client_ip=client,
         user_agent=request.headers.get("user-agent"),
         route=f"{request.method} {request.url.path}",
+        forwarded="x-forwarded-for" in request.headers,
     )
 
 

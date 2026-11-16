@@ -8,6 +8,8 @@ person, bound to that organization only (groups are platform-level since identit
 from __future__ import annotations
 
 import secrets
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
@@ -78,6 +80,17 @@ STAFF_USERS = (
 )
 
 
+@contextmanager
+def _in_tenant(session: Session, tenant_id: UUID) -> Iterator[None]:
+    """The writes that belong to one client run with that client as the context (not as the
+    platform administrator), so the seed shows the database its own client rules."""
+    db.set_tenant(session, tenant_id)
+    try:
+        yield
+    finally:
+        db.set_tenant(session, None)
+
+
 def _staff_email(slug: str) -> str:
     return f"staff@{slug}.local"
 
@@ -91,36 +104,40 @@ def _seed_org_group(
     if role_id is None:
         raise RuntimeError("the viewer role template is not seeded")
     group_id = uuid7()
-    authz_repo.insert_group(
-        session,
-        {
-            "id": group_id,
-            "slug": f"staff-{slug}",
-            "name": f"Staff of {slug}",
-            "status": "active",
-            "created_at": now,
-        },
-    )
-    session.flush()
-    authz_repo.add_group_members(session, group_id, [staff_id], "manual", now)
-    authz_repo.insert_binding(
-        session,
-        {
-            "id": uuid7(),
-            "tenant_id": tenant_id,
-            "subject_type": "group",
-            "subject_id": group_id,
-            "role_id": role_id,
-            "scope_type": "tenant",
-            "scope_id": tenant_id,
-            "created_by": None,
-            "created_at": now,
-        },
-    )
+    with db.platform_admin_context(session):  # a platform group and its members: installation level
+        authz_repo.insert_group(
+            session,
+            {
+                "id": group_id,
+                "slug": f"staff-{slug}",
+                "name": f"Staff of {slug}",
+                "status": "active",
+                "created_at": now,
+            },
+        )
+        session.flush()
+        authz_repo.add_group_members(session, group_id, [staff_id], "manual", now)
+        # binding a group is platform-only too (the database refuses any other context)
+        authz_repo.insert_binding(
+            session,
+            {
+                "id": uuid7(),
+                "tenant_id": tenant_id,
+                "subject_type": "group",
+                "subject_id": group_id,
+                "role_id": role_id,
+                "scope_type": "tenant",
+                "scope_id": tenant_id,
+                "created_by": None,
+                "created_at": now,
+            },
+        )
 
 
 def _ensure_group(session: Session, slug: str, tenant_id: UUID, user_ids: dict[str, UUID]) -> None:
-    if authz_repo.get_group_by_slug(session, f"staff-{slug}") is None:
+    with db.platform_admin_context(session):
+        missing = authz_repo.get_group_by_slug(session, f"staff-{slug}") is None
+    if missing:
         _seed_org_group(
             session,
             tenant_id=tenant_id,
@@ -160,8 +177,7 @@ def seed_dev_data(
         credentials[u.email] = password
     session.flush()
 
-    with db.platform_admin_context(session):
-        _seed_orgs(session, user_ids, with_groups=with_groups)
+    _seed_orgs(session, user_ids, with_groups=with_groups)
     session.flush()
     return credentials
 
@@ -169,73 +185,76 @@ def seed_dev_data(
 def _seed_orgs(session: Session, user_ids: dict[str, UUID], *, with_groups: bool) -> None:
     ctx = RequestContext(request_id="dev-seed")
     for org in ORGS:
-        tenant = session.scalar(select(Tenant).where(Tenant.slug == org.slug))
+        with db.platform_admin_context(session):
+            tenant = session.scalar(select(Tenant).where(Tenant.slug == org.slug))
         if tenant is not None:
             if with_groups:
                 _ensure_group(session, org.slug, tenant.id, user_ids)
             continue
         tenant_id = uuid7()
         now = utcnow()
-        tenancy_repo.insert_tenant(
-            session,
-            {
-                "id": tenant_id,
-                "slug": org.slug,
-                "name": org.name,
-                "status": "active",
-                "settings": {},
-                "created_at": now,
-            },
-        )
-        session.flush()
-        for m in org.members:
-            identity.add_member(session, tenant_id=tenant_id, user_id=user_ids[m.email])
-            authz.grant_role(
+        with db.platform_admin_context(session):  # creating a client, adding people
+            tenancy_repo.insert_tenant(
                 session,
-                tenant_id=tenant_id,
-                user_id=user_ids[m.email],
-                role_key=m.role_key,
-                scope_type="tenant",
-                scope_id=tenant_id,
-                created_by=None,
+                {
+                    "id": tenant_id,
+                    "slug": org.slug,
+                    "name": org.name,
+                    "status": "active",
+                    "settings": {},
+                    "created_at": now,
+                },
             )
-        ws_id, project_id = uuid7(), uuid7()
-        tenancy_repo.insert_workspace(
-            session,
-            {
-                "id": ws_id,
-                "tenant_id": tenant_id,
-                "slug": "main",
-                "name": "Main Workspace",
-                "status": "active",
-                "settings": {},
-                "created_at": now,
-            },
-        )
-        session.flush()
-        tenancy_repo.insert_project(
-            session,
-            {
-                "id": project_id,
-                "tenant_id": tenant_id,
-                "workspace_id": ws_id,
-                "slug": "sample",
-                "name": "Sample Project",
-                "status": "active",
-                "settings": {},
-                "created_at": now,
-            },
-        )
-        audit.record(
-            session,
-            ctx,
-            action="tenancy.org.created",
-            tenant_id=tenant_id,
-            actor_label="dev-seed",
-            target_type="org",
-            target_id=tenant_id,
-            target_label=f"org:{org.slug}",
-            details={"seeded": True},
-        )
+            session.flush()
+            for m in org.members:
+                identity.add_member(session, tenant_id=tenant_id, user_id=user_ids[m.email])
+                authz.grant_role(  # naming the first owner is platform-only
+                    session,
+                    tenant_id=tenant_id,
+                    user_id=user_ids[m.email],
+                    role_key=m.role_key,
+                    scope_type="tenant",
+                    scope_id=tenant_id,
+                    created_by=None,
+                )
+        with _in_tenant(session, tenant_id):
+            ws_id, project_id = uuid7(), uuid7()
+            tenancy_repo.insert_workspace(
+                session,
+                {
+                    "id": ws_id,
+                    "tenant_id": tenant_id,
+                    "slug": "main",
+                    "name": "Main Workspace",
+                    "status": "active",
+                    "settings": {},
+                    "created_at": now,
+                },
+            )
+            session.flush()
+            tenancy_repo.insert_project(
+                session,
+                {
+                    "id": project_id,
+                    "tenant_id": tenant_id,
+                    "workspace_id": ws_id,
+                    "slug": "sample",
+                    "name": "Sample Project",
+                    "status": "active",
+                    "settings": {},
+                    "created_at": now,
+                },
+            )
+            audit.record(
+                session,
+                ctx,
+                action="tenancy.org.created",
+                tenant_id=tenant_id,
+                actor_label="dev-seed",
+                target_type="org",
+                target_id=tenant_id,
+                target_label=f"org:{org.slug}",
+                details={"seeded": True},
+            )
         if with_groups:
             _ensure_group(session, org.slug, tenant_id, user_ids)

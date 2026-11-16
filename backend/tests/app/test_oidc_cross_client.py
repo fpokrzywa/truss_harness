@@ -204,6 +204,46 @@ def test_the_installation_idp_secret_definer_refuses_a_client_context_and_other_
     owner_session.rollback()
 
 
+def test_the_definer_checks_the_secret_as_well_as_the_idp(
+    env: TestClient, world: World, owner_session: Session
+) -> None:
+    """App isolation review 1 item 1, each in a rolled-back transaction as the schema owner: an
+    installation IdP whose secret is disabled answers no row (`s.status = 'active'`), and with the
+    scope trigger off, an installation IdP pointed at B's secret answers no row
+    (`s.tenant_id IS NULL`): the definer holds even when the two layers before it do not."""
+    inst = create_idp(env, world)
+    b_idp = create_idp(env, world, tenant="demo-b")
+    inst_secret, _ = _secret_of(owner_session, inst)
+    b_secret, b_owner = _secret_of(owner_session, b_idp)
+    assert b_owner is not None
+    assert owner_session.execute(text(DEFINER), {"i": inst}).scalars().all() == [inst_secret]
+    owner_session.rollback()
+    try:
+        owner_session.execute(
+            text("UPDATE shifde.secrets SET status = 'disabled' WHERE id = :s"), {"s": inst_secret}
+        )
+        assert owner_session.execute(text(DEFINER), {"i": inst}).all() == []
+    finally:
+        owner_session.rollback()
+    try:
+        owner_session.execute(
+            text("ALTER TABLE shifde.idp_configs DISABLE TRIGGER trg_idp_configs_secret_scope")
+        )
+        owner_session.execute(
+            text("UPDATE shifde.idp_configs SET client_secret_ref_id = :s WHERE id = :i"),
+            {"s": b_secret, "i": inst},
+        )
+        pointed = owner_session.execute(
+            text("SELECT client_secret_ref_id FROM shifde.idp_configs WHERE id = :i"), {"i": inst}
+        ).scalar_one()
+        assert pointed == b_secret  # the trigger was the only thing in the way
+        assert owner_session.execute(text(DEFINER), {"i": inst}).all() == []
+    finally:
+        owner_session.rollback()
+    assert owner_session.execute(text(DEFINER), {"i": inst}).scalars().all() == [inst_secret]
+    owner_session.rollback()
+
+
 def test_a_client_admin_cannot_reach_the_installation_idp_secret(
     env: TestClient, world: World, owner_session: Session
 ) -> None:

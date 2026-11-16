@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from tests._support.fullapp import World
-from tests._support.p2util import login, post, tenant_id
+from tests._support.p2util import login, new_user, post, tenant_id
 from tests._support.p3util import ADMIN, ADMIN_B, A, B, connection
 from tests._support.p4util import art, prompt_spec, tenant_scope
 
@@ -104,14 +104,28 @@ def test_a_platform_group_filled_in_one_client_confers_nothing_in_another(
     viewer = owner_session.execute(
         text("SELECT id FROM shifde.users WHERE primary_email = 'viewer@demo-a.local'")
     ).scalar_one()
+    member_b = "member@demo-b.example"
+    viewer_b = new_user(client, ph, "demo-b", member_b, "a-long-password-1")
+    ph = login(client, world.passwords, "platform@shifde.local")
     filled = client.put(
         f"/api/v1/platform/groups/{group['id']}/members",
-        json={"user_ids": [str(viewer)], "row_version": group["row_version"]},
+        json={"user_ids": [str(viewer), viewer_b], "row_version": group["row_version"]},
         headers=ph,
     )
     assert filled.status_code == 200, filled.text
     vh = login(client, world.passwords, "viewer@demo-a.local")
     assert "audit:read" in client.get(f"{A}/me/permissions", headers=vh).json()["permissions"]
+    # demo-b's own person in the same group gains nothing in demo-b from A's binding (B has no
+    # binding for them: the client is invisible), and in A only what the binding names: a group
+    # member needs no membership there (B-1009), so the platform administrator's choice of members
+    # is what opens A, and only to `audit:read`
+    vbh = login(client, {member_b: "a-long-password-1"}, member_b)
+    assert client.get(f"{B}/me/permissions", headers=vbh).status_code == 404
+    assert client.get(f"{B}/audit-events", headers=vbh).status_code == 404
+    assert client.get(f"{B}/connections", headers=vbh).status_code == 404
+    perms_a = client.get(f"{A}/me/permissions", headers=vbh).json()["permissions"]
+    assert perms_a == ["audit:read"]
+    assert client.get(f"{A}/connections", headers=vbh).status_code == 403
     bh = login(client, world.passwords, ADMIN_B)
     assert client.get(f"{A}/audit-events", headers=bh).status_code == 404
     roles_b = client.get(f"{B}/roles", headers=bh).json()["items"]

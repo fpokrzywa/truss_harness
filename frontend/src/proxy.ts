@@ -46,6 +46,13 @@ export function proxy(request: NextRequest) {
   }
   const headers = new Headers(request.headers);
   headers.set(VIA_HEADER, 'web');
+  // The client chooses its own X-Forwarded-For, and Next copies it unchanged onto the rewritten
+  // request (it sets the header from the socket only when it is absent, and its rewrite proxy does
+  // not append). Drop it: a client must not pick the address the API limits and audits by (app
+  // isolation review 2 item 1, B-2280). Next 16 does not expose the socket address to proxy.ts, so
+  // the header is left unset; an edge proxy that sets X-Forwarded-For from the real address, listed
+  // in SHIFDE_TRUSTED_PROXIES, is required at go-live (carry_forward, sub-project 4).
+  headers.delete('x-forwarded-for');
   // Same-origin proxy so session cookies are first-party (PHASE_1_CONTRACT topology). The target
   // is resolved per request from SHIFDE_API_ORIGIN: a `rewrites()` destination in next.config.ts
   // would be frozen at `next build` time, which breaks one-build-many-installations.

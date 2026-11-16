@@ -80,21 +80,24 @@ def test_trusted_proxy_xff_is_honoured_for_ip_and_limiter(
         assert other.status_code == 200  # a different real client is unaffected
 
 
-def test_the_same_host_proxy_is_believed_by_default_and_not_when_loopback_trust_is_off(
+def test_the_same_host_proxy_is_believed_only_when_loopback_trust_is_on(
     settings: Settings, world: World, owner_session: Session
 ) -> None:
     """Core review 1 item 4 (B-201, B-2250): the frontend proxy on this host (a loopback peer)
-    sets the client address by default; `trust_loopback_proxy=false` ignores it, so a client that
+    sets the client address only when `trust_loopback_proxy` is on (B-2280: default off); off, it is
+    ignored, so a client that
     reaches the app over loopback by another route cannot pick its own address."""
     creds = {"email": ADMIN_A, "password": world.passwords[ADMIN_A]}
     default = settings.model_copy(update={"login_rate_per_minute": 2})
-    with _client(default, client=("127.0.0.1", 4242)) as c:
+    assert default.trust_loopback_proxy is False  # B-2280: not believed until the operator opts in
+    on = default.model_copy(update={"trust_loopback_proxy": True})
+    with _client(on, client=("127.0.0.1", 4242)) as c:
         assert c.post("/api/auth/local/login", json=creds, headers=EVIL_XFF).status_code == 200
     audit_ips, session_ips = _ips(owner_session)
     assert audit_ips == {"6.6.6.6"} and session_ips == {"6.6.6.6"}
     owner_session.execute(text("DELETE FROM shifde.sessions"))
     owner_session.commit()
-    off = default.model_copy(update={"trust_loopback_proxy": False})
+    off = default
     with _client(off, client=("127.0.0.1", 4242)) as c:
         assert c.post("/api/auth/local/login", json=creds, headers=EVIL_XFF).status_code == 200
     _, session_ips = _ips(owner_session)
@@ -104,6 +107,39 @@ def test_the_same_host_proxy_is_believed_by_default_and_not_when_loopback_trust_
     ) as c:  # a listed proxy is trusted whether or not loopback is
         assert c.post("/api/auth/local/login", json=creds, headers=EVIL_XFF).status_code == 200
     assert "6.6.6.6" in _ips(owner_session)[1]
+
+
+def test_a_forwarded_loopback_address_is_still_limited_through_a_loopback_peer(
+    settings: Settings, world: World
+) -> None:
+    """App isolation review 2 item 1: `X-Forwarded-For: 127.0.0.1` must not switch the per-IP
+    limit off, and rotating values must not buy a fresh key, from a loopback peer in either trust
+    mode."""
+    for trust in (False, True):
+        cfg = settings.model_copy(
+            update={"login_rate_per_minute": 3, "trust_loopback_proxy": trust}
+        )
+        body = {"email": ADMIN_A, "password": "wrong"}
+        with _client(cfg, client=("127.0.0.1", 1)) as c:
+            codes = [
+                c.post(
+                    "/api/auth/local/login", json=body, headers={"X-Forwarded-For": "127.0.0.1"}
+                ).status_code
+                for _ in range(5)
+            ]
+        assert codes[:3] == [401] * 3 and codes[3:] == [429] * 2, (trust, codes)
+    rotating = settings.model_copy(update={"login_rate_per_minute": 3})
+    with _client(rotating, client=("127.0.0.1", 1)) as c:
+        codes = [
+            c.post(
+                "/api/auth/local/login", json=body, headers={"X-Forwarded-For": f"7.7.{i}.9"}
+            ).status_code
+            for i in range(6)
+        ]
+    assert codes == [401, 401, 401, 429, 429, 429]
+    assert ip_limit_applies("127.0.0.1", [], forwarded=True) is True
+    assert ip_limit_applies("10.0.0.5", ["10.0.0.0/24"], forwarded=True) is True
+    assert ip_limit_applies("::1", [], forwarded=False) is False
 
 
 def test_loopback_and_trusted_proxy_peers_skip_the_per_ip_limit(

@@ -53,7 +53,7 @@ def enforce_login_limits(
     cannot throttle the person's own attempts from another (carry_forward victim-lockout row,
     B-919). The account-wide bound over every source is the database ceiling (B-918)."""
     source = source_key(ctx.client_ip)
-    if ip_limit_applies(ctx.client_ip, settings.trusted_proxies):
+    if ip_limit_applies(ctx.client_ip, settings.trusted_proxies, forwarded=ctx.forwarded):
         ip_limiter: SlidingWindowLimiter = request.app.state.login_ip_limiter
         ip_limiter.check(source or "unknown")
     account_limiter: SlidingWindowLimiter = request.app.state.login_account_limiter
@@ -70,7 +70,7 @@ def _authenticate_bearer(
     """Failed bearer attempts are limited per source (findings Item 5b). A source over its limit
     is refused before any lookup, so a correct key cannot be told apart by the answer."""
     limiter: SlidingWindowLimiter = request.app.state.api_key_failure_limiter
-    applies = ip_limit_applies(ctx.client_ip, settings.trusted_proxies)
+    applies = ip_limit_applies(ctx.client_ip, settings.trusted_proxies, forwarded=ctx.forwarded)
     key = source_key(ctx.client_ip) or "unknown"
     if applies and limiter.exceeded(key):
         raise RateLimited(API_KEY_LIMIT_MESSAGE)

@@ -149,9 +149,11 @@ class Settings(BaseSettings):
     login_rate_per_account_per_minute: int = 10  # per normalized email
     # X-Forwarded-For is believed from these peers and from loopback (the same-host frontend proxy)
     trusted_proxies: Annotated[list[str], NoDecode] = []
-    # False when the proxy is not on this host: then only `trusted_proxies` may set the client
-    # address (core review 1 item 4; the default keeps the same-host frontend working)
-    trust_loopback_proxy: bool = True
+    # Loopback peers may set the client address through X-Forwarded-For only when this is true.
+    # Default false (B-2280): the same-host web proxy is not trusted until the operator lists it
+    # (`SHIFDE_TRUSTED_PROXIES=127.0.0.1/32` or this flag), because a client reaching the API over
+    # loopback by any route could otherwise choose the address the limiters and audit use.
+    trust_loopback_proxy: bool = False
     max_request_body_bytes: int = 8 * 1024 * 1024  # global request-body cap, 0 = off (Item 5b)
     db_connect_timeout_seconds: int = 10  # Item 18
     db_statement_timeout_ms: int = 60_000  # Item 18; 0 = none

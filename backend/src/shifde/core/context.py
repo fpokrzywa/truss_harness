@@ -50,6 +50,9 @@ class RequestContext:
     tenant_id: UUID | None = None
     session_id: UUID | None = None
     route: str | None = None  # `METHOD /path` of the request (audit context)
+    # True when the request carried an `X-Forwarded-For` header, believed or not: the per-IP limit
+    # then never treats the resolved address as an exempt loopback / proxy peer (review 2 item 1)
+    forwarded: bool = False
 
 
 # Mutable per-request dict shared by reference so values bound inside threadpool-run

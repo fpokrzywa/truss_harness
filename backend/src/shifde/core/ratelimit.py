@@ -71,11 +71,20 @@ def source_key(client_ip: str | None) -> str:
     return str(addr) if addr is not None else client_ip
 
 
-def ip_limit_applies(client_ip: str | None, trusted_proxies: list[str]) -> bool:
+def ip_limit_applies(
+    client_ip: str | None, trusted_proxies: list[str], *, forwarded: bool = False
+) -> bool:
     """Per-IP limiting only makes sense for a real remote address: not for loopback or a
-    configured trusted proxy (all users would share that one key)."""
+    configured trusted proxy (all users would share that one key).
+
+    The exemption holds only when that address is the TCP peer itself (a local process, a health
+    check, the proxy's own probe). When the request carried `X-Forwarded-For` (`forwarded`), the
+    address is a client's claim or the proxy's fallback, never an exempt peer: a client that sends
+    `X-Forwarded-For: 127.0.0.1` stays limited, on the shared key of the peer (review 2 item 1)."""
     if not client_ip:
         return False
+    if forwarded:
+        return True
     try:
         addr = ipaddress.ip_address(client_ip)
     except ValueError:

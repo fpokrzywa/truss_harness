@@ -17,6 +17,7 @@ from fastapi import APIRouter, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
+from shifde.core.context import RequestContext
 from shifde.core.deps import RequestCtxDep, SessionDep, SettingsDep
 from shifde.core.errors import AppError
 from shifde.core.features import FeatureRegistry
@@ -159,8 +160,9 @@ def logout(
     return response
 
 
-def _client_limit(request: Request, settings: Settings, client: str | None) -> None:
-    if ip_limit_applies(client, settings.trusted_proxies):
+def _client_limit(request: Request, settings: Settings, ctx: RequestContext) -> None:
+    client = ctx.client_ip
+    if ip_limit_applies(client, settings.trusted_proxies, forwarded=ctx.forwarded):
         limiter: SlidingWindowLimiter = request.app.state.login_ip_limiter
         limiter.check(source_key(client) or "unknown")
 
@@ -176,7 +178,7 @@ def redeem_setup_token(
     ctx: RequestCtxDep,
 ) -> SessionOut | PendingLinkOut:
     """Redeem a one-time setup token: set a password (local auth) or arm OIDC linking."""
-    _client_limit(request, settings, ctx.client_ip)
+    _client_limit(request, settings, ctx)
     try:
         result = service.redeem_setup_token(
             session,
@@ -203,11 +205,12 @@ def _oidc_client(request: Request) -> oidc.OidcClient:
     return client
 
 
-def _oidc_limit(request: Request, settings: Settings, client: str | None, step: str) -> None:
+def _oidc_limit(request: Request, settings: Settings, ctx: RequestContext, step: str) -> None:
     """Findings Item 5b: sign-in starts and callbacks per client address (`source_key`), skipped
     for loopback and trusted proxies like the login limiter; a full window answers 429 before any
     database work (B-926)."""
-    if ip_limit_applies(client, settings.trusted_proxies):
+    client = ctx.client_ip
+    if ip_limit_applies(client, settings.trusted_proxies, forwarded=ctx.forwarded):
         limiter: SlidingWindowLimiter = request.app.state.oidc_limiter
         limiter.check(f"{step}:{source_key(client) or 'unknown'}")
 
@@ -229,7 +232,7 @@ def oidc_login(
 ) -> Response:
     """Start the authorization-code + PKCE flow: 302 to the IdP. An unknown, disabled or
     unsupported IdP answers the same generic redirect as any other failure."""
-    _oidc_limit(request, settings, ctx.client_ip, "login")
+    _oidc_limit(request, settings, ctx, "login")
     try:
         url, binding = oidc.begin_login(
             session, settings, _oidc_client(request), idp_id=UUID(idp_id), next_path=next_path
@@ -262,7 +265,7 @@ def oidc_callback(
     error: str | None = None,
 ) -> Response:
     """Finish the flow; every failure is a generic redirect (detail only in audit/log)."""
-    _oidc_limit(request, settings, ctx.client_ip, "callback")
+    _oidc_limit(request, settings, ctx, "callback")
     try:
         uid = UUID(idp_id)
     except ValueError:
