@@ -1279,7 +1279,10 @@ def test_principal_tables_are_principal_keyed_tables(owner_engine: Engine) -> No
         ),
         # neither in the database nor a SETH principal-keyed table
         ("shifde.zz_gone", [], "not a table in the database"),
-        ("shifde.runs", [], "not a table in the database"),
+        # A SETH-snapshot table that is not principal-keyed and is absent here: installation_profile
+        # was not ported (B-1101). It replaced shifde.runs, which runtime now creates (B-2107,
+        # B-2150; approved by the owner on 2026-11-16).
+        ("shifde.installation_profile", [], "not a table in the database"),
         ("public.sessions", [], "not a table in the database"),
         # present, but tenant-keyed or without a principal-keyed policy
         ("shifde.zz_rls_tenant", [], "has a tenant_id column"),
