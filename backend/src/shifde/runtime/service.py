@@ -729,7 +729,10 @@ class RunService:
             raise NotFound("run not found")
         is_initiator = run["initiated_by_principal_id"] == self.sc.principal.principal_id
         if not is_initiator:
-            self.sc.pdp.require("run:cancel", self._ref(run), hide_unless="run:read")
+            # a run the caller cannot read answers like an unknown id ("run not found"), not with
+            # the PDP's generic "resource not found" (runtime isolation review 10 finding 1)
+            self._readable_run(run_id)
+            self.sc.pdp.require("run:cancel", self._ref(run))
         self._cancel_tree(run)
         fresh = self._own_run(run_id)
         assert fresh is not None

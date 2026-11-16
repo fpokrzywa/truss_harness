@@ -24,8 +24,8 @@ dependencies = [
 
 [project.scripts]
 shifde-api = "shifde.main:run"
+shifde-worker = "shifde.runtime.worker:run"
 shifde-admin = "shifde.cli.main:app"
-# shifde-worker (shifde.runtime.worker:run) is re-added by the runtime port (APP-2, DECISIONS B-101);
 # the "shifde.adapters" entry points below came back with the adapters port.
 
 [project.entry-points."shifde.adapters"]
