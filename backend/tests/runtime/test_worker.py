@@ -7,8 +7,10 @@ through `shifde_claim_jobs` and advances each claimed run through `lifecycle.adv
 run's own client; a job wedged past its run's deadline is no longer heartbeated (ARCH M3).
 
 C1 end to end (charter 5 item 3, B-2151; the equivalent of SETH `test_r1_unknown_outcome.py`
-tests 1 and 2, which drive the full app): a worker loop is executing an approved non-idempotent
-write when it stops heartbeating (killed / wedged) and loses its lease; after Cancel (or the
+tests 1 and 2, which drive the full app): a worker loop runs the real tool step
+(`steps.run_tool`), which asks for approval; once it is approved through the approvals route it
+journals the non-idempotent write and is delivering it (a blocking `invoke_once`) when it stops
+heartbeating (killed / wedged) and loses its lease; after Cancel (or the
 deadline) and a reaper pass by another worker, the run is reported `cancelled` (`timed_out`)
 with `indeterminate_side_effect`, the write step and invocation `indeterminate`, a pending
 unknown-outcome approval reachable through the approvals route, and the
@@ -35,12 +37,14 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from shifde.adapters.runtime import IntegrationRuntime
+from shifde.build import tool_runtime
+from shifde.build.env import VersionRef
 from shifde.core.clock import utcnow
 from shifde.core.db import Database
 from shifde.core.dbrole import UnsafeDatabaseRole
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
-from shifde.runtime import lifecycle
+from shifde.runtime import lifecycle, steps
 from shifde.runtime import worker as worker_mod
 from shifde.runtime.context import RunContext
 from shifde.runtime.governance import PolicyBudgetHooks
@@ -58,6 +62,7 @@ from tests.tenancy.routes import People, make_people
 __all__ = ["world"]
 
 UNKNOWN = "indeterminate_side_effect"
+MODES = ["app-role", "schema-owner"]
 WRITE_TOOL = {"executor": "builtin.function", "binding": {"function_key": "x"}, "timeout_s": 5,
               "side_effect_class": "write_non_idempotent",
               "input_schema": {"type": "object"}}  # fmt: skip
@@ -69,13 +74,15 @@ class C:
     slug: str
     run: UUID  # pending root agent run with a queued job
     job: UUID
-    tool: UUID  # a published write tool version
+    tool: VersionRef  # a published write tool of the client
 
 
 def _seed(o: Session, tenant: UUID, slug: str, *, queued: bool = True) -> C:
     user = add_person(o, tenant, "runner", "tenant_administrator")
     run = add_run(o, tenant, initiated_by_principal_id=user)
-    _, tool = add_published(o, tenant, "tools", f"tool-{uuid7().hex}", WRITE_TOOL)
+    key = f"tool-{uuid7().hex}"
+    art, ver = add_published(o, tenant, "tools", key, WRITE_TOOL)
+    tool = VersionRef(ver, art, "tools", 1, "published", WRITE_TOOL, None, key, key, "active")
     job = uuid7()
     insert(o, "jobs", id=job, tenant_id=tenant, kind="run.advance", run_id=run,
            dedupe_key=f"run:{run}:{job}", status="queued" if queued else "done",
@@ -157,6 +164,14 @@ def _until(check: Callable[[], bool], timeout: float = 30.0) -> None:
     raise AssertionError("condition not reached in time")
 
 
+def _on_owner(w: Worker, owner_url: str) -> Worker:
+    """`w` on the schema owner's database (no row-level security): the worker's own client
+    predicates are all that keeps a forged client id away from another client's rows."""
+    w.db.dispose()
+    w.db = Database(owner_url, pool_size=2, verify_role=False)  # the schema owner, deliberately
+    return w
+
+
 def _q(owner_db: Database, sql: str, **params: Any) -> list[tuple[Any, ...]]:  # Any: row values
     with owner_db.session() as o:
         return [tuple(r) for r in o.execute(text(sql), params).all()]
@@ -193,6 +208,35 @@ def test_the_worker_refuses_a_privileged_database_role_at_startup(
         w.db.dispose()
 
 
+def test_the_worker_process_exits_3_under_a_privileged_role_before_anything_is_claimed(
+    two: tuple[C, C],
+    owner_db: Database,
+    settings: Settings,
+    owner_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`shifde-worker` itself (`run`), not only `refuse_unsafe_role`: exit 3 with one line on
+    stderr, no worker registered and A's queued job still queued (runtime isolation review 11
+    finding 2)."""
+    a, _ = two
+    privileged = settings.model_copy(update={"database_url": owner_url})
+    monkeypatch.setattr(worker_mod, "settings_or_exit", lambda: privileged)
+    claimed: list[object] = []
+    monkeypatch.setattr(
+        worker_mod.repo, "claim_jobs", lambda *args, **kw: claimed.append(args) or []
+    )
+    workers = "SELECT count(*) FROM shifde.workers"
+    registered = _q(owner_db, workers)
+    with pytest.raises(SystemExit) as exited:
+        worker_mod.run([])
+    assert exited.value.code == worker_mod.EXIT_UNSAFE_ROLE == 3
+    err = capsys.readouterr().err
+    assert "shifde-worker: refusing to start" in err and owner_url not in err
+    assert claimed == [] and _q(owner_db, workers) == registered
+    assert _q(owner_db, "SELECT status FROM shifde.jobs WHERE id = :j", j=a.job) == [("queued",)]
+
+
 # ------------------------------------------------------------------ claim and advance
 def test_each_claimed_run_is_advanced_in_its_own_client_on_the_workers_database(
     two: tuple[C, C], owner_db: Database, script: type[Script], running: Callable[..., Worker]
@@ -215,11 +259,14 @@ def test_each_claimed_run_is_advanced_in_its_own_client_on_the_workers_database(
                                      "(:a, :b)", a=a.job, b=b_job)} == {"done"})  # fmt: skip
 
 
+@pytest.mark.parametrize("mode", MODES)
 def test_a_job_naming_another_clients_id_touches_nothing_of_that_client(
-    two: tuple[C, C], owner_db: Database, settings: Settings
+    mode: str, two: tuple[C, C], owner_db: Database, settings: Settings, owner_url: str
 ) -> None:
-    """Heartbeat, release and settle name the claimed client: a job carrying A's client id with
-    B's job and run (a forged claim row) changes none of B's rows; B's own client id does."""
+    """Heartbeat, release and settle (every outcome: done, released, lease_lost, error) name the
+    claimed client: a job carrying A's client id with B's job and run (a forged claim row)
+    changes none of B's rows; B's own client id does. As `shifde_app` and as the schema owner
+    (no row-level security: the repository predicates alone, review 11 finding 5)."""
     a, b = two
     with owner_db.session() as o:
         o.execute(text("UPDATE shifde.jobs SET status = 'leased', lease_owner = 'w-x', "
@@ -228,15 +275,18 @@ def test_a_job_naming_another_clients_id_touches_nothing_of_that_client(
         o.commit()
     before = _state(owner_db, b.tenant)
     w = _worker(settings, "w-x")
+    if mode == "schema-owner":
+        _on_owner(w, owner_url)
     try:
         forged = _Job(b.job, a.tenant, b.run)
         w._inflight[forged.id] = forged
         w._beat()
         assert forged.lease_lost.is_set()  # not B's job in A's client: no heartbeat
         w._release_claim(forged)
-        w._settle_job(forged, "done")
-        w._settle_job(forged, "released")
         assert _state(owner_db, b.tenant) == before
+        for outcome in ("lease_lost", "error", "done", "released"):
+            w._settle_job(forged, outcome)  # lease_lost / error: B's run reads as no run
+            assert _state(owner_db, b.tenant) == before, outcome
         own = _Job(b.job, b.tenant, b.run)  # not vacuous: B's own client id reaches the row
         w._inflight = {own.id: own}
         w._beat()
@@ -279,8 +329,11 @@ def test_a_job_wedged_past_its_runs_deadline_is_no_longer_heartbeated(
 
 
 def test_a_reaped_run_is_audited_in_its_own_client_only(
-    two: tuple[C, C], owner_db: Database, settings: Settings
+    two: tuple[C, C], owner_db: Database, settings: Settings, owner_url: str
 ) -> None:
+    """A reaped run is audited in its own client; B's run named with A's client id is audited
+    nowhere, as `shifde_app` and on a worker whose database is the schema owner (no row-level
+    security: `get_run`'s client predicate alone, runtime isolation review 11 finding 1)."""
     a, b = two
     with owner_db.session() as o:  # A's run was claimed by a worker that died
         o.execute(text("UPDATE shifde.jobs SET status = 'leased', lease_owner = 'w-dead', "
@@ -291,8 +344,10 @@ def test_a_reaped_run_is_audited_in_its_own_client_only(
                   {"t": uuid7(), "j": a.job, "r": a.run})  # fmt: skip
         o.commit()
     count = "SELECT count(*) FROM shifde.audit_events WHERE tenant_id = :t"
+    about = "SELECT tenant_id, action FROM shifde.audit_events WHERE target_id = :r"
     b_audit = _q(owner_db, count, t=b.tenant)
     before = _state(owner_db, b.tenant)
+    assert _q(owner_db, about, r=str(b.run)) == []
     w = _worker(settings, "w-reaper")
     try:
         w._reap()
@@ -301,9 +356,19 @@ def test_a_reaped_run_is_audited_in_its_own_client_only(
         w._executor.shutdown()
         w.db.dispose()
     assert _status(owner_db, a.run) == "pending"  # requeued for another worker
-    rows = _q(owner_db, "SELECT tenant_id, action FROM shifde.audit_events WHERE target_id = :r",
-              r=str(a.run))  # fmt: skip
+    rows = _q(owner_db, about, r=str(a.run))
     assert rows and all(t == a.tenant for t, _ in rows)
+    assert _q(owner_db, about, r=str(b.run)) == []  # in no client at all
+    owner = _on_owner(_worker(settings, "w-reaper-owner"), owner_url)
+    try:
+        owner._audit_reaped(a.tenant, b.run, "worker_lost")  # the predicate alone stops it
+        assert _q(owner_db, about, r=str(b.run)) == []
+        owner._audit_reaped(a.tenant, a.run, "timed_out")  # not vacuous: A's own run is audited
+        assert (a.tenant, "run.timed_out") in _q(owner_db, about, r=str(a.run))
+    finally:
+        owner._executor.shutdown()
+        owner.db.dispose()
+    assert _q(owner_db, about, r=str(b.run)) == []
     assert _q(owner_db, count, t=b.tenant) == b_audit and _state(owner_db, b.tenant) == before
 
 
@@ -321,31 +386,40 @@ def test_c1_a_worker_that_loses_its_lease_mid_write_leaves_an_unknown_outcome_no
 ) -> None:
     a, b = two
     writing, release = threading.Event(), threading.Event()
+    deliveries: list[str] = []
 
-    def approved_write(ctx: RunContext) -> Any:  # Any: output document
-        with owner_db.session() as o:  # the approved POST reached the target
-            invocation = uuid7()
-            insert(o, "tool_invocations", id=invocation, tenant_id=a.tenant, run_id=a.run,
-                   call_ref="w1", tool_version_id=a.tool, side_effect_class="write_non_idempotent",
-                   idempotency_key=f"k-{invocation}", status="started", request_hash="h",
-                   arguments='{"item": "x"}')  # fmt: skip
-            insert(o, "run_steps", id=uuid7(), tenant_id=a.tenant, run_id=a.run, seq=1,
-                   kind="tool_call", name="t", status="running", tool_invocation_id=invocation,
-                   tool_version_id=a.tool)  # fmt: skip
-            o.commit()
+    def invoke_once(conns: object, spec: object, args: object, **kw: Any) -> object:
+        deliveries.append(kw["idempotency_key"])  # the approved POST reached the target
         writing.set()
         release.wait(60)  # the process is gone / wedged: its outcome is unknown to the platform
-        return {"ok": 1}
+        return {"written": True}
 
-    script.behave = staticmethod(approved_write)
+    monkeypatch.setattr(tool_runtime, "invoke_once", invoke_once)
+    call = steps.ToolCall(a.tool, {"item": "x"}, "w1", node_id="w1")
+    policy = steps.ToolPolicy(frozenset({"write_non_idempotent"}), None,
+                              frozenset({a.tool.version_id}))  # fmt: skip
+    # the executor is the real tool step: gate, approval, write-ahead journal, one delivery
+    script.behave = staticmethod(lambda ctx: steps.run_tool(ctx, call, policy))
     b_before = _state(owner_db, b.tenant)
     w1 = running("w-c1")
-    assert writing.wait(30), "the write never started"
-    monkeypatch.setattr(w1, "_beat", lambda: None)  # killed: no more heartbeats
-    assert _status(owner_db, a.run) == "running"  # a dead worker still holds it
+    _until(lambda: _status(owner_db, a.run) == "waiting_for_approval")
+    assert deliveries == [] and not writing.is_set()  # nothing is sent before the decision
     with runtime_client(settings) as client:
         h = as_user(client, people.owner_a)
         base = org(a.slug)
+        asked = client.get(f"{base}/approvals", params={"status": "pending"}, headers=h).json()
+        [first] = [x for x in asked["items"] if x["run_id"] == str(a.run)]
+        assert first["reason"] == "tool_side_effect"
+        ok = client.post(f"{base}/approvals/{first['id']}/decide", headers=h,
+                         json={"decision": "approve"})  # fmt: skip
+        assert ok.status_code == 200, ok.text
+        assert writing.wait(30), "the approved write never started"
+        assert len(deliveries) == 1
+        # write-ahead: the invocation was committed `started` before the call was made
+        assert _q(owner_db, "SELECT status FROM shifde.tool_invocations WHERE run_id = :r",
+                  r=a.run) == [("started",)]  # fmt: skip
+        monkeypatch.setattr(w1, "_beat", lambda: None)  # killed: no more heartbeats
+        assert _status(owner_db, a.run) == "running"  # a dead worker still holds it
         if ended_by == "cancel":
             r = client.post(f"{base}/runs/{a.run}/cancel", headers=h)
             assert r.status_code == 202, r.text
@@ -372,9 +446,9 @@ def test_c1_a_worker_that_loses_its_lease_mid_write_leaves_an_unknown_outcome_no
                  "WHERE id = :r", r=a.run)[0]  # fmt: skip
         assert row[0] == status and row[1] == UNKNOWN, row
         assert "unknown" in (row[2] or "").lower()
-        steps = _q(owner_db, "SELECT kind, status FROM shifde.run_steps WHERE run_id = :r",
+        journal = _q(owner_db, "SELECT kind, status FROM shifde.run_steps WHERE run_id = :r",
                    r=a.run)  # fmt: skip
-        assert ("tool_call", "indeterminate") in steps and all(s != "running" for _, s in steps)
+        assert ("tool_call", "indeterminate") in journal and all(s != "running" for _, s in journal)
         assert _q(owner_db, "SELECT status FROM shifde.tool_invocations WHERE run_id = :r",
                   r=a.run) == [("indeterminate",)]  # once, never repeated  # fmt: skip
         actions = _q(owner_db, "SELECT action FROM shifde.audit_events WHERE target_id = :r",
@@ -403,3 +477,4 @@ def test_c1_a_worker_that_loses_its_lease_mid_write_leaves_an_unknown_outcome_no
     assert _q(owner_db, "SELECT status FROM shifde.tool_invocations WHERE run_id = :r",
               r=a.run) == [("resolved_succeeded",)]  # fmt: skip
     assert _status(owner_db, a.run) == status
+    assert len(deliveries) == 1, "the write was resent"
