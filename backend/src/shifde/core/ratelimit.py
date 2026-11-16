@@ -96,7 +96,11 @@ def _parse_ip(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | Non
 
 
 def resolve_client_ip(
-    peer: str | None, forwarded_for: str | None, trusted_proxies: list[str]
+    peer: str | None,
+    forwarded_for: str | None,
+    trusted_proxies: list[str],
+    *,
+    trust_loopback: bool = True,
 ) -> str | None:
     """The real client address of a request (audit Item 3).
 
@@ -105,14 +109,16 @@ def resolve_client_ip(
     empty setting every peer is 127.0.0.1 and the real client was lost). The chain is read from the
     right, skipping trusted proxies; the first other valid address is the client, so entries a
     client prepends to the header cannot be used to pick its own address. Anything unparseable
-    falls back to the peer."""
+    falls back to the peer. With `trust_loopback` false (a deployment whose proxy is not on the same
+    host) loopback is trusted no more than any other address: only `trusted_proxies` count."""
     if not peer:
         return None
     peer_addr = _parse_ip(peer)
     if peer_addr is None or not forwarded_for:
         return peer
     networks = [ipaddress.ip_network(p, strict=False) for p in trusted_proxies]
-    networks.extend(_LOOPBACK_NETWORKS)
+    if trust_loopback:
+        networks.extend(_LOOPBACK_NETWORKS)
 
     def trusted(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
         return any(addr.version == n.version and addr in n for n in networks)

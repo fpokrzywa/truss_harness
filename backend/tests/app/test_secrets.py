@@ -16,11 +16,11 @@ from shifde.core import db
 from shifde.core.context import Principal, RequestContext
 from shifde.core.crypto import KeyRing
 from shifde.core.db import Database
-from shifde.core.errors import NotFound
+from shifde.core.errors import Forbidden, NotFound
 from shifde.core.settings import Settings
 from shifde.secrets.service import SecretProvider
 from tests._support.fullapp import World
-from tests._support.p2util import login, post
+from tests._support.p2util import login, new_user, post
 
 A = "/api/v1/orgs/demo-a"
 
@@ -83,6 +83,62 @@ def test_resolve_is_pdp_checked_audited_and_logged(
         owner_session.execute(text("SELECT last_used_at FROM shifde.secrets")).scalar_one()
         is not None
     )
+
+
+def test_resolve_denied_for_principals_without_secret_use_and_for_disabled_or_foreign_secrets(
+    client: TestClient, world: World, app_db: Database, settings: Settings, owner_session: Session
+) -> None:
+    h = login(client, world.passwords, ADMIN)
+    sec = post(client, f"{A}/secrets", h, {"name": "svc-token", "value": VALUE})
+    # a Viewer lacks secret:use (and secret:read): the secret does not even exist for it
+    s, principal, pdp, provider, _ = _provider_env(
+        app_db, settings, owner_session, "demo-a", "viewer@demo-a.local"
+    )
+    try:
+        with pytest.raises(NotFound):
+            provider.resolve(UUID(sec["id"]), principal, "x", pdp=pdp)
+    finally:
+        s.close()
+    # tenant B principal cannot see tenant A's secret at all (RLS)
+    s, principal, pdp, provider, _ = _provider_env(
+        app_db, settings, owner_session, "demo-b", "admin@demo-b.local"
+    )
+    try:
+        with pytest.raises(NotFound):
+            provider.resolve(UUID(sec["id"]), principal, "x", pdp=pdp)
+    finally:
+        s.close()
+    # an Auditor-like reader (secret:read but no secret:use) is Forbidden, and disabled secrets vanish
+    role = post(
+        client,
+        f"{A}/roles",
+        h,
+        {"key": "reader", "name": "reader", "permissions": ["secret:read", "workspace:read"]},
+    )["id"]
+    uid = new_user(client, h, "demo-a", "sr@example.com", "a-long-password-1", [role])
+    s, principal, pdp, provider, _ = _provider_env(
+        app_db, settings, owner_session, "demo-a", "sr@example.com"
+    )
+    try:
+        with pytest.raises(Forbidden):
+            provider.resolve(UUID(sec["id"]), principal, "x", pdp=pdp)
+    finally:
+        s.close()
+    h = login(client, world.passwords, ADMIN)
+    client.patch(
+        f"{A}/secrets/{sec['id']}", json={"status": "disabled", "row_version": 1}, headers=h
+    )
+    s, principal, pdp, provider, _ = _provider_env(app_db, settings, owner_session, "demo-a", ADMIN)
+    try:
+        with pytest.raises(NotFound):
+            provider.resolve(UUID(sec["id"]), principal, "x", pdp=pdp)
+    finally:
+        s.close()
+    assert (
+        owner_session.execute(text("SELECT count(*) FROM shifde.secret_access_log")).scalar_one()
+        == 0
+    )
+    _ = uid
 
 
 def test_ciphertext_moved_to_another_secret_row_does_not_decrypt(

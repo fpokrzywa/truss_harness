@@ -72,7 +72,11 @@ def _settings() -> Settings:
 
 @contextmanager
 def _owner_session(settings: Settings) -> Iterator[Session]:
-    database = Database(settings.effective_migration_url, pool_size=1, max_overflow=0)
+    # the schema owner's own tooling (`Database` docstring): the owner role is privileged by
+    # design, so the startup role check that guards the app's URL does not apply to this one
+    database = Database(
+        settings.effective_migration_url, pool_size=1, max_overflow=0, verify_role=False
+    )
     try:
         with database.session() as session:
             yield session

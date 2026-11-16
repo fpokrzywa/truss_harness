@@ -73,3 +73,13 @@ def test_resolve_client_ip_unit() -> None:
     assert resolve_client_ip("::1", "2001:db8::7", []) == "2001:db8::7"
     assert resolve_client_ip("10.0.0.5", "1.2.3.4", ["10.0.0.0/24"]) == "1.2.3.4"
     assert resolve_client_ip("10.0.0.5", None, ["10.0.0.0/24"]) == "10.0.0.5"
+
+
+def test_resolve_client_ip_trust_loopback_off_believes_only_configured_proxies() -> None:
+    off = {"trust_loopback": False}
+    assert resolve_client_ip("127.0.0.1", "1.2.3.4", [], **off) == "127.0.0.1"
+    assert resolve_client_ip("::1", "2001:db8::7", [], **off) == "::1"
+    assert resolve_client_ip("10.0.0.5", "1.2.3.4", ["10.0.0.0/24"], **off) == "1.2.3.4"
+    # a loopback hop inside a trusted proxy's chain is the client when loopback is not trusted
+    assert resolve_client_ip("10.0.0.5", "127.0.0.1", ["10.0.0.0/24"], **off) == "127.0.0.1"
+    assert resolve_client_ip("10.0.0.5", "127.0.0.1", ["10.0.0.0/24"]) == "10.0.0.5"

@@ -28,7 +28,10 @@ def get_request_ctx(request: Request) -> RequestContext:
     settings: Settings = request.app.state.settings
     peer = request.client.host if request.client else None
     client = resolve_client_ip(
-        peer, request.headers.get("x-forwarded-for"), settings.trusted_proxies
+        peer,
+        request.headers.get("x-forwarded-for"),
+        settings.trusted_proxies,
+        trust_loopback=settings.trust_loopback_proxy,
     )
     return RequestContext(
         request_id=request_id,

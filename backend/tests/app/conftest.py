@@ -23,6 +23,7 @@ from sqlalchemy.pool import NullPool
 from shifde.core.db import Database
 from shifde.core.settings import Settings
 from tests._support.fullapp import World, fresh_world, full_client
+from tests._support.servers import mcp_server, oai_server, rest_server
 from tests.conftest import (
     DB_PREFIX,
     _create_database,
@@ -108,3 +109,20 @@ def world(owner_session: Session) -> World:
 def client(settings: Settings, world: World) -> Iterator[TestClient]:
     with full_client(settings) as c:
         yield c
+
+
+__all__ = [
+    "app_db",
+    "app_engine",
+    "app_url",
+    "client",
+    "mcp_server",
+    "oai_server",
+    "owner_db",
+    "owner_engine",
+    "owner_session",
+    "owner_url",
+    "rest_server",
+    "test_database",
+    "world",
+]
