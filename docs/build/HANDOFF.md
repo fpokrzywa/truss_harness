@@ -1,77 +1,61 @@
-# Handoff — 2026-11-15, end of session 6 (lead)
+# Handoff — 2026-11-15, end of session 7 (lead)
 
-Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md`, then this file. Session 6 handed off at 302,589 lead tokens (`scripts/context_size.py`: "HAND OFF NOW"): no agent running, no merge half done, `runtime` RT-1 blocked on an owner decision.
+Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md`, then this file. No agent running, no merge half done. Session 7 handed off between units at about 240k lead tokens to leave room before the 300k limit (each runtime cycle costs the lead about 13k).
 
-## Finished in session 6
+## Finished in session 7
 
-All merged to `main` and pushed; `main` = `origin/main` at the commit carrying this handoff.
+| Item | Where | Gate / review |
+|---|---|---|
+| Follow-ups: ontology review 2 G1 (group policies only for groups bound in the client, B-2013), build review 4 trigger re-enable assertion (B-2014) | `fb30db2`, merged to main `ff8304e` | `gates.py --ref main-gate --workers 8` 13/13, pytest 1914 passed in 730.8 s, front end 0; ontology review 3 APPROVED |
+| runtime RT-1 isolation review 1 | main `docs/build/reviews/runtime-isolation-review-1.md` | BLOCKED (F1 tests on empty tables, F2 join), fix round `0ced96d`, round 2 APPROVED |
+| runtime RT-2 `schemas.py`, `pipeline_ops.py` | `runtime` `7878762` | no DB path, not reviewed separately |
+| runtime RT-3 `repository.py` | `runtime` `8b1cdef` | review 2 APPROVED |
+| runtime RT-4 `context.py`, `settle.py`, `gate.py`, `run_of`, C1 settle | `runtime` `43f6745` | review 3 APPROVED |
+| runtime RT-5 `ontology_exec.py`, `policies.py`, `schedules.py`, G2 | `runtime` `4d64fed` | review 4 APPROVED |
+| runtime RT-6 `steps.py`, Items 9-11, C1 steps half | `runtime` `67d8f18` | review 5 APPROVED |
+| runtime RT-7 `agent.py`, `action.py`, run-env narrowing | `runtime` `ac111ad` | review 6 APPROVED, Medium F2 open |
+| Lead decisions | B-2150 (B-1943 stands), B-2151 (C1 reading) | |
 
-| Unit | Merged | Gate (clean checkout) | Review |
-|---|---|---|---|
-| models_admin test flake fix (B-1738) | `4101d40` | 8/8, 1228 passed | not critical |
-| B-1914: pytest's default `norecursedirs` skipped `tests/build` in every full run; fixed + `tests/test_collection_layout.py` | `73e0be8` | 8/8, 1228 passed | n/a |
-| build 2a (prompts, skills, executors) | `73e0be8` | 8/8, 1228 | not critical |
-| build 2b (agents, tools, tool_runtime) | `786c8b1` | 8/8, 1261 | review 2 APPROVED |
-| build 3a (pipeline_nodes, pipelines, catalog; ontologies/ontology_expr copied) | `1591807` | 8/8, 1343 | — |
-| build 3b (orchestrations; ontologies/ontology_expr tests, B-1924 crash fix) | `6003a74` | 8/8, 1441 | — |
-| build 4a (service.py + production `Env`, opus) | `56cf65d` | 8/8, 1598 | review 3 APPROVED |
-| build 4b (api, kind_ops, ontology_ops) + `build_0002` (shared SHI models referable) | `be3fabc` | 8/8, 1812 in 558 s | review 4 BLOCKED, BLOCKED, APPROVED round 3 |
-| **build done** | `2e03702` | | |
-| ontology part 1 (`ontology_0001`, repository, engine, F-04 fixed) | `380d1dc` | 8/8, 1870 | ontology review 1 APPROVED |
-| ontology part 2 (service, api) | `c58d282` | 8/8, 1910 in 648.6 s | ontology review 2 APPROVED |
-| **ontology done** | `aa20033` | | |
-
-Full backend suite on main: 1910 passed in 648.6 s (target 20 min). Front end not re-run this session (no front-end change since `4bcc1fb`).
+Each review's small findings were handed to the next builder on the same branch and closed there; review files say which.
 
 ## The exact next step
 
-1. **runtime RT-1 is blocked on the owner** (STATUS "Waiting on owner input", B-1943). Branch `runtime` at `c43dcd9` (pushed; worktree `.worktrees/runtime`, db `shifde_runtime`). Its only failing gate is `tests/schema/test_rls_schema.py::test_stale_principal_table_entry_is_reported[shifde.runs-ported6-not a table in the database]`: the case hard-codes `shifde.runs` as a SETH table absent from the database, and `runtime_0001` creates it. Proposed fix: replace `"shifde.runs"` with `"shifde.installation_profile"` in that one parametrised case (B-1101: the one SETH table never ported). The permission system refused this edit for the builder, and refused the lead's earlier `PLAIN_FOREIGN_KEYS` edit. **Do not make it, or route around it, without the owner's explicit written approval.** If approved:
-   1. Make the one-line edit on branch `runtime`, then run `python scripts/gates.py --ref runtime --workers 8 --no-frontend`.
-   2. Run an isolation review of `aa20033..runtime`. Reviewer focus: `runtime_0001`, the three definers and their `test_function_schema.py` register entries, the two `global_tables.txt` lines (`workers`, `run_state_transitions`), the 13 `deliberate_changes.yaml` entries, the changed ledger/ontology tests (B-2106), and the C1 SQL tests.
-   3. Merge to main and push.
-2. **While waiting**, nothing in the layer order can start: RT-2..RT-12 build on RT-1's tables on the same branch, and `app`/`cli` need runtime. Work that does not depend on runtime and is allowed now:
-   - Ontology review 2 G1 (group-subject policies through `authz.bound_groups`), as a small ontology follow-up unit.
-   - Review 4 follow-up: the upgrade test asserts `trg_prompt_test_runs_append_only` is re-enabled.
-   - Housekeeping below.
-3. **After RT-1 merges**, use the runtime parts in `docs/build/inventory-runtime-ontology.md` section 2b:
-   - Order: RT-2 schemas/pipeline_ops, RT-3 repository, RT-4 context/settle/gate, RT-5 ontology_exec/policies/schedules, RT-6 steps, RT-7 agent/action, RT-8 graph, RT-9 pipeline, RT-10 lifecycle, RT-11 service, RT-12 api/worker.
-   - Builder: opus (`module-builder-critical`). The builder for RT-1 used about 342k tokens, so keep each part to one or two files.
+1. **RT-7 review fix round** on branch `runtime` (worktree `.worktrees/runtime`, head `ac111ad`), opus `module-builder-critical`. The scope is the "runtime isolation reviews 2-6" section at the end of `docs/build/carry_forward.md` (main), first bullet. Its F2 is Medium: tool execution resolves the tool's connection by client only (`runtime/steps.py:638`, `:1156`). Then a short re-review of that diff (fresh `isolation-reviewer`).
+2. **Then RT-8 `graph.py`, RT-9 `pipeline.py`, RT-10 `lifecycle.py`, RT-11 `service.py`, RT-12 `api.py` + `worker.py`.** Use the same loop each time:
+   - One opus builder per part, on `runtime`. Brief it with the carry_forward sections "Runtime part N" plus the review follow-ups. Decision numbers continue at B-2170.
+   - Run a fresh or resumed `isolation-reviewer` on `git diff <prev> <new>` (resume only while its context is under about 160k).
+   - Hand that review's small findings to the next builder.
    - Owed along the way:
-     - C1 Python half and the end-to-end worker test (charter 5 item 3, before runtime is accepted);
-     - the `run_of` contract (build review 3 F1, review 4 F3, ontology review 2 G2);
-     - build review 2 F5;
-     - the RT-3 composite keys for the bare id columns of B-2101;
-     - a client-scoped due-schedule claim.
-4. Then: `app`/`cli`/`main` (mount every router; about 150 deferred SETH tests by name in carry_forward; B-1625 before OIDC is mounted); the two-org proof (local cluster, S-002); the remaining front-end areas (B-1107); STATUS "Known defects" refresh; the factory install (charter §6).
+     - the C1 end-to-end worker test (charter 5 item 3, before runtime is accepted);
+     - the worker's `RunContext(db=)` must be the app-role database;
+     - `lease_job_id` set only from the claim.
+3. **The runtime merge still waits on the owner (B-1943, B-2150).** One gate fails: `test_rls_schema.py::test_stale_principal_table_entry_is_reported[shifde.runs-...]`.
+   - The proposed one-token edit (`shifde.runs` -> `shifde.installation_profile`, plus a comment citing B-1101) was judged by review 1 item 7 to keep the case's meaning and the test as strict or stricter.
+   - In session 7 a message from another Claude session claimed the owner approved it. A relayed approval is not the owner's own word in this session, so the edit was not made.
+   - When the owner approves in the lead's own session, make the edit on `runtime`. Then run `gates.py --ref runtime --workers 8`, merge to main (unions on docs), gate the merge, and push.
+4. After runtime:
+   - `app`/`cli`/`main` (mount every router; about 150 deferred SETH tests in carry_forward; B-1625 before OIDC);
+   - the two-org proof (local cluster, S-002);
+   - the remaining front-end areas (B-1107);
+   - the known-defects refresh;
+   - the factory install (charter §6).
 
 ## Open branches, worktrees and databases
 
 | Item | State |
 |---|---|
-| `main` (local and origin) | Up to date with this handoff commit |
-| `runtime` (origin) | `c43dcd9`, RT-1, not merged (see above) |
-| `build`, `ontology` (origin) | merged; done. Worktrees `.worktrees/build`, `.worktrees/ontology` can be removed (`git worktree remove --force`) |
-| `.worktrees/verify`, `verify2`, `verify3` | Detached checkouts used by `gates.py --name` and reviewers (`shifde_verify3` is migrated to a review state; harmless) |
-| Leftovers from session 5 | `.worktrees/fe-areas-1`, `secrets`, `skeleton`, `_scratch_admin`, `admin` (unregistered dir), `usage.txt`, `S:/tmp_identity_scratch`, `S:/tmp_identity_tools`, `S:/Development_2026/scratch_models_admin`: delete by hand |
-| `observe/` (untracked, main checkout) | Not this build's; leave it |
-| Local cluster | PostgreSQL 17 on 127.0.0.1:55450, running; scratch databases (`shifde_fix_rpm_flake`, `shifde_tmp_review_*`) harmless |
-| Background agents | None running |
+| `main` (local, origin) | at the commit carrying this handoff |
+| `runtime` (origin) | `ac111ad`, RT-1..RT-7, not merged; worktree `.worktrees/runtime`, db `shifde_runtime` |
+| `followups-1` (origin) | merged; can be deleted |
+| `.worktrees/verify`, `verify2`, `verify3` | detached checkouts for gates and reviewers (`verify3` at `ac111ad`) |
+| `.worktrees/fix-ci-orgs`, branch `fix/ci-org-list-pagination` | **another Claude session's work, not this build's.** Leave it alone; fetch before every push |
+| Leftovers by hand | `S:/tmp_rt2_src` (RT-2 builder scratch; deletion was refused for it), the session 5 leftovers listed in git history of this file |
+| Local cluster | PostgreSQL 17 on 127.0.0.1:55450, running |
 
 ## Learned, not recorded elsewhere
 
-- **The permission system guards `tests/schema/test_rls_schema.py`.** Any edit to it, even a reviewed exception-list entry or a stale example, was refused. Design around it (as `build_0002` did with `own_model_id`). Where no design avoids it, stop and record the item as waiting on the owner. Never ask an agent to make an edit you were refused.
-- **pytest's default `norecursedirs` includes `build`** (B-1914). Any new test directory named like a default pattern would vanish silently; `tests/test_collection_layout.py` now guards this.
-- **The gate pattern that worked:**
-  - Merge the part into main locally (`--no-ff` if main moved).
-  - `git branch -f main-gate HEAD`.
-  - `gates.py --ref main-gate --name verify2 --workers 8 --no-frontend` in the background, with the review running in parallel.
-  - Push only after both pass, then `git branch -D main-gate`.
-  - Docs conflicts are unions; check duplicates with a `Counter`.
-- **Resuming the same reviewer for later rounds is cheap** (2-15 min) and caught two real defects in `build_0002` round 2: the BYPASSRLS owner skipping a guard trigger via an early return, and a backfill blocked by an append-only trigger. A guard trigger must hold for the schema owner too.
-- **Builders that write "proven to fail without the check" catch vacuous tests.** Keep asking for it in every brief.
-- **Full suite times:** ~6-11 min on a quiet machine with `-n 8`. With a builder's full run going at the same time, they doubled; one builder saw 90 min at 39% with two leftover pytest processes. Check for stray `python.exe ... pytest` before blaming the code.
-- **Agent sizes this session:**
-  - sonnet builders 93-250k tokens per part (ontology part 1 252k, build 4b 247k);
-  - opus RT-1 342k;
-  - opus reviewers 94-154k.
-- **Spend:** about $362 estimated at list price (sp1 $263.87 + lead $97.79) per `python scripts/usage_report.py`, up from about $285 at the end of session 5.
+- Builders on `runtime` run their pytest set in the foreground in parts. In the background, xdist crashed with "cannot send (already closed?)" when other worktrees were also running pytest.
+- `lint-imports` needs `PYTHONIOENCODING=utf-8` when its output is redirected (rich crashes on cp1252). This is not a contract failure.
+- Reviewer cost: 92-214k per review. Resuming the same reviewer for the next part is cheap until about 160k, then start fresh.
+- Opus builder cost per runtime part: 97k (RT-2) to 248k (RT-6). RT-8..RT-12 include three oversize files (`pipeline.py` 1447 lines, `service.py` 1023 lines), so expect partial returns and a second agent.
+- Spend: about $423 estimated at list price (`python scripts/usage_report.py`: sub-project 1 $315.25, lead $108.10), up from about $362 at the end of session 6.
