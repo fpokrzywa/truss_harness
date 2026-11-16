@@ -391,8 +391,9 @@ def run_target(session: Session, tenant_id: UUID, run_id: UUID) -> Row | None:
     return (
         session.execute(
             text(
-                "SELECT id, tenant_id, kind, agent_version_id, orchestration_version_id, "
-                "pipeline_version_id, ontology_version_id FROM shifde.runs "
+                "SELECT id, tenant_id, kind, workspace_id, project_id, agent_version_id, "
+                "orchestration_version_id, pipeline_version_id, ontology_version_id "
+                "FROM shifde.runs "
                 "WHERE id = :r AND tenant_id = :t"
             ),
             {"r": run_id, "t": tenant_id},

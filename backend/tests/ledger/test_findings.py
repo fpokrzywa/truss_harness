@@ -11,7 +11,6 @@ from uuid import UUID
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from shifde import ledger
@@ -312,19 +311,34 @@ def test_a_usage_row_survives_a_crash_after_the_provider_answered(
         db.dispose()
 
 
+@pytest.mark.parametrize("as_owner", [False, True])
 def test_the_durable_write_is_tenant_scoped_and_refuses_another_tenants_values(
-    app_db: Database, owner_db: Database
+    app_db: Database, owner_db: Database, as_owner: bool
 ) -> None:
+    """Values naming client B under client A's durable write are refused before any session opens
+    (B-2164), as `shifde_app` (where row-level security would also refuse them) and on the schema
+    owner's database (where nothing else would): no row is written for either client."""
     a, b = uuid7(), uuid7()
     with owner_db.session() as owner:
         add_tenants(owner, a, b)
         owner.commit()
-    with pytest.raises(DBAPIError):
+    with pytest.raises(ValueError, match="not the client of the durable write"):
         ledger.record_model_call_durably(
-            app_db,
+            owner_db if as_owner else app_db,
             a,
             _call(b, "k"),
             reported=Usage(),
             estimated_input=1,
             estimated_output=1,
         )
+    with owner_db.session() as owner:
+        count = owner.execute(
+            text("SELECT count(*) FROM shifde.usage_events WHERE tenant_id IN (:a, :b)"),
+            {"a": a, "b": b},
+        ).scalar_one()
+    assert count == 0
+    # A's own values are written (not vacuous)
+    written = ledger.record_model_call_durably(
+        app_db, a, _call(a, "k"), reported=Usage(), estimated_input=1, estimated_output=1
+    )
+    assert written.inserted

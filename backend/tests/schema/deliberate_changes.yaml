@@ -611,6 +611,21 @@
   reason: "client-keyed composite foreign key where SETH had a bare id column: constraints bypass row-level security, so without it a row of client A could name client B's object and a later join on the id alone would read B's row (B-116 item 9, B-607, B-2102). (tenant_id, root_run_id) -> runs (tenant_id, id): the usage ledger, budgets and approval walks read the root run by this id."
   migration: runtime_0001
 
+- table: runs
+  path: [constraints, fk_runs__agent_of_version]
+  reason: "client-keyed composite foreign key where SETH had a bare id column: constraints bypass row-level security, so without it a run of client A could name client B's agent artifact, or another artifact of A than its pinned version's (B-116 item 9, B-2125, B-2165). (tenant_id, agent_version_id, agent_id) -> artifact_versions (tenant_id, id, artifact_id): the agent runner builds its artifact from runs.agent_id."
+  migration: runtime_0001
+
+- table: runs
+  path: [constraints, fk_runs__orch_of_version]
+  reason: "client-keyed composite foreign key where SETH had a bare id column: constraints bypass row-level security, so without it a run of client A could name client B's orchestration artifact, or another artifact of A than its pinned version's (B-116 item 9, B-2125, B-2165). (tenant_id, orchestration_version_id, orchestration_id) -> artifact_versions (tenant_id, id, artifact_id)."
+  migration: runtime_0001
+
+- table: runs
+  path: [constraints, fk_runs__prompt_version]
+  reason: "client-keyed composite foreign key where SETH had a bare id column: constraints bypass row-level security, so without it a run of client A could name client B's prompt version (B-116 item 9, B-2125, B-2165). (tenant_id, prompt_version_id) -> artifact_versions (tenant_id, id)."
+  migration: runtime_0001
+
 - table: run_steps
   path: [constraints, fk_run_steps__child_run]
   reason: "client-keyed composite foreign key where SETH had a bare id column: constraints bypass row-level security, so without it a row of client A could name client B's object and a later join on the id alone would read B's row (B-116 item 9, B-607, B-2102). (tenant_id, child_run_id) -> runs: the runtime reads finished awaited children through this id."
