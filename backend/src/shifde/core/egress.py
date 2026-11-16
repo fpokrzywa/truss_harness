@@ -20,8 +20,10 @@ Nothing here knows about tenants, databases or the web framework (core depends o
 from __future__ import annotations
 
 import asyncio
+import functools
 import ipaddress
 import socket
+import ssl
 import threading
 import time
 from collections.abc import (
@@ -194,8 +196,8 @@ class EgressGuard:
         self._inner_async = inner_async
         # One real transport (= one connection pool) per (name, address, port): httpcore pools by
         # address and ignores SNI, so hosts sharing an IP must never share a TLS connection.
-        self._inner_factory = inner_factory or httpx.HTTPTransport
-        self._inner_async_factory = inner_async_factory or httpx.AsyncHTTPTransport
+        self._inner_factory = inner_factory or _default_transport
+        self._inner_async_factory = inner_async_factory or _default_async_transport
         self.max_redirects = max_redirects
         self._deadline: float | None = None
 
@@ -455,6 +457,25 @@ class _AsyncCappedStream(httpx.AsyncByteStream):
 def _declared_length(response: httpx.Response) -> int | None:
     raw = response.headers.get("content-length")
     return int(raw) if raw and raw.isdigit() else None
+
+
+@functools.cache
+def _verifying_context() -> ssl.SSLContext:
+    """httpx's default verifying context (certifi CAs, CERT_REQUIRED, hostname check), built once.
+
+    Loading the CA bundle costs ~0.3 s, and every pinned transport used to load its own inside the
+    call's deadline (B-2330). A context carries no connections and no client credentials, so
+    sharing one changes nothing about which certificates are accepted or which TLS connection a
+    host gets (each still has its own transport, see `EgressGuard.__init__`)."""
+    return httpx.create_ssl_context()
+
+
+def _default_transport() -> httpx.BaseTransport:
+    return httpx.HTTPTransport(verify=_verifying_context())
+
+
+def _default_async_transport() -> httpx.AsyncBaseTransport:
+    return httpx.AsyncHTTPTransport(verify=_verifying_context())
 
 
 class EgressTransport(httpx.BaseTransport):

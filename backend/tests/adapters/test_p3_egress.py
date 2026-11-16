@@ -483,3 +483,17 @@ def test_tls_certificate_is_verified_against_the_name_not_the_pinned_ip(tmp_path
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_default_transports_share_one_verifying_context() -> None:
+    """B-2330: every pinned transport verifies with the same context (built once, outside any
+    call's deadline), and that context still requires a valid certificate for the host name."""
+    from shifde.core import egress as core_egress
+
+    ctx = core_egress._verifying_context()
+    assert ctx is core_egress._verifying_context()
+    assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
+    assert len(ctx.get_ca_certs()) == len(httpx.create_ssl_context().get_ca_certs())
+    for make in (core_egress._default_transport, core_egress._default_async_transport):
+        transport = make()
+        assert transport._pool._ssl_context is ctx  # type: ignore[attr-defined]
