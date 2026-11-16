@@ -287,7 +287,7 @@ def advance(
     session = database.session()
     db.init_context(session, f"advance-{run_id}")
     try:
-        return advance_in(
+        return _advance_in(
             session, database, settings, runtime, hooks, tenant_id, run_id, worker_id, stop,
             lease_lost, job_id,
         )  # fmt: skip
@@ -298,7 +298,7 @@ def advance(
             session.close()
 
 
-def advance_in(
+def _advance_in(
     session: Session,
     usage_db: Database | None,
     settings: Settings,
@@ -311,9 +311,10 @@ def advance_in(
     lease_lost: threading.Event,
     job_id: UUID,
 ) -> str:
-    """`advance` on a session the caller owns. `usage_db` becomes `RunContext.db` (durable usage
-    rows, Item 11) and is refused unless it is the application role; None writes usage rows in
-    the step's transaction."""
+    """`advance` on a session the caller owns (private: it does not check the role behind
+    `session`; the worker calls `advance`, runtime isolation review 9 finding 3). `usage_db`
+    becomes `RunContext.db` (durable usage rows, Item 11) and is refused unless it is the
+    application role; None writes usage rows in the step's transaction."""
     if usage_db is not None:
         require_app_role(usage_db)
     trace_id, parent_span, correlation = _trace_of(session, tenant_id, run_id, job_id)
@@ -352,7 +353,8 @@ def _advance(
     job_id: UUID,
 ) -> str:
     db.set_tenant(session, tenant_id)
-    if repo.job_of_run(session, tenant_id, run_id, job_id) is None:
+    job = repo.job_of_run(session, tenant_id, run_id, job_id)
+    if job is None:
         # not a job of this run of this client (another client's job, another run's, unknown):
         # it drives nothing
         session.commit()
@@ -366,6 +368,11 @@ def _advance(
         if run["lease_job_id"] not in (None, job_id):
             # the run is executed under ANOTHER job's lease (this job is stale): hands off;
             # the reaper deals with that lease if its owner dies
+            session.commit()
+            return "skipped"
+        if job["status"] != "leased" or job["lease_owner"] != worker_id:
+            # recovery resets the run only for the job this worker holds (runtime isolation
+            # review 9 finding 1): a done, queued or foreign-leased job of the run recovers nothing
             session.commit()
             return "skipped"
         # the lease belongs to this very job (or to none): recover the abandoned run

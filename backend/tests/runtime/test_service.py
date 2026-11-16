@@ -35,6 +35,7 @@ from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.runtime import repository as repo
 from shifde.runtime import schemas as rs
+from shifde.runtime.action import start_action_run
 from shifde.runtime.governance import PolicyBudgetHooks
 from shifde.runtime.service import ApprovalService, RunService
 from tests._support.runs import add_run
@@ -257,6 +258,34 @@ def test_a_draft_test_run_records_the_drafts_pins_and_its_env_answers_only_those
             assert env.version(other) is None
 
 
+def test_bs_tool_version_planted_in_a_runs_recorded_pins_is_not_in_its_env(
+    pair: tuple[Client, Client], opened: Any, owner_db: Database, settings: Settings
+) -> None:
+    """Runtime isolation review 10 finding 3: the recorded `pins` are trusted, so B's tool version
+    id written there (as the schema owner) must still be dropped by the client-keyed closure."""
+    a, b = pair
+    with opened(a.tenant) as s:
+        runs, _ = _services(s, a, settings)
+        out, _ = runs.create(_draft_body(a), None)
+        stored = repo.get_run(s, a.tenant, out.id)
+        assert stored is not None
+        s.commit()
+    with owner_db.session() as o:  # the input is append-only: a new input document
+        doc = dict(repo.get_artifact(o, a.tenant, stored["input_ref"]))
+        doc["pins"] = [str(a.tool), str(b.tool), str(b.agent_version)]
+        planted = repo.insert_artifact(o, a.tenant, out.id, "input", doc)
+        o.execute(text("UPDATE shifde.runs SET input_ref = :i WHERE id = :r AND tenant_id = :t"),
+                  {"i": planted, "r": out.id, "t": a.tenant})  # fmt: skip
+        o.commit()
+    with opened(a.tenant) as s:
+        runs, _ = _services(s, a, settings)
+        stored = repo.get_run(s, a.tenant, out.id)
+        assert stored is not None and stored["input_ref"] == planted
+        env = runs.artifacts.env(runs.artifacts.artifact("pipelines", a.pipeline), run_of=stored)
+        assert env.version(a.tool) is not None  # not vacuous: the client's own pin answers
+        assert env.version(b.tool) is None and env.version(b.agent_version) is None
+
+
 # ------------------------------------------------------------------ cancel and decide (own)
 def test_cancel_of_a_pending_run_with_a_maybe_delivered_write_keeps_the_decision_open(
     pair: tuple[Client, Client], opened: Any, owner_db: Database, settings: Settings
@@ -403,3 +432,85 @@ def test_lists_never_include_another_clients_rows(
         _, approvals = _services(s, a, settings)
         assert approvals.list_approvals("pending", b.waiting, 100, None).items == []
         assert approvals.list_approvals("pending", None, 100, None, b.waiting).items == []
+
+
+# ------------------------------------------------------------------ RT-12: review 10 items 1, 2
+def test_a_non_initiator_who_cannot_read_a_run_gets_the_unknown_run_answer_on_cancel(
+    pair: tuple[Client, Client], opened: Any, owner_db: Database, settings: Settings
+) -> None:
+    """Runtime isolation review 10 finding 1: no existence oracle inside the client."""
+    a, _ = pair
+    with owner_db.session() as o:
+        stranger = add_person(o, a.tenant, "stranger", None)  # a member with no binding
+        o.commit()
+    before = _state(owner_db, a.tenant)
+    answers = []
+    for run in (a.pending, uuid7()):
+        with opened(a.tenant) as s:
+            app = s.execute(text("SELECT current_user")).scalar_one() == "shifde_app"
+            sc = service_for(s, a.tenant, stranger, settings, set_context=app).sc
+            runtime = IntegrationRuntime(settings=settings, registry=REGISTRY)
+            svc = RunService(sc, runtime, PolicyBudgetHooks())
+            answers.append(_answer(lambda svc=svc, run=run: svc.cancel(run)))
+    assert answers[0] == answers[1] == (NotFound, "run not found"), answers
+    assert _state(owner_db, a.tenant) == before
+
+
+def _ontology(owner_db: Database, c: Client) -> UUID:
+    """A published ontology of `c` whose action `act` runs `c.tool`."""
+    with owner_db.session() as o:
+        action = {"key": "act", "tool_version_id": str(c.tool), "param_mapping": {}}
+        onto, version = add_published(
+            o, c.tenant, "ontologies", _key("onto"), {"actions": [action]}
+        )
+        build_repo.insert_pins(o, c.tenant, version, [(c.tool, "action_tool")])
+        o.execute(text("UPDATE shifde.artifacts SET latest_published_version_id = :v "
+                       "WHERE id = :a"), {"v": version, "a": onto})  # fmt: skip
+        o.commit()
+    return onto
+
+
+@pytest.mark.parametrize("where", ["archived workspace", "archived project"])
+def test_no_action_run_starts_in_an_archived_workspace_or_project(
+    where: str, pair: tuple[Client, Client], opened: Any, owner_db: Database, settings: Settings
+) -> None:
+    """Runtime isolation review 10 finding 2: `_active_scope` in `start_action_run`."""
+    a, _ = pair
+    onto = _ontology(owner_db, a)
+    ws, proj = a.archived_ws if where == "archived workspace" else (a.ws, a.archived_proj)
+    before = _runs_of(owner_db, a.tenant)
+    with opened(a.tenant) as s:
+        runs, _ = _services(s, a, settings)
+        body = rs.ActionInvokeIn(object_pk="1", workspace=ws, project=proj)
+        with pytest.raises(ScopeArchived, match=where.split()[1]):
+            start_action_run(runs, onto, "act", body, None)
+    # not vacuous: the active scope gets past the scope check (to the object lookup)
+    with opened(a.tenant) as s:
+        runs, _ = _services(s, a, settings)
+        body = rs.ActionInvokeIn(object_pk="1", workspace=a.ws, project=a.proj)
+        with pytest.raises(AppError) as err:
+            start_action_run(runs, onto, "act", body, None)
+        assert not isinstance(err.value, ScopeArchived), err.value
+    assert _runs_of(owner_db, a.tenant) == before
+
+
+def test_bs_ontology_or_version_answers_like_an_unknown_one_in_start_action_run(
+    pair: tuple[Client, Client], opened: Any, owner_db: Database, settings: Settings
+) -> None:
+    a, b = pair
+    mine, theirs = _ontology(owner_db, a), _ontology(owner_db, b)
+    before = _state(owner_db, b.tenant)
+    body = rs.ActionInvokeIn(object_pk="1", workspace=a.ws, project=a.proj)
+    cases = [((theirs, body), (uuid7(), body)),
+             ((mine, body.model_copy(update={"version_id": b.agent_version})),
+              (mine, body.model_copy(update={"version_id": uuid7()})))]  # fmt: skip
+    for crossed, unknown in cases:
+        got = []
+        for onto, sent in (crossed, unknown):
+            with opened(a.tenant) as s:
+                runs, _ = _services(s, a, settings)
+                got.append(
+                    _answer(lambda r=runs, o=onto, x=sent: start_action_run(r, o, "act", x, None))
+                )
+        assert got[0] == got[1] and got[0][0] is NotFound, got
+    assert _state(owner_db, b.tenant) == before
