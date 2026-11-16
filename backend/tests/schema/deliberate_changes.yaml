@@ -622,6 +622,11 @@
   migration: runtime_0001
 
 - table: runs
+  path: [constraints, ck_runs__target, definition]
+  reason: "an agent run also requires agent_id and an orchestration run orchestration_id (as pipeline and ontology_action runs already require their artifact id): a NULL artifact id skips the composite key fk_runs__agent_of_version / fk_runs__orch_of_version (MATCH SIMPLE), so the run's artifact would not be tied to its pinned version at the database (runtime isolation review 6 finding 3, B-2172)."
+  migration: runtime_0001
+
+- table: runs
   path: [constraints, fk_runs__prompt_version]
   reason: "client-keyed composite foreign key where SETH had a bare id column: constraints bypass row-level security, so without it a run of client A could name client B's prompt version (B-116 item 9, B-2125, B-2165). (tenant_id, prompt_version_id) -> artifact_versions (tenant_id, id)."
   migration: runtime_0001

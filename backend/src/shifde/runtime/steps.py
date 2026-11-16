@@ -634,9 +634,10 @@ def _resource_state(ctx: RunContext, tool: VersionRef) -> gate.Check:
             return ("tool_disabled", "the tool is disabled or retired")
         cid = (spec.get("binding") or {}).get("connection_id")
         if spec.get("executor") != "builtin.function" and cid:
-            try:
-                row = ctx.artifacts.conns.get_row(UUID(str(cid)))
-            except NotFound:
+            # at the client level or the stored run's own workspace and project, as the run's env
+            # (runtime isolation review 6 finding 2); anything else is an unknown connection
+            row = ctx.artifacts.run_connection(ctx.run_id, UUID(str(cid)))
+            if row is None:
                 return ("connection_missing", "the tool's connection does not exist")
             if row["status"] != "active":
                 return ("connection_inactive", f"the tool's connection is {row['status']}")
@@ -646,6 +647,17 @@ def _resource_state(ctx: RunContext, tool: VersionRef) -> gate.Check:
         return None
 
     return check
+
+
+def _require_run_connection(ctx: RunContext, spec: Mapping[str, Any]) -> None:
+    """Right before a tool is executed, again: its connection lies at the client level or at the
+    stored run's own workspace and project (`invoke_once` opens it by the client id alone), else
+    the unknown-connection answer (runtime isolation review 6 finding 2)."""
+    cid = (spec.get("binding") or {}).get("connection_id")
+    if spec.get("executor") == "builtin.function" or not cid:
+        return
+    if ctx.artifacts.run_connection(ctx.run_id, UUID(str(cid))) is None:
+        raise NotFound("the tool's connection does not exist")
 
 
 def _policy(ctx: RunContext, call: ToolCall, policy: ToolPolicy) -> gate.Check:
@@ -1153,6 +1165,7 @@ def _execute_attempts(
                         ctx, call.args, purpose=f"tool:{tool.artifact_key}:ontology"
                     )
                 else:
+                    _require_run_connection(ctx, spec)
                     output = tool_runtime.invoke_once(
                         ctx.artifacts.conns,
                         dict(spec),

@@ -27,8 +27,10 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from shifde.adapters.base import Usage
+from shifde.adapters.base import ChatResponse, Usage
+from shifde.authz.service import ResourceRef
 from shifde.build import repository as build_repo
+from shifde.build import tool_runtime
 from shifde.build.kind_ops import AgentOps
 from shifde.core.clock import utcnow
 from shifde.core.db import Database
@@ -36,7 +38,7 @@ from shifde.core.errors import NotFound
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.models_admin import schemas as ms
-from shifde.models_admin.service import RunInvoke
+from shifde.models_admin.service import ModelService, RunInvoke
 from shifde.ontology.service import OntologyService
 from shifde.runtime import repository as repo
 from shifde.runtime import state, steps
@@ -44,7 +46,7 @@ from shifde.runtime.action import OntologyActionRunner
 from shifde.runtime.agent import AgentRunner
 from shifde.runtime.context import RunContext
 from tests._support.runs import add_run
-from tests._support.tenants import add_tenants, add_workspace
+from tests._support.tenants import add_project, add_tenants, add_workspace
 from tests.build.env_support import add_published
 from tests.build.routes import agent_spec, prompt_spec
 from tests.build.service_support import add_person
@@ -57,6 +59,8 @@ __all__ = ["MODES", "opened"]
 ANSWER = "the final answer"
 NONE_TOOL = {"executor": "builtin.function", "binding": {"function_key": "x"}, "timeout_s": 5,
              "side_effect_class": "none", "input_schema": {"type": "object"}}  # fmt: skip
+# a read tool executed through its connection (`_resource_state` checks the connection)
+REST_TOOL = {**NONE_TOOL, "executor": "rest.http"}
 
 
 @dataclass(frozen=True)
@@ -67,11 +71,12 @@ class Client:
     model: UUID
     route: UUID
     conn_named: UUID  # client-level connection the pinned tool names
-    conn_far: UUID  # connection in another workspace, named by another pinned tool
+    conn_far: UUID  # connection in another workspace, named by `far_tool`
     conn_unnamed: UUID  # client-level connection no pinned spec names
     prompt: UUID
     tool: UUID  # pinned by `agent_version`, names `conn_named`
     tool_key: str
+    far_tool: UUID  # pinned by `agent_version`, names `conn_far`
     unpinned: UUID  # a published tool of the client, pinned by nothing
     unpinned_key: str
     agent: UUID
@@ -84,14 +89,17 @@ class Client:
     action_run: UUID  # running action run of `ontology_version`
 
 
-def _connection(o: Session, tenant: UUID, workspace: UUID | None = None) -> UUID:
+def _connection(
+    o: Session, tenant: UUID, workspace: UUID | None = None, project: UUID | None = None
+) -> UUID:
     cid = uuid7()
     o.execute(
         text(
-            "INSERT INTO shifde.connections (id, tenant_id, workspace_id, name, connection_type, "
-            "adapter_key) VALUES (:c, :t, :w, :n, 'model_api', 'openai')"
+            "INSERT INTO shifde.connections (id, tenant_id, workspace_id, project_id, name, "
+            "connection_type, adapter_key, status) "
+            "VALUES (:c, :t, :w, :p, :n, 'rest', 'rest.http', 'active')"
         ),
-        {"c": cid, "t": tenant, "w": workspace, "n": f"conn-{cid.hex}"},
+        {"c": cid, "t": tenant, "w": workspace, "p": project, "n": f"conn-{cid.hex}"},
     )
     return cid
 
@@ -129,10 +137,10 @@ def _first(o: Session, t: UUID) -> dict[str, Any]:  # Any: ids of the first phas
     _, prompt = add_published(o, t, "prompts", f"prompt-{uuid7().hex}", prompt_spec())
     tool_key, unpinned_key = f"tool-{uuid7().hex}", f"unpinned-{uuid7().hex}"
     _, tool = add_published(
-        o, t, "tools", tool_key, {**NONE_TOOL, "binding": {"connection_id": str(named)}}
+        o, t, "tools", tool_key, {**REST_TOOL, "binding": {"connection_id": str(named)}}
     )
     _, far_tool = add_published(
-        o, t, "tools", f"far-{uuid7().hex}", {**NONE_TOOL, "binding": {"connection_id": str(far)}}
+        o, t, "tools", f"far-{uuid7().hex}", {**REST_TOOL, "binding": {"connection_id": str(far)}}
     )
     _, unpinned = add_published(o, t, "tools", unpinned_key, NONE_TOOL)
     return {"tenant": t, "user": user, "token": uuid7(), "model": model, "route": route,
@@ -168,8 +176,7 @@ def _second(o: Session, x: dict[str, Any], other: dict[str, Any]) -> Client:  # 
     action_run = _running(o, t, user, token, {"object_pk": "1"}, kind="ontology_action",
                           ontology_id=ontology, ontology_version_id=onto_version,
                           action_key="act")  # fmt: skip
-    keep = {k: v for k, v in x.items() if k != "far_tool"}
-    return Client(**keep, agent=agent, agent_version=version, run=run,
+    return Client(**x, agent=agent, agent_version=version, run=run,
                   route_run=route_run(x["route"]), foreign_route_run=route_run(other["route"]),
                   ontology=ontology, ontology_version=onto_version,
                   action_run=action_run)  # fmt: skip
@@ -350,6 +357,271 @@ def test_a_runs_env_reaches_only_the_connections_its_pinned_specs_name_at_its_sc
         assert ctx.artifacts.env(art).connection(a.conn_unnamed) is not None
 
 
+# ------------------------------------------------------------------ tool execution's connection
+def _spy_invoke(mp: pytest.MonkeyPatch) -> list[object]:
+    """`invoke_once` records the connection it would execute through and answers; nothing leaves
+    the process."""
+    sent: list[object] = []
+
+    def invoke_once(conns: object, spec: dict[str, Any], args: object, **kw: Any) -> object:
+        sent.append(spec["binding"]["connection_id"])
+        return {"ok": True}
+
+    mp.setattr(tool_runtime, "invoke_once", invoke_once)
+    return sent
+
+
+def _run_one_tool(ctx: RunContext, version: UUID, node: str) -> str:
+    """Executes the pinned tool `version` through `steps.run_tool` (the real gate) in `ctx`'s
+    run; its ref is read from the run's env, as the runners do."""
+    ref = AgentRunner(ctx).env.version(version)
+    assert ref is not None
+    call = steps.ToolCall(ref, {}, f"node:{node}", node_id=node)
+    policy = steps.ToolPolicy(frozenset(), None, frozenset({version}))
+    try:
+        return f"ok: {steps.run_tool(ctx, call, policy)}"
+    except state.GateDenied as exc:
+        return f"denied: {exc.reason}"
+    except state.RunFailed as exc:
+        return f"failed: {exc.error_class}: {exc}"
+
+
+OK = "ok: {'ok': True}"
+
+
+def test_a_pinned_tool_runs_only_through_a_connection_at_the_runs_scope(
+    pair: tuple[Client, Client], opened: Any, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`far_tool` is pinned by A's run but its connection lies in another workspace of A: the
+    run's env refuses the connection and tool execution now does too (`connection_missing`,
+    runtime isolation review 6 finding 2). A's client-level connection is reached (not
+    vacuous)."""
+    a, _ = pair
+    sent = _spy_invoke(monkeypatch)
+    with opened(a.tenant) as s:
+        assert _run_one_tool(_ctx(s, settings, a, a.run), a.tool, "near") == OK
+        far = _run_one_tool(_ctx(s, settings, a, a.run), a.far_tool, "far")
+    assert far == "denied: connection_missing"
+    assert sent == [str(a.conn_named)]
+
+
+def test_tool_execution_checks_the_connection_again_right_before_the_call(
+    pair: tuple[Client, Client], opened: Any, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the gate's resource-state check removed, the far tool is still not executed: the
+    check before `invoke_once` refuses it (review 6 finding 2)."""
+    a, _ = pair
+    sent = _spy_invoke(monkeypatch)
+    monkeypatch.setattr(steps, "_resource_state", lambda ctx, tool: lambda: None)
+    with opened(a.tenant) as s:
+        far = _run_one_tool(_ctx(s, settings, a, a.run), a.far_tool, "far")
+        near = _run_one_tool(_ctx(s, settings, a, a.run), a.tool, "near")
+    assert far.startswith(f"failed: {state.AUTHZ_DENIED}"), far
+    assert "connection does not exist" in far
+    assert near == OK
+    assert sent == [str(a.conn_named)]
+
+
+@dataclass(frozen=True)
+class Scoped:
+    """Client A's run at a workspace and project of its own, its agent version pinning one tool
+    per connection below, and runs (same scope) of agent versions whose model is a route of each
+    route scope."""
+
+    run: UUID
+    tools: dict[str, UUID]  # label -> pinned tool version naming `conns[label]`
+    conns: dict[str, UUID]  # see SCOPE_LABELS
+    route_runs: dict[str, UUID]  # see ROUTE_LABELS
+    model: UUID
+
+
+SCOPE_LABELS = ("workspace", "project", "other project", "other workspace")
+ROUTE_LABELS = ("client", "workspace", "project", "other project", "other workspace")
+
+
+def _route(o: Session, tenant: UUID, scope_type: str, scope_id: UUID, model: UUID) -> UUID:
+    route = uuid7()
+    o.execute(
+        text(
+            "INSERT INTO shifde.model_routes (id, tenant_id, name, scope_type, scope_id, "
+            "primary_model_id) VALUES (:r, :t, :n, :st, :si, :m)"
+        ),
+        {
+            "r": route,
+            "t": tenant,
+            "n": f"route-{route.hex}",
+            "st": scope_type,
+            "si": scope_id,
+            "m": model,
+        },  # fmt: skip
+    )
+    return route
+
+
+@pytest.fixture
+def scoped(pair: tuple[Client, Client], owner_db: Database) -> Scoped:
+    a, _ = pair
+    t = a.tenant
+    with owner_db.session() as o:
+        ws, ws2 = add_workspace(o, t), add_workspace(o, t)
+        proj, proj2, proj3 = add_project(o, t, ws), add_project(o, t, ws), add_project(o, t, ws2)
+        conns = {
+            "workspace": _connection(o, t, ws),
+            "project": _connection(o, t, ws, proj),
+            "other project": _connection(o, t, ws, proj2),
+            "other workspace": _connection(o, t, ws2, proj3),
+        }
+        tools = {
+            label: add_published(o, t, "tools", f"scoped-{uuid7().hex}",
+                                 {**REST_TOOL, "binding": {"connection_id": str(cid)}})[1]
+            for label, cid in conns.items()
+        }  # fmt: skip
+        spec = agent_spec(
+            str(a.prompt), str(a.model), tool_version_ids=[str(v) for v in tools.values()]
+        )
+        pins = [(a.prompt, "prompt"), *[(v, "tool") for v in tools.values()]]
+        agent, version = _agent(o, t, spec, pins)
+        at = {"workspace_id": ws, "project_id": proj}
+        payload = {"input": "hello"}
+        run = _running(o, t, a.user, a.token, payload, agent_id=agent, agent_version_id=version,
+                       **at)  # fmt: skip
+        route_scopes = {"client": ("tenant", t), "workspace": ("workspace", ws),
+                        "project": ("project", proj), "other project": ("project", proj2),
+                        "other workspace": ("workspace", ws2)}  # fmt: skip
+        route_runs = {}
+        for label, (scope_type, scope_id) in route_scopes.items():
+            rspec = agent_spec(str(a.prompt), str(a.model))
+            rspec["model"] = {"route_id": str(_route(o, t, scope_type, scope_id, a.model))}
+            ragent, rversion = _agent(o, t, rspec, [(a.prompt, "prompt")])
+            route_runs[label] = _running(o, t, a.user, a.token, payload, agent_id=ragent,
+                                         agent_version_id=rversion, **at)  # fmt: skip
+        o.commit()
+    return Scoped(run, tools, conns, route_runs, a.model)
+
+
+def test_a_run_reaches_connections_at_its_workspace_and_project_and_no_other_project(
+    pair: tuple[Client, Client],
+    scoped: Scoped,
+    opened: Any,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runtime isolation review 6 finding 4: a connection at the run's own workspace, or at its
+    workspace and project, is reached through the run's env and by tool execution; one in another
+    project of the same workspace, or in another workspace, answers like an unknown one."""
+    a, _ = pair
+    sent = _spy_invoke(monkeypatch)
+    reached, executed = {}, {}
+    with opened(a.tenant) as s:
+        env = AgentRunner(_ctx(s, settings, a, scoped.run)).env
+        for label in SCOPE_LABELS:
+            reached[label] = env.connection(scoped.conns[label]) is not None
+        for n, label in enumerate(SCOPE_LABELS):
+            executed[label] = _run_one_tool(
+                _ctx(s, settings, a, scoped.run), scoped.tools[label], f"t{n}"
+            )
+    assert reached == {"workspace": True, "project": True, "other project": False,
+                       "other workspace": False}  # fmt: skip
+    assert executed == {"workspace": OK, "project": OK,
+                        "other project": "denied: connection_missing",
+                        "other workspace": "denied: connection_missing"}  # fmt: skip
+    assert sent == [str(scoped.conns["workspace"]), str(scoped.conns["project"])]
+
+
+def test_a_runs_model_route_must_lie_at_the_client_level_or_the_runs_own_scope(
+    pair: tuple[Client, Client],
+    scoped: Scoped,
+    opened: Any,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review 6 finding 4: in a run's env a route the run's spec names is also narrowed by the
+    route's own scope: the client level, the run's workspace or its project. A route of another
+    project or workspace of the same client is refused like an unknown route."""
+    a, _ = pair
+    answers, lookups = {}, {}
+    with opened(a.tenant) as s:
+        for label in ROUTE_LABELS:
+            ctx = _ctx(s, settings, a, scoped.route_runs[label])
+            called = _script(monkeypatch, ctx, [ANSWER])
+            runner = AgentRunner(ctx)
+            route = UUID(runner._load_agent().spec["model"]["route_id"])
+            lookups[label] = runner.env.route_model_ids(route)
+            answers[label] = (_outcome(runner.run), called)
+            s.rollback()
+            # outside a run's env (the caller's own, as the test panel) the route is known
+            art = ctx.artifacts.artifact_row("agents", ctx.run["agent_id"])
+            assert ctx.artifacts.env(art).route_model_ids(route) == [scoped.model]
+            s.rollback()
+    for label in ("client", "workspace", "project"):
+        assert lookups[label] == [scoped.model], label
+        assert answers[label] == (f"ok: {ANSWER}", [scoped.model]), label
+    for label in ("other project", "other workspace"):
+        assert lookups[label] is None, label
+        assert answers[label][1] == [], label
+        assert "model route is not available" in answers[label][0], label
+
+
+# ------------------------------------------------------------------ a model named directly
+class _Answering:
+    """A provider adapter that answers without leaving the process (only `generate` is used)."""
+
+    def generate(self, ctx: object, conn: object, model_key: str, request: object) -> object:
+        return ChatResponse(ANSWER, Usage(input_tokens=1, output_tokens=1))
+
+
+def test_an_agent_naming_bs_model_directly_gets_not_found_from_the_real_model_lookup(
+    pair: tuple[Client, Client],
+    owner_db: Database,
+    opened: Any,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review 6 finding 5: `invoke_for_run` and `_invocable_model` are the real ones (only the
+    provider's network call is replaced; the lookup is wrapped to record what it answered): A's
+    agent naming B's `model_id` gets the answer an unknown model id gets, from
+    `_invocable_model`; A's own model answers."""
+    a, b = pair
+    runs = {}
+    with owner_db.session() as o:
+        for label, model in (("a", a.model), ("b", b.model), ("unknown", uuid7())):
+            agent, version = _agent(
+                o, a.tenant, agent_spec(str(a.prompt), str(model)), [(a.prompt, "prompt")]
+            )
+            runs[label] = _running(o, a.tenant, a.user, a.token, {"input": "hello"},
+                                   agent_id=agent, agent_version_id=version)  # fmt: skip
+        o.commit()
+    looked_up: list[tuple[UUID, str]] = []
+    real_lookup = ModelService._invocable_model
+
+    def invocable_model(
+        self: ModelService, model_id: UUID, ref: ResourceRef, run_id: UUID | None
+    ) -> Any:  # Any: the model row
+        try:
+            row = real_lookup(self, model_id, ref, run_id)
+        except NotFound as exc:
+            looked_up.append((model_id, f"NotFound: {exc}"))
+            raise
+        looked_up.append((model_id, "found"))
+        return row
+
+    def provider_call(self: ModelService, *args: Any, **kwargs: Any) -> Any:  # Any: adapter+ctx
+        return _Answering(), None, None
+
+    monkeypatch.setattr(ModelService, "_invocable_model", invocable_model)
+    monkeypatch.setattr(ModelService, "_provider_call", provider_call)
+    answers = {}
+    with opened(a.tenant) as s:
+        for label, run in runs.items():
+            answers[label] = _outcome(AgentRunner(_ctx(s, settings, a, run)).run)
+            s.rollback()
+    assert answers["a"] == f"ok: {ANSWER}"
+    assert answers["b"] == answers["unknown"]
+    assert answers["b"].startswith("RunFailed: ") and "model not found" in answers["b"]
+    assert (b.model, "NotFound: model not found") in looked_up
+    assert (a.model, "found") in looked_up
+
+
 def test_an_agent_run_naming_bs_agent_gets_the_unknown_id_answer(
     pair: tuple[Client, Client], opened: Any, settings: Settings
 ) -> None:
@@ -442,15 +714,34 @@ def test_an_action_run_naming_bs_ontology_gets_the_unknown_id_answer(
 
 
 # ------------------------------------------------------------------ composite keys (B-2125)
-@pytest.mark.parametrize("column", ["agent_id", "agent_id_other", "prompt_version_id"])
+@pytest.mark.parametrize(
+    "column",
+    ["agent_id", "agent_id_other", "prompt_version_id", "orchestration_id",
+     "orchestration_id_other"],
+)  # fmt: skip
 def test_a_run_cannot_name_another_clients_or_another_artifacts_row(
     column: str, pair: tuple[Client, Client], owner_db: Database
 ) -> None:
-    """As the schema owner (constraints are the only guard there): A's run naming B's agent, an
-    artifact of A that is not its version's, or B's prompt version is refused."""
+    """As the schema owner (constraints are the only guard there): A's run naming B's agent or
+    orchestration, an artifact of A that is not its version's, or B's prompt version is
+    refused."""
     a, b = pair
     with owner_db.session() as o:
         other_agent, _ = add_published(o, a.tenant, "agents", f"x-{uuid7().hex}", {})
+        orch, orch_version = _orchestration(o, a.tenant)
+        b_orch, _ = _orchestration(o, b.tenant)
+        o.commit()  # kept across the refused inserts' rollbacks
+        if column.startswith("orchestration_id"):
+            value = b_orch if column == "orchestration_id" else a.agent
+            with pytest.raises(IntegrityError, match="fk_runs__orch_of_version"):
+                add_run(o, a.tenant, kind="orchestration", orchestration_version_id=orch_version,
+                        orchestration_id=value)  # fmt: skip
+            o.rollback()
+            # A's own pairing is accepted (not vacuous)
+            add_run(o, a.tenant, kind="orchestration", orchestration_version_id=orch_version,
+                    orchestration_id=orch)  # fmt: skip
+            o.rollback()
+            return
         value = {"agent_id": b.agent, "agent_id_other": other_agent,
                  "prompt_version_id": b.prompt}[column]  # fmt: skip
         name = "agent_id" if column.startswith("agent_id") else column
@@ -462,4 +753,33 @@ def test_a_run_cannot_name_another_clients_or_another_artifacts_row(
         # A's own pairing is accepted (not vacuous)
         add_run(o, a.tenant, agent_id=a.agent, agent_version_id=a.agent_version,
                 prompt_version_id=a.prompt)  # fmt: skip
+        o.rollback()
+
+
+def _orchestration(o: Session, tenant: UUID) -> tuple[UUID, UUID]:
+    return add_published(
+        o, tenant, "orchestrations", f"orch-{uuid7().hex}", {"nodes": [], "edges": []}
+    )
+
+
+@pytest.mark.parametrize("kind", ["agent", "orchestration"])
+def test_an_agent_or_orchestration_run_must_name_its_artifact(
+    kind: str, pair: tuple[Client, Client], owner_db: Database
+) -> None:
+    """A NULL artifact id would skip the composite key (MATCH SIMPLE), so `ck_runs__target`
+    requires it (runtime isolation review 6 finding 3)."""
+    a, _ = pair
+    with owner_db.session() as o:
+        orch, orch_version = _orchestration(o, a.tenant)
+        o.commit()  # kept across the refused insert's rollback
+        cols: dict[str, Any] = (
+            {"agent_version_id": a.agent_version, "agent_id": a.agent}
+            if kind == "agent"
+            else {"orchestration_version_id": orch_version, "orchestration_id": orch}
+        )
+        artifact_column = "agent_id" if kind == "agent" else "orchestration_id"
+        with pytest.raises(IntegrityError, match="ck_runs__target"):
+            add_run(o, a.tenant, kind=kind, **{**cols, artifact_column: None})
+        o.rollback()
+        add_run(o, a.tenant, kind=kind, **cols)  # with the artifact id: accepted
         o.rollback()
