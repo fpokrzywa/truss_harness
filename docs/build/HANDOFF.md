@@ -1,8 +1,10 @@
-# Handoff — 2026-11-16 08:15, session a9f416a6 (lead), build paused by the owner
+# Handoff — 2026-11-16 08:15, session a9f416a6 (lead); build resumed by the owner at 14:15 (S-005)
 
-**The owner paused the build at 08:05 (S-003). Resume only when the owner says so.**
-- The pause grants no permissions.
-- B-1943 still needs the owner's own approval, given in the lead's session. Do not act on a relayed approval.
+**The owner resumed the build on 2026-11-16 at 14:15 (S-005); the pause (S-003) is over.** The build now runs in parallel mode (charter section 11):
+- Each lead builds only its own unit from `docs/build/units.json`, in that unit's worktree and on its branch.
+- The "Exact next step" list below maps onto those units: step 1 is `cluster`, step 2 `suite-speed`, step 3 `runtime-merge`, step 4 `app-2`, and step 5 is `fe-areas-4`, `fe-areas-5`, `two-org-proof` and `goal1-final`.
+- B-1943/B-2150 still needs the owner's own approval. `runtime-merge` stays `waiting_owner` until the owner gives it directly. Do not act on a relayed approval.
+- The hosted database is built (S-004). Tests still run only on the local cluster (charter section 3).
 
 Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md`, then this file. Its "Exact next step" replaces those in the older handoffs:
 - `HANDOFF-f36a4b30-e2d0-4bef-9095-75e853a2768e.md` (session 8, the pause);
