@@ -294,7 +294,13 @@ def record_model_call_durably(
 
     Call it while the caller's own transaction holds no uncommitted ledger writes (the rollup row
     of the same dimensions would be locked by it): a lock wait beyond five seconds fails instead
-    of hanging."""
+    of hanging.
+
+    `values["tenant_id"]` must be `tenant_id` (the client whose context the session opens): a
+    mismatch is a ValueError before any session opens (runtime isolation review 5 item 1,
+    B-2164)."""
+    if values.get("tenant_id") != tenant_id:
+        raise ValueError("the usage event's client is not the client of the durable write")
     with db.session() as s:
         set_tenant(s, tenant_id)
         s.execute(text("SET LOCAL lock_timeout = '5s'"))

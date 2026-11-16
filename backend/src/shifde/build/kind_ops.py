@@ -470,11 +470,17 @@ class AgentOps:
         spec: Mapping[str, Any],
         input_text: str,
         variables: Mapping[str, Any],  # Any: caller-supplied variable values
+        *,
+        run_of: Mapping[str, Any] | None = None,  # Any: the run row the runtime executes
     ) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
         """Context assembly shared by the test panel and the P5 runtime: rendered prompt, skills
-        as instructional text, untrusted run input in a delimited block, tool declarations."""
+        as instructional text, untrusted run input in a delimited block, tool declarations.
+
+        The test panel reads through the caller's env (visibility and use checks); the runtime
+        passes its run row (`run_of`, B-1933): the run's own env, which answers only for the
+        run's pinned agent version and what it pins (build review 3 F1, B-2160)."""
         svc = self.svc
-        env = svc.env(art)
+        env = svc.env(art, run_of=run_of)
         prompt = env.version(UUID(spec["prompt_version_id"]))
         if prompt is None:
             raise ValidationFailed("the pinned prompt version is not available to you")
