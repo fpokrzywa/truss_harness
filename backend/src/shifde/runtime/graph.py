@@ -67,6 +67,9 @@ class GraphRunner:
     def __init__(self, ctx: RunContext) -> None:
         self.ctx = ctx
         run = self._stored_run()
+        # the stored run row (re-read with the client id): scope, initiator and events use it,
+        # never the context's mapping (runtime isolation review 8 item 4)
+        self.stored: Mapping[str, Any] = run  # Any: the stored run row
         self.art = {
             "id": run["orchestration_id"],
             "tenant_id": ctx.tenant_id,
@@ -78,8 +81,10 @@ class GraphRunner:
             "status": "active",
         }
         try:
-            # the run's own env: its pinned version and what it pins (`run_of`, B-1933)
-            self.env = ctx.env(self.art)
+            # the run's own env: its pinned version and what it pins (`run_of`, B-1933), built
+            # from the stored run row, never the context's mapping (runtime isolation review 8
+            # item 4)
+            self.env = ctx.artifacts.env(self.art, run_of=run)
         except NotFound as exc:
             raise state.RunFailed(
                 state.VALIDATION, "the pinned orchestration is not available"
@@ -113,7 +118,7 @@ class GraphRunner:
         self.limits = spec["limits"]
         self.nodes: dict[str, dict[str, Any]] = {n["id"]: n for n in spec["nodes"]}
         self.edges: list[dict[str, Any]] = spec["edges"]
-        payload = repo.get_artifact(ctx.session, ctx.tenant_id, ctx.run["input_ref"]) or {}
+        payload = repo.get_artifact(ctx.session, ctx.tenant_id, self.stored["input_ref"]) or {}
         raw_input = str(payload.get("input", ""))
         try:
             parsed: Any = json.loads(raw_input)
@@ -319,7 +324,7 @@ class GraphRunner:
                 "orchestration limit max_nodes_executed "
                 f"({self.limits['max_nodes_executed']}) reached",
             )
-        root = self.ctx.run["root_run_id"]
+        root = self.stored["root_run_id"]
         family = repo.run_totals(self.ctx.session, self.ctx.tenant_id, [root]).get(root)
         if family is not None:
             used = int(family["input_tokens"]) + int(family["output_tokens"])
@@ -390,8 +395,8 @@ class GraphRunner:
                     {
                         "tenant_id": ctx.tenant_id,
                         "run_id": ctx.run_id,
-                        "workspace_id": ctx.run["workspace_id"],
-                        "project_id": ctx.run["project_id"],
+                        "workspace_id": self.stored["workspace_id"],
+                        "project_id": self.stored["project_id"],
                         "step_seq": seq,
                         "call_ref": call_ref,
                         "epoch": 0,
@@ -400,14 +405,14 @@ class GraphRunner:
                             context if isinstance(context, dict) else {"value": context}
                         ),
                         "context_summary": {"node": nid},
-                        "requested_by": ctx.run["initiated_by_principal_id"],
+                        "requested_by": self.stored["initiated_by_principal_id"],
                         "expires_at": utcnow()
                         + timedelta(hours=ctx.settings.approval_expiry_hours),
                     },
                 )
                 repo.add_event(
                     ctx.session,
-                    ctx.run,
+                    self.stored,
                     "approval_requested",
                     step_id=step["id"],
                     details={"approval_id": str(approval["id"]), "reason": "orchestration_node"},

@@ -403,6 +403,19 @@ def run_target(session: Session, tenant_id: UUID, run_id: UUID) -> Row | None:
     )
 
 
+def run_input(session: Session, tenant_id: UUID, run_id: UUID) -> Any:  # Any: JSON document
+    """The stored input document of `tenant_id`'s run `run_id` (its `input_ref` artifact of the
+    same client and run), else None."""
+    return session.execute(
+        text(
+            "SELECT a.content FROM shifde.runs r JOIN shifde.run_artifacts a "
+            "ON a.id = r.input_ref AND a.tenant_id = r.tenant_id AND a.run_id = r.id "
+            "WHERE r.id = :r AND r.tenant_id = :t"
+        ),
+        {"r": run_id, "t": tenant_id},
+    ).scalar_one_or_none()
+
+
 # ------------------------------------------------------------------ publish requests
 def insert_request(session: Session, values: Mapping[str, Any]) -> None:
     session.execute(

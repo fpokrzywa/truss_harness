@@ -240,8 +240,10 @@ class PipelineRunner:
             "status": "active",
         }
         try:
-            # the run's own env: its pinned version and what it pins (`run_of`, B-1933)
-            self.env = ctx.env(self.art)
+            # the run's own env: its pinned version and what it pins (`run_of`, B-1933), built
+            # from the stored run row, never the context's mapping (runtime isolation review 8
+            # item 4)
+            self.env = ctx.artifacts.env(self.art, run_of=self.stored)
         except NotFound as exc:
             raise state.RunFailed(
                 state.VALIDATION, "the pinned pipeline version is not available"
@@ -689,7 +691,7 @@ class PipelineRunner:
             ctx.session,
             ctx.tenant_id,
             ctx.run_id,
-            ctx.run["initiated_by_principal_id"],
+            self.stored["initiated_by_principal_id"],
             still_leader,
         )
 
@@ -772,7 +774,7 @@ class PipelineRunner:
                     with self.ctx.txn():
                         repo.add_event(
                             self.ctx.session,
-                            self.ctx.run,
+                            self.stored,
                             "retry_scheduled",
                             step_id=step["id"],
                             details={
@@ -1246,7 +1248,7 @@ class PipelineRunner:
         )
         repo.add_event(
             ctx.session,
-            ctx.run,
+            self.stored,
             "approval_requested",
             step_id=step["id"],
             details={"approval_id": str(approval["id"]), "reason": "indeterminate_side_effect"},
@@ -1333,7 +1335,7 @@ class PipelineRunner:
                 )
                 repo.add_event(
                     ctx.session,
-                    ctx.run,
+                    self.stored,
                     "approval_requested",
                     step_id=step["id"],
                     details={"approval_id": str(approval["id"]), "reason": "pipeline_node"},

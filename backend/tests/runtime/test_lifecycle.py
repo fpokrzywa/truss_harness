@@ -40,6 +40,7 @@ from shifde.core.db import Database
 from shifde.core.dbrole import UnsafeDatabaseRole
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
+from shifde.runtime import context as context_mod
 from shifde.runtime import lifecycle, state
 from shifde.runtime import repository as repo
 from shifde.runtime.context import RunContext
@@ -495,3 +496,26 @@ def test_a_privileged_database_is_refused_for_the_advance_and_for_usage(
     assert fake.seen == []
     with owner_db.session() as o:
         assert (_state(o, a.tenant), _state(o, b.tenant)) == before
+
+
+# ------------------------------------------------------------------ client unavailable (B-2243)
+def test_a_run_whose_client_is_not_available_fails_before_it_starts(
+    two: tuple[C, C],
+    advance: Advance,
+    fake: type[Fake],
+    owner_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runtime isolation review 9 finding 2: when the client's header cannot be read, the run
+    fails before any executor starts (`authz_denied`), its lease is cleared and B is untouched."""
+    a, b = two
+    with owner_db.session() as o:
+        b_before = _state(o, b.tenant)
+    monkeypatch.setattr(context_mod.tenancy, "tenant_header", lambda session, tenant_id: None)
+    assert advance(a.tenant, a.run, a.job) == "done"
+    assert fake.seen == []
+    with owner_db.session() as o:
+        row = _run(o, a.run)
+        assert (row["status"], row["error_class"]) == ("failed", state.AUTHZ_DENIED)
+        assert (row["lease_token"], row["lease_job_id"]) == (None, None)
+        assert _state(o, b.tenant) == b_before
