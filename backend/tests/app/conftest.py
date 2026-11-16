@@ -8,10 +8,8 @@ own database cloned from the run's migrated template (DECISIONS B-2234); the roo
 
 from __future__ import annotations
 
-import contextlib
 import uuid
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
@@ -28,61 +26,21 @@ from tests._support.servers import mcp_server, oai_server, rest_server
 from tests.conftest import (
     DB_PREFIX,
     _create_database,
-    _drop_database,
     _ensure_template,
     _env,
     _lock_path,
     _with_db,
 )
 
-DROP_THREADS = 8  # per worker; the drops of all workers overlap at the end of the run
-
-
-class _Dropper:
-    """Collects the per-test databases a worker has finished with and drops them all at the end.
-
-    `DROP DATABASE` forces an immediate checkpoint. Run one per test, with eight busy workers,
-    those checkpoints queued behind one another and starved every other test of disk time (single
-    teardowns waited minutes; B-2330). Dropped together after the last test, concurrently so that
-    waiting drops share checkpoints, they cost a fraction. Every test still gets a database of its
-    own for its whole run, and none outlives it by more than the worker's session.
-    """
-
-    def __init__(self, admin_url: str) -> None:
-        self._names: list[str] = []
-        self._admin_url = admin_url
-
-    def drop(self, name: str) -> None:
-        self._names.append(name)
-
-    def close(self) -> None:
-        admin = create_engine(
-            self._admin_url,
-            isolation_level="AUTOCOMMIT",
-            poolclass=NullPool,
-        )
-
-        def one(name: str) -> None:
-            with contextlib.suppress(Exception), admin.connect() as c:
-                _drop_database(c, name)
-
-        try:
-            with ThreadPoolExecutor(max_workers=DROP_THREADS) as pool:
-                list(pool.map(one, self._names))
-        finally:
-            admin.dispose()
-
-
-@pytest.fixture(scope="session")
-def _dropper(admin_url: str) -> Iterator[_Dropper]:
-    dropper = _Dropper(admin_url)
-    yield dropper
-    dropper.close()
-
 
 @pytest.fixture
-def test_database(run_id: str, admin_url: str, _dropper: _Dropper) -> Iterator[tuple[str, str]]:
-    """(app_url, owner_url) of a database cloned from the run's template for this test alone."""
+def test_database(run_id: str, admin_url: str) -> Iterator[tuple[str, str]]:
+    """(app_url, owner_url) of a database cloned from the run's template for this test alone.
+
+    It is not dropped here: `DROP DATABASE` forces an immediate checkpoint, and one per test,
+    with eight busy workers, queued checkpoints behind one another and starved every other test
+    of disk time (B-2330). The run's controller drops every database of the run, side by side,
+    once all workers have finished (`pytest_sessionfinish` in tests/conftest.py)."""
     app_url = _env("SHIFDE_TEST_DATABASE_URL")
     owner_url = _env("SHIFDE_TEST_MIGRATION_DATABASE_URL")
     app_role = make_url(app_url).username or "shifde_app"
@@ -96,7 +54,6 @@ def test_database(run_id: str, admin_url: str, _dropper: _Dropper) -> Iterator[t
             _create_database(c, name, owner_role, app_role, template)
         yield _with_db(app_url, name), _with_db(owner_url, name)
     finally:
-        _dropper.drop(name)
         admin.dispose()
 
 

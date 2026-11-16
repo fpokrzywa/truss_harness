@@ -20,6 +20,7 @@ import re
 import tempfile
 import uuid
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,7 @@ DEV_ENV = Path(__file__).resolve().parents[2] / ".devdata" / "dev.env"
 ORIGIN = "http://127.0.0.1:3710"
 DB_PREFIX = "shifdet_"
 _RUN_KEY = "shifde_test_run"
+DROP_THREADS = 8  # the run's databases are dropped side by side at the end (pytest_sessionfinish)
 
 # Tables wiped (as owner, so row-level security does not apply) before every test that uses the
 # database. Module ports append their tenant-data tables here; seed catalogs stay.
@@ -86,12 +88,21 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
         admin = create_engine(admin_url, isolation_level="AUTOCOMMIT", poolclass=NullPool)
         try:
             with admin.connect() as c:
-                names = c.execute(
-                    text("SELECT datname FROM pg_database WHERE datname LIKE :p"),
-                    {"p": f"{DB_PREFIX}{run}\\_%"},
-                ).scalars()
-                for name in list(names):
+                names = list(
+                    c.execute(
+                        text("SELECT datname FROM pg_database WHERE datname LIKE :p"),
+                        {"p": f"{DB_PREFIX}{run}\\_%"},
+                    ).scalars()
+                )
+
+            def drop(name: str) -> None:
+                with contextlib.suppress(Exception), admin.connect() as c:
                     _drop_database(c, name)
+
+            # Side by side: each DROP DATABASE waits for a checkpoint, and waiting drops share one.
+            # tests/app leaves its per-test databases to this (B-2330).
+            with ThreadPoolExecutor(max_workers=DROP_THREADS) as pool:
+                list(pool.map(drop, names))
         finally:
             admin.dispose()
 
