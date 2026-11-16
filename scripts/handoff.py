@@ -1,11 +1,13 @@
-"""Write and verify the repo-based handoff record, docs/build/HANDOFF.json (standard library only).
+"""Write and verify the repo-based handoff record, docs/build/handoffs/<branch>.json (standard library only).
+
+Each branch has its own record, so parallel unit branches never conflict over it.
 
 A lead hands off (charter section 10) by running, as its last command:
 
     python scripts/handoff.py write --unit "<unit in progress, or none>" --next "<exact next step>"
 
 `write` refuses unless the checkout is clean, on a branch, and that branch's HEAD is already pushed.
-It then commits HANDOFF.json on its own, pushes, and prints the result of `verify`. The supervisor
+It then commits the branch's record on its own, pushes, and prints the result of `verify`. The supervisor
 and the goal check both rely on that printed line.
 
     python scripts/handoff.py verify [--session SID] [--no-fetch]
@@ -13,10 +15,10 @@ and the goal check both rely on that printed line.
 `verify` prints `HANDOFF VERIFIED ...` and exits 0 only when every one of these is true:
   - the working tree is clean (untracked files count; gitignored files do not);
   - HEAD equals its upstream (origin/<branch>), so the handoff is pushed;
-  - HEAD is the commit that wrote HANDOFF.json, and it changed nothing else;
-  - HANDOFF.json's head_sha is HEAD's parent: a file cannot hold its own commit's hash, so it
+  - HEAD is the commit that wrote the branch's record, and it changed nothing else;
+  - the record's head_sha is HEAD's parent: a file cannot hold its own commit's hash, so it
     records the commit it hands off, and the handoff commit sits directly on top of it;
-  - HANDOFF.json's session_id is the expected session (when one is known).
+  - the record's session_id is the expected session (when one is known).
 Otherwise it prints `HANDOFF NOT VALID: <reason>` and exits 1.
 """
 
@@ -30,7 +32,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-RECORD = "docs/build/HANDOFF.json"
+RECORD_DIR = "docs/build/handoffs"
+
+
+def record_path(branch: str) -> str:
+    return f"{RECORD_DIR}/{branch.replace('/', '-')}.json"
+
 FIELDS = ("session_id", "head_sha", "branch", "unit_in_progress", "next_step", "written_at")
 
 
@@ -80,16 +87,17 @@ def verify(repo: Path, session: str | None = None, fetch: bool = True) -> tuple[
         return False, "the working tree is not clean", {}
     if head != upstream:
         return False, f"HEAD {head[:9]} is not pushed (origin/{branch} is {upstream[:9]})", {}
+    rec = record_path(branch)
     changed = git(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", "HEAD").splitlines()
-    if changed != [RECORD]:
-        return False, f"HEAD does not change only {RECORD} (it changes {changed[:5]})", {}
+    if changed != [rec]:
+        return False, f"HEAD does not change only {rec} (it changes {changed[:5]})", {}
     try:
-        record = json.loads(git(repo, "show", f"HEAD:{RECORD}"))
+        record = json.loads(git(repo, "show", f"HEAD:{rec}"))
     except (RuntimeError, ValueError) as exc:
-        return False, f"{RECORD} is unreadable: {exc}", {}
+        return False, f"{rec} is unreadable: {exc}", {}
     missing = [f for f in FIELDS if not record.get(f)]
     if missing:
-        return False, f"{RECORD} lacks {missing}", record
+        return False, f"{rec} lacks {missing}", record
     parent = git(repo, "rev-parse", "HEAD^", check=False)
     if record["head_sha"] != parent:
         return False, f"head_sha {record['head_sha'][:9]} is not HEAD's parent {parent[:9]}", record
@@ -123,10 +131,10 @@ def write(repo: Path, unit: str, next_step: str, session: str | None) -> int:
         "next_step": next_step,
         "written_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
-    path = repo / RECORD
+    path = repo / record_path(branch)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8", newline="\n")
-    git(repo, "add", RECORD)
+    git(repo, "add", record_path(branch))
     git(repo, "commit", "--quiet", "-m", f"Handoff record: session {session[:8]}, next: {next_step[:60]}")
     git(repo, "push", "--quiet", "origin", branch)
     ok, detail, _ = verify(repo, session, fetch=True)

@@ -160,14 +160,17 @@ Added by the owner's supervisor on 2026-11-13. Where this section and an earlier
 
 **Why.** Every turn pays for everything already in your context, and a long context makes mistakes more likely. Automatic compaction is not an acceptable way to shrink it, because it drops detail you did not choose to drop. You hand over to a fresh session on your own terms instead. A supervising process starts that session for you.
 
-**When to hand off.** After every accepted unit, before starting the next, run `python scripts/context_size.py`. At 300,000 tokens or more, hand off. If the script cannot report a figure, hand off after every three accepted units.
+**When to hand off.** The limit is 200,000 tokens (lowered from 300,000 by the owner on 2026-11-16). Run `python scripts/context_size.py` after every accepted unit and after every completed step inside a unit.
+- At a unit boundary at or above the limit, hand off.
+- Inside a unit, keep going to the boundary if you can see it will fit. Hand off mid-unit only if the limit forces it, and only at a step boundary with no agent running.
+- If the script cannot report a figure, hand off after every three accepted units.
 
-**How to hand off.** Only between units, with no agent running and no merge half done:
+**How to hand off.** Between units where possible, never with an agent running or a merge half done. In parallel mode, write the unit's own notes in `docs/build/units/<unit>.md` on the unit's branch instead of `HANDOFF.md`:
 
 1. Bring `docs/build/STATUS.md` and `docs/build/DECISIONS.md` fully up to date.
 2. Replace `docs/build/HANDOFF.md` with: what was just finished; the exact next step; every open branch and worktree and the state it is in; and anything you learned that is not in the other files, such as commands that work on this machine and traps you hit.
 3. Commit and push.
-4. As the last command, run `python scripts/handoff.py write --unit "<unit in progress, or none>" --next "<the exact next step>"`. It commits and pushes `docs/build/HANDOFF.json`, then must print a line beginning `HANDOFF VERIFIED`. If it prints `HANDOFF NOT VALID: <reason>`, fix what it names, for example an unpushed commit or a stray file, and run it again. The supervisor and the goal check accept a handoff only on this line.
+4. As the last command, run `python scripts/handoff.py write --unit "<unit in progress, or none>" --next "<the exact next step>"`. It commits and pushes the branch's record, `docs/build/handoffs/<branch>.json`, then must print a line beginning `HANDOFF VERIFIED`. If it prints `HANDOFF NOT VALID: <reason>`, fix what it names, for example an unpushed commit or a stray file, and run it again. The supervisor and the goal check accept a handoff only on this line.
 5. End the same turn with a final message whose first line is `HANDOFF COMPLETE`. Start nothing else.
 
 A session that starts and finds `docs/build/HANDOFF.md` reads it after this charter and `STATUS.md`, and carries on from its "exact next step".
@@ -188,3 +191,32 @@ A session that starts and finds `docs/build/HANDOFF.md` reads it after this char
 - Try `haiku` for the builder on the next small module that is not in the critical list and is mostly a straight copy. If it passes every gate within two rounds, use `haiku` for the remaining modules of that kind; if not, stay on `sonnet` for them. Record the result in `DECISIONS.md`.
 - With a `haiku` builder, move the unit up to `sonnet` after the first failed round, not the second.
 - Never lower the model for `module-builder-critical` or `isolation-reviewer`, and never lower a gate to suit a model.
+
+## 11. Parallel units and a small lead context
+
+Added by the owner's supervisor on 2026-11-16 at the owner's request. Where this section and an earlier one differ, this one applies.
+
+**Parallel units.** `docs/build/units.json` lists the remaining goal 1 units, their dependencies and the shared resources each one touches. The supervisor runs up to three units at once:
+- only units whose dependencies are all done;
+- never two units that declare the same resource;
+- each with its own lead, branch and worktree under `.worktrees/<unit>`;
+- each with its own database, from `python scripts/dev_db.py env`.
+
+The supervisor locks a unit's declared resources before it starts that unit's lead.
+
+**Shared files.** The resources and the files they cover are named in `units.json`: migrations, routing, config and front-end navigation, test infrastructure, schema tests, and the cluster.
+- Before changing a file under a resource your unit did not declare, run `python scripts/unit.py lock <resource> --unit <unit>`. If it prints `LOCKED`, do not touch those files: do other work, or hand off, and say so.
+- Write `STATUS.md`, `DECISIONS.md` and your `units.json` entry only in the merge step. During the unit, keep notes in `docs/build/units/<unit>.md`.
+
+**Merging a unit.** One unit merges at a time, and a unit merges only after all 13 gates pass on its branch rebased onto the current main:
+1. `python scripts/unit.py lock merge --unit <unit>`. If it is locked, wait and retry; another unit is merging.
+2. `git fetch` and `git rebase origin/main`, then resolve conflicts. Never force-push the unit branch: the rebased commits reach origin only by fast-forwarding main.
+3. Update your row in `STATUS.md`, your entries in `DECISIONS.md`, and your `units.json` entry (`"status": "done"`), and commit.
+4. `python scripts/gates.py --ref <full sha of HEAD> --name <unit>-merge`. All 13 gates must pass. If any fails, fix it, commit, and run all 13 again. Never skip, deselect or loosen anything.
+5. `git push origin HEAD:main`. A rejected push means main moved: go back to step 2.
+6. `python scripts/unit.py unlock merge --unit <unit>`, then `python scripts/unit.py done <unit>`. It must print `UNIT DONE`.
+
+**Keep the lead's context small.** The lead decides and checks; agents read and run.
+- Delegate exploring the codebase, the full test suite and gate runs to agents. Ask each for a summary of at most about 40 lines: the result, each command and its exit code, the failures, the files changed. Never read whole logs or whole files into the lead to find one fact.
+- During a unit, run only the tests for the code being changed (`python scripts/gates.py --ref <sha> --tests tests/<module> ...` or `uv run pytest tests/<module>`).
+- Run the full suite and all 13 gates once, at the unit boundary, in the merge step above.

@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-HANDOFF_AT = 300_000
+HANDOFF_AT = 200_000
 TAIL_BYTES = 600_000
 
 

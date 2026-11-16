@@ -96,7 +96,7 @@ class HandoffRecordTests(RepoCase):
     def test_write_refuses_dirty_tree(self) -> None:
         (self.repo / "stray.txt").write_text("x")
         self.assertEqual(self.write_handoff(), 1)
-        self.assertFalse((self.repo / handoff.RECORD).exists())
+        self.assertFalse((self.repo / handoff.record_path("main")).exists())
 
     def test_write_refuses_unpushed_commit(self) -> None:
         (self.repo / "a.txt").write_text("a")
@@ -249,8 +249,9 @@ class WatchdogTests(RepoCase):
         self.assertEqual(len(problems), 1)                    # commit age only; no-lead clock just started
         problems, _ = watchdog.check(str(self.repo), 30, since, now + 31 * 60, lambda p: False, {})
         self.assertEqual(len(problems), 2)
-        problems, since = watchdog.check(str(self.repo), 30, since, now + 31 * 60, lambda p: True, {})
-        self.assertIsNone(since)
+        problems, since = watchdog.check(str(self.repo), 30, since, now + 31 * 60, lambda p: True,
+                                         {"slots": {"fe-areas-4": {"pid": 4242}}})
+        self.assertIsNone(since)                              # a parallel slot counts as a running lead
 
 
 if __name__ == "__main__":

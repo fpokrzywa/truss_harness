@@ -4,7 +4,7 @@
 
 Each lead gets goal N from docs/build/GOALS.md. A lead stops in one of three ways:
 
-- **Handoff.** `scripts/handoff.py verify` passes for that lead: HANDOFF.json is committed and
+- **Handoff.** `scripts/handoff.py verify` passes for that lead: the branch's handoff record is committed and
   pushed on top of a clean tree. A fresh lead starts at once.
   - Fallback: if the repo record is missing but the transcript shows `HANDOFF COMPLETE` and the
     checkout is clean and pushed, that also counts as a handoff, and a warning is logged.
@@ -275,57 +275,79 @@ def salvage(repo: str, sid: str | None, branch: str = "main") -> str:
     if not notes:
         return ""
     return ("The previous lead (session " + tag + ") ended without a valid handoff. The supervisor salvaged "
-            "the main checkout: " + "; ".join(notes) + ". Agent worktrees under .worktrees/ were not touched "
+            f"the checkout {repo}: " + "; ".join(notes) + ". Agent worktrees under .worktrees/ were not touched "
             "and may hold uncommitted work. Inspect the salvage and the worktrees, decide what to keep, and "
             "record what you decided in docs/build/DECISIONS.md before continuing from docs/build/HANDOFF.md.")
 
 
 # ---------------------------------------------------------------- running a lead
 
+class Lead:
+    """One headless lead, started at once and watched by repeated step() calls."""
+
+    def __init__(self, prompt: str, cwd: str, label: str, model: str = "opus", append_prompt: str = ""):
+        os.makedirs(LOGS, exist_ok=True)
+        self.cwd, self.label = cwd, label
+        self.log = os.path.join(LOGS, f"{label}-{time.strftime('%Y%m%d-%H%M%S')}.log")
+        env = {k: v for k, v in os.environ.items() if k not in SCRUB}
+        env["DISABLE_AUTO_COMPACT"] = "1"   # the owner wants handoffs, never compaction
+        env["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = str(8 * 3600 * 1000)  # default 10 min cuts agents off
+        cmd = [CLAUDE, "-p", prompt, "--permission-mode", "auto", "--permission-prompts", "none",
+               "--model", model, "--output-format", "stream-json", "--verbose", *EXTRA_FLAGS]
+        if append_prompt:
+            cmd += ["--append-system-prompt", append_prompt]
+        self.started = time.time()
+        with open(self.log, "w", encoding="utf-8") as out:
+            self.proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=out, stderr=subprocess.STDOUT,
+                                         stdin=subprocess.DEVNULL)
+        self.pid = self.proc.pid
+        self.sid, self.forced, self.peak, self.ctx, self._stale_alerted = None, False, 0, 0, 0.0
+        note(f"started {label} model={model} pid={self.pid} cwd={cwd} log={self.log}"
+             + (" (with salvage note)" if append_prompt else ""))
+
+    def step(self) -> bool:
+        """Check on the lead once. True while it is still running."""
+        if self.proc.poll() is not None:
+            return False
+        self.sid = self.sid or session_id_from_log(self.log)
+        if not self.sid:
+            return True
+        os.makedirs(os.path.join(self.cwd, ".devdata"), exist_ok=True)
+        with open(os.path.join(self.cwd, ".devdata", "lead_session"), "w", encoding="utf-8") as f:
+            f.write(self.sid)
+        self.ctx = last_context(self.sid)
+        self.peak = max(self.peak, self.ctx)
+        if self.ctx >= FORCE_AT and agents_running(self.sid) == 0 and not git_busy(self.cwd):
+            note(f"{self.label}: forcing a stop, lead context {self.ctx} >= {FORCE_AT}, no agent running")
+            subprocess.run(["taskkill", "/PID", str(self.pid), "/T", "/F"], capture_output=True)
+            self.forced = True
+            self.proc.wait()
+            return False
+        idle_min = (time.time() - newest_activity(self.sid, self.log)) / 60
+        if idle_min > STALE_MIN and time.time() - self._stale_alerted > STALE_MIN * 60:
+            alert("Build lead stale", f"{self.label}: no activity for {idle_min:.0f} min. Lead {self.sid} "
+                                      f"(pid {self.pid}) left running. Last log lines:\n" + log_tail(20))
+            self._stale_alerted = time.time()
+        return True
+
+    def outcome(self) -> tuple[str | None, str, float, str, bool]:
+        self.proc.wait()
+        res = final_result(self.log)
+        note(f"{self.label} ended sid={self.sid} peak_lead_ctx={self.peak} turns={res.get('num_turns')} "
+             f"cost_usd={res.get('total_cost_usd')} exit={self.proc.returncode} forced={self.forced}")
+        return self.sid, str(res.get("result") or ""), self.started, self.log, self.forced
+
+
 def run_lead(n: int, append_prompt: str = "") -> tuple[str | None, str, float, str, bool]:
-    """Start one lead and watch it. Returns (sid, result_text, started, log, forced)."""
-    os.makedirs(LOGS, exist_ok=True)
-    log = os.path.join(LOGS, f"goal{n}-{time.strftime('%Y%m%d-%H%M%S')}.log")
-    env = {k: v for k, v in os.environ.items() if k not in SCRUB}
-    env["DISABLE_AUTO_COMPACT"] = "1"   # the owner wants handoffs, never compaction
-    env["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = str(8 * 3600 * 1000)  # default 10 min cuts agents off
-    cmd = [CLAUDE, "-p", goal_text(n), "--permission-mode", "auto", "--permission-prompts", "none",
-           "--model", "opus", "--output-format", "stream-json", "--verbose", *EXTRA_FLAGS]
-    if append_prompt:
-        cmd += ["--append-system-prompt", append_prompt]
-    started = time.time()
-    with open(log, "w", encoding="utf-8") as out:
-        proc = subprocess.Popen(cmd, cwd=REPO, env=env, stdout=out, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL)
-    note(f"started goal {n} pid={proc.pid} log={log}" + (" (with salvage note)" if append_prompt else ""))
-    write_state(goal=n, lead_pid=proc.pid, sid=None, lead_started=started, status="running")
-    sid, forced, peak, stale_alerted = None, False, 0, 0.0
-    while proc.poll() is None:
+    """Start the goal-n lead in the main checkout and wait for it. Returns (sid, text, started, log, forced)."""
+    lead = Lead(goal_text(n), REPO, f"goal{n}", "opus", append_prompt)
+    write_state(goal=n, lead_pid=lead.pid, sid=None, lead_started=lead.started, status="running")
+    while lead.step():
+        write_state(sid=lead.sid, lead_ctx=lead.ctx)
         time.sleep(POLL)
-        sid = sid or session_id_from_log(log)
-        if not sid:
-            continue
-        os.makedirs(f"{REPO}/.devdata", exist_ok=True)
-        open(f"{REPO}/.devdata/lead_session", "w", encoding="utf-8").write(sid)
-        ctx = last_context(sid)
-        peak = max(peak, ctx)
-        write_state(sid=sid, lead_ctx=ctx)
-        if ctx >= FORCE_AT and agents_running(sid) == 0 and not git_busy(REPO):
-            note(f"forcing a stop: lead context {ctx} >= {FORCE_AT}, no agent running")
-            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
-            forced = True
-            break
-        idle_min = (time.time() - newest_activity(sid, log)) / 60
-        if idle_min > STALE_MIN and time.time() - stale_alerted > STALE_MIN * 60:
-            alert("Build lead stale", f"No activity for {idle_min:.0f} min. Lead {sid} (pid {proc.pid}) "
-                                      "left running. Last log lines:\n" + log_tail(20))
-            stale_alerted = time.time()
-    proc.wait()
-    res = final_result(log)
-    note(f"lead ended sid={sid} peak_lead_ctx={peak} turns={res.get('num_turns')} "
-         f"cost_usd={res.get('total_cost_usd')} exit={proc.returncode} forced={forced}")
+    out = lead.outcome()
     write_state(lead_pid=None, status="between leads")
-    return sid, str(res.get("result") or ""), started, log, forced
+    return out
 
 
 def session_id_from_log(log: str) -> str | None:
@@ -391,7 +413,7 @@ def supervise(n: int, run=run_lead, sleep=time.sleep, repo: str = REPO, goal_don
             continue
         if kind == "handoff-fallback":
             failures = 0
-            note("WARNING: handoff accepted from the transcript only; HANDOFF.json was not valid")
+            note("WARNING: handoff accepted from the transcript only; the handoff record was not valid")
             continue
         try:
             salvage_note = salvage(repo, sid)
@@ -415,6 +437,179 @@ def supervise(n: int, run=run_lead, sleep=time.sleep, repo: str = REPO, goal_don
         sleep(wait * 60)
 
 
+# ---------------------------------------------------------------- parallel units (charter section 11)
+
+def load_units(repo: str = REPO) -> list[dict]:
+    """The unit list as origin/main has it (leads mark their unit done there when they merge)."""
+    git(repo, "fetch", "--quiet", "origin")
+    shown = git(repo, "show", "origin/main:docs/build/units.json")
+    return json.loads(shown.stdout).get("units", []) if shown.returncode == 0 else []
+
+
+def unit_prompt(u: dict, worktree: str, repo: str = REPO) -> str:
+    text = goal_text(3, repo)
+    for key, value in (("<<id>>", u["id"]), ("<<title>>", u["title"]), ("<<branch>>", u["branch"]),
+                       ("<<worktree>>", worktree)):
+        text = text.replace(key, value)
+    return text
+
+
+def _has_ref(repo: str, ref: str) -> bool:
+    return bool(git_out(repo, "rev-parse", "--verify", "--quiet", ref))
+
+
+def unit_worktree(u: dict, repo: str = REPO) -> str:
+    """The worktree holding the unit's branch, created (with the branch, pushed) if needed."""
+    branch, current, found = u["branch"], None, None
+    for line in git_out(repo, "worktree", "list", "--porcelain").splitlines():
+        if line.startswith("worktree "):
+            current = line[len("worktree "):]
+        elif line == f"branch refs/heads/{branch}":
+            found = current
+    if found:
+        return found.replace("\\", "/")
+    if not _has_ref(repo, f"refs/heads/{branch}"):
+        start = f"origin/{branch}" if _has_ref(repo, f"refs/remotes/origin/{branch}") else "origin/main"
+        if git(repo, "branch", branch, start).returncode != 0:
+            raise RuntimeError(f"cannot create branch {branch} from {start}")
+    if not _has_ref(repo, f"refs/remotes/origin/{branch}"):
+        r = git(repo, "push", "--quiet", "-u", "origin", branch)
+        if r.returncode != 0:
+            raise RuntimeError(f"cannot push new branch {branch}: {r.stderr.strip()}")
+    path = f"{repo}/.worktrees/{u['id']}"
+    r = git(repo, "worktree", "add", "--quiet", path, branch)
+    if r.returncode != 0:
+        raise RuntimeError(f"cannot add worktree {path}: {r.stderr.strip()}")
+    git(path, "branch", "--quiet", "--set-upstream-to", f"origin/{branch}")
+    # The worktree's own database settings; fails harmlessly while the cluster is down.
+    subprocess.run([sys.executable, "scripts/dev_db.py", "env"], cwd=path, capture_output=True)
+    return path
+
+
+def take_resources(u: dict, repo: str = REPO) -> bool:
+    import unit as unitlib
+    from pathlib import Path
+    for r in u.get("resources", []):
+        h = unitlib.holder(Path(repo), r)
+        if h and h.get("unit") != u["id"]:
+            return False
+    return all(unitlib.lock(Path(repo), r, u["id"])[0] for r in u.get("resources", []))
+
+
+def free_resources(uid: str, repo: str = REPO) -> list[str]:
+    import unit as unitlib
+    from pathlib import Path
+    return unitlib.unlock_all(Path(repo), uid)
+
+
+def start_unit(u: dict, salvage_note: str):
+    path = unit_worktree(u)
+    return Lead(unit_prompt(u, path), path, f"unit-{u['id']}", u.get("lead_model", "opus"), salvage_note)
+
+
+def end_unit(u: dict, lead, outcome) -> tuple[str, str]:
+    sid, text, started, _log, forced = outcome
+    if not forced:
+        kind, detail = classify_end(lead.cwd, sid, started, text)
+        note(f"unit {u['id']} end classified: {kind}: {detail}")
+        if kind.startswith("handoff"):
+            return kind, ""
+    return "unrecognized", salvage(lead.cwd, sid, u["branch"])
+
+
+def run_final() -> str:
+    if git_out(REPO, "status", "--porcelain") == "":
+        git(REPO, "merge", "--quiet", "--ff-only", "origin/main")
+    note("all units done: starting the goal 1 final lead in the main checkout")
+    return supervise(1)
+
+
+def supervise_parallel(slots_max: int, *, units=load_units, start=start_unit, end=end_unit,
+                       take=take_resources, free=free_resources, final=run_final,
+                       sleep=time.sleep, now=time.time) -> str:
+    """Run ready units, at most slots_max at a time. Every collaborator is injectable for tests."""
+    running: dict = {}
+    failures: dict = {}
+    wait_until: dict = {}
+    notes_for: dict = {}
+    gave_up: set = set()
+    owner_alerted = ""
+    while True:
+        # 1. Check on running leads.
+        for uid, (u, lead) in list(running.items()):
+            if lead.step():
+                continue
+            del running[uid]
+            outcome = lead.outcome()
+            if {x["id"]: x.get("status") for x in units()}.get(uid) == "done":
+                freed = free(uid)
+                failures[uid] = 0
+                note(f"unit {uid} done; freed {freed}")
+                continue
+            kind, salvage_note = end(u, lead, outcome)
+            if kind.startswith("handoff"):
+                failures[uid] = 0
+                continue
+            notes_for[uid] = salvage_note
+            if outcome[4]:          # stopped by the supervisor at its context limit
+                continue
+            failures[uid] = failures.get(uid, 0) + 1
+            if failures[uid] > MAX_RESTARTS:
+                gave_up.add(uid)
+                free(uid)
+                alert("Build unit failing", f"Unit {uid}: {MAX_RESTARTS} fresh leads in a row ended without a "
+                                            f"handoff. Last lead {outcome[0]}, log {outcome[3]}. Other units go on."
+                                            "\nLast supervisor log lines:\n" + log_tail(20))
+                continue
+            wait_until[uid] = now() + BACKOFF_MIN[failures[uid] - 1] * 60
+            note(f"unit {uid}: restart {failures[uid]} of {MAX_RESTARTS} after {BACKOFF_MIN[failures[uid] - 1]} min")
+        # 2. Everything done except the final unit: run it alone.
+        us = units()
+        rest = [u for u in us if not u.get("final")]
+        status = {u["id"]: u.get("status") for u in us}
+        if rest and not running and all(u.get("status") == "done" for u in rest):
+            return final()
+        # 3. Start what is ready.
+        launched = False
+        if not os.path.exists(PAUSE):
+            for u in rest:
+                if len(running) >= slots_max:
+                    break
+                uid = u["id"]
+                if uid in running or uid in gave_up or u.get("status") in ("done", "waiting_owner"):
+                    continue
+                if any(status.get(d) != "done" for d in u.get("depends_on", [])):
+                    continue
+                if wait_until.get(uid, 0) > now():
+                    continue
+                if not take(u):
+                    continue
+                try:
+                    running[uid] = (u, start(u, notes_for.pop(uid, "")))
+                    launched = True
+                except RuntimeError as exc:
+                    free(uid)
+                    failures[uid] = failures.get(uid, 0) + 1
+                    wait_until[uid] = now() + BACKOFF_MIN[min(failures[uid], MAX_RESTARTS) - 1] * 60
+                    alert("Build unit could not start", f"Unit {uid}: {exc}")
+        # 4. Nothing running and nothing about to run: say why.
+        if not running and not launched and not os.path.exists(PAUSE) and \
+                not any(t > now() for t in wait_until.values()):
+            pending = [u["id"] for u in rest if u.get("status") != "done"]
+            if gave_up:
+                alert("Build supervisor stopped", f"No unit can run. Failing: {sorted(gave_up)}. "
+                                                  f"Not done: {pending}.\n" + log_tail(20))
+                return finish(f"FAILING parallel failing={sorted(gave_up)} pending={pending}")
+            waiting = sorted(u["id"] for u in rest if u.get("status") == "waiting_owner")
+            msg = f"waiting on the owner: {waiting}; blocked behind them: {sorted(set(pending) - set(waiting))}"
+            if msg != owner_alerted:
+                alert("Build waiting on you", msg)
+                owner_alerted = msg
+        write_state(slots={uid: {"pid": lead.pid, "sid": lead.sid} for uid, (_, lead) in running.items()},
+                    status=f"parallel: running {sorted(running)}", lead_pid=None)
+        sleep(POLL)
+
+
 def finish(line: str) -> str:
     note(line)
     write_state(status=line, lead_pid=None)
@@ -423,17 +618,27 @@ def finish(line: str) -> str:
 
 
 def main() -> None:
-    n = int(sys.argv[1])
-    other = read_state().get("supervisor_pid")
+    import argparse
+    ap = argparse.ArgumentParser(description="Run one build goal in headless lead sessions.")
+    ap.add_argument("goal", type=int, choices=(1, 2))
+    ap.add_argument("--parallel", type=int, default=0, metavar="N",
+                    help="goal 1 only: run up to N units from docs/build/units.json at once (max 3)")
+    args = ap.parse_args()
+    state = read_state()
+    other = state.get("supervisor_pid")
     if other and other != os.getpid() and pid_alive(other):
         print(f"ANOTHER SUPERVISOR is running (pid {other}); not starting.")
         sys.exit(2)
-    lead = read_state().get("lead_pid")
-    if lead and pid_alive(lead):
-        print(f"A LEAD is still running (pid {lead}); not starting a second one.")
+    leads = [state.get("lead_pid")] + [s.get("pid") for s in (state.get("slots") or {}).values()]
+    alive = [p for p in leads if p and pid_alive(p)]
+    if alive:
+        print(f"A LEAD is still running (pid {alive}); not starting another.")
         sys.exit(2)
-    write_state(goal=n, status="starting", started=time.time())
-    supervise(n)
+    write_state(goal=args.goal, status="starting", started=time.time(), slots={}, lead_pid=None)
+    if args.parallel and args.goal == 1:
+        supervise_parallel(min(args.parallel, 3))
+    else:
+        supervise(args.goal)
 
 
 if __name__ == "__main__":

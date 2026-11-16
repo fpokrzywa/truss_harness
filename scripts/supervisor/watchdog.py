@@ -35,7 +35,8 @@ def check(repo: str, limit_min: float, no_lead_since: float | None, now: float,
     """Returns (problems, updated no_lead_since)."""
     state = s.read_state() if state is None else state
     problems = []
-    if lead_alive(state.get("lead_pid")):
+    pids = [state.get("lead_pid")] + [x.get("pid") for x in (state.get("slots") or {}).values()]
+    if any(lead_alive(p) for p in pids if p):
         no_lead_since = None
     else:
         no_lead_since = no_lead_since or now

@@ -1,0 +1,94 @@
+{
+  "_about": "Remaining goal 1 units and their dependencies (owner request 2026-11-16, item 6). The supervisor (scripts/supervisor/supervise.py --parallel N) runs every unit whose depends_on are all done, at most N at a time, never two that share a resource. A unit lead changes only its own entry, and only during its merge step while holding the merge lock (charter section 11). status: todo | in_progress | waiting_owner | done.",
+  "units": [
+    {
+      "id": "cluster",
+      "title": "Bring the local PostgreSQL 17 cluster back up and drop the leftover test databases",
+      "branch": "unit/cluster",
+      "depends_on": [],
+      "resources": ["cluster"],
+      "lead_model": "sonnet",
+      "status": "todo",
+      "brief": "docs/build/HANDOFF.md 'Exact next step' 1. Read the postgres log under the main checkout's .devdata/pg (never print cluster.env, .env.local or any secret), let crash recovery finish, `python scripts/dev_db.py start`, drop the ~317 leftover shifdet_* databases. Change code only if dev_db.py itself is at fault."
+    },
+    {
+      "id": "suite-speed",
+      "title": "Full backend suite under the 20-minute target (design section 6)",
+      "branch": "suite-speed",
+      "depends_on": ["cluster"],
+      "resources": ["tests-infra"],
+      "lead_model": "opus",
+      "status": "in_progress",
+      "brief": "docs/build/HANDOFF.md step 2 and B-2330 in the branch's DECISIONS.md. Branch head 43c08d4. Target: 2140+ passed in under 1200 s with -n 8 on a quiet machine. Never skip, deselect or delete a test."
+    },
+    {
+      "id": "runtime-merge",
+      "title": "Merge runtime RT-1..RT-12 to main",
+      "branch": "runtime",
+      "depends_on": ["cluster"],
+      "resources": ["migrations", "schema-tests"],
+      "lead_model": "opus",
+      "status": "waiting_owner",
+      "brief": "docs/build/HANDOFF.md step 3. Blocked on B-1943/B-2150: the owner's own approval of the one-token edit in backend/tests/schema/test_rls_schema.py:1282 (shifde.runs -> shifde.installation_profile, with a comment citing B-1101)."
+    },
+    {
+      "id": "app-2",
+      "title": "APP-2: mount runtime, governance state, platform status route, deferred SETH tests",
+      "branch": "app-2",
+      "depends_on": ["runtime-merge"],
+      "resources": ["routing", "migrations"],
+      "lead_model": "opus",
+      "status": "todo",
+      "brief": "docs/build/HANDOFF.md step 4, including its isolation review."
+    },
+    {
+      "id": "fe-areas-4",
+      "title": "Front-end areas for build and ontology",
+      "branch": "fe-areas-4",
+      "depends_on": ["cluster"],
+      "resources": ["frontend-nav"],
+      "lead_model": "sonnet",
+      "status": "todo",
+      "brief": "Port SETH's build and ontology screens (routers already mounted on main). Same approach as front-end areas 1-3 (docs/build/frontend-areas.md, B-1107)."
+    },
+    {
+      "id": "fe-areas-5",
+      "title": "Front-end areas for runtime and the platform status page",
+      "branch": "fe-areas-5",
+      "depends_on": ["app-2", "fe-areas-4"],
+      "resources": ["frontend-nav"],
+      "lead_model": "sonnet",
+      "status": "todo",
+      "brief": "Runtime screens (runs, approvals) and the platform status page, after APP-2 mounts their routes."
+    },
+    {
+      "id": "two-org-proof",
+      "title": "Two-organization side-by-side proof and the known-defects refresh",
+      "branch": "two-org-proof",
+      "depends_on": ["app-2", "fe-areas-5"],
+      "resources": [],
+      "lead_model": "opus",
+      "status": "todo",
+      "brief": "HANDOFF.md step 5: the proof on the local cluster (S-002, seed dev-seed) and the known-defects refresh in STATUS (RT-11/RT-12 closed or narrowed Item 12, C1, ARCH M3)."
+    },
+    {
+      "id": "goal1-final",
+      "title": "Software factory install (charter section 6) and goal 1's final checks",
+      "branch": "main",
+      "depends_on": ["suite-speed", "runtime-merge", "app-2", "fe-areas-4", "fe-areas-5", "two-org-proof"],
+      "resources": ["frontend-nav", "routing", "migrations", "tests-infra", "schema-tests", "cluster"],
+      "lead_model": "opus",
+      "status": "todo",
+      "final": true,
+      "brief": "Runs in the main checkout with goal 1's own condition, alone."
+    }
+  ],
+  "resources": {
+    "cluster": "the local cluster's data directory and dev_db.py",
+    "tests-infra": "backend/tests/conftest.py, shared fixtures, pytest settings in backend/pyproject.toml",
+    "migrations": "Alembic migrations and env (backend/src/shifde/**/migrations, alembic.ini)",
+    "schema-tests": "backend/tests/schema/ (row-level security schema test, SETH schema comparison)",
+    "routing": "backend/src/shifde/app.py router mounting and app settings",
+    "frontend-nav": "frontend navigation, layout and shared front-end config"
+  }
+}
