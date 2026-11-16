@@ -167,7 +167,8 @@ Added by the owner's supervisor on 2026-11-13. Where this section and an earlier
 1. Bring `docs/build/STATUS.md` and `docs/build/DECISIONS.md` fully up to date.
 2. Replace `docs/build/HANDOFF.md` with: what was just finished; the exact next step; every open branch and worktree and the state it is in; and anything you learned that is not in the other files, such as commands that work on this machine and traps you hit.
 3. Commit and push.
-4. End with a final message whose first line is `HANDOFF COMPLETE`. Start nothing else.
+4. As the last command, run `python scripts/handoff.py write --unit "<unit in progress, or none>" --next "<the exact next step>"`. It commits and pushes `docs/build/HANDOFF.json`, then must print a line beginning `HANDOFF VERIFIED`. If it prints `HANDOFF NOT VALID: <reason>`, fix what it names, for example an unpushed commit or a stray file, and run it again. The supervisor and the goal check accept a handoff only on this line.
+5. End the same turn with a final message whose first line is `HANDOFF COMPLETE`. Start nothing else.
 
 A session that starts and finds `docs/build/HANDOFF.md` reads it after this charter and `STATUS.md`, and carries on from its "exact next step".
 
