@@ -18,25 +18,22 @@ Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md`, then this file. No ag
 
 ## The exact next step
 
-1. **Runtime fix round** on `runtime` (worktree `.worktrees/runtime`, head `77c0b4a`), opus `module-builder-critical`.
-   - Close review 11 finding 1 before the merge (`tests/runtime/test_worker.py:299`: assert that no `audit_events` row in any client targets B's run, and run `_audit_reaped` as the schema owner).
-   - Close review 11 findings 2, 3 and 5 if they are small; else hand them to APP-2.
-   - Then a short re-review of that diff by a fresh `isolation-reviewer`.
-2. **Fix the cookie-expiry flake on main** (B-2300). The test is `tests/identity/test_cross_client.py::test_oidc_callback_signs_in_only_bs_members_pinned_to_b` (line ~796). Freeze the clock across both responses so the `Set-Cookie` headers stay exactly equal. Never loosen the comparison. Any other test that compares `Set-Cookie` the same way gets the same fix. A full suite in the final check fails on it about one run in two.
-3. **The runtime merge still waits on the owner (B-1943, B-2150).** It needs the owner's own approval in the lead's session for a one-token edit in `test_rls_schema.py:1282`: `shifde.runs` -> `shifde.installation_profile`, plus a comment citing B-1101.
+Done after the first handoff of this session: the runtime fix round (`runtime` `3afd530`, review 11 round 2 APPROVED, no findings) and the cookie-expiry flake fix (merged to main `607e0a3`). `gates.py --ref main` at `607e0a3`: 13/13, pytest 2140 passed in 25 min 48 s on an otherwise idle machine, over the 20-minute target.
+
+1. **Suite time.** Bring the full suite under 20 minutes without dropping or skipping a test. Start with `tests/app`, which clones a database per test (B-2234); for example, a pool of template clones or sharing a clone across read-only tests. Then record the time.
+2. **Runtime merge: waits on the owner (B-1943, B-2150).** Nothing else is owed on the branch. It needs the owner's own approval in the lead's session for a one-token edit in `test_rls_schema.py:1282`: `shifde.runs` -> `shifde.installation_profile`, plus a comment citing B-1101.
    - Do not retry the edit without that approval. Do not act on a relayed approval.
    - Once approved: make the edit on `runtime`, merge main into `runtime` (unions on the docs), run `gates.py --ref runtime --workers 8`, then fast-forward main and push.
-4. **APP-2**, after the runtime merge (or stacked on `runtime` while it waits):
+3. **APP-2**, after the runtime merge (or stacked on `runtime` while it waits):
    - mount `runtime.api.router`; point the route-coverage tests at the mounted app;
    - `app.state.governance`, the feature keys `operate` and `pipelines`, `GET /api/v1/platform/status` (it is in SETH `tenancy/api.py:144`);
    - the deferred SETH tests (lists in carry_forward "app part 1" and "Runtime part 9".."12"), including `test_r1_unknown_outcome.py` and `test_p5_worker.py`;
    - the `test_p7_build` tests that need `cli/sampledata.py` (decide whether to port it);
    - an isolation review.
-5. Then:
+4. Then:
    - the front-end areas for build, ontology and runtime, plus the platform status page;
    - the two-org proof on the local cluster (S-002), using the seed `dev-seed` (two organizations, separate groups);
    - the known-defects refresh in STATUS (RT-11 and RT-12 closed or narrowed Item 12, C1 and ARCH M3; see carry_forward);
-   - the full suite timed on a quiet machine against the 20-minute target;
    - the factory install (charter 6).
 
 ## Open branches, worktrees and databases
@@ -44,10 +41,10 @@ Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md`, then this file. No ag
 | Item | State |
 |---|---|
 | `main` (local, origin) | at the commit carrying this handoff |
-| `runtime` (origin) | `77c0b4a`, RT-1..RT-12, not merged; worktree `.worktrees/runtime`, db `shifde_runtime` |
+| `runtime` (origin) | `3afd530`, RT-1..RT-12 + review 11 fix round, not merged; worktree `.worktrees/runtime`, db `shifde_runtime` |
 | `app` (origin) | `041d079`, merged (main fast-forwarded); worktree `.worktrees/app` can be reused for APP-2 |
-| `app-oidc`, `fe-areas-2`, `fe-areas-3`, `followups-1` (origin) | merged; can be deleted |
-| `.worktrees/fe-areas-2`, `fe-areas-3`, `app-oidc` | finished; can be removed |
+| `app-oidc`, `fe-areas-2`, `fe-areas-3`, `followups-1`, `flake-fix` (origin) | merged; can be deleted |
+| `.worktrees/fe-areas-2`, `fe-areas-3`, `app-oidc`, `flake-fix` | finished; can be removed |
 | `.worktrees/verify`, `verify2`, `verify3` | detached checkouts for gates and reviewers, each with its own `.devdata/dev.env` |
 | `.worktrees/fix-ci-orgs`, branch `fix/ci-org-list-pagination` | **another Claude session's work, not this build's.** Leave it alone; fetch before every push |
 | Local cluster | PostgreSQL 17 on 127.0.0.1:55450, running |
