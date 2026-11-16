@@ -318,11 +318,11 @@ def test_create_run_chooses_its_id_and_is_its_own_root(
 ) -> None:
     a, _ = seeded
     with owner_db.session() as o:
-        project, agent_version = o.execute(
-            text("SELECT project_id, agent_version_id FROM shifde.runs WHERE id = :r"),
+        project, agent, agent_version = o.execute(
+            text("SELECT project_id, agent_id, agent_version_id FROM shifde.runs WHERE id = :r"),
             {"r": a.run},
         ).one()
-    values = _run_values(a, project_id=project, agent_version_id=agent_version)
+    values = _run_values(a, project_id=project, agent_id=agent, agent_version_id=agent_version)
     with app_session(app_db, a.tenant) as s:
         row = repo.create_run(s, values, {"q": 1})
         assert row["tenant_id"] == a.tenant and row["root_run_id"] == row["id"]
@@ -335,7 +335,7 @@ def test_create_run_chooses_its_id_and_is_its_own_root(
 
 
 def _insert_cases(
-    caller: UUID, x: Ids, project: UUID, version: UUID, tool_version: UUID
+    caller: UUID, x: Ids, project: UUID, agent: UUID, version: UUID, tool_version: UUID
 ) -> dict[str, Callable[[Session], Any]]:
     """Inserts of `caller`'s rows that name `x`'s run."""
     on_run = {"tenant_id": caller, "run_id": x.run}
@@ -343,7 +343,7 @@ def _insert_cases(
         "insert_run_parent": lambda s: repo.insert_run(
             s,
             {
-                **_run_values(x, project_id=project, agent_version_id=version),
+                **_run_values(x, project_id=project, agent_id=agent, agent_version_id=version),
                 "tenant_id": caller,
                 "parent_run_id": x.run,
                 "root_run_id": x.run,
@@ -394,9 +394,10 @@ def test_an_insert_naming_bs_run_gets_the_unknown_id_answer(
     (B-2101), not by a filter: B's run and an unknown run both give 23503; A's own run works."""
     a, b = seeded
     with owner_db.session() as o:
-        project, version, tool_version = o.execute(
+        project, agent, version, tool_version = o.execute(
             text(
-                "SELECT r.project_id, r.agent_version_id, i.tool_version_id FROM shifde.runs r "
+                "SELECT r.project_id, r.agent_id, r.agent_version_id, i.tool_version_id "
+                "FROM shifde.runs r "
                 "JOIN shifde.tool_invocations i ON i.id = :i WHERE r.id = :r"
             ),
             {"r": a.run, "i": a.invocation},
@@ -405,7 +406,7 @@ def test_an_insert_naming_bs_run_gets_the_unknown_id_answer(
     def answer(target: Ids) -> str | None:
         # A's own workspace and project; only the run is the target's
         x = replace(target, workspace=a.workspace)
-        call = _insert_cases(a.tenant, x, project, version, tool_version)[name]
+        call = _insert_cases(a.tenant, x, project, agent, version, tool_version)[name]
         with app_session(app_db, a.tenant) as s:
             try:
                 call(s)

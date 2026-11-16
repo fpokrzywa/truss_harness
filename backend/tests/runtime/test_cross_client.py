@@ -136,9 +136,10 @@ def test_a_row_of_a_cannot_name_bs_workspace_project_tool_child_run_or_invocatio
     a_agent = s_agent = None
     s = owner_db.session() if as_owner else app_session(app_db, a.tenant)
     with s:
-        a_agent = s.execute(
-            text("SELECT agent_version_id FROM shifde.runs WHERE id = :r"), {"r": a.run}
-        ).scalar_one()
+        a_artifact, a_agent = s.execute(
+            text("SELECT agent_id, agent_version_id FROM shifde.runs WHERE id = :r"), {"r": a.run}
+        ).one()
+        run["agent_id"] = a_artifact  # an agent run names its agent (ck_runs__target, B-2172)
         cases = [
             ("approvals", {**approval, "workspace_id": b.workspace}),
             ("approvals", {**approval, "project_id": b.project}),

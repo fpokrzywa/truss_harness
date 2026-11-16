@@ -706,6 +706,26 @@ class ArtifactService:
         run = repository.run_target(self.session, tenant, run_id)
         return run if run is not None and run["tenant_id"] == tenant else None
 
+    def run_connection(self, run_id: UUID, connection_id: UUID) -> Mapping[str, Any] | None:
+        """The connection row a tool of run `run_id` executes through: a connection of this
+        client at the client level or at the stored run's own workspace and project (the rule a
+        run's env applies, B-2161), else None, the answer an unknown id gets. Tool execution
+        resolves its connection here, never by the client id alone (runtime isolation review 6
+        finding 2)."""
+        tenant = self.sc.tenant_id
+        run = self.run_target(run_id)
+        if run is None:
+            return None
+        try:
+            row = self.conns.get_row(connection_id)  # the scope's client id, else NotFound
+        except NotFound:
+            return None
+        if row["tenant_id"] != tenant or not at_run_scope(
+            row, (run["workspace_id"], run["project_id"])
+        ):
+            return None
+        return row
+
     def run_versions(self, run: Mapping[str, Any]) -> list[Mapping[str, Any]]:  # Any: rows
         """The version rows a run executes: its own pinned version (agent, orchestration,
         pipeline or ontology) and every version that one pins, directly or transitively, all of
@@ -1269,6 +1289,14 @@ def _as_uuid(value: Any) -> UUID | None:  # Any: JSON value
         return None
 
 
+def at_run_scope(row: Mapping[str, Any], scope: tuple[UUID | None, UUID | None]) -> bool:
+    """A connection row (Any: row) at the client level or at the run's own (workspace id,
+    project id): one in another workspace, or in another project of the run's workspace, is not
+    (B-2161, runtime isolation review 6 findings 2 and 4)."""
+    workspace_id, project_id = scope
+    return row["workspace_id"] in (None, workspace_id) and row["project_id"] in (None, project_id)
+
+
 class _Env:
     """The validators' view of the world, bound to the publisher's permissions and to one client.
 
@@ -1338,11 +1366,7 @@ class _Env:
             return True
         if self.run_scope is None:
             return False
-        workspace_id, project_id = self.run_scope
-        return row["workspace_id"] in (None, workspace_id) and row["project_id"] in (
-            None,
-            project_id,
-        )
+        return at_run_scope(row, self.run_scope)
 
     def _same_client(self) -> bool:
         """The scope still names the client this env was built for (an env is never reused)."""
@@ -1409,7 +1433,13 @@ class _Env:
     def route_model_ids(self, route_id: UUID) -> list[UUID] | None:
         if not self._same_client() or not self._run_may_name("route_id", route_id):
             return None
-        return self.svc.models.route_model_ids(route_id)
+        if self.only_versions is None:
+            return self.svc.models.route_model_ids(route_id)
+        # a run's env: also only a route at the client level or the run's own workspace or
+        # project (the route's own scope; runtime isolation review 6 finding 4)
+        if self.run_scope is None:
+            return None
+        return self.svc.models.route_model_ids(route_id, at=self.run_scope)
 
     def _readable_connection(self, connection_id: UUID) -> Mapping[str, Any] | None:
         """The client's connection row, if the caller may read it (or an approver re-validates)."""

@@ -11,6 +11,7 @@ from uuid import UUID
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from shifde import ledger
@@ -315,9 +316,11 @@ def test_a_usage_row_survives_a_crash_after_the_provider_answered(
 def test_the_durable_write_is_tenant_scoped_and_refuses_another_tenants_values(
     app_db: Database, owner_db: Database, as_owner: bool
 ) -> None:
-    """Values naming client B under client A's durable write are refused before any session opens
-    (B-2164), as `shifde_app` (where row-level security would also refuse them) and on the schema
-    owner's database (where nothing else would): no row is written for either client."""
+    """Values naming client B under client A's durable write are refused by the write's own
+    client check before any session opens (B-2164), on the app database and on the schema owner's
+    database (where nothing else would refuse them): no row is written for either client. That
+    row-level security also refuses B's values in an app session under A's context is
+    `test_an_app_session_of_a_cannot_record_bs_model_call`."""
     a, b = uuid7(), uuid7()
     with owner_db.session() as owner:
         add_tenants(owner, a, b)
@@ -342,3 +345,36 @@ def test_the_durable_write_is_tenant_scoped_and_refuses_another_tenants_values(
         app_db, a, _call(a, "k"), reported=Usage(), estimated_input=1, estimated_output=1
     )
     assert written.inserted
+
+
+def test_an_app_session_of_a_cannot_record_bs_model_call(
+    app_db: Database, owner_db: Database
+) -> None:
+    """The second line under the durable write's client check: in an app-role session under A's
+    context, `record_model_call` with B's values is refused by row-level security (42501, runtime
+    isolation review 6 finding 1); A's own values in the same kind of session are written."""
+    a, b = uuid7(), uuid7()
+    with owner_db.session() as owner:
+        add_tenants(owner, a, b)
+        owner.commit()
+    with app_db.session() as s:
+        set_tenant(s, a)
+        assert s.execute(text("SELECT current_user")).scalar_one() == "shifde_app"
+        with pytest.raises(DBAPIError) as refused:
+            ledger.record_model_call(
+                s, _call(b, "k"), reported=Usage(), estimated_input=1, estimated_output=1
+            )
+        assert getattr(refused.value.orig, "sqlstate", None) == "42501"  # row-level security
+        s.rollback()
+        set_tenant(s, a)
+        written = ledger.record_model_call(
+            s, _call(a, "k"), reported=Usage(), estimated_input=1, estimated_output=1
+        )
+        assert written.inserted
+        s.commit()
+    with owner_db.session() as owner:
+        rows = owner.execute(
+            text("SELECT tenant_id FROM shifde.usage_events WHERE tenant_id IN (:a, :b)"),
+            {"a": a, "b": b},
+        ).all()
+    assert rows == [(a,)]
