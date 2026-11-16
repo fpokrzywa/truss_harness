@@ -1,7 +1,9 @@
 import { api as defaultClient, type ApiClient } from './client';
+import { createSecurityEndpoints } from './security-endpoints';
 import type {
   AuthConfig,
   CreateOrgInput,
+  CreateScopeInput,
   Dashboard,
   ListResponse,
   MyPermissions,
@@ -61,8 +63,6 @@ export function createEndpoints(client: ApiClient = defaultClient) {
       client.request<ListResponse<Org>>('/api/v1/orgs', {
         query: { limit: 200, scope: all ? 'all' : undefined },
       }),
-    // createOrg and dashboard stay in the shell only because the shell's client tests use them as
-    // the exemplar POST and query-string calls; the tenancy area owns them.
     createOrg: (input: CreateOrgInput) =>
       client.request<Org>('/api/v1/orgs', { method: 'POST', body: input }),
     dashboard: (org: string, workspace?: string, project?: string) =>
@@ -72,12 +72,27 @@ export function createEndpoints(client: ApiClient = defaultClient) {
       client.request<ListResponse<Workspace>>(`${orgPath(org)}/workspaces`, {
         query: { limit: 200, include_archived: includeArchived ? 'true' : undefined },
       }),
+    createWorkspace: (org: string, input: CreateScopeInput) =>
+      client.request<Workspace>(`${orgPath(org)}/workspaces`, { method: 'POST', body: input }),
+    archiveWorkspace: (org: string, ws: Workspace) =>
+      client.request<Workspace>(wsPath(org, ws.slug), {
+        method: 'PATCH',
+        body: { status: 'archived', row_version: ws.row_version },
+      }),
     listProjects: (org: string, ws: string, includeArchived = false) =>
       client.request<ListResponse<Project>>(`${wsPath(org, ws)}/projects`, {
         query: { limit: 200, include_archived: includeArchived ? 'true' : undefined },
       }),
-    // Per-area endpoint groups (security, integrate, build, operate, pipelines, ontology,
-    // governance) are spread in here as each area lands. The shell only owns session plumbing.
+    createProject: (org: string, ws: string, input: CreateScopeInput) =>
+      client.request<Project>(`${wsPath(org, ws)}/projects`, { method: 'POST', body: input }),
+    archiveProject: (org: string, ws: string, proj: Project) =>
+      client.request<Project>(`${wsPath(org, ws)}/projects/${enc(proj.slug)}`, {
+        method: 'PATCH',
+        body: { status: 'archived', row_version: proj.row_version },
+      }),
+    ...createSecurityEndpoints(client),
+    // Further per-area endpoint groups (integrate, build, operate, pipelines, ontology,
+    // governance) are spread in here as each area lands.
     myPermissions: (org: string, workspace?: string, project?: string) =>
       client.request<MyPermissions>(`${orgPath(org)}/me/permissions`, {
         query: { workspace, project },

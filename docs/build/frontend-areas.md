@@ -90,7 +90,7 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 | `src/lib/api-origin.ts` | ported |  |
 | `src/lib/api/client.test.ts` | ported |  |
 | `src/lib/api/client.ts` | ported |  |
-| `src/lib/api/endpoints.ts` | ported, modified | trimmed to session/scope plumbing (plus `createOrg`, `dashboard`, which the shell client tests call); per-area endpoint groups are spread back in as areas land |
+| `src/lib/api/endpoints.ts` | ported, modified | session/scope plumbing plus tenancy create/archive workspace and project; the security endpoint group is spread in; other per-area groups are spread back in as areas land |
 | `src/lib/api/errors.ts` | ported |  |
 | `src/lib/api/types.ts` | ported, modified | verbatim plus `MyPermissions` and `PermissionDef` copied from `security-types.ts` |
 | `src/lib/hooks.ts` | ported | session, scope and permission hooks the shell chrome needs. |
@@ -115,45 +115,45 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 
 | File | Status | Notes |
 |---|---|---|
-| `src/app/(app)/o/[org]/govern/audit/page.tsx` | later | blocked: audit has no API in the unified backend (events and `verify` are org routes `/api/v1/orgs/{org}/audit...`, owner: tenancy part 2 / `app` port); `security-*` files also span authz and identity |
-| `src/app/(app)/o/[org]/govern/layout.tsx` | later | blocked: audit has no API in the unified backend (events and `verify` are org routes `/api/v1/orgs/{org}/audit...`, owner: tenancy part 2 / `app` port); `security-*` files also span authz and identity |
-| `src/app/(app)/o/[org]/security/audit/page.tsx` | later | blocked: audit has no API in the unified backend (events and `verify` are org routes `/api/v1/orgs/{org}/audit...`, owner: tenancy part 2 / `app` port); `security-*` files also span authz and identity |
-| `src/app/(app)/o/[org]/security/layout.tsx` | later | blocked: audit has no API in the unified backend (events and `verify` are org routes `/api/v1/orgs/{org}/audit...`, owner: tenancy part 2 / `app` port); `security-*` files also span authz and identity |
-| `src/components/security/AuditExplorer.test.tsx` | later | blocked: audit has no API in the unified backend (events and `verify` are org routes `/api/v1/orgs/{org}/audit...`, owner: tenancy part 2 / `app` port); `security-*` files also span authz and identity |
-| `src/components/security/AuditView.test.tsx` | later | blocked: audit has no API in the unified backend (events and `verify` are org routes `/api/v1/orgs/{org}/audit...`, owner: tenancy part 2 / `app` port); `security-*` files also span authz and identity |
-| `src/components/security/AuditView.tsx` | later | blocked: audit has no API in the unified backend (events and `verify` are org routes `/api/v1/orgs/{org}/audit...`, owner: tenancy part 2 / `app` port); `security-*` files also span authz and identity |
-| `src/lib/api/security-endpoints.ts` | later | as security-types; `myPermissions` is already in the shell endpoints.; blocked: audit has no API in the unified backend (events and `verify` are org routes `/api/v1/orgs/{org}/audit...`, owner: tenancy part 2 / `app` port); `security-*` files also span authz and identity |
-| `src/lib/api/security-types.ts` | later | spans identity, authz, secrets and audit; audit|authz tie broken alphabetically. Split by area when ported.; blocked: audit has no API in the unified backend (events and `verify` are org routes `/api/v1/orgs/{org}/audit...`, owner: tenancy part 2 / `app` port); `security-*` files also span authz and identity |
+| `src/app/(app)/o/[org]/govern/audit/page.tsx` | ported |  |
+| `src/app/(app)/o/[org]/govern/layout.tsx` | ported |  |
+| `src/app/(app)/o/[org]/security/audit/page.tsx` | ported |  |
+| `src/app/(app)/o/[org]/security/layout.tsx` | ported |  |
+| `src/components/security/AuditExplorer.test.tsx` | ported |  |
+| `src/components/security/AuditView.test.tsx` | ported |  |
+| `src/components/security/AuditView.tsx` | ported |  |
+| `src/lib/api/security-endpoints.ts` | ported, modified | `redeemSetup`, `myPermissions` (already in the shell endpoints), `createGroup`, `setGroupMembers` removed: the group create and member routes exist only under `/api/v1/platform/groups` (admin), not `/orgs/{org}/groups`; spread into `endpoints.ts` |
+| `src/lib/api/security-types.ts` | ported, modified | `MyPermissions`, `PermissionDef`, `SetupRedeemResult` re-exported from `./types` (shell-owned copies) instead of redefined |
 
 ## authz
 
 | File | Status | Notes |
 |---|---|---|
-| `src/app/(app)/o/[org]/security/groups/[id]/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/security/groups/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/security/page.tsx` | later | UNSURE: as SecurityHome. |
-| `src/app/(app)/o/[org]/security/permissions/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/security/roles/page.tsx` | later |  |
-| `src/components/CreateScopeForm.test.tsx` | later |  |
-| `src/components/CreateScopeForm.tsx` | later | UNSURE: scope (org/workspace/project) creation form, but `GroupsView` (authz) also uses it, so the layer rule gives authz. |
-| `src/components/admin/PermissionChecklist.tsx` | later |  |
-| `src/components/admin/RoleBindings.test.tsx` | later |  |
-| `src/components/admin/RoleBindings.tsx` | later |  |
-| `src/components/admin/ScopePicker.tsx` | later |  |
-| `src/components/security/GroupDetailView.test.tsx` | later |  |
-| `src/components/security/GroupDetailView.tsx` | later |  |
-| `src/components/security/GroupsView.tsx` | later |  |
-| `src/components/security/PermissionsView.tsx` | later |  |
-| `src/components/security/RolesView.test.tsx` | later |  |
-| `src/components/security/RolesView.tsx` | later |  |
-| `src/components/security/SecurityHome.tsx` | later | UNSURE: security landing page linking to all security areas; placed with groups/roles (authz). |
-| `src/lib/security-hooks.ts` | later |  |
+| `src/app/(app)/o/[org]/security/groups/[id]/page.tsx` | later | blocked: `POST /api/v1/orgs/{org}/groups` and `PUT /api/v1/orgs/{org}/groups/{id}/members` do not exist (groups are created and edited only under `/api/v1/platform/groups`, admin); owner: admin / `app` port |
+| `src/app/(app)/o/[org]/security/groups/page.tsx` | later | blocked: `POST /api/v1/orgs/{org}/groups` and `PUT /api/v1/orgs/{org}/groups/{id}/members` do not exist (groups are created and edited only under `/api/v1/platform/groups`, admin); owner: admin / `app` port |
+| `src/app/(app)/o/[org]/security/page.tsx` | ported |  |
+| `src/app/(app)/o/[org]/security/permissions/page.tsx` | ported |  |
+| `src/app/(app)/o/[org]/security/roles/page.tsx` | ported |  |
+| `src/components/CreateScopeForm.test.tsx` | ported |  |
+| `src/components/CreateScopeForm.tsx` | ported |  |
+| `src/components/admin/PermissionChecklist.tsx` | ported |  |
+| `src/components/admin/RoleBindings.test.tsx` | ported |  |
+| `src/components/admin/RoleBindings.tsx` | ported |  |
+| `src/components/admin/ScopePicker.tsx` | ported |  |
+| `src/components/security/GroupDetailView.test.tsx` | later | blocked: `POST /api/v1/orgs/{org}/groups` and `PUT /api/v1/orgs/{org}/groups/{id}/members` do not exist (groups are created and edited only under `/api/v1/platform/groups`, admin); owner: admin / `app` port |
+| `src/components/security/GroupDetailView.tsx` | later | blocked: `POST /api/v1/orgs/{org}/groups` and `PUT /api/v1/orgs/{org}/groups/{id}/members` do not exist (groups are created and edited only under `/api/v1/platform/groups`, admin); owner: admin / `app` port |
+| `src/components/security/GroupsView.tsx` | later | blocked: `POST /api/v1/orgs/{org}/groups` and `PUT /api/v1/orgs/{org}/groups/{id}/members` do not exist (groups are created and edited only under `/api/v1/platform/groups`, admin); owner: admin / `app` port |
+| `src/components/security/PermissionsView.tsx` | ported |  |
+| `src/components/security/RolesView.test.tsx` | ported |  |
+| `src/components/security/RolesView.tsx` | ported |  |
+| `src/components/security/SecurityHome.tsx` | ported |  |
+| `src/lib/security-hooks.ts` | ported |  |
 
 ## observability
 
 | File | Status | Notes |
 |---|---|---|
-| `src/app/(app)/o/[org]/govern/performance/page.tsx` | later | UNSURE: execution performance; the view lives in `GovernanceViews`.; blocked: `GET /api/v1/platform/status` does not exist (observability exposes only `/api/health`, `/api/ready`, `/api/metrics`); the page also needs ledger/governance `governance-types` and `lib/governance` (owner: ledger) |
+| `src/app/(app)/o/[org]/govern/performance/page.tsx` | later | UNSURE: execution performance; the view lives in `GovernanceViews`. Its route `/orgs/{org}/observability/performance` exists, but the page needs `GovernanceViews` (governance) and ledger's `lib/governance`; owner: governance |
 | `src/app/(app)/platform/status/page.tsx` | later | UNSURE: as PlatformStatusView.; blocked: `GET /api/v1/platform/status` does not exist (observability exposes only `/api/health`, `/api/ready`, `/api/metrics`); the page also needs ledger/governance `governance-types` and `lib/governance` (owner: ledger) |
 | `src/components/PlatformStatusView.test.tsx` | later | blocked: `GET /api/v1/platform/status` does not exist (observability exposes only `/api/health`, `/api/ready`, `/api/metrics`); the page also needs ledger/governance `governance-types` and `lib/governance` (owner: ledger) |
 | `src/components/PlatformStatusView.tsx` | later | UNSURE: platform status page; no area named for it, observability chosen.; blocked: `GET /api/v1/platform/status` does not exist (observability exposes only `/api/health`, `/api/ready`, `/api/metrics`); the page also needs ledger/governance `governance-types` and `lib/governance` (owner: ledger) |
@@ -187,20 +187,20 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 
 | File | Status | Notes |
 |---|---|---|
-| `src/app/(app)/o/[org]/security/secrets/page.tsx` | later | blocked: secrets has no API in the unified backend (org routes `/api/v1/orgs/{org}/secrets`, owner: tenancy part 2 / `app` port) |
-| `src/components/security/SecretsView.test.tsx` | later | blocked: secrets has no API in the unified backend (org routes `/api/v1/orgs/{org}/secrets`, owner: tenancy part 2 / `app` port) |
-| `src/components/security/SecretsView.tsx` | later | blocked: secrets has no API in the unified backend (org routes `/api/v1/orgs/{org}/secrets`, owner: tenancy part 2 / `app` port) |
+| `src/app/(app)/o/[org]/security/secrets/page.tsx` | ported |  |
+| `src/components/security/SecretsView.test.tsx` | ported |  |
+| `src/components/security/SecretsView.tsx` | ported |  |
 
 ## identity
 
 | File | Status | Notes |
 |---|---|---|
-| `src/app/(app)/o/[org]/security/api-keys/page.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
-| `src/app/(app)/o/[org]/security/idps/page.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
-| `src/app/(app)/o/[org]/security/service-accounts/[id]/page.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
-| `src/app/(app)/o/[org]/security/service-accounts/page.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
-| `src/app/(app)/o/[org]/security/users/page.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
-| `src/app/(app)/platform/idps/page.tsx` | later | needs `/api/v1/platform/idps`, which the unified backend does not have yet (owner: identity part 3 admin routes / `app` port) |
+| `src/app/(app)/o/[org]/security/api-keys/page.tsx` | ported |  |
+| `src/app/(app)/o/[org]/security/idps/page.tsx` | ported |  |
+| `src/app/(app)/o/[org]/security/service-accounts/[id]/page.tsx` | ported |  |
+| `src/app/(app)/o/[org]/security/service-accounts/page.tsx` | ported |  |
+| `src/app/(app)/o/[org]/security/users/page.tsx` | ported |  |
+| `src/app/(app)/platform/idps/page.tsx` | ported |  |
 | `src/app/login/page.tsx` | ported |  |
 | `src/app/setup/page.tsx` | ported |  |
 | `src/components/LoginForm.oidc.test.tsx` | ported |  |
@@ -208,34 +208,34 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 | `src/components/LoginForm.tsx` | ported, modified | `useBranding` removed: heading uses `DEFAULT_PRODUCT_NAME`; no logo, login message or support link; no call to `/api/installation/branding` (B-1101) |
 | `src/components/SetupForm.test.tsx` | ported |  |
 | `src/components/SetupForm.tsx` | ported | UNSURE: first-admin setup redeem; identity (calls `redeemSetup`). |
-| `src/components/admin/SecretOnce.tsx` | ported | no importer until `ApiKeysPanel` lands |
-| `src/components/security/ApiKeysPanel.test.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
-| `src/components/security/ApiKeysPanel.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
-| `src/components/security/ApiKeysView.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
-| `src/components/security/IdpsView.test.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
-| `src/components/security/IdpsView.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
-| `src/components/security/ServiceAccountsView.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
-| `src/components/security/UsersView.test.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
-| `src/components/security/UsersView.tsx` | later | needs org-scoped routes under `/api/v1/orgs/{org}` that the unified backend does not have yet (owner: tenancy part 2 / `app` port) |
+| `src/components/admin/SecretOnce.tsx` | ported |  |
+| `src/components/security/ApiKeysPanel.test.tsx` | ported |  |
+| `src/components/security/ApiKeysPanel.tsx` | ported |  |
+| `src/components/security/ApiKeysView.tsx` | ported |  |
+| `src/components/security/IdpsView.test.tsx` | ported |  |
+| `src/components/security/IdpsView.tsx` | ported |  |
+| `src/components/security/ServiceAccountsView.tsx` | ported |  |
+| `src/components/security/UsersView.test.tsx` | ported |  |
+| `src/components/security/UsersView.tsx` | ported |  |
 | `src/lib/oidc.ts` | ported |  |
 
 ## tenancy
 
 | File | Status | Notes |
 |---|---|---|
-| `src/app/(app)/o/[org]/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/w/[ws]/p/[proj]/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/w/[ws]/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/w/[ws]/projects/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/workspaces/page.tsx` | later |  |
-| `src/app/(app)/platform/organizations/page.tsx` | later |  |
-| `src/components/DashboardView.test.tsx` | later |  |
-| `src/components/DashboardView.tsx` | later |  |
-| `src/components/OrganizationsView.tsx` | later |  |
-| `src/components/ProjectsView.tsx` | later |  |
-| `src/components/ScopeListView.test.tsx` | later |  |
-| `src/components/ScopeListView.tsx` | later |  |
-| `src/components/WorkspacesView.tsx` | later |  |
+| `src/app/(app)/o/[org]/page.tsx` | ported |  |
+| `src/app/(app)/o/[org]/w/[ws]/p/[proj]/page.tsx` | ported |  |
+| `src/app/(app)/o/[org]/w/[ws]/page.tsx` | ported |  |
+| `src/app/(app)/o/[org]/w/[ws]/projects/page.tsx` | ported |  |
+| `src/app/(app)/o/[org]/workspaces/page.tsx` | ported |  |
+| `src/app/(app)/platform/organizations/page.tsx` | ported |  |
+| `src/components/DashboardView.test.tsx` | ported |  |
+| `src/components/DashboardView.tsx` | ported |  |
+| `src/components/OrganizationsView.tsx` | ported |  |
+| `src/components/ProjectsView.tsx` | ported |  |
+| `src/components/ScopeListView.test.tsx` | ported |  |
+| `src/components/ScopeListView.tsx` | ported |  |
+| `src/components/WorkspacesView.tsx` | ported |  |
 
 ## installation
 
