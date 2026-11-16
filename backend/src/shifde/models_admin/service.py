@@ -799,11 +799,26 @@ class ModelService:
                 problems[model_id] = "model_not_allowed"
         return problems
 
-    def route_model_ids(self, route_id: UUID) -> list[UUID] | None:
-        """Primary then fallback model ids of a route of this organization (None if unknown)."""
-        row = repository.get_route(self._session, route_id, tenant_id=self.sc.tenant_id)
-        if row is None or row["tenant_id"] != self.sc.tenant_id:
+    def route_model_ids(
+        self, route_id: UUID, *, at: tuple[UUID | None, UUID | None] | None = None
+    ) -> list[UUID] | None:
+        """Primary then fallback model ids of a route of this organization (None if unknown).
+        `at` (a run's own (workspace id, project id)): only a route of the client level, of that
+        workspace or of that project; any other route of the client answers None, like an unknown
+        id (runtime isolation review 6 finding 4)."""
+        tenant = self.sc.tenant_id
+        row = repository.get_route(self._session, route_id, tenant_id=tenant)
+        if row is None or row["tenant_id"] != tenant:
             return None
+        if at is not None:
+            workspace_id, project_id = at
+            allowed: set[tuple[str, UUID]] = {("tenant", tenant)}
+            if workspace_id is not None:
+                allowed.add(("workspace", workspace_id))
+            if project_id is not None:
+                allowed.add(("project", project_id))
+            if (row["scope_type"], row["scope_id"]) not in allowed:
+                return None
         return [row["primary_model_id"], *list(row["fallback_model_ids"] or [])]
 
     # ================================================================== routes

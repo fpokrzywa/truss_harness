@@ -836,8 +836,9 @@ def upgrade() -> None:
             action_key text,
             CONSTRAINT uq_runs__tenant_id_id UNIQUE (tenant_id, id),
             CONSTRAINT ck_runs__target CHECK
-                ((kind = 'agent' AND agent_version_id IS NOT NULL)
-                 OR (kind = 'orchestration' AND orchestration_version_id IS NOT NULL)
+                ((kind = 'agent' AND agent_version_id IS NOT NULL AND agent_id IS NOT NULL)
+                 OR (kind = 'orchestration' AND orchestration_version_id IS NOT NULL
+                     AND orchestration_id IS NOT NULL)
                  OR (kind = 'pipeline' AND pipeline_version_id IS NOT NULL
                      AND pipeline_id IS NOT NULL)
                  OR (kind = 'ontology_action' AND ontology_version_id IS NOT NULL
