@@ -2,45 +2,55 @@
   "_about": "Remaining goal 1 units and their dependencies (owner request 2026-11-16, item 6). The supervisor (scripts/supervisor/supervise.py --parallel N) runs every unit whose depends_on are all done, at most N at a time, never two that share a resource. A unit lead changes only its own entry, and only during its merge step while holding the merge lock (charter section 11). status: todo | in_progress | waiting_owner | done.",
   "units": [
     {
+      "id": "nextjs-security",
+      "title": "Upgrade Next.js past the known security vulnerability that stops `pnpm build` on a fresh checkout",
+      "branch": "nextjs-security",
+      "depends_on": [],
+      "resources": [
+        "frontend-nav"
+      ],
+      "lead_model": "sonnet",
+      "status": "todo",
+      "brief": "Found by the cluster unit on 2026-11-16 (S-008). On every fresh checkout, `pnpm build` with Next.js 16.4.4 stops with SecurityFatalError (\"known security vulnerability\"). The acknowledgement id is new each time, so a rerun never clears it and no unit can pass its 13 gates; this unit blocks every merge. Identify the advisory (`pnpm audit`, the Next.js release notes) and upgrade `next` and its companions (eslint-config-next, @next/*) to the lowest release on the same major that fixes it; update pnpm-lock.yaml with pnpm. Done when `python scripts/gates.py --ref <sha> --name nextjs-security-merge` passes all 13 gates on the FIRST run in a fresh worktree, with no retry. Record the advisory id and versions in DECISIONS. Never silence, configure away or disable the check. The local cluster is already running (the cluster unit recovered it; its merge waits on this unit)."
+    },
+    {
       "id": "cluster",
       "title": "Bring the local PostgreSQL 17 cluster back up and drop the leftover test databases",
       "branch": "unit/cluster",
-      "depends_on": [],
+      "depends_on": [
+        "nextjs-security"
+      ],
       "resources": [
         "cluster"
       ],
       "lead_model": "sonnet",
-      "status": "todo",
-      "brief": "docs/build/HANDOFF.md 'Exact next step' 1. Read the postgres log under the main checkout's .devdata/pg (never print cluster.env, .env.local or any secret), let crash recovery finish, `python scripts/dev_db.py start`, drop the ~317 leftover shifdet_* databases. Change code only if dev_db.py itself is at fault."
+      "status": "in_progress",
+      "brief": "docs/build/HANDOFF.md 'Exact next step' 1. Read the postgres log under the main checkout's .devdata/pg (never print cluster.env, .env.local or any secret), let crash recovery finish, `python scripts/dev_db.py start`, drop the ~317 leftover shifdet_* databases. Change code only if dev_db.py itself is at fault. Recovery and cleanup are done and pushed on `unit/cluster` (notes in docs/build/units/cluster.md). Only the merge is left: rebase onto origin/main after nextjs-security merges, run the 13 gates, merge."
     },
     {
       "id": "suite-speed",
       "title": "Full backend suite under the 20-minute target (design section 6)",
       "branch": "suite-speed",
-      "depends_on": [
-        "cluster"
-      ],
+      "depends_on": [],
       "resources": [
         "tests-infra"
       ],
       "lead_model": "opus",
       "status": "in_progress",
-      "brief": "docs/build/HANDOFF.md step 2 and B-2330 in the branch's DECISIONS.md. Branch head 43c08d4. Target: 2140+ passed in under 1200 s with -n 8 on a quiet machine. Never skip, deselect or delete a test."
+      "brief": "docs/build/HANDOFF.md step 2 and B-2330 in the branch's DECISIONS.md. Branch head 43c08d4. Target: 2140+ passed in under 1200 s with -n 8 on a quiet machine. Never skip, deselect or delete a test. Merge note (S-008): every unit's 13 gates include `pnpm build`, which fails on a fresh checkout until `nextjs-security` is merged. Build and test now; take the merge lock only once units.json on origin/main shows nextjs-security done, then rebase onto it."
     },
     {
       "id": "runtime-merge",
       "title": "Merge runtime RT-1..RT-12 to main",
       "branch": "runtime",
-      "depends_on": [
-        "cluster"
-      ],
+      "depends_on": [],
       "resources": [
         "migrations",
         "schema-tests"
       ],
       "lead_model": "opus",
       "status": "todo",
-      "brief": "docs/build/HANDOFF.md step 3. B-2150 approved by the owner on 2026-11-16 (S-006): the one-token edit is made on `runtime` as 7bcab1c (tests/schema/test_rls_schema.py 125 passed). Merge main into the branch's work by rebasing per charter section 11, run all 13 gates on the rebased commit, fast-forward main."
+      "brief": "docs/build/HANDOFF.md step 3. B-2150 approved by the owner on 2026-11-16 (S-006): the one-token edit is made on `runtime` as 7bcab1c (tests/schema/test_rls_schema.py 125 passed). Merge main into the branch's work by rebasing per charter section 11, run all 13 gates on the rebased commit, fast-forward main. Merge note (S-008): every unit's 13 gates include `pnpm build`, which fails on a fresh checkout until `nextjs-security` is merged. Build and test now; take the merge lock only once units.json on origin/main shows nextjs-security done, then rebase onto it."
     },
     {
       "id": "app-2",
@@ -62,7 +72,7 @@
       "title": "Front-end areas for build and ontology",
       "branch": "fe-areas-4",
       "depends_on": [
-        "cluster"
+        "nextjs-security"
       ],
       "resources": [
         "frontend-nav"
@@ -104,11 +114,13 @@
       "title": "Software factory install (charter section 6) and goal 1's final checks",
       "branch": "main",
       "depends_on": [
-        "suite-speed",
-        "runtime-merge",
         "app-2",
+        "cluster",
         "fe-areas-4",
         "fe-areas-5",
+        "nextjs-security",
+        "runtime-merge",
+        "suite-speed",
         "two-org-proof"
       ],
       "resources": [
