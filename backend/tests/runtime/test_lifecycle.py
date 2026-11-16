@@ -9,7 +9,7 @@ executor already parked (`Waiting(transitioned=True)`). C1 (B-2151): an exceptio
 in flight ends the run with `error_class=indeterminate_side_effect`, the write `indeterminate` and
 an unknown-outcome approval, never a plain `failed/internal`.
 
-Isolation, as `shifde_app` (`advance` on the app database) and as the schema owner (`advance_in`
+Isolation, as `shifde_app` (`advance` on the app database) and as the schema owner (`_advance_in`
 on an owner session, no row-level security): a job of client B (or of another run of A, or an
 unknown id) drives none of A's runs; B's run named under A's client answers like an unknown run;
 a member of B only cannot run A's run; advancing A's run changes none of B's runs, jobs, steps,
@@ -157,7 +157,7 @@ def advance(
         s = owner_db.session()
         db.init_context(s, "test")
         try:
-            return lifecycle.advance_in(s, None, *args)
+            return lifecycle._advance_in(s, None, *args)
         finally:
             s.close()
 
@@ -298,6 +298,32 @@ def test_b_job_never_recovers_a_running_run_of_a_but_its_own_job_does(
         assert _run(o, a.run)["status"] == "completed"
         assert _events(o, a.run).count("recovered") == 1  # recovered from an abandoned lease
         assert _state(o, b.tenant) == before[1]
+
+
+@pytest.mark.parametrize("job", ["queued", "done", "another worker's lease"])
+def test_only_the_job_this_worker_holds_recovers_a_running_run(
+    job: str, two: tuple[C, C], advance: Advance, fake: type[Fake], owner_db: Database
+) -> None:
+    """Runtime isolation review 9 finding 1 (RT-12): recovery (running -> pending) needs the run's
+    own job leased by this very worker, like the claim; anything else touches nothing."""
+    a, b = two
+    with owner_db.session() as o:
+        status, owner = {"queued": ("queued", None), "done": ("done", None),
+                         "another worker's lease": ("leased", "another-worker")}[job]  # fmt: skip
+        other = add_job(o, a.tenant, a.run, status=status, owner=owner)
+        o.execute(
+            text(
+                "UPDATE shifde.runs SET status = 'running', lease_token = :t, lease_job_id = :j, "
+                "state_version = 2, attempt_count = 1 WHERE id = :r"
+            ),
+            {"t": uuid7(), "j": other, "r": a.run},
+        )
+        o.commit()
+        before = _state(o, a.tenant), _state(o, b.tenant)
+    assert advance(a.tenant, a.run, other) == "skipped"
+    assert fake.seen == []
+    with owner_db.session() as o:
+        assert (_state(o, a.tenant), _state(o, b.tenant)) == before
 
 
 def test_recovered_is_written_after_a_lost_lease_only_not_after_a_wait(
@@ -492,7 +518,7 @@ def test_a_privileged_database_is_refused_for_the_advance_and_for_usage(
     with pytest.raises(UnsafeDatabaseRole):
         lifecycle.advance(owner_db, *args)
     with owner_db.session() as s, pytest.raises(UnsafeDatabaseRole):
-        lifecycle.advance_in(s, owner_db, *args)
+        lifecycle._advance_in(s, owner_db, *args)
     assert fake.seen == []
     with owner_db.session() as o:
         assert (_state(o, a.tenant), _state(o, b.tenant)) == before

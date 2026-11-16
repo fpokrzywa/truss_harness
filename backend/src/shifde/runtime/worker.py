@@ -1,1 +1,439 @@
-"""Not yet ported from SETH 3ba0e06; see docs/build/STATUS.md."""
+"""`shifde-worker`: the execution plane (SYSTEM_ARCHITECTURE 6.3).
+
+A separate process that claims jobs from the PostgreSQL queue (`shifde_claim_jobs`, FOR UPDATE SKIP
+LOCKED, ids only), runs each run on a worker thread, heartbeats the leases it holds, runs the
+reaper (guarded by an advisory lock so one reaper acts at a time), and wakes on LISTEN / NOTIFY or
+by polling. The API never executes model or tool calls.
+
+Shutdown (SIGINT / SIGTERM / CTRL_BREAK): stop claiming; running runs notice at their next
+checkpoint and are handed back (running -> pending, job released) so another worker continues
+them; whatever does not finish within the grace period is left to lease expiry + the reaper.
+
+Client isolation (RT-12, B-2291..B-2294): the worker's database is the application role (refused
+at startup otherwise, like the API: `run` exits 3, and `Database` itself refuses a privileged role,
+B-2164); it is also the `RunContext.db` of durable usage rows. Claiming and reaping go through the
+cross-client definers `shifde_claim_jobs` / `shifde_reap_expired_leases` on a session without a
+client context (B-2103); every other statement runs in the claimed (or reaped) row's own client:
+the `(job_id, tenant_id, run_id)` the claim returned is what `lifecycle.advance` gets, and every job
+heartbeat, release and finish names that client. A job wedged past its run's deadline is no longer
+heartbeated, so its lease expires and the reaper settles the run (ARCH M3, B-2294).
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import signal
+import socket
+import sys
+import threading
+import time
+from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from datetime import timedelta
+from typing import Any
+from uuid import UUID, uuid4
+
+import psycopg
+import structlog
+from sqlalchemy import text
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
+
+from shifde import __version__
+from shifde.adapters.registry import AdapterRegistry
+from shifde.adapters.runtime import IntegrationRuntime
+from shifde.audit import service as audit
+from shifde.core import db
+from shifde.core.clock import utcnow
+from shifde.core.context import RequestContext
+from shifde.core.db import Database
+from shifde.core.dbrole import UnsafeDatabaseRole, check_database_url
+from shifde.core.egress import default_resolver
+from shifde.core.settings import Settings, settings_or_exit
+from shifde.observability import tracing
+from shifde.observability.logging import configure_logging
+from shifde.runtime import lifecycle
+from shifde.runtime import repository as repo
+from shifde.runtime.governance import GovernanceHooks, TokenBudgetHooks
+
+log = structlog.get_logger("shifde.worker")
+REAPER_LOCK = "shifde:reaper"
+EXIT_UNSAFE_ROLE = 3  # as `shifde-api` (shifde.main)
+REASON_ACTION = {
+    "lease_lost": "run.lease_lost",
+    "worker_lost": "run.failed",
+    "timed_out": "run.timed_out",
+    "approval_expired": "approval.expired",
+    "cancelled": "run.cancelled",
+    "children_finished": "run.resumed",
+    "unknown_outcome": "run.indeterminate_side_effect",
+}
+
+
+@dataclass
+class _Job:
+    id: UUID
+    tenant_id: UUID
+    run_id: UUID
+    lease_lost: threading.Event = field(default_factory=threading.Event)
+
+
+class Worker:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        worker_id: str | None = None,
+        concurrency: int | None = None,
+        lease_seconds: int | None = None,
+        poll_ms: int | None = None,
+        reap_seconds: float | None = None,
+        runtime: IntegrationRuntime | None = None,
+        hooks: GovernanceHooks | None = None,
+    ) -> None:
+        self.settings = settings
+        self.worker_id = worker_id or f"{socket.gethostname()}-{os.getpid()}-{uuid4().hex[:6]}"
+        self.concurrency = concurrency or settings.worker_concurrency
+        self.lease = lease_seconds or settings.worker_lease_seconds
+        self.poll = (poll_ms or settings.worker_poll_ms) / 1000
+        self.reap_every = reap_seconds if reap_seconds is not None else max(self.lease / 4, 1.0)
+        # the application role only (`Database` refuses a privileged role, B-2164); a statement
+        # (a lock wait included) is bounded, so a thread cannot block forever on the database
+        # (ARCH M3)
+        self.db = Database(
+            settings.database_url,
+            pool_size=self.concurrency + 3,
+            max_overflow=4,
+            statement_timeout_ms=settings.db_statement_timeout_ms,
+        )
+        # a job still running this long after its run's deadline is wedged: stop heartbeating it
+        # so the lease expires and the reaper settles the run (ARCH M3)
+        self.wedged_after = timedelta(seconds=max(2 * self.lease, 60))
+        self.runtime = runtime or IntegrationRuntime(
+            settings=settings, registry=AdapterRegistry.load(), resolver=default_resolver
+        )
+        self.hooks = hooks or TokenBudgetHooks()
+        self.stop = threading.Event()
+        self.wake = threading.Event()
+        self._inflight: dict[UUID, _Job] = {}
+        self._lock = threading.Lock()
+        self._executor = ThreadPoolExecutor(
+            max_workers=self.concurrency, thread_name_prefix="shifde-run"
+        )
+
+    # ------------------------------------------------------------------ lifecycle
+    def run(self) -> None:
+        with self.db.session() as s:
+            repo.upsert_worker(
+                s, self.worker_id, socket.gethostname(), os.getpid(), __version__, self.concurrency
+            )
+            s.commit()
+        log.info("worker.started", worker_id=self.worker_id, concurrency=self.concurrency)
+        for target in (self._heartbeat_loop, self._listen_loop):
+            threading.Thread(target=target, daemon=True, name=target.__name__).start()
+        next_reap = 0.0
+        try:
+            while not self.stop.is_set():
+                self._claim_and_dispatch()
+                if time.monotonic() >= next_reap:
+                    self._reap()
+                    next_reap = time.monotonic() + self.reap_every
+                self.wake.wait(self.poll)
+                self.wake.clear()
+        finally:
+            self._shutdown()
+
+    def request_stop(self) -> None:
+        self.stop.set()
+        self.wake.set()
+
+    def _shutdown(self) -> None:
+        log.info("worker.stopping", worker_id=self.worker_id)
+        self._executor.shutdown(wait=True, cancel_futures=True)
+        try:
+            with self.db.session() as s:
+                repo.beat_worker(s, self.worker_id, "stopped")
+                s.commit()
+        finally:
+            self.db.dispose()
+        log.info("worker.stopped", worker_id=self.worker_id)
+
+    # ------------------------------------------------------------------ claiming
+    def _claim_and_dispatch(self) -> None:
+        with self._lock:
+            free = self.concurrency - len(self._inflight)
+        if free <= 0:
+            return
+        try:
+            with self.db.session() as s:
+                rows = repo.claim_jobs(
+                    s, self.worker_id, free, self.lease, self.settings.queue_tenant_max_inflight
+                )
+                s.commit()
+        except Exception:  # noqa: BLE001 - the database may be briefly unavailable
+            log.error("worker.claim_failed", exc_info=True)
+            return
+        dispatched = self._dispatch(rows)
+        # Only a full batch of NEW work suggests more is queued. A handed-back duplicate claim must
+        # not count, or the worker would re-claim the same job in a busy loop.
+        if dispatched == free:
+            self.wake.set()
+
+    def _dispatch(self, rows: Sequence[Mapping[str, Any]]) -> int:  # Any: claim rows
+        """Start each claimed job; return how many were actually started."""
+        started = 0
+        for row in rows:
+            job = _Job(row["job_id"], row["tenant_id"], row["run_id"])
+            with self._lock:
+                busy = job.id in self._inflight
+                if not busy:
+                    self._inflight[job.id] = job
+            if busy:
+                # The reaper requeued a job this worker is still executing (its heartbeat could not
+                # reach the database) and we claimed it again. Never run one job twice here and
+                # never replace the live entry: hand the claim back untouched.
+                log.warning("worker.reclaimed_inflight_job", job_id=str(job.id))
+                self._release_claim(job)
+                continue
+            self._executor.submit(self._work, job)
+            started += 1
+        return started
+
+    def _release_claim(self, job: _Job) -> None:
+        try:
+            with self.db.session() as s:
+                db.set_tenant(s, job.tenant_id)
+                # Back off one lease period so another worker (or this one, once the stale call
+                # returns) gets the job instead of an immediate re-claim here.
+                repo.release_job(
+                    s, job.tenant_id, job.id, self.worker_id, delay_seconds=float(self.lease)
+                )
+                s.commit()
+        except Exception:  # noqa: BLE001 - the lease expires and the reaper requeues it
+            log.error("worker.release_failed", job_id=str(job.id), exc_info=True)
+
+    def _work(self, job: _Job) -> None:
+        outcome = "error"
+        try:
+            outcome = lifecycle.advance(
+                self.db,
+                self.settings,
+                self.runtime,
+                self.hooks,
+                job.tenant_id,
+                job.run_id,
+                self.worker_id,
+                self.stop,
+                job.lease_lost,
+                job.id,
+            )
+        except Exception:  # noqa: BLE001 - leave the lease to expire; the reaper requeues it
+            log.error("worker.job_failed", job_id=str(job.id), exc_info=True)
+        finally:
+            self._settle_job(job, outcome)
+            with self._lock:
+                if self._inflight.get(job.id) is job:  # never drop a newer entry for this id
+                    del self._inflight[job.id]
+            self.wake.set()
+
+    def _settle_job(self, job: _Job, outcome: str) -> None:
+        try:
+            with self.db.session() as s:
+                db.set_tenant(s, job.tenant_id)
+                if outcome in ("lease_lost", "error"):
+                    # Finish our own job only when the run no longer depends on it (settled, or
+                    # executed under another job's lease). A pending / running-under-us run keeps
+                    # the lease: it expires and the reaper requeues the job.
+                    cur = repo.run_lease(s, job.tenant_id, job.run_id)
+                    settled = cur is None or cur["status"] in (
+                        "completed",
+                        "failed",
+                        "cancelled",
+                        "timed_out",
+                        "waiting_for_approval",
+                    )
+                    foreign = (
+                        cur is not None
+                        and cur["status"] == "running"
+                        and cur["lease_job_id"] not in (None, job.id)
+                    )
+                    if settled or foreign:
+                        repo.finish_job(s, job.tenant_id, job.id, self.worker_id)
+                        s.commit()
+                    return
+                if outcome == "released":
+                    repo.release_job(s, job.tenant_id, job.id, self.worker_id)
+                else:
+                    repo.finish_job(s, job.tenant_id, job.id, self.worker_id)
+                s.commit()
+        except Exception:  # noqa: BLE001 - the lease expires and the run is already settled
+            log.error("worker.job_settle_failed", job_id=str(job.id), exc_info=True)
+
+    # ------------------------------------------------------------------ heartbeat
+    def _heartbeat_loop(self) -> None:
+        interval = max(self.lease / 4, 0.2)
+        while not self.stop.is_set() or self._inflight:
+            self._beat()
+            if self.stop.wait(interval) and not self._inflight:
+                return
+
+    def _beat(self) -> None:
+        with self._lock:
+            jobs = list(self._inflight.values())
+        try:
+            with self.db.session() as s:
+                repo.beat_worker(s, self.worker_id)
+                s.commit()
+            for job in jobs:
+                with self.db.session() as s:
+                    db.set_tenant(s, job.tenant_id)
+                    if self._wedged(s, job):
+                        # no heartbeat: the lease expires and the reaper settles the run
+                        s.commit()
+                        if not job.lease_lost.is_set():
+                            log.warning("worker.wedged_job_abandoned", job_id=str(job.id))
+                            job.lease_lost.set()
+                        continue
+                    alive = repo.heartbeat_job(s, job.tenant_id, job.id, self.worker_id, self.lease)
+                    s.commit()
+                if not alive and not job.lease_lost.is_set():
+                    log.warning("worker.lease_lost", job_id=str(job.id))
+                    job.lease_lost.set()
+        except Exception:  # noqa: BLE001 - retry at the next beat
+            log.error("worker.heartbeat_failed", exc_info=True)
+
+    def _wedged(self, s: Session, job: _Job) -> bool:
+        """The job's run (read in the job's own client) is past its deadline by `wedged_after`."""
+        cur = repo.control_state(s, job.tenant_id, job.run_id)
+        deadline = cur["deadline_at"] if cur is not None else None
+        return deadline is not None and utcnow() > deadline + self.wedged_after
+
+    # ------------------------------------------------------------------ LISTEN / NOTIFY
+    def _listen_loop(self) -> None:
+        url = make_url(self.settings.database_url).set(drivername="postgresql")
+        while not self.stop.is_set():
+            try:
+                with psycopg.connect(
+                    url.render_as_string(hide_password=False), autocommit=True
+                ) as c:
+                    c.execute("LISTEN shifde_jobs")
+                    while not self.stop.is_set():
+                        for _ in c.notifies(timeout=1.0):
+                            self.wake.set()
+            except Exception:  # noqa: BLE001 - polling continues to work without NOTIFY
+                if self.stop.is_set():
+                    return
+                log.warning("worker.listen_failed", exc_info=True)
+                self.stop.wait(2.0)
+
+    # ------------------------------------------------------------------ reaper
+    def _reap(self) -> None:
+        try:
+            with self.db.session() as s:
+                got = s.execute(
+                    text("SELECT pg_try_advisory_xact_lock(hashtextextended(:k, 0))"),
+                    {"k": REAPER_LOCK},
+                ).scalar_one()
+                rows = repo.reap(s) if got else []
+                if got:
+                    repo.mark_reap(s, self.worker_id)
+                s.commit()
+        except Exception:  # noqa: BLE001
+            log.error("worker.reap_failed", exc_info=True)
+            return
+        if rows:
+            self.wake.set()
+        for row in rows:
+            self._audit_reaped(row["tenant_id"], row["run_id"], row["reason"])
+
+    def _audit_reaped(self, tenant_id: UUID, run_id: UUID, reason: str) -> None:
+        try:
+            with self.db.session() as s:
+                db.init_context(s, "reaper")
+                db.set_tenant(s, tenant_id)
+                run = repo.get_run(s, tenant_id, run_id)
+                if run is None:
+                    return
+                audit.record(
+                    s,
+                    RequestContext(request_id="reaper"),
+                    action=REASON_ACTION.get(reason, "run.reaped"),
+                    outcome="failure"
+                    if reason in ("worker_lost", "timed_out", "unknown_outcome")
+                    else "success",
+                    tenant_id=tenant_id,
+                    actor_id=None,
+                    target_type="run",
+                    target_id=run_id,
+                    target_label=f"run:{run_id}",
+                    workspace_id=run["workspace_id"],
+                    project_id=run["project_id"],
+                    details={"run_id": str(run_id), "reason": reason, "by": "reaper"},
+                )
+                s.commit()
+        except Exception:  # noqa: BLE001 - auditing the reaper must never stop it
+            log.error("worker.reap_audit_failed", exc_info=True)
+
+
+def _install_signals(worker: Worker) -> None:
+    def handler(_signum: int, _frame: object) -> None:
+        worker.request_stop()
+
+    for name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, handler)
+            except (ValueError, OSError):  # not the main thread / unsupported here
+                log.warning("worker.signal_unavailable", signal=name)
+
+
+def refuse_unsafe_role(settings: Settings) -> None:
+    """Exit 3 with one line on stderr unless `SHIFDE_DATABASE_URL` connects as a safe application
+    role, before anything is claimed (as `shifde-api`, B-2164). Fails closed: a role that cannot
+    be checked is refused too."""
+    try:
+        check_database_url(settings.database_url)
+    except UnsafeDatabaseRole as exc:
+        print(f"shifde-worker: refusing to start: {exc.reason}", file=sys.stderr, flush=True)
+        raise SystemExit(EXIT_UNSAFE_ROLE) from None
+    except SQLAlchemyError as exc:
+        # the driver message can echo connection details; report the error class only
+        print(
+            "shifde-worker: refusing to start: cannot verify the database role "
+            f"({exc.__class__.__name__})",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise SystemExit(EXIT_UNSAFE_ROLE) from None
+
+
+def run(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(prog="shifde-worker", description="SHIFDE execution worker")
+    parser.add_argument("--concurrency", type=int, default=None)
+    parser.add_argument("--worker-id", default=None)
+    parser.add_argument("--lease-seconds", type=int, default=None)
+    parser.add_argument("--poll-ms", type=int, default=None)
+    parser.add_argument("--reap-seconds", type=float, default=None)
+    args = parser.parse_args(argv)
+    settings = settings_or_exit()
+    refuse_unsafe_role(settings)
+    configure_logging(settings.log_level, settings.log_format)
+    tracing.configure_from_settings(settings, "shifde-worker")
+    worker = Worker(
+        settings,
+        worker_id=args.worker_id,
+        concurrency=args.concurrency,
+        lease_seconds=args.lease_seconds,
+        poll_ms=args.poll_ms,
+        reap_seconds=args.reap_seconds,
+    )
+    _install_signals(worker)
+    worker.run()
+
+
+if __name__ == "__main__":
+    run()
