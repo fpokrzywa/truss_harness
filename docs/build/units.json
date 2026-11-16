@@ -6,7 +6,9 @@
       "title": "Bring the local PostgreSQL 17 cluster back up and drop the leftover test databases",
       "branch": "unit/cluster",
       "depends_on": [],
-      "resources": ["cluster"],
+      "resources": [
+        "cluster"
+      ],
       "lead_model": "sonnet",
       "status": "todo",
       "brief": "docs/build/HANDOFF.md 'Exact next step' 1. Read the postgres log under the main checkout's .devdata/pg (never print cluster.env, .env.local or any secret), let crash recovery finish, `python scripts/dev_db.py start`, drop the ~317 leftover shifdet_* databases. Change code only if dev_db.py itself is at fault."
@@ -15,8 +17,12 @@
       "id": "suite-speed",
       "title": "Full backend suite under the 20-minute target (design section 6)",
       "branch": "suite-speed",
-      "depends_on": ["cluster"],
-      "resources": ["tests-infra"],
+      "depends_on": [
+        "cluster"
+      ],
+      "resources": [
+        "tests-infra"
+      ],
       "lead_model": "opus",
       "status": "in_progress",
       "brief": "docs/build/HANDOFF.md step 2 and B-2330 in the branch's DECISIONS.md. Branch head 43c08d4. Target: 2140+ passed in under 1200 s with -n 8 on a quiet machine. Never skip, deselect or delete a test."
@@ -25,18 +31,28 @@
       "id": "runtime-merge",
       "title": "Merge runtime RT-1..RT-12 to main",
       "branch": "runtime",
-      "depends_on": ["cluster"],
-      "resources": ["migrations", "schema-tests"],
+      "depends_on": [
+        "cluster"
+      ],
+      "resources": [
+        "migrations",
+        "schema-tests"
+      ],
       "lead_model": "opus",
-      "status": "waiting_owner",
-      "brief": "docs/build/HANDOFF.md step 3. Blocked on B-1943/B-2150: the owner's own approval of the one-token edit in backend/tests/schema/test_rls_schema.py:1282 (shifde.runs -> shifde.installation_profile, with a comment citing B-1101)."
+      "status": "todo",
+      "brief": "docs/build/HANDOFF.md step 3. B-2150 approved by the owner on 2026-11-16 (S-006): the one-token edit is made on `runtime` as 7bcab1c (tests/schema/test_rls_schema.py 125 passed). Merge main into the branch's work by rebasing per charter section 11, run all 13 gates on the rebased commit, fast-forward main."
     },
     {
       "id": "app-2",
       "title": "APP-2: mount runtime, governance state, platform status route, deferred SETH tests",
       "branch": "app-2",
-      "depends_on": ["runtime-merge"],
-      "resources": ["routing", "migrations"],
+      "depends_on": [
+        "runtime-merge"
+      ],
+      "resources": [
+        "routing",
+        "migrations"
+      ],
       "lead_model": "opus",
       "status": "todo",
       "brief": "docs/build/HANDOFF.md step 4, including its isolation review."
@@ -45,8 +61,12 @@
       "id": "fe-areas-4",
       "title": "Front-end areas for build and ontology",
       "branch": "fe-areas-4",
-      "depends_on": ["cluster"],
-      "resources": ["frontend-nav"],
+      "depends_on": [
+        "cluster"
+      ],
+      "resources": [
+        "frontend-nav"
+      ],
       "lead_model": "sonnet",
       "status": "todo",
       "brief": "Port SETH's build and ontology screens (routers already mounted on main). Same approach as front-end areas 1-3 (docs/build/frontend-areas.md, B-1107)."
@@ -55,8 +75,13 @@
       "id": "fe-areas-5",
       "title": "Front-end areas for runtime and the platform status page",
       "branch": "fe-areas-5",
-      "depends_on": ["app-2", "fe-areas-4"],
-      "resources": ["frontend-nav"],
+      "depends_on": [
+        "app-2",
+        "fe-areas-4"
+      ],
+      "resources": [
+        "frontend-nav"
+      ],
       "lead_model": "sonnet",
       "status": "todo",
       "brief": "Runtime screens (runs, approvals) and the platform status page, after APP-2 mounts their routes."
@@ -65,7 +90,10 @@
       "id": "two-org-proof",
       "title": "Two-organization side-by-side proof and the known-defects refresh",
       "branch": "two-org-proof",
-      "depends_on": ["app-2", "fe-areas-5"],
+      "depends_on": [
+        "app-2",
+        "fe-areas-5"
+      ],
       "resources": [],
       "lead_model": "opus",
       "status": "todo",
@@ -75,8 +103,22 @@
       "id": "goal1-final",
       "title": "Software factory install (charter section 6) and goal 1's final checks",
       "branch": "main",
-      "depends_on": ["suite-speed", "runtime-merge", "app-2", "fe-areas-4", "fe-areas-5", "two-org-proof"],
-      "resources": ["frontend-nav", "routing", "migrations", "tests-infra", "schema-tests", "cluster"],
+      "depends_on": [
+        "suite-speed",
+        "runtime-merge",
+        "app-2",
+        "fe-areas-4",
+        "fe-areas-5",
+        "two-org-proof"
+      ],
+      "resources": [
+        "frontend-nav",
+        "routing",
+        "migrations",
+        "tests-infra",
+        "schema-tests",
+        "cluster"
+      ],
       "lead_model": "opus",
       "status": "todo",
       "final": true,
