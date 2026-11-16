@@ -153,11 +153,12 @@ def start(c: TestClient, provider: FakeOidcProvider, idp: str) -> Authorization:
 
 
 def finish(c: TestClient, idp: str, code: str, state: str) -> httpx.Response:
-    return c.get(
+    r: httpx.Response = c.get(
         f"/api/auth/oidc/{idp}/callback",
         params={"code": code, "state": state},
         follow_redirects=False,
     )
+    return r
 
 
 def ok_login(

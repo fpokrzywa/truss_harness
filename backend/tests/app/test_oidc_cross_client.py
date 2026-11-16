@@ -5,6 +5,7 @@ the schema owner (whose BYPASSRLS shows the definer's own checks, not row-level 
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from typing import Any  # Any: httpx responses
 from uuid import UUID
@@ -75,7 +76,13 @@ def _same_failure(r: Any, reference: Any) -> None:
     """A refusal that answers exactly like an unknown IdP id: status, location, cookies."""
     assert r.status_code == reference.status_code == 302
     assert r.headers["location"] == reference.headers["location"] == FAIL
-    assert r.headers.get("set-cookie") == reference.headers.get("set-cookie")
+    assert _cookie(r) == _cookie(reference)
+
+
+def _cookie(r: Any) -> str:
+    """The Set-Cookie header without its `expires` date (a clearing cookie's date is the second
+    it was sent)."""
+    return re.sub(r"expires=[^;]*; ", "", r.headers.get("set-cookie") or "")
 
 
 def test_bs_idp_never_signs_a_person_into_a(
