@@ -36,6 +36,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 PORT = int(os.environ.get("SHIFDE_DEV_DB_PORT", "55450"))
@@ -178,10 +179,30 @@ class Cluster:
             )
         print(f"initialised cluster at {self.pgdata}")
 
+    def ready(self) -> bool:
+        """True once the server accepts connections (not while it replays WAL after a crash)."""
+        result = subprocess.run(
+            [self.tool("pg_isready"), "-h", HOST, "-p", str(PORT)],
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode == 0
+
+    def wait_ready(self, timeout: float = 3600.0) -> None:
+        """Crash recovery of a large cluster takes minutes; `pg_ctl -w` gives up after its -t."""
+        deadline = time.monotonic() + timeout
+        while not self.ready():
+            if not self.running():
+                raise DevDbError(f"server stopped during startup; see {self.log_file}")
+            if time.monotonic() > deadline:
+                raise DevDbError(f"server not accepting connections after {timeout:.0f}s")
+            time.sleep(2)
+
     def start(self) -> None:
         if not self.initialised():
             raise DevDbError("cluster not initialised; run `python scripts/dev_db.py init`")
         if self.running():
+            self.wait_ready()
             print(f"already running on {HOST}:{PORT}")
             return
         flags = 0
@@ -207,6 +228,7 @@ class Cluster:
         )
         if not self.running():
             raise DevDbError(f"pg_ctl start failed; see {self.log_file}")
+        self.wait_ready()
         print(f"started on {HOST}:{PORT}")
 
     def stop(self) -> None:
