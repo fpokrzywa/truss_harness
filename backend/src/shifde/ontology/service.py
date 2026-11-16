@@ -107,6 +107,9 @@ class OntologyService:
         self.runtime = artifacts.runtime
         self.conns = artifacts.conns
         self._rows: dict[UUID, Mapping[str, Any]] = {}  # Any: connection rows
+        # the anchored run's (workspace id, project id) on the unchecked path: its mappings'
+        # connections must lie there (B-2193); None for an API caller
+        self._run_scope: tuple[UUID | None, UUID | None] | None = None
 
     # ================================================================== loading
     def _artifact(
@@ -127,6 +130,7 @@ class OntologyService:
         if run is None:  # `_anchor_run` already refuses the unchecked path without a run
             raise NotFound("run not found")
         self._run_reads(run, art, version_id, agent_tool=agent_tool)
+        self._run_scope = (run["workspace_id"], run["project_id"])
         return art
 
     def _version(self, art: Mapping[str, Any], version_id: UUID | None) -> Mapping[str, Any]:
@@ -184,7 +188,15 @@ class OntologyService:
     def _conn_row(self, connection_id: UUID) -> Mapping[str, Any]:  # Any: row
         # `get_row` reads with the client id (NotFound otherwise); `open_trusted` re-checks it
         if connection_id not in self._rows:
-            self._rows[connection_id] = self.conns.get_row(connection_id)
+            row = self.conns.get_row(connection_id)
+            scope = self._run_scope
+            # in a run, only a connection at the client level or at the run's own workspace and
+            # project, the rule of every run's env (B-2161, B-2193); else the unknown answer
+            if scope is not None and not (
+                row["workspace_id"] in (None, scope[0]) and row["project_id"] in (None, scope[1])
+            ):
+                raise NotFound("connection not found")
+            self._rows[connection_id] = row
         return self._rows[connection_id]
 
     def _schema_discovery(self, mapping: Mapping[str, Any]) -> dict[str, Any] | None:  # Any: JSON
@@ -194,6 +206,9 @@ class OntologyService:
         authorize this use (no env, no visibility flag: build isolation review 3 F1)."""
         if mapping["tenant_id"] != self.sc.tenant_id:
             return None
+        # the unknown-connection answer for another client's id and, in a run, for one outside the
+        # run's scope (B-2193)
+        self._conn_row(mapping["connection_id"])
         found = self.conns.discovery_of(mapping["connection_id"])
         if found is None or found.kind != "schema" or not isinstance(found.payload, dict):
             return None
