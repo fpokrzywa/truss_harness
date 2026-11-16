@@ -10,7 +10,7 @@
         "cluster"
       ],
       "lead_model": "sonnet",
-      "status": "todo",
+      "status": "done",
       "brief": "docs/build/HANDOFF.md 'Exact next step' 1. Read the postgres log under the main checkout's .devdata/pg (never print cluster.env, .env.local or any secret), let crash recovery finish, `python scripts/dev_db.py start`, drop the ~317 leftover shifdet_* databases. Change code only if dev_db.py itself is at fault."
     },
     {
