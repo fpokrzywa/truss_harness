@@ -649,15 +649,21 @@ def _resource_state(ctx: RunContext, tool: VersionRef) -> gate.Check:
     return check
 
 
-def _require_run_connection(ctx: RunContext, spec: Mapping[str, Any]) -> None:
+def _require_run_connection(
+    ctx: RunContext, spec: Mapping[str, Any]
+) -> tuple[UUID | None, UUID | None] | None:
     """Right before a tool is executed, again: its connection lies at the client level or at the
-    stored run's own workspace and project (`invoke_once` opens it by the client id alone), else
-    the unknown-connection answer (runtime isolation review 6 finding 2)."""
+    stored run's own workspace and project, else the unknown-connection answer (runtime isolation
+    review 6 finding 2). Returns the stored run's (workspace id, project id), which `invoke_once`
+    hands to `open_for_use(at=)` so the row it re-reads is held to the same scope (review 6
+    round 2); None for a builtin tool."""
     cid = (spec.get("binding") or {}).get("connection_id")
     if spec.get("executor") == "builtin.function" or not cid:
-        return
-    if ctx.artifacts.run_connection(ctx.run_id, UUID(str(cid))) is None:
+        return None
+    run = ctx.artifacts.run_target(ctx.run_id)
+    if run is None or ctx.artifacts.run_connection(ctx.run_id, UUID(str(cid))) is None:
         raise NotFound("the tool's connection does not exist")
+    return (run["workspace_id"], run["project_id"])
 
 
 def _policy(ctx: RunContext, call: ToolCall, policy: ToolPolicy) -> gate.Check:
@@ -1165,7 +1171,7 @@ def _execute_attempts(
                         ctx, call.args, purpose=f"tool:{tool.artifact_key}:ontology"
                     )
                 else:
-                    _require_run_connection(ctx, spec)
+                    at = _require_run_connection(ctx, spec)
                     output = tool_runtime.invoke_once(
                         ctx.artifacts.conns,
                         dict(spec),
@@ -1173,6 +1179,7 @@ def _execute_attempts(
                         purpose=f"tool:{tool.artifact_key}:run",
                         idempotency_key=key,
                         deadline=timeout,
+                        at=at,
                     )
         except (AdapterFailure, AppError) as exc:
             ctx.session.rollback()

@@ -191,12 +191,14 @@ def invoke_once(
     purpose: str,
     idempotency_key: str,
     deadline: float,
+    at: tuple[UUID | None, UUID | None] | None = None,
 ) -> Any:  # Any: tool result
     """ONE attempt of a validated tool spec, for the P5 runtime (which journals attempts, applies
     the retry policy and decides about ambiguous outcomes itself). Raises `AdapterFailure`
     unconverted so the caller can classify it; `open_for_use` errors (permissions, connection
     state, egress) are `AppError`s raised BEFORE anything is sent. `deadline` (seconds) bounds
-    every network step of the call."""
+    every network step of the call. `at` is the run's (workspace id, project id): the connection
+    the session re-reads must lie there (`ConnectionService.open_for_use(at=)`)."""
     executor = spec["executor"]
     binding: dict[str, Any] = spec["binding"]
     if executor == "builtin.function":
@@ -204,7 +206,9 @@ def invoke_once(
     write = spec["side_effect_class"] in WRITE_CLASSES
     key = idempotency_key if spec.get("idempotency") == "key_supported" else None
     connection_id = UUID(str(binding["connection_id"]))
-    with conns.open_for_use(connection_id, purpose, write=write, deadline=deadline) as session:
+    with conns.open_for_use(
+        connection_id, purpose, write=write, deadline=deadline, at=at
+    ) as session:
         output = _invoke(executor, binding, args, session, write, key)
     status = output.get("status") if executor == "rest.http" and isinstance(output, dict) else None
     if isinstance(status, int) and status == 429:

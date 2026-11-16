@@ -852,14 +852,27 @@ class ConnectionService:
 
     @contextmanager
     def open_for_use(
-        self, connection_id: UUID, purpose: str, write: bool = False, deadline: float | None = None
+        self,
+        connection_id: UUID,
+        purpose: str,
+        write: bool = False,
+        deadline: float | None = None,
+        *,
+        at: tuple[UUID | None, UUID | None] | None = None,
     ) -> Iterator[ConnectionSession]:
         """Authorized, audited adapter session for server-side callers (agents, pipelines, tools).
 
         ``connection:use`` is evaluated on the connection resource (a resource-level binding grants
         exactly that connection); ``write`` additionally needs ``connection:write``. ``deadline``
-        (seconds, from the moment the session opens) bounds every network step of the session."""
+        (seconds, from the moment the session opens) bounds every network step of the session.
+        ``at`` is a run's (workspace id, project id): the row read here must lie at the client
+        level or at that workspace and project, else it is the unknown-connection answer (a run
+        uses the row its caller checked; runtime isolation review 6 round 2)."""
         row = self._get_row(connection_id)
+        if at is not None and not (
+            row["workspace_id"] in (None, at[0]) and row["project_id"] in (None, at[1])
+        ):
+            raise NotFound("connection not found")
         self._require("connection:use", row)
         if write:
             self._require("connection:write", row, hide=None)

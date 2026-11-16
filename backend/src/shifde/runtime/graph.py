@@ -66,7 +66,7 @@ def render(value: Any, scope: dict[str, Any]) -> Any:  # Any: JSON template
 class GraphRunner:
     def __init__(self, ctx: RunContext) -> None:
         self.ctx = ctx
-        run = ctx.run
+        run = self._stored_run()
         self.art = {
             "id": run["orchestration_id"],
             "tenant_id": ctx.tenant_id,
@@ -85,10 +85,27 @@ class GraphRunner:
                 state.VALIDATION, "the pinned orchestration is not available"
             ) from exc
 
+    def _stored_run(self) -> Mapping[str, Any]:  # Any: run row
+        """The run row re-read with the client id: the version executed and every child's scope
+        come from it, never from the context's mapping (runtime isolation review 7 item 1, B-2190).
+        A run that is gone or no longer names the context's orchestration version is the
+        unknown-version answer."""
+        ctx = self.ctx
+        run = repo.get_run(ctx.session, ctx.tenant_id, ctx.run_id)
+        if (
+            run is None
+            or run["tenant_id"] != ctx.tenant_id
+            or run["kind"] != "orchestration"
+            or run["orchestration_id"] != ctx.run["orchestration_id"]
+            or run["orchestration_version_id"] != ctx.run["orchestration_version_id"]
+        ):
+            raise state.RunFailed(state.VALIDATION, "the pinned orchestration is not available")
+        return run
+
     # ------------------------------------------------------------------ setup
     def run(self) -> Any:  # Any: orchestration output
         ctx = self.ctx
-        orch = self.env.version(ctx.run["orchestration_version_id"])
+        orch = self.env.version(self._stored_run()["orchestration_version_id"])
         if orch is None or orch.kind != "orchestrations":
             raise state.RunFailed(state.VALIDATION, "the pinned orchestration is not available")
         self._start_gate(orch)
@@ -488,6 +505,8 @@ class GraphRunner:
             }
             prepared.append((nid, agent, prompt, payload))
         with ctx.txn():
+            # the child's scope from the stored run, re-read under the lease (B-2190)
+            run = self._stored_run()
             for nid, agent, prompt, payload in prepared:
                 # the parent's client, workspace, project and root only (B-2115: the id is new)
                 child = repo.create_run(

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 from uuid import UUID
 
@@ -31,16 +32,19 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from shifde.build import repository as build_repo
+from shifde.build.executors import ONTOLOGY_QUERY
 from shifde.core.clock import utcnow
 from shifde.core.db import Database
+from shifde.core.errors import NotFound
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
+from shifde.ontology.service import OntologyService
 from shifde.runtime import repository as repo
 from shifde.runtime import state, steps
 from shifde.runtime.context import RunContext
 from shifde.runtime.graph import GraphRunner
 from tests._support.runs import add_run
-from tests._support.tenants import add_tenants
+from tests._support.tenants import add_project, add_tenants, add_workspace
 from tests.build.env_support import add_published
 from tests.build.routes import agent_spec, prompt_spec
 from tests.build.service_support import add_person
@@ -433,3 +437,114 @@ def test_caps_stop_the_graph(
     assert stopped.value.error_class == state.BUDGET_DENIED and cap in str(stopped.value)
     assert len(seen) == (1 if cap == "max_nodes_executed" else 0)
     assert _children(owner_db, run) == []
+
+
+# ------------------------------------------------------------------ runtime isolation review 7
+def test_a_pinned_tool_carrying_a_pinned_prompt_is_not_an_agent(
+    pair: tuple[Client, Client], opened: Any, owner_db: Database, settings: Settings
+) -> None:
+    """Review 7 item 2 (B-2191): a pinned tool version whose spec names a pinned prompt, used as
+    an agent node, is refused like an unknown agent and starts no child (the kind check)."""
+    a, b = pair
+    with owner_db.session() as o:
+        _, tool = add_published(o, a.tenant, "tools", _key("prompted"),
+                                {**NONE_TOOL, "prompt_version_id": str(a.prompt)})  # fmt: skip
+        build_repo.insert_pins(o, a.tenant, tool, [(a.prompt, "prompt")])
+        o.commit()
+    run = _orch(owner_db, a, [_agent("n", tool)], pins=[(tool, "tool")])
+    before = client_state_of(owner_db, b.tenant)
+    with opened(a.tenant) as s, pytest.raises(state.RunFailed) as refused:
+        GraphRunner(_ctx(s, settings, a, run)).run()
+    assert (refused.value.error_class, str(refused.value)) == (
+        state.VALIDATION,
+        "node n: the agent is not available",
+    )
+    assert _children(owner_db, run) == []
+    assert client_state_of(owner_db, b.tenant) == before
+
+
+def test_a_child_takes_its_scope_from_the_stored_run_not_the_contexts_mapping(
+    pair: tuple[Client, Client], opened: Any, owner_db: Database, settings: Settings
+) -> None:
+    """Review 7 item 1 (B-2190): a context whose mapping names another workspace, project, root,
+    test flag or deadline starts the child where the stored run is."""
+    a, _ = pair
+    run = _orch(owner_db, a, [_agent("n", a.agent)], pins=[(a.agent, "agent")])
+    with owner_db.session() as o:
+        far_ws = add_workspace(o, a.tenant)
+        far_proj = add_project(o, a.tenant, far_ws)
+        o.commit()
+    forged = {"workspace_id": far_ws, "project_id": far_proj, "root_run_id": uuid7(),
+              "is_test": True, "deadline_at": utcnow() + timedelta(days=9)}  # fmt: skip
+    with opened(a.tenant) as s, pytest.raises(state.Waiting):
+        GraphRunner(_ctx(s, settings, a, run, **forged)).run()
+    [child] = _children(owner_db, run)
+    with owner_db.session() as o:
+        parent = run_row(o, a.tenant, run)
+    same = ("workspace_id", "project_id", "root_run_id", "is_test", "deadline_at")
+    assert {k: child[k] for k in same} == {k: parent[k] for k in same}
+    assert child["workspace_id"] != far_ws and child["root_run_id"] == run
+
+
+def test_an_orchestration_version_other_than_the_stored_runs_is_refused(
+    pair: tuple[Client, Client], opened: Any, owner_db: Database, settings: Settings
+) -> None:
+    """Review 7 item 1 (B-2190): the version executed is the stored run's."""
+    a, _ = pair
+    run = _orch(owner_db, a, [_tool("t", a.tool)], pins=[(a.tool, "tool")])
+    other = _orch(owner_db, a, [_tool("t", a.tool)], pins=[(a.tool, "tool")])
+    with owner_db.session() as o:
+        version = run_row(o, a.tenant, other)["orchestration_version_id"]
+    with opened(a.tenant) as s, pytest.raises(state.RunFailed) as refused:
+        GraphRunner(_ctx(s, settings, a, run, orchestration_version_id=version)).run()
+    assert str(refused.value) == "the pinned orchestration is not available"
+
+
+def test_the_version_executed_is_re_read_from_the_stored_run_when_the_run_starts(
+    pair: tuple[Client, Client],
+    opened: Any,
+    owner_db: Database,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review 7 item 1 (B-2190): `run()` executes the stored run's version, re-read when it
+    starts, not the context's mapping: a run whose stored row names another orchestration after
+    the runner was set up runs nothing."""
+    a, _ = pair
+    run = _orch(owner_db, a, [_tool("t", a.tool)], pins=[(a.tool, "tool")])
+    other = _orch(owner_db, a, [_tool("t", a.tool)], pins=[(a.tool, "tool")])
+    seen = _spy_tools(monkeypatch)
+    with opened(a.tenant) as s:
+        runner = GraphRunner(_ctx(s, settings, a, run))
+        with owner_db.session() as o:
+            moved = run_row(o, a.tenant, other)
+            o.execute(
+                text("UPDATE shifde.runs SET orchestration_id = :o, orchestration_version_id = :v "
+                     "WHERE id = :r"),
+                {"o": moved["orchestration_id"], "v": moved["orchestration_version_id"], "r": run},
+            )  # fmt: skip
+            o.commit()
+        with pytest.raises(state.RunFailed) as refused:
+            runner.run()
+    assert str(refused.value) == "the pinned orchestration is not available"
+    assert seen == []
+
+
+def test_an_ontology_query_tool_in_an_orchestration_run_fails_closed(
+    pair: tuple[Client, Client], opened: Any, owner_db: Database, settings: Settings
+) -> None:
+    """Review 7 item 3 (B-2193): the agent-tool rule of `_run_reads` opens only agent runs, so an
+    orchestration that pins the `ontology.query` tool but not the ontology version reads nothing:
+    the unknown-run answer."""
+    a, _ = pair
+    ontology_tool = {**NONE_TOOL, "binding": {"function_key": ONTOLOGY_QUERY}}
+    with owner_db.session() as o:
+        _, tool = add_published(o, a.tenant, "tools", _key("ontq"), ontology_tool)
+        onto_art, onto = add_published(o, a.tenant, "ontologies", _key("onto"),
+                                       {"object_types": []})  # fmt: skip
+        o.commit()
+    run = _orch(owner_db, a, [_tool("t", tool)], pins=[(tool, "tool")])
+    with opened(a.tenant) as s:
+        svc = OntologyService(_ctx(s, settings, a, run).artifacts)
+        with pytest.raises(NotFound, match="run not found"):
+            svc._artifact(onto_art, api=False, run_id=run, version_id=onto, agent_tool=True)
