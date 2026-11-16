@@ -239,3 +239,14 @@ Each later module's brief must include its section here. Strike an item (move it
 - RT-10/RT-12: `RunContext(db=)` must be the app-role database (startup check); `lease_job_id` only from the claim (B-2117, B-2124); `cancel_open_children` callers pass the client.
 - RT-11/RT-12: `scope` tuples for `list_runs`/`list_approvals` built from the caller's own bindings with workspace/project refusal route tests; route cross-client tests for `start_action_run` and schedules; every caller passes the context's `tenant_id`, never one from a request body.
 - Item 11 remainder: `cached_input_tokens` mapping. Item 15 remainder: tool-invocation audit event. `shifde_ops_stats` stays platform-only.
+
+## app part 1 (B-2230..B-2234)
+
+Done: `app.py` (11 routers, limiters, body cap, db timeouts), `shifde-admin` and `cli/seeding.py`/`governance_seed.py`, route-table test, two-organization seed test, `test_api_auth.py` remainder (7), `test_api_tenancy.py` remainder (7, org list shape per B-1011), `test_p2_secrets.py` (3 of 4) in `tests/app/`.
+
+Left, by name:
+- APP-2 (runtime): mount `runtime.api.router`, `app.state.governance` (`TokenBudgetHooks`), feature keys `operate` and `pipelines`, `shifde-worker`, `GET /api/v1/platform/status` + `test_platform_status`; all tests needing runs, the worker or runtime routes (`test_p6_*`, `test_p5_graph`, `test_p7_query`, `test_p7_review1`, `test_p8_observability` four, the C1 end-to-end test, the unnamed object-id route test); `cli` demo/sample commands.
+- Not moved, need an adaptation decision (unified admin differs from SETH): `test_p2_iam.py` (20; nineteen fail against the unified admin: per-organization group writes are gone (B-928), creating a user is platform-administrator only, so `new_user` flows and group CRUD tests need rewriting, not a path change); `test_p2_secrets.py::test_resolve_denied_for_principals_without_secret_use_and_for_disabled_or_foreign_secrets` (same `new_user` cause).
+- Not started in APP-1 (budget): `test_p2_oidc.py` two (OIDC unmounted, B-2232), `test_p2_review.py` two, `test_p3_models.py` one, `test_p8_policies.py` one, `test_p2_audit`/`test_p3_connections`/`test_p3_review`/`test_hardening*`/`test_p4_*`/`test_p7_build`/`test_p5_graph` (3) of the inventory, section 5.
+- OIDC mount: B-1625 and the IdP-sync self-add audit (B-2232).
+- `main.py` still serves with uvicorn `proxy_headers=False`; loopback-trust setting and X-Forwarded-For test (core review 1 item 4) not done.
