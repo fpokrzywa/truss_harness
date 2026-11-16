@@ -1,4 +1,7 @@
 import { api as defaultClient, type ApiClient } from './client';
+import { createBuildEndpoints } from './build-endpoints';
+import { createGovernanceEndpoints } from './governance-endpoints';
+import { createIntegrateEndpoints } from './integrate-endpoints';
 import { createSecurityEndpoints } from './security-endpoints';
 import type {
   AuthConfig,
@@ -91,8 +94,11 @@ export function createEndpoints(client: ApiClient = defaultClient) {
         body: { status: 'archived', row_version: proj.row_version },
       }),
     ...createSecurityEndpoints(client),
-    // Further per-area endpoint groups (integrate, build, operate, pipelines, ontology,
-    // governance) are spread in here as each area lands.
+    ...createIntegrateEndpoints(client),
+    ...createGovernanceEndpoints(client),
+    ...createBuildEndpoints(client),
+    // Further per-area endpoint groups (build, operate, pipelines, ontology) are spread in
+    // here as each area lands.
     myPermissions: (org: string, workspace?: string, project?: string) =>
       client.request<MyPermissions>(`${orgPath(org)}/me/permissions`, {
         query: { workspace, project },

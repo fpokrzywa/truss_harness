@@ -153,7 +153,7 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 
 | File | Status | Notes |
 |---|---|---|
-| `src/app/(app)/o/[org]/govern/performance/page.tsx` | later | UNSURE: execution performance; the view lives in `GovernanceViews`. Its route `/orgs/{org}/observability/performance` exists, but the page needs `GovernanceViews` (governance) and ledger's `lib/governance`; owner: governance |
+| `src/app/(app)/o/[org]/govern/performance/page.tsx` | ported | |
 | `src/app/(app)/platform/status/page.tsx` | later | UNSURE: as PlatformStatusView.; blocked: `GET /api/v1/platform/status` does not exist (observability exposes only `/api/health`, `/api/ready`, `/api/metrics`); the page also needs ledger/governance `governance-types` and `lib/governance` (owner: ledger) |
 | `src/components/PlatformStatusView.test.tsx` | later | blocked: `GET /api/v1/platform/status` does not exist (observability exposes only `/api/health`, `/api/ready`, `/api/metrics`); the page also needs ledger/governance `governance-types` and `lib/governance` (owner: ledger) |
 | `src/components/PlatformStatusView.tsx` | later | UNSURE: platform status page; no area named for it, observability chosen.; blocked: `GET /api/v1/platform/status` does not exist (observability exposes only `/api/health`, `/api/ready`, `/api/metrics`); the page also needs ledger/governance `governance-types` and `lib/governance` (owner: ledger) |
@@ -164,24 +164,24 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 
 | File | Status | Notes |
 |---|---|---|
-| `src/app/(app)/o/[org]/govern/costs/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/govern/models/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/govern/runs/[id]/cost/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/govern/usage/page.tsx` | later |  |
-| `src/components/governance/RunCostView.test.tsx` | later |  |
-| `src/components/governance/RunCostView.tsx` | later |  |
-| `src/components/governance/UsageFilterBar.tsx` | later |  |
-| `src/components/governance/UsageViews.test.tsx` | later |  |
-| `src/components/governance/UsageViews.tsx` | later |  |
-| `src/components/governance/charts.tsx` | later |  |
-| `src/components/governance/cost.tsx` | later |  |
-| `src/components/integrate/SlugScopeSelect.tsx` | later |  |
-| `src/lib/api/governance-endpoints.ts` | later | area follows its types file. |
-| `src/lib/api/governance-types.ts` | later | shared by usage/cost (ledger) and governance views; the layer rule gives ledger. |
-| `src/lib/governance-hooks.ts` | later |  |
-| `src/lib/governance.test.ts` | later |  |
-| `src/lib/governance.ts` | later |  |
-| `src/test/governance.ts` | later |  |
+| `src/app/(app)/o/[org]/govern/costs/page.tsx` | ported | |
+| `src/app/(app)/o/[org]/govern/models/page.tsx` | ported | |
+| `src/app/(app)/o/[org]/govern/runs/[id]/cost/page.tsx` | ported | |
+| `src/app/(app)/o/[org]/govern/usage/page.tsx` | ported | |
+| `src/components/governance/RunCostView.test.tsx` | ported | |
+| `src/components/governance/RunCostView.tsx` | ported | |
+| `src/components/governance/UsageFilterBar.tsx` | ported | |
+| `src/components/governance/UsageViews.test.tsx` | ported | |
+| `src/components/governance/UsageViews.tsx` | ported | |
+| `src/components/governance/charts.tsx` | ported | |
+| `src/components/governance/cost.tsx` | ported | |
+| `src/components/integrate/SlugScopeSelect.tsx` | ported | |
+| `src/lib/api/governance-endpoints.ts` | ported | |
+| `src/lib/api/governance-types.ts` | ported | |
+| `src/lib/governance-hooks.ts` | ported | |
+| `src/lib/governance.test.ts` | ported | |
+| `src/lib/governance.ts` | ported | |
+| `src/test/governance.ts` | ported | |
 
 ## secrets
 
@@ -254,65 +254,65 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 
 | File | Status | Notes |
 |---|---|---|
-| `src/app/(app)/o/[org]/integrate/layout.tsx` | later |  |
-| `src/app/(app)/o/[org]/integrate/vendors/[id]/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/integrate/vendors/page.tsx` | later |  |
-| `src/app/(app)/platform/vendors/layout.tsx` | later |  |
-| `src/app/(app)/platform/vendors/page.tsx` | later |  |
-| `src/components/integrate/Maturity.tsx` | later |  |
-| `src/components/integrate/PlatformVendorsView.test.tsx` | later |  |
-| `src/components/integrate/VendorDetailView.tsx` | later |  |
-| `src/components/integrate/VendorsView.test.tsx` | later |  |
-| `src/components/integrate/VendorsView.tsx` | later |  |
-| `src/lib/api/integrate-endpoints.ts` | later | area follows its types file. |
-| `src/lib/api/integrate-types.ts` | later | shared by vendors, connections and models; the layer rule gives vendors. |
-| `src/lib/integrate-hooks.ts` | later |  |
-| `src/test/integrate.ts` | later |  |
+| `src/app/(app)/o/[org]/integrate/layout.tsx` | ported | |
+| `src/app/(app)/o/[org]/integrate/vendors/[id]/page.tsx` | ported | |
+| `src/app/(app)/o/[org]/integrate/vendors/page.tsx` | ported | |
+| `src/app/(app)/platform/vendors/layout.tsx` | ported | |
+| `src/app/(app)/platform/vendors/page.tsx` | ported | |
+| `src/components/integrate/Maturity.tsx` | ported | |
+| `src/components/integrate/PlatformVendorsView.test.tsx` | ported | |
+| `src/components/integrate/VendorDetailView.tsx` | ported | |
+| `src/components/integrate/VendorsView.test.tsx` | ported | |
+| `src/components/integrate/VendorsView.tsx` | ported | |
+| `src/lib/api/integrate-endpoints.ts` | ported | |
+| `src/lib/api/integrate-types.ts` | ported | |
+| `src/lib/integrate-hooks.ts` | ported | |
+| `src/test/integrate.ts` | ported | |
 
 ## connections
 
 | File | Status | Notes |
 |---|---|---|
-| `src/app/(app)/o/[org]/integrate/adapters/page.tsx` | later | UNSURE: as AdaptersView. |
-| `src/app/(app)/o/[org]/integrate/connections/[id]/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/integrate/connections/[id]/tests/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/integrate/connections/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/integrate/egress/page.tsx` | later |  |
-| `src/app/(app)/platform/egress/layout.tsx` | later |  |
-| `src/app/(app)/platform/egress/page.tsx` | later |  |
-| `src/components/integrate/AdaptersView.test.tsx` | later |  |
-| `src/components/integrate/AdaptersView.tsx` | later | UNSURE: adapter catalogue; no area named for it, grouped with connections. |
-| `src/components/integrate/ConnectionConsole.tsx` | later |  |
-| `src/components/integrate/ConnectionDetailView.test.tsx` | later |  |
-| `src/components/integrate/ConnectionDetailView.tsx` | later |  |
-| `src/components/integrate/ConnectionTests.tsx` | later |  |
-| `src/components/integrate/ConnectionWizard.test.tsx` | later |  |
-| `src/components/integrate/ConnectionWizard.tsx` | later |  |
-| `src/components/integrate/ConnectionsView.tsx` | later |  |
-| `src/components/integrate/EgressView.tsx` | later |  |
-| `src/components/integrate/SchemaForm.tsx` | later |  |
-| `src/lib/discovery.test.ts` | later |  |
-| `src/lib/discovery.ts` | later |  |
-| `src/lib/maturity.ts` | later |  |
-| `src/lib/schema-form.test.ts` | later |  |
-| `src/lib/schema-form.ts` | later |  |
+| `src/app/(app)/o/[org]/integrate/adapters/page.tsx` | ported | |
+| `src/app/(app)/o/[org]/integrate/connections/[id]/page.tsx` | ported | |
+| `src/app/(app)/o/[org]/integrate/connections/[id]/tests/page.tsx` | ported | |
+| `src/app/(app)/o/[org]/integrate/connections/page.tsx` | ported | |
+| `src/app/(app)/o/[org]/integrate/egress/page.tsx` | ported | |
+| `src/app/(app)/platform/egress/layout.tsx` | ported | |
+| `src/app/(app)/platform/egress/page.tsx` | ported | |
+| `src/components/integrate/AdaptersView.test.tsx` | ported | |
+| `src/components/integrate/AdaptersView.tsx` | ported | |
+| `src/components/integrate/ConnectionConsole.tsx` | ported | |
+| `src/components/integrate/ConnectionDetailView.test.tsx` | ported | |
+| `src/components/integrate/ConnectionDetailView.tsx` | ported | |
+| `src/components/integrate/ConnectionTests.tsx` | ported | |
+| `src/components/integrate/ConnectionWizard.test.tsx` | ported | |
+| `src/components/integrate/ConnectionWizard.tsx` | ported | |
+| `src/components/integrate/ConnectionsView.tsx` | ported | |
+| `src/components/integrate/EgressView.tsx` | ported | |
+| `src/components/integrate/SchemaForm.tsx` | ported | |
+| `src/lib/discovery.test.ts` | ported | |
+| `src/lib/discovery.ts` | ported | |
+| `src/lib/maturity.ts` | ported | |
+| `src/lib/schema-form.test.ts` | ported | |
+| `src/lib/schema-form.ts` | ported | |
 
 ## models_admin
 
 | File | Status | Notes |
 |---|---|---|
-| `src/app/(app)/o/[org]/integrate/models/[id]/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/integrate/models/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/integrate/providers/[id]/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/integrate/providers/page.tsx` | later |  |
-| `src/components/integrate/ModelDetailView.test.tsx` | later |  |
-| `src/components/integrate/ModelDetailView.tsx` | later |  |
-| `src/components/integrate/ModelPolicyPanels.tsx` | later |  |
-| `src/components/integrate/ModelsView.test.tsx` | later |  |
-| `src/components/integrate/ModelsView.tsx` | later |  |
-| `src/components/integrate/ProviderDetailView.tsx` | later |  |
-| `src/components/integrate/ProvidersView.test.tsx` | later |  |
-| `src/components/integrate/ProvidersView.tsx` | later |  |
+| `src/app/(app)/o/[org]/integrate/models/[id]/page.tsx` | ported | |
+| `src/app/(app)/o/[org]/integrate/models/page.tsx` | ported | |
+| `src/app/(app)/o/[org]/integrate/providers/[id]/page.tsx` | ported | |
+| `src/app/(app)/o/[org]/integrate/providers/page.tsx` | ported | |
+| `src/components/integrate/ModelDetailView.test.tsx` | ported | |
+| `src/components/integrate/ModelDetailView.tsx` | ported | |
+| `src/components/integrate/ModelPolicyPanels.tsx` | ported | |
+| `src/components/integrate/ModelsView.test.tsx` | ported | |
+| `src/components/integrate/ModelsView.tsx` | ported | |
+| `src/components/integrate/ProviderDetailView.tsx` | ported | |
+| `src/components/integrate/ProvidersView.test.tsx` | ported | |
+| `src/components/integrate/ProvidersView.tsx` | ported | |
 
 ## admin
 
@@ -323,37 +323,37 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 
 | File | Status | Notes |
 |---|---|---|
-| `src/app/(app)/o/[org]/approvals/layout.tsx` | later |  |
-| `src/app/(app)/o/[org]/approvals/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/govern/budgets/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/govern/decisions/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/govern/overview/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/govern/policies/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/govern/pricing/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/govern/retention/page.tsx` | later |  |
-| `src/app/(app)/platform/rate-cards/layout.tsx` | later |  |
-| `src/app/(app)/platform/rate-cards/page.tsx` | later |  |
-| `src/components/governance/BudgetsView.test.tsx` | later |  |
-| `src/components/governance/BudgetsView.tsx` | later |  |
-| `src/components/governance/GovScopePicker.tsx` | later |  |
-| `src/components/governance/GovernanceViews.test.tsx` | later |  |
-| `src/components/governance/GovernanceViews.tsx` | later | UNSURE: holds the overview, decisions, performance (observability?) and retention views; governance by majority. |
-| `src/components/governance/PoliciesView.test.tsx` | later |  |
-| `src/components/governance/PoliciesView.tsx` | later |  |
-| `src/components/governance/PricingView.test.tsx` | later |  |
-| `src/components/governance/PricingView.tsx` | later |  |
-| `src/components/operate/ApprovalsView.outcome.test.tsx` | later |  |
-| `src/components/operate/ApprovalsView.test.tsx` | later |  |
-| `src/components/operate/ApprovalsView.tsx` | later |  |
-| `src/lib/api/build-endpoints.ts` | later | area follows its types file. |
-| `src/lib/api/build-types.ts` | later | shared by build and operate files; the layer rule gives governance (approvals). Split when ported. |
-| `src/lib/api/operate-endpoints.ts` | later | area follows its types file. |
-| `src/lib/api/operate-types.ts` | later | shared by runs, approvals and pipelines; the layer rule gives governance (approvals). |
-| `src/lib/build-hooks.ts` | later |  |
-| `src/lib/operate-hooks.ts` | later |  |
-| `src/lib/run-utils.test.ts` | later |  |
-| `src/lib/run-utils.ts` | later |  |
-| `src/test/operate.ts` | later |  |
+| `src/app/(app)/o/[org]/approvals/layout.tsx` | later | blocked: approvals routes belong to runtime; owner: runtime |
+| `src/app/(app)/o/[org]/approvals/page.tsx` | later | blocked: approvals routes belong to runtime; owner: runtime |
+| `src/app/(app)/o/[org]/govern/budgets/page.tsx` | ported | |
+| `src/app/(app)/o/[org]/govern/decisions/page.tsx` | ported | |
+| `src/app/(app)/o/[org]/govern/overview/page.tsx` | ported | |
+| `src/app/(app)/o/[org]/govern/policies/page.tsx` | ported | |
+| `src/app/(app)/o/[org]/govern/pricing/page.tsx` | ported | |
+| `src/app/(app)/o/[org]/govern/retention/page.tsx` | ported | |
+| `src/app/(app)/platform/rate-cards/layout.tsx` | ported | |
+| `src/app/(app)/platform/rate-cards/page.tsx` | ported | |
+| `src/components/governance/BudgetsView.test.tsx` | ported | |
+| `src/components/governance/BudgetsView.tsx` | ported | |
+| `src/components/governance/GovScopePicker.tsx` | ported | |
+| `src/components/governance/GovernanceViews.test.tsx` | ported | |
+| `src/components/governance/GovernanceViews.tsx` | ported | |
+| `src/components/governance/PoliciesView.test.tsx` | ported | |
+| `src/components/governance/PoliciesView.tsx` | ported | |
+| `src/components/governance/PricingView.test.tsx` | ported | |
+| `src/components/governance/PricingView.tsx` | ported | |
+| `src/components/operate/ApprovalsView.outcome.test.tsx` | later | blocked: operate types/hooks serve runs, approvals and pipelines (runtime routes); owner: runtime |
+| `src/components/operate/ApprovalsView.test.tsx` | later | blocked: operate types/hooks serve runs, approvals and pipelines (runtime routes); owner: runtime |
+| `src/components/operate/ApprovalsView.tsx` | later | blocked: operate types/hooks serve runs, approvals and pipelines (runtime routes); owner: runtime |
+| `src/lib/api/build-endpoints.ts` | later | area follows its types file.; build area (out of scope here); only the slice governance needs was ported (B-2210: `ArtifactKind`, `Artifact`, `ArtifactFilters`, `listArtifacts`, `useArtifacts`); the build unit extends it |
+| `src/lib/api/build-types.ts` | later | shared by build and operate files; the layer rule gives governance (approvals). Split when ported.; build area (out of scope here); only the slice governance needs was ported (B-2210: `ArtifactKind`, `Artifact`, `ArtifactFilters`, `listArtifacts`, `useArtifacts`); the build unit extends it |
+| `src/lib/api/operate-endpoints.ts` | later | area follows its types file.; blocked: operate types/hooks serve runs, approvals and pipelines (runtime routes); owner: runtime |
+| `src/lib/api/operate-types.ts` | later | shared by runs, approvals and pipelines; the layer rule gives governance (approvals).; blocked: operate types/hooks serve runs, approvals and pipelines (runtime routes); owner: runtime |
+| `src/lib/build-hooks.ts` | later | build area (out of scope here); only the slice governance needs was ported (B-2210: `ArtifactKind`, `Artifact`, `ArtifactFilters`, `listArtifacts`, `useArtifacts`); the build unit extends it |
+| `src/lib/operate-hooks.ts` | later | blocked: operate types/hooks serve runs, approvals and pipelines (runtime routes); owner: runtime |
+| `src/lib/run-utils.test.ts` | later | blocked: serves runs and approvals (runtime routes); owner: runtime |
+| `src/lib/run-utils.ts` | later | blocked: serves runs and approvals (runtime routes); owner: runtime |
+| `src/test/operate.ts` | later | blocked: operate types/hooks serve runs, approvals and pipelines (runtime routes); owner: runtime |
 
 ## build
 
