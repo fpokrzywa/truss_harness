@@ -10,7 +10,7 @@
         "frontend-nav"
       ],
       "lead_model": "sonnet",
-      "status": "todo",
+      "status": "done",
       "brief": "Found by the cluster unit on 2026-11-16 (S-008). On every fresh checkout, `pnpm build` with Next.js 16.4.4 stops with SecurityFatalError (\"known security vulnerability\"). The acknowledgement id is new each time, so a rerun never clears it and no unit can pass its 13 gates; this unit blocks every merge. Identify the advisory (`pnpm audit`, the Next.js release notes) and upgrade `next` and its companions (eslint-config-next, @next/*) to the lowest release on the same major that fixes it; update pnpm-lock.yaml with pnpm. Done when `python scripts/gates.py --ref <sha> --name nextjs-security-merge` passes all 13 gates on the FIRST run in a fresh worktree, with no retry. Record the advisory id and versions in DECISIONS. Never silence, configure away or disable the check. The local cluster is already running (the cluster unit recovered it; its merge waits on this unit)."
     },
     {
