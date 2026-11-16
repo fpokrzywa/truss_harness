@@ -301,3 +301,40 @@ def client(settings: Settings) -> Iterator[TestClient]:
     app = create_app(settings)
     with TestClient(app, base_url="https://testserver", headers={"Origin": ORIGIN}) as c:
         yield c
+
+
+@pytest.fixture
+def frozen_cookie_date(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Freeze the date a clearing cookie's `Expires=` carries (B-2320).
+
+    Starlette's `delete_cookie` sets `expires=0`, which `http.cookies` renders as "now" through
+    `http.cookies._getdate`. Two responses that straddle a second boundary then differ in
+    `Expires`. Tests that compare `Set-Cookie` headers byte for byte use this fixture instead of
+    stripping or tolerating the date.
+    """
+    import http.cookies as http_cookies
+    import time
+
+    fixed = time.time()
+    weekdays = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+    months = (
+        "",
+        "Jan",
+        "Feb",
+        "Mar",
+        "Apr",
+        "May",
+        "Jun",
+        "Jul",
+        "Aug",
+        "Sep",
+        "Oct",
+        "Nov",
+        "Dec",
+    )
+
+    def getdate(future: float = 0) -> str:
+        year, month, day, hh, mm, ss, wd, _y, _z = time.gmtime(fixed + future)
+        return f"{weekdays[wd]}, {day:02d} {months[month]} {year:4d} {hh:02d}:{mm:02d}:{ss:02d} GMT"
+
+    monkeypatch.setattr(http_cookies, "_getdate", getdate)  # private stdlib helper, no stub
