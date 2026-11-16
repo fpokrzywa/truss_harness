@@ -23,7 +23,9 @@ final `runs_guard` and `shifde_reap_expired_leases`). The permission keys of `p0
   B-2102): unique keys that omit `tenant_id` start with it (`uq_run_events__seq`,
   `uq_run_steps__attempt`); client-keyed composite foreign keys where SETH had a bare id column
   (`approvals` workspace, project and tool version; `run_steps` child run, tool invocation and
-  tool version; `runs.root_run_id`), with `uq_tool_invocations__tenant_id_id` as the target.
+  tool version; `runs.root_run_id`), with `uq_tool_invocations__tenant_id_id` as the target;
+  `runs.agent_id` / `orchestration_id` tied to their pinned version's artifact and
+  `runs.prompt_version_id` client-keyed (B-2125, B-2165).
 * SECURITY DEFINER (owner rights, every client): `shifde_claim_jobs`, `shifde_reap_expired_leases`
   (the worker's queue and reaper) and `shifde_ops_stats` (aggregates only). Each pins
   `search_path = pg_catalog, pg_temp`, names every relation schema-qualified, is executable by
@@ -847,6 +849,14 @@ def upgrade() -> None:
             CONSTRAINT fk_runs__agent_version FOREIGN KEY (tenant_id, agent_version_id)
                 REFERENCES shifde.artifact_versions (tenant_id, id),
             CONSTRAINT fk_runs__orch_version FOREIGN KEY (tenant_id, orchestration_version_id)
+                REFERENCES shifde.artifact_versions (tenant_id, id),
+            CONSTRAINT fk_runs__agent_of_version
+                FOREIGN KEY (tenant_id, agent_version_id, agent_id)
+                REFERENCES shifde.artifact_versions (tenant_id, id, artifact_id),
+            CONSTRAINT fk_runs__orch_of_version
+                FOREIGN KEY (tenant_id, orchestration_version_id, orchestration_id)
+                REFERENCES shifde.artifact_versions (tenant_id, id, artifact_id),
+            CONSTRAINT fk_runs__prompt_version FOREIGN KEY (tenant_id, prompt_version_id)
                 REFERENCES shifde.artifact_versions (tenant_id, id),
             CONSTRAINT fk_runs__pipeline_version FOREIGN KEY (tenant_id, pipeline_version_id)
                 REFERENCES shifde.artifact_versions (tenant_id, id),

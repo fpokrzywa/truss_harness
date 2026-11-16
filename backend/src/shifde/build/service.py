@@ -679,7 +679,8 @@ class ArtifactService:
         # the model checks; runtime isolation review 3 item 3)
         stored = repository.get_artifact(self.session, tenant, art["id"])
         if (
-            version is None
+            run is None
+            or version is None
             or stored is None
             or stored["tenant_id"] != tenant
             or stored["kind"] != art["kind"]
@@ -696,6 +697,7 @@ class ArtifactService:
             check_visibility=False,
             only_versions=pinned,
             run_version_id=version["id"],
+            run_scope=(run["workspace_id"], run["project_id"]),
         )
 
     def run_target(self, run_id: UUID) -> Mapping[str, Any] | None:
@@ -1284,6 +1286,7 @@ class _Env:
         check_visibility: bool,
         only_versions: frozenset[UUID] | None = None,
         run_version_id: UUID | None = None,
+        run_scope: tuple[UUID | None, UUID | None] | None = None,
     ) -> None:
         self.svc = svc
         self.art = art
@@ -1294,6 +1297,52 @@ class _Env:
         self.only_versions = only_versions
         # a run's env: the run's own pinned version (`only_versions` holds it and its pins)
         self.run_version_id = run_version_id
+        # a run's env: the stored run's (workspace id, project id); its connections must lie there
+        self.run_scope = run_scope
+        self._named_ids: dict[str, frozenset[str]] = {}
+
+    def _named(self, key: str) -> frozenset[str]:
+        """In a run's env, the ids the run's pinned specs (its version and every version it pins)
+        name under `key` (`connection_id`, `route_id`), at any depth; read once per env. A run
+        reaches only the connections and model routes its pinned specs name (runtime review 3
+        follow-up, B-2161)."""
+        if key not in self._named_ids:
+            found: set[str] = set()
+
+            def walk(node: object) -> None:
+                if isinstance(node, dict):
+                    for k, v in node.items():
+                        if k == key and isinstance(v, str):
+                            found.add(v.lower())
+                        else:
+                            walk(v)
+                elif isinstance(node, list):
+                    for item in node:
+                        walk(item)
+
+            for vid in sorted(self.only_versions or ()):
+                row = repository.get_version(self.svc.session, self.tenant_id, vid)
+                if row is not None and row["tenant_id"] == self.tenant_id:
+                    walk(row["spec"])
+            self._named_ids[key] = frozenset(found)
+        return self._named_ids[key]
+
+    def _run_may_name(self, key: str, object_id: UUID) -> bool:
+        """Outside a run's env always True; in one, only for an id its pinned specs name."""
+        return self.only_versions is None or str(object_id).lower() in self._named(key)
+
+    def _in_run_scope(self, row: Mapping[str, Any]) -> bool:  # Any: connection row
+        """In a run's env, a connection at the client level or at the run's own workspace and
+        project; outside one, always True (the caller's checks decide)."""
+        if self.only_versions is None:
+            return True
+        if self.run_scope is None:
+            return False
+        workspace_id, project_id = self.run_scope
+        return row["workspace_id"] in (None, workspace_id) and row["project_id"] in (
+            None,
+            project_id,
+        )
 
     def _same_client(self) -> bool:
         """The scope still names the client this env was built for (an env is never reused)."""
@@ -1358,19 +1407,19 @@ class _Env:
         return self.svc.models.problems_at(self.svc.scope_ref_of(self.art), model_ids)
 
     def route_model_ids(self, route_id: UUID) -> list[UUID] | None:
-        if not self._same_client():
+        if not self._same_client() or not self._run_may_name("route_id", route_id):
             return None
         return self.svc.models.route_model_ids(route_id)
 
     def _readable_connection(self, connection_id: UUID) -> Mapping[str, Any] | None:
         """The client's connection row, if the caller may read it (or an approver re-validates)."""
-        if not self._same_client():
+        if not self._same_client() or not self._run_may_name("connection_id", connection_id):
             return None
         try:
             row = self.svc.conns.get_row(connection_id)  # the scope's client id, else NotFound
         except NotFound:
             return None
-        if row["tenant_id"] != self.tenant_id:
+        if row["tenant_id"] != self.tenant_id or not self._in_run_scope(row):
             return None
         if (
             self.check_visibility
@@ -1413,6 +1462,9 @@ class _Env:
 
     def mcp_tool(self, connection_id: UUID, tool_name: str) -> McpDiscovery:
         if not self._same_client():
+            return McpDiscovery(False, None)
+        # a run's env: only a connection its pinned specs name, at the run's scope (B-2161)
+        if self.only_versions is not None and self._readable_connection(connection_id) is None:
             return McpDiscovery(False, None)
         try:
             # the scope's client id and `connection:read`, else an AppError
