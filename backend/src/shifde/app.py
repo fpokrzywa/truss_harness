@@ -2,19 +2,19 @@
 
 SETH 3ba0e06 `app.py` with the changes recorded in DECISIONS B-2230..B-2236: the 11 routers that
 exist on main (runtime's is APP-2, installation's public branding router is not ported, B-2221),
-the OIDC routes left unmounted (B-2232), the limiters and the body cap carry_forward assigns to
-the app, no uvicorn `ProxyHeadersMiddleware` (the client address is `resolve_client_ip`, B-201).
+the OIDC routes (unmounted by B-2232, mounted by B-2263), the limiters and the body cap
+carry_forward assigns to the app, no uvicorn `ProxyHeadersMiddleware` (the client address is
+`resolve_client_ip`, B-201).
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import APIRouter, Depends, FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.routing import BaseRoute
 
 from shifde import __version__
 from shifde.adapters.registry import AdapterRegistry
@@ -44,20 +44,6 @@ from shifde.observability.middleware import RequestIdMiddleware
 from shifde.ontology import api as ontology_api
 from shifde.tenancy import api as tenancy_api
 from shifde.vendors import api as vendors_api
-
-# B-2232: the OpenID Connect routes stay unmounted until identity review 4 item 5 (B-1625) and the
-# IdP-sync self-add audit are closed; every other `/api/auth` route is mounted.
-UNMOUNTED_PATH_PREFIXES = ("/api/auth/oidc/",)
-
-
-def _without(router: APIRouter, prefixes: Iterable[str]) -> APIRouter:
-    """A router with the routes of `router` whose path does not start with one of `prefixes`."""
-    kept: list[BaseRoute] = [
-        r for r in router.routes if not str(getattr(r, "path", "")).startswith(tuple(prefixes))
-    ]
-    out = APIRouter()
-    out.routes.extend(kept)
-    return out
 
 
 def create_app(
@@ -144,7 +130,8 @@ def create_app(
         process supervisors use it; B-2231)."""
         return {"status": "ok"}
 
-    app.include_router(_without(auth_api.router, UNMOUNTED_PATH_PREFIXES))
+    # every `/api/auth` route, the OpenID Connect sign-in included (B-2263; was B-2232)
+    app.include_router(auth_api.router)
     # Deny-by-default: every /api/v1 route requires an authenticated session.
     guard = [Depends(require_auth)]
     app.include_router(tenancy_api.router, dependencies=guard)

@@ -36,6 +36,7 @@ from shifde.secrets import repository
 from shifde.secrets.models import Secret
 
 __all__ = [
+    "INSTALLATION_IDP_SECRET_RESOLVED",
     "MAX_SECRET_BYTES",
     "SECRET_NAME_CONFLICT",
     "SecretMeta",
@@ -52,6 +53,7 @@ __all__ = [
 
 MAX_SECRET_BYTES = 16 * 1024
 SECRET_NAME_CONFLICT = "a secret with this name already exists"
+INSTALLATION_IDP_SECRET_RESOLVED = "secret.idp_client_secret.resolved"
 KINDS = frozenset({"generic", "api_key", "password", "token", "pem", "idp_client_secret"})
 
 
@@ -327,6 +329,34 @@ class SecretProvider:
             target_id=secret.id,
             target_label=f"secret:{secret.name}",
             details={"purpose": purpose, "version": secret.secret_version},
+        )
+        return value
+
+    def resolve_installation_idp(self, idp_id: UUID) -> SecretValue:
+        """An installation IdP's client secret for the OIDC token exchange (identity review 4
+        item 5, B-2260), with no principal, no client context and no platform-administrator
+        context: `shifde_installation_idp_secret` returns the envelope only for an active
+        installation IdP's active installation secret and writes the access-log row; a client
+        context is refused by the database (42501). Audited at installation level as
+        `secret.idp_client_secret.resolved` (actor `system`)."""
+        secret = repository.installation_idp_secret(self._session, idp_id)
+        if secret is None:
+            raise NotFound("secret not found")
+        value = self._decrypt(secret)
+        audit.record(
+            self._session,
+            self._ctx,
+            action=INSTALLATION_IDP_SECRET_RESOLVED,
+            tenant_id=None,
+            actor_label="system",
+            target_type="secret",
+            target_id=secret.id,
+            target_label=f"secret:{secret.name}",
+            details={
+                "purpose": "oidc.token_exchange",
+                "version": secret.secret_version,
+                "idp_id": str(idp_id),
+            },
         )
         return value
 

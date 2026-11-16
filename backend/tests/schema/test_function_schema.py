@@ -183,6 +183,16 @@ SECURITY_DEFINER_ALLOWLIST: dict[str, str] = {
         "each such group with its change and, for an added or removed group only, the clients "
         "binding it, for their audit at sign-in."
     ),
+    "shifde.shifde_installation_idp_secret(uuid)": (
+        "secrets_0003 (B-2260, identity review 4 item 5): owned by shifde_owner, search_path "
+        "pg_catalog, pg_temp, every object schema-qualified, EXECUTE for shifde_app only, writes "
+        "no app.* setting. Refuses (42501) whenever current_tenant_id() is set, before any "
+        "lookup. Returns the envelope (never plaintext) of the one active installation secret "
+        "named by an active installation IdP's client_secret_ref_id, so the unauthenticated OIDC "
+        "callback no longer raises the platform-administrator context; a client's IdP, a "
+        "disabled IdP and an unknown id answer no row alike. Writes only that secret's "
+        "secret_access_log row (purpose oidc.token_exchange) and last_used_at."
+    ),
     "shifde.shifde_consume_oidc_request(bytea, uuid)": (
         f"{_OIDC_DEFINER}. Marks a live flow request used (single use, expiry checked in SQL) "
         "for the IdP named in the callback, only while that IdP is active and still in the "
@@ -386,8 +396,9 @@ def test_allowlist_has_no_stale_entries(owner_engine: Engine) -> None:
 
 
 def test_identity_definers_are_on_the_allowlist_by_signature(owner_engine: Engine) -> None:
-    """identity_0002..0005 (B-909, B-915, B-922, B-928) and tenancy_0001..0004 (B-1006, B-1010,
-    B-1016, B-1407): each identity and tenancy definer is listed under its full signature."""
+    """identity_0002..0005 (B-909, B-915, B-922, B-928), tenancy_0001..0004 (B-1006, B-1010,
+    B-1016, B-1407) and secrets_0003 (B-2260): each identity, tenancy and secrets definer is
+    listed under its full signature."""
     with owner_engine.connect() as c:
         rows = [
             row
@@ -416,6 +427,7 @@ def test_identity_definers_are_on_the_allowlist_by_signature(owner_engine: Engin
         "shifde.shifde_may_bind_group(uuid, uuid)",
         "shifde.shifde_is_client_owner(uuid)",
         "shifde.shifde_bound_group_admin_ids(uuid)",
+        "shifde.shifde_installation_idp_secret(uuid)",
     }
     assert all(row.owner == "shifde_owner" for row in rows)
     assert all(_search_path(row.proconfig) == "pg_catalog, pg_temp" for row in rows)

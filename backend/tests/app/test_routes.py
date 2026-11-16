@@ -1,5 +1,5 @@
-"""The mounted route table, the oidc/runtime/branding exclusions, and two seeded organizations
-seen through the mounted API (plan row 19)."""
+"""The mounted route table, the runtime/branding exclusions, and two seeded organizations seen
+through the mounted API (plan row 19). The OpenID Connect routes are mounted (B-2263)."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from tests._support.fullapp import World, fresh_world, full_client, login
 
 SNAPSHOT = json.loads((Path(__file__).parent / "seth_routes_3ba0e06.json").read_text("utf-8"))
 
-# Routes SETH 3ba0e06 has and this app does not mount yet, each with its reason:
 OIDC = {("GET", "/api/auth/oidc/{idp_id}/login"), ("GET", "/api/auth/oidc/{idp_id}/callback")}
+# Routes SETH 3ba0e06 has and this app does not mount yet, each with its reason:
 # `GET /api/v1/platform/status` reads the runtime `workers` table: runtime port (B-1020)
 PLATFORM_STATUS = {("GET", "/api/v1/platform/status")}
 # unified addition (kept from the skeleton, B-2231)
@@ -52,30 +52,35 @@ def _mounted(client: TestClient) -> set[tuple[str, str]]:
     return {(m.upper(), p) for p, ops in paths.items() for m in ops}
 
 
-def test_the_mounted_route_table_is_sethss_minus_runtime_branding_oidc_and_status(
+def test_the_mounted_route_table_is_sethss_minus_runtime_branding_and_status(
     client: TestClient,
 ) -> None:
     seth = _pairs(SNAPSHOT["all"])
     runtime, branding = _pairs(SNAPSHOT["runtime"]), _pairs(SNAPSHOT["branding"])
     assert runtime and branding and seth >= OIDC | PLATFORM_STATUS | SETH_GROUP_WRITES
     expected = (
-        (seth - runtime - branding - OIDC - PLATFORM_STATUS - SETH_GROUP_WRITES)
-        | HEALTHZ
-        | UNIFIED_ONLY
+        (seth - runtime - branding - PLATFORM_STATUS - SETH_GROUP_WRITES) | HEALTHZ | UNIFIED_ONLY
     )
     mounted = _mounted(client)
     assert mounted - expected == set(), "mounted but not in SETH"
     assert expected - mounted == set(), "in SETH but not mounted"
+    assert mounted >= OIDC  # B-2263: the OpenID Connect routes are SETH's
     assert len(mounted) > 250
 
 
-def test_oidc_routes_are_not_mounted_until_the_idp_secret_path_is_closed(
+def test_oidc_routes_are_mounted_and_an_unknown_idp_is_the_generic_failure(
     client: TestClient,
 ) -> None:
-    # B-2232: identity review 4 item 5 (B-1625) and the IdP-sync self-add audit come first
+    # B-2263 (was B-2232): identity review 4 item 5 (B-2260) and the IdP-sync self-add audit
+    # (B-1624, B-2262) are closed; an unknown IdP id answers the one generic sign-in failure
     for path in ("login", "callback"):
-        r = client.get(f"/api/auth/oidc/00000000-0000-0000-0000-000000000000/{path}")
-        assert r.status_code == 404
+        r = client.get(
+            f"/api/auth/oidc/00000000-0000-0000-0000-000000000000/{path}",
+            params={"code": "c", "state": "s"} if path == "callback" else None,
+            follow_redirects=False,
+        )
+        assert r.status_code == 302, (path, r.status_code)
+        assert r.headers["location"] == "/login?error=oidc_failed"
     assert client.get("/api/auth/config").status_code == 200
 
 
