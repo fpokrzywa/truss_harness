@@ -118,25 +118,45 @@ def label_for(meta_path, n):
     return f"{md.get('agentType') or 'agent'} {n}: {desc[:40]}"
 
 
+def current_leads():
+    """{label: sid} for every running lead: parallel unit slots from the supervisor's state file,
+    otherwise the single lead in .devdata/lead_session."""
+    try:
+        state = json.load(open(f"{REPO}/.devdata/supervisor/state.json", encoding="utf-8"))
+    except (OSError, ValueError):
+        state = {}
+    slots = {f"{uid} {s['sid'][:8]}": s["sid"] for uid, s in (state.get("slots") or {}).items() if s.get("sid")}
+    if slots:
+        return slots
+    sid = state.get("sid") or lead_sid()
+    return {f"lead {sid[:8]}": sid} if sid else {}
+
+
+def transcript_path(sid):
+    hits = glob.glob(os.path.expanduser(f"~/.claude/projects/*/{sid}.jsonl"))
+    return hits[0] if hits else None
+
+
 def main():
-    sid, tails = None, {}
+    tails, known = {}, set()
     while True:
-        new_sid = lead_sid()
-        if new_sid and new_sid != sid:
-            if sid:
-                print(f"\n\x1b[1m=== handoff: new lead session {new_sid[:8]} ===\x1b[0m\n")
-            sid, tails = new_sid, {}
-            lead = f"{PROJ}/{sid}.jsonl"
-            tails[lead] = Tail(lead, f"lead {sid[:8]}", "1;37", BACK)
-        if sid:
-            for meta in sorted(glob.glob(f"{PROJ}/{sid}/subagents/*.meta.json"), key=os.path.getmtime):
+        for label, sid in current_leads().items():
+            path = transcript_path(sid)
+            if not path:
+                continue
+            if sid not in known:
+                known.add(sid)
+                print(f"\n\x1b[1m=== lead {label} ===\x1b[0m\n")
+                tails[path] = Tail(path, label, "1;37", BACK)
+            for meta in sorted(glob.glob(path[:-6] + "/subagents/*.meta.json"), key=os.path.getmtime):
                 log = meta.replace(".meta.json", ".jsonl")
                 if log not in tails and os.path.exists(log):
                     n = len(tails)
                     fresh = time.time() - os.path.getmtime(log) < 600
-                    tails[log] = Tail(log, label_for(meta, n), COLORS[n % len(COLORS)], BACK if fresh else 0)
-            for t in tails.values():
-                t.poll()
+                    tails[log] = Tail(log, f"{label.split()[0]} / {label_for(meta, n)}", COLORS[n % len(COLORS)],
+                                      BACK if fresh else 0)
+        for t in tails.values():
+            t.poll()
         sys.stdout.flush()
         time.sleep(2)
 
