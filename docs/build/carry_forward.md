@@ -247,6 +247,16 @@ Done: `app.py` (11 routers, limiters, body cap, db timeouts), `shifde-admin` and
 Left, by name:
 - APP-2 (runtime): mount `runtime.api.router`, `app.state.governance` (`TokenBudgetHooks`), feature keys `operate` and `pipelines`, `shifde-worker`, `GET /api/v1/platform/status` + `test_platform_status`; all tests needing runs, the worker or runtime routes (`test_p6_*`, `test_p5_graph`, `test_p7_query`, `test_p7_review1`, `test_p8_observability` four, the C1 end-to-end test, the unnamed object-id route test); `cli` demo/sample commands.
 - Not moved, need an adaptation decision (unified admin differs from SETH): `test_p2_iam.py` (20; nineteen fail against the unified admin: per-organization group writes are gone (B-928), creating a user is platform-administrator only, so `new_user` flows and group CRUD tests need rewriting, not a path change); `test_p2_secrets.py::test_resolve_denied_for_principals_without_secret_use_and_for_disabled_or_foreign_secrets` (same `new_user` cause).
-- Not started in APP-1 (budget): `test_p2_oidc.py` two (OIDC unmounted, B-2232), `test_p2_review.py` two, `test_p3_models.py` one, `test_p8_policies.py` one, `test_p2_audit`/`test_p3_connections`/`test_p3_review`/`test_hardening*`/`test_p4_*`/`test_p7_build`/`test_p5_graph` (3) of the inventory, section 5.
-- OIDC mount: B-1625 and the IdP-sync self-add audit (B-2232).
+- Not started in APP-1 (budget): `test_p2_oidc.py` two (moved in app part 1c, B-2264), `test_p2_review.py` two, `test_p3_models.py` one, `test_p8_policies.py` one, `test_p2_audit`/`test_p3_connections`/`test_p3_review`/`test_hardening*`/`test_p4_*`/`test_p7_build`/`test_p5_graph` (3) of the inventory, section 5.
+- OIDC mount: done in app part 1c (B-2260..B-2265).
 - `main.py` still serves with uvicorn `proxy_headers=False`; loopback-trust setting and X-Forwarded-For test (core review 1 item 4) not done.
+
+## app part 1c (B-2260..B-2265)
+
+Done: installation IdP secret through `shifde_installation_idp_secret` (`secrets_0003`; identity review 4 item 5, carry_forward 95; B-2260, B-2261); IdP-sync self-add audit confirmed done by B-1624 and pinned over the mounted routes (B-2262); OIDC routes mounted, route-table test updated (B-2263); `test_p2_oidc.py` group-sync tests moved to `tests/app/test_oidc.py` (B-2264); cross-client tests `tests/app/test_oidc_cross_client.py` with removal proofs (B-2265).
+
+Left, by name:
+- Isolation review of `secrets_0003` / `shifde_installation_idp_secret`, `SecretProvider.resolve_installation_idp` and `secret.idp_client_secret.resolved` as a pre-tenant action (B-2260).
+- Installation-level `identity.group.members_changed` row for IdP-sync changes (B-1625, carry_forward 102): needs the administrator flag or a definer in the sign-in path.
+- `test_p2_review.py` `test_suspension_revokes_...` and `test_pinned_sessions_never_carry_platform_admin_...`: do not need OIDC; with the app test move.
+- carry_forward 92: retention job for used or expired `oidc_auth_requests` (cli).
