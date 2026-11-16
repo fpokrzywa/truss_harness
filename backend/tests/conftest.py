@@ -259,13 +259,28 @@ def app_db(app_url: str) -> Iterator[Database]:
 @pytest.fixture(autouse=True)
 def clean_data(request: pytest.FixtureRequest) -> None:
     """Wipe tenant data before each test. Only touches the database when a module has registered
-    tables in `CLEAN_TABLES`, so pure unit tests need no database."""
+    tables in `CLEAN_TABLES`, so pure unit tests need no database.
+
+    DELETE, not TRUNCATE: TRUNCATE gives every table (and its indexes and TOAST) new files, and
+    the next checkpoint has to fsync them all; at a hundred tables per test that made checkpoints
+    take seconds and every `DROP DATABASE` wait for them (B-2330). The superuser on the test's own
+    database, with `session_replication_role = replica`, is not subject to row-level security,
+    append-only triggers or foreign-key checks, so the tables end up as empty as TRUNCATE left
+    them."""
     if not CLEAN_TABLES:
         return
     engine: Engine = request.getfixturevalue("owner_engine")
-    with engine.begin() as c:
-        tables = _with_referencing_tables(c, CLEAN_TABLES)
-        c.execute(text("TRUNCATE " + ", ".join(f"shifde.{t}" for t in tables)))
+    database = engine.url.database or ""
+    admin = create_engine(
+        _with_db(_env("SHIFDE_TEST_ADMIN_DATABASE_URL"), database), poolclass=NullPool
+    )
+    try:
+        with admin.begin() as c:
+            c.execute(text("SET LOCAL session_replication_role = replica"))
+            for table in _with_referencing_tables(c, CLEAN_TABLES):
+                c.execute(text(f"DELETE FROM shifde.{_quote(table)}"))
+    finally:
+        admin.dispose()
 
 
 _REFERENCING = text(
