@@ -1,8 +1,8 @@
 {
-  "session_id": "32996efa-4e28-4de2-a51d-1dc4cf091a28",
-  "head_sha": "3727c09cd6e3bc38eb66c81fa69d1fcdb3a3bc5d",
+  "session_id": "43e732dd-4742-4c29-8ad8-c49d7394f9f2",
+  "head_sha": "119af82210201ff69e28bec82b80fd2c366421dd",
   "branch": "unit/cluster",
-  "unit_in_progress": "cluster (work done, merge blocked on Next.js advisory)",
-  "next_step": "After nextjs-security lands on main: rebase unit/cluster, lock merge, rerun gates.py --name cluster-merge (13/13), push HEAD:main, unlock, unit.py done cluster. See docs/build/units/cluster.md",
-  "written_at": "2026-11-16T21:14:14Z"
+  "unit_in_progress": "cluster",
+  "next_step": "after nextjs-security merges: rebase unit/cluster onto origin/main, run the 13 gates, merge",
+  "written_at": "2026-11-16T21:19:41Z"
 }
