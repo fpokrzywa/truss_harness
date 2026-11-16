@@ -3,6 +3,10 @@
 Read this first after any compaction or resume. Standing instructions: `docs/build/CHARTER.md`. Plan: `docs/superpowers/plans/2026-11-13-subproject-1-foundation-and-seth-port.md`.
 
 States: `todo`, `in progress`, `done`, `blocked` (with evidence), `waiting on owner input`.
+
+**Build paused by the owner on 2026-11-16 at 08:05 (S-003). Resume only when the owner says so.** Current state and next step: `docs/build/HANDOFF.md`.
+- The local cluster on 55450 is down and was not restarted.
+- `suite-speed` (`43c08d4`) is paused, not accepted.
 Tokens per model: see `python scripts/usage_report.py` (by unit); the figure below is copied at acceptance.
 
 ## Sub-project 1
@@ -37,6 +41,7 @@ Tokens per model: see `python scripts/usage_report.py` (by unit); the figure bel
 | front-end areas 1 (identity, installation; audit/secrets/observability waiting on routes) | done (partial by design, B-1107) | `4bcc1fb` (fast-forward) | `gates.py --ref fe-areas-1 --tests tests/installation` (lead, clean checkout) 13/13: scan 0 findings; backend gates 0; pnpm lint/typecheck 0; pnpm test 183 passed; pnpm build 0. Ported login (no branding fetch), setup, platform settings; remaining files of these areas marked `later` in `frontend-areas.md` with owners | sonnet build ~97k |
 | front-end areas 2 (audit, authz, secrets, identity, tenancy; groups and observability waiting on routes) | done (partial by design, B-1107) | `b385a1e` (fast-forward) | `gates.py --ref origin/fe-areas-2 --tests tests/installation` (lead, clean checkout) 13/13: scan 0 findings; backend gates 0; pnpm lint/typecheck 0; pnpm test 245 passed; pnpm build 0. 53 files ported (49 verbatim, 4 modified, Notes in `frontend-areas.md`); no assertion changed. Left `later`: 5 authz group files (no org group-write routes; groups are platform-level, B-1401) and 6 observability files (`/platform/status` not in the unified backend; `govern/performance` needs governance/ledger areas) | sonnet build ~90k |
 | front-end areas 3 (ledger, vendors, connections, models_admin, governance; approvals waiting on runtime) | done (partial by design, B-1107) | `86dfbba`, merged into main | `gates.py --ref origin/fe-areas-3 --tests tests/installation` (lead, clean checkout) 13/13: scan 0 findings; backend gates 0; pnpm lint/typecheck 0; pnpm test 377 passed; pnpm build 0; merged-main gate in the row's merge commit. 85 files ported verbatim (ledger 18/18, vendors 14/14, connections 23/23, models_admin 12/12, governance 17/31, observability `govern/performance`); slice of build front-end libs for `GovScopePicker` (B-2210). Left `later`: governance approvals and operate libs (runtime routes), platform status (B-1020) | sonnet build ~89k |
+| suite speed (full backend suite under the 20-minute target, design 6) | in progress, paused by the owner (S-003) | `suite-speed` `43c08d4` (pushed, not merged) | B-2330: `tests/app` clones its per-test databases outside the run lock and drops them together at session end; no test dropped, no assertion changed. `tests/app` alone went from 671 s to 272 s (220 passed). The final version is not timed yet: its only full run (07:49) is invalid because the local cluster stopped mid-run (`server closed the connection unexpectedly`). Last valid main figure: 1548.8 s at `607e0a3` | |
 | two-org side-by-side proof | todo | | | |
 | software factory install | todo | | | |
 
@@ -73,6 +78,8 @@ Source: `docs/build/findings.md` ("known defect" rows). State as of session 4 (m
 Also open from reviews (minor, tracked in `carry_forward.md`): SEC Minor-3 (no secret delete path), the connections review 2 C2 race (next unit), the IdP-sync self-add (before OIDC is mounted).
 
 ## Waiting on owner input
+
+- **Build pause (S-003)**: the owner paused the build on 2026-11-16 at 08:05. The local PostgreSQL cluster (55450) is down, maybe stuck partway through restarting (`pg_ctl start` failed twice, `postmaster.pid` present). It is left alone until the owner decides.
 
 - **Permission for one edit to `backend/tests/schema/test_rls_schema.py`** (runtime RT-1, B-1943): replace the stale example `shifde.runs` with `shifde.installation_profile` in the parametrised case of `test_stale_principal_table_entry_is_reported`. The case's meaning is kept (a SETH table not in the database); no rule or list changes. The session's permission system refused the edit as a change to an oversight test, so neither the lead nor a builder will make it without the owner's explicit approval. Until then `runtime` cannot merge and sub-project 1 cannot finish.
 
