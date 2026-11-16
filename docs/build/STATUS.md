@@ -57,7 +57,7 @@ Source: `docs/build/findings.md` ("known defect" rows). State as of session 4 (m
 
 | Finding | Summary | Owner | State now |
 |---|---|---|---|
-| Item 12 (REQ F-02) | Archived workspace/project still accepts runs | runtime | connections half fixed (B-1509); runs half open |
+| Item 12 (REQ F-02) | Archived workspace/project still accepts runs | runtime | connections half fixed (B-1509); runs half fixed on branch `runtime` (RT-11, B-2271), closes at the runtime merge |
 | Item 12 (REQ F-03) | Orgs cannot be suspended; archived org principals still log in | tenancy, identity | archived client refused at the session pin (tenancy 2a, B-1008..B-1014); `suspended` client status needs a decision (carry_forward) |
 | Item 13 (J-M2) | Admin cannot read run output in prod; `capture_content` has no setter | runtime, tenancy | open (runtime not ported) |
 | Item 14 (REQ F-12) | Capture off only hides on read; content still stored | runtime, models_admin | open |

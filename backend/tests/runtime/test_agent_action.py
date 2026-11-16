@@ -389,6 +389,27 @@ def _run_one_tool(ctx: RunContext, version: UUID, node: str) -> str:
 OK = "ok: {'ok': True}"
 
 
+def test_a_tool_call_executes_at_the_stored_runs_scope(
+    pair: tuple[Client, Client], opened: Any, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Runtime isolation review 8 finding 2 (`steps` tool path): `steps.run_tool` hands
+    `invoke_once` the stored run's (workspace id, project id) as `at=`, so the connection the
+    session re-reads is held to the run's own scope."""
+    a, _ = pair
+    seen: list[object] = []
+
+    def invoke_once(conns: object, spec: dict[str, Any], args: object, **kw: Any) -> object:
+        seen.append(kw.get("at"))
+        return {"ok": True}
+
+    monkeypatch.setattr(tool_runtime, "invoke_once", invoke_once)
+    with opened(a.tenant) as s:
+        stored = repo.get_run(s, a.tenant, a.run)
+        assert stored is not None
+        assert _run_one_tool(_ctx(s, settings, a, a.run), a.tool, "near") == OK
+    assert seen == [(stored["workspace_id"], stored["project_id"])]
+
+
 def test_a_pinned_tool_runs_only_through_a_connection_at_the_runs_scope(
     pair: tuple[Client, Client], opened: Any, settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
