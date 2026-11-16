@@ -1,5 +1,9 @@
 # Handoff — 2026-11-16, end of session 8 (lead)
 
+> **Build paused by the owner (2026-11-16 08:05). Resume only when the owner says so.**
+> - Current state and next step: `HANDOFF-f36a4b30-e2d0-4bef-9095-75e853a2768e.md`. It supersedes "The exact next step" below.
+> - Session a9f416a6 was launched during the pause and did no work: `HANDOFF-a9f416a6-927e-4828-961e-84805e10cb51.md`.
+
 Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md`, then this file. No agent is running and no merge is half done. Session 8 handed off between units at about 250k lead tokens.
 
 ## Finished in session 8
