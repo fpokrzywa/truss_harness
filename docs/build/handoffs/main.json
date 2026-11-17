@@ -1,0 +1,8 @@
+{
+  "session_id": "6ba4d0b2-fccf-49ab-9fb0-d2dc0c262511",
+  "head_sha": "c7fe0dd8c13edc4efc837056e4a981c481e91ad4",
+  "branch": "main",
+  "unit_in_progress": "none",
+  "next_step": "Time the full backend suite on an idle machine against the 20-minute target (HANDOFF.md step 1), then charter 7: file factory issues for the open known defects and start sub-project 2",
+  "written_at": "2026-11-17T13:32:53Z"
+}
