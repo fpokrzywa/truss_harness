@@ -4,7 +4,9 @@ start over an unreachable database, B-2230) and wired the way `create_app` wires
 
 from __future__ import annotations
 
+import socket
 import time
+from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,11 +15,20 @@ from shifde.app import create_app
 from shifde.core.db import Database
 from shifde.core.settings import Settings
 
-CLOSED_LOCAL_PORT = "postgresql+psycopg://x:y@127.0.0.1:1/none"  # refused at once
-SILENT_HOST = "postgresql+psycopg://x:y@192.0.2.1:5432/none"  # RFC 5737 TEST-NET: never answers
+CLOSED_LOCAL_PORT = "postgresql+psycopg://x:y@127.0.0.1:1/none"  # refused
 
 
-@pytest.mark.parametrize("url", [CLOSED_LOCAL_PORT, SILENT_HOST], ids=["refused", "silent"])
+@pytest.fixture(params=["refused", "silent"])
+def url(request: pytest.FixtureRequest) -> Iterator[str]:
+    """`refused`: a closed local port. `silent`: a local listener this test opens and never accepts
+    from, so the handshake completes in the kernel's backlog and the server never answers."""
+    if request.param == "refused":
+        yield CLOSED_LOCAL_PORT
+        return
+    with socket.create_server(("127.0.0.1", 0), backlog=8) as listener:
+        yield f"postgresql+psycopg://x:y@127.0.0.1:{listener.getsockname()[1]}/none"
+
+
 def test_ready_answers_503_within_5s_when_database_is_down(settings: Settings, url: str) -> None:
     app = create_app(settings)
     app.state.db.dispose()
