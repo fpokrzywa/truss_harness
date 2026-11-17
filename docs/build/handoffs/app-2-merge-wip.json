@@ -1,0 +1,8 @@
+{
+  "session_id": "b4750c53-8554-4140-be61-c71856e195c3",
+  "head_sha": "53aaee98b6dc25a4f55cb4b38491ced38f5f1880",
+  "branch": "app-2-merge-wip",
+  "unit_in_progress": "app-2",
+  "next_step": "On branch app-2-merge-wip (.worktrees/app-2): verify the unverified merge-gate fix round B-2452/B-2453 (checks, tests/app tests/runtime tests/cli, isolation review of runtime/lifecycle.py diff), then lock merge, rebase onto origin/main, gates.py --name app-2-merge 13/13, push HEAD:main, unlock merge, unit.py done app-2. Details: docs/build/units/app-2.md 'Exact next step'.",
+  "written_at": "2026-11-17T07:44:52Z"
+}
