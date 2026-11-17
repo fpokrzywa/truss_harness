@@ -8,7 +8,8 @@ Each lead gets goal N from docs/build/GOALS.md. A lead stops in one of three way
   pushed on top of a clean tree. A fresh lead starts at once.
   - Fallback: if the repo record is missing but the transcript shows `HANDOFF COMPLETE` and the
     checkout is clean and pushed, that also counts as a handoff, and a warning is logged.
-- **Goal met.** Goal 1's STATUS check passes, or the goal check recorded met=true. The supervisor
+- **Goal met.** Goal 1's STATUS check passes, or the goal check recorded met=true for a lead that
+  did not hand off (outcome A also records met=true, so a handoff never counts). The supervisor
   prints `GOAL-DONE` (goal 1) or `GOAL-MET` (goal 2) and exits, for the supervising session to verify.
 - **Anything else** (a crash, a forced turn end, usage limits, a forced stop). The supervisor:
   1. salvages the checkout: stashes uncommitted work, and keeps unpushed commits on a
@@ -412,10 +413,14 @@ def supervise(n: int, run=run_lead, sleep=time.sleep, repo: str = REPO, goal_don
             return finish("GOAL-DONE goal=1")
         sid, text, started, log, forced = run(n, salvage_note)
         salvage_note = ""
-        if (n == 1 and goal_done(repo)) or (sid and met(sid, started)):
-            return finish(f"GOAL-DONE goal={n}" if n == 1 else f"GOAL-MET goal={n} sid={sid} (verify by hand)")
+        if n == 1 and goal_done(repo):
+            return finish("GOAL-DONE goal=1")
         kind, detail = ("unrecognized", "stopped by the supervisor at its context limit") if forced \
             else classify_end(repo, sid, started, text, handed_off)
+        # The goal check also records met=true for outcome A (a handoff), so it proves the goal only
+        # when the lead did not hand off (2026-11-17: goal 2's first handoff was read as GOAL-MET).
+        if not kind.startswith("handoff") and sid and met(sid, started):
+            return finish(f"GOAL-DONE goal={n}" if n == 1 else f"GOAL-MET goal={n} sid={sid} (verify by hand)")
         note(f"end classified: {kind}: {detail}")
         if kind == "handoff":
             failures = 0

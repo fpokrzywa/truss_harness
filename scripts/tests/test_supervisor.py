@@ -223,6 +223,24 @@ class LoopTests(RepoCase):
         self.assertTrue(line.startswith("FAILING"))
         self.assertEqual(sleeps, [60, 120, 240, 480] + [60, 120, 240, 480, 960])
 
+    def test_goal_2_handoff_is_not_goal_met_even_though_the_goal_check_says_met(self) -> None:
+        # 2026-11-17: outcome A (handoff) also records met=true; goal 2 stopped after its first lead.
+        calls = []
+
+        def fake_run(n, note):
+            calls.append(n)
+            sid = f"s{len(calls)}"
+            if len(calls) < 3:
+                self.commit_push(f"g{len(calls)}.txt", "x\n")
+                handoff.write(self.repo, "u", "next", sid)
+            return sid, "", 0.0, "fake.log", False
+
+        line = supervise.supervise(2, run=fake_run, sleep=lambda s: None, repo=str(self.repo),
+                                   goal_done=lambda r: False, met=lambda s, t: True,
+                                   handed_off=lambda s, t: False)
+        self.assertEqual(len(calls), 3)  # two handoffs relaunched; the third lead's met=true ends it
+        self.assertTrue(line.startswith("GOAL-MET goal=2 sid=s3"), line)
+
     def test_pause_file_holds_new_leads(self) -> None:
         Path(supervise.PAUSE).parent.mkdir(parents=True, exist_ok=True)
         Path(supervise.PAUSE).write_text("owner pause")
