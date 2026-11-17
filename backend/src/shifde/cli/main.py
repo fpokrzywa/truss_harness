@@ -91,8 +91,8 @@ def _owner_session(settings: Settings) -> Iterator[Session]:
 
 
 @db_app.command("upgrade")
-def db_upgrade(revision: Annotated[str, typer.Argument()] = "head") -> None:
-    """Upgrade the database to REVISION (default: head)."""
+def db_upgrade(revision: Annotated[str, typer.Argument()] = "heads") -> None:
+    """Upgrade the database to REVISION (default: heads, every module's migration branch)."""
     settings = _settings()
     try:
         command.upgrade(alembic_config(settings.effective_migration_url), revision)
