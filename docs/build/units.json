@@ -93,7 +93,7 @@
         "frontend-nav"
       ],
       "lead_model": "sonnet",
-      "status": "todo",
+      "status": "done",
       "brief": "Runtime screens (runs, approvals) and the platform status page, after APP-2 mounts their routes."
     },
     {
