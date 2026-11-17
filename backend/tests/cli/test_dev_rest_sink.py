@@ -6,6 +6,9 @@ each request's method and path (never a header or a body) and stops the server o
 
 from __future__ import annotations
 
+import http.client
+import json
+
 import httpx
 import pytest
 from typer.testing import CliRunner
@@ -53,12 +56,23 @@ def test_dev_rest_sink_echoes_method_and_path_and_stops_on_ctrl_c(
             raise KeyboardInterrupt
         # the first tick: one authorized request reaches the sink before the echo loop reads it
         (server,) = servers
-        r = httpx.post(
-            f"{server.base_url}/items?q=secret-value",
-            json={"body": "secret-body"},
-            headers={"Authorization": f"Bearer {TOKEN}"},
-        )
-        assert r.status_code != 401, r.text  # authorized (an unknown path still is recorded)
+        # the test's own request goes through `http.client`, which logs nothing: httpx logs each
+        # request URL (query included) at INFO, and once an earlier test in this process has
+        # configured the app's logging that line lands on the stdout `CliRunner` captures as the
+        # command's output (B-2453; the sink itself never logs a request)
+        conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+        try:
+            conn.request(
+                "POST",
+                "/items?q=secret-value",
+                body=json.dumps({"body": "secret-body"}),
+                headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"},
+            )
+            r = conn.getresponse()
+            text = r.read().decode()
+        finally:
+            conn.close()
+        assert r.status != 401, text  # authorized (an unknown path still is recorded)
 
     monkeypatch.setattr("time.sleep", sleep)
     result = CliRunner().invoke(cli_main.app, ["dev-rest-sink", "--port", "0"])

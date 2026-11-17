@@ -94,9 +94,19 @@ def finalize(
     waiting_reason: str | None = None,
 ) -> None:
     """Persist the outcome of an advance (fenced by the lease token)."""
-    terminal = to_status in state.TERMINAL
     tenant_id = ctx.tenant_id
     with ctx.txn():
+        if to_status == state.WAITING:
+            # B-2452: a cancel request that landed after the run's last checkpoint (the API, or
+            # `cancel_open_children` of a fail_fast pipeline, which flags a running child and
+            # finishes its jobs) ends the run cancelled instead of parking it with nobody left
+            # to cancel it. `ctx.txn()` holds the run row lock, so a canceller either committed
+            # before this read or finds the run ended (this client's own run row).
+            ctl = repo.control_state(ctx.session, tenant_id, ctx.run_id)
+            if ctl is not None and ctl["cancel_requested_at"] is not None:
+                to_status, waiting_reason = state.CANCELLED, None
+                error_class, message = state.CANCELLED_CLASS, "cancelled"
+        terminal = to_status in state.TERMINAL
         values: dict[str, Any] = {}  # Any: run columns
         if terminal:
             values["finished_at"] = utcnow()

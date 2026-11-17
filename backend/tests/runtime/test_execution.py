@@ -204,6 +204,49 @@ def test_a_graceful_shutdown_ends_a_cancel_requested_run_cancelled_not_pending(
         assert (outcome, status) == ("released", "pending")
 
 
+@pytest.mark.parametrize("cancel", [True, False], ids=["cancel-requested", "no-cancel"])
+def test_a_run_cancelled_after_its_last_checkpoint_is_not_parked_waiting(
+    cancel: bool,
+    seeds: tuple[Seed, Seed],
+    opened: Any,
+    settings: Settings,
+    owner_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B-2452: the run passes its last checkpoint, then (another connection) a cancel request
+    lands (the API, or a fail_fast pipeline's `cancel_open_children`, which flags a running
+    child and finishes its jobs), then the run asks to wait (an approval): it ends `cancelled`;
+    parking it `waiting_for_approval` left it there with nobody to cancel it. Without a cancel
+    request the run is parked."""
+    a, b = seeds
+    with owner_db.session() as o:
+        b_before = client_state(o, b.tenant)
+
+    def parks(runner: AgentRunner) -> object:
+        runner.ctx.checkpoint()  # no cancel request yet
+        if cancel:
+            with opened(a.tenant) as other:  # the canceller's own transaction, committed
+                runtime_repo.request_cancel(other, a.tenant, a.running, a.user)
+                other.commit()
+        raise state.Waiting("child_runs")  # a reason that parks without an approval row
+
+    monkeypatch.setattr(AgentRunner, "run", parks)
+    with opened(a.tenant) as s:
+        ctx = run_context(s, settings, run_row(s, a.tenant, a.running))
+        outcome = lifecycle._run(ctx)
+    with owner_db.session() as o:
+        [(status, error_class, lease)] = _q(
+            o, "SELECT status, error_class, lease_token FROM shifde.runs WHERE id = :r",
+            r=a.running,
+        )  # fmt: skip
+        assert client_state(o, b.tenant) == b_before
+    assert outcome == "done" and lease is None
+    if cancel:
+        assert (status, error_class) == ("cancelled", state.CANCELLED_CLASS)
+    else:
+        assert (status, error_class) == ("waiting_for_approval", None)
+
+
 # ------------------------------------------------------------------ context.py and gate.py
 def test_the_checkpoint_fence_and_budget_scope_act_on_the_runs_own_rows(
     seeds: tuple[Seed, Seed], opened: Any, settings: Settings
