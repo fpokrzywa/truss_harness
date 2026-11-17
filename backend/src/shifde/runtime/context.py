@@ -143,6 +143,12 @@ class RunContext:
         """Cooperative control point (before every gate and between steps)."""
         if self.stop.is_set():
             raise state.Shutdown()
+        self.control()
+
+    def control(self) -> None:
+        """The run's own control state: a lost lease, a cancel request, an agent child whose
+        pipeline parent ended, the deadline (the checkpoint without the worker's stop flag; a
+        graceful shutdown reads it before handing the run back, B-2440)."""
         if self.lease_lost.is_set():
             raise state.LeaseLost()
         ctl = repo.control_state(self.session, self.tenant_id, self.run_id)

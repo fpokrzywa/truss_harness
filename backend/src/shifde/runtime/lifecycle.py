@@ -529,6 +529,16 @@ def _run_inner(ctx: RunContext) -> str:
         return "lease_lost"
     except state.Shutdown:
         ctx.session.rollback()
+        try:
+            # a cancel requested before the shutdown (the API, or `cancel_open_children` of a
+            # fail_fast pipeline, which has already finished the child's jobs) ends the run
+            # cancelled; handing it back would leave it `pending` (B-2440)
+            ctx.control()
+        except state.Cancelled:
+            finalize(ctx, state.CANCELLED, error_class=state.CANCELLED_CLASS, message="cancelled")
+            return "done"
+        except state.TimedOut:
+            pass  # the next worker times it out
         _release(ctx)
         return "released"
     except state.Waiting as exc:

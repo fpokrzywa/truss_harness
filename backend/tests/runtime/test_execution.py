@@ -31,7 +31,9 @@ from shifde.core.errors import AppError, NotFound
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.ledger.enforcement import ReserveDetail
-from shifde.runtime import gate, settle, state
+from shifde.runtime import gate, lifecycle, settle, state
+from shifde.runtime import repository as runtime_repo
+from shifde.runtime.agent import AgentRunner
 from shifde.runtime.context import RunContext
 from tests._support.tenants import add_tenants
 from tests.build.service_support import service_for
@@ -160,6 +162,46 @@ def test_the_last_finished_child_wakes_its_waiting_parent(
         assert _q(o, "SELECT status FROM shifde.jobs WHERE run_id = :r", r=a.waiting) == [
             ("queued",)
         ]
+
+
+@pytest.mark.parametrize("cancel", [True, False], ids=["cancel-requested", "no-cancel"])
+def test_a_graceful_shutdown_ends_a_cancel_requested_run_cancelled_not_pending(
+    cancel: bool,
+    seeds: tuple[Seed, Seed],
+    opened: Any,
+    settings: Settings,
+    owner_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B-2440: the worker stops (graceful shutdown) while its run has a cancel request (the API,
+    or a fail_fast pipeline's `cancel_open_children`, which already finished the run's jobs): the
+    run ends `cancelled`; handing it back left it `pending` with no job. Without a cancel request
+    the shutdown still hands the run back."""
+    a, b = seeds
+    with owner_db.session() as o:
+        b_before = client_state(o, b.tenant)
+
+    def stopped(runner: AgentRunner) -> object:
+        runner.ctx.stop.set()
+        runner.ctx.checkpoint()  # the next control point after the stop
+        raise AssertionError("the checkpoint must raise")
+
+    monkeypatch.setattr(AgentRunner, "run", stopped)
+    with opened(a.tenant) as s:
+        if cancel:
+            runtime_repo.request_cancel(s, a.tenant, a.running, a.user)
+            s.commit()
+        ctx = run_context(s, settings, run_row(s, a.tenant, a.running))
+        outcome = lifecycle._run(ctx)
+    with owner_db.session() as o:
+        [(status, error_class)] = _q(
+            o, "SELECT status, error_class FROM shifde.runs WHERE id = :r", r=a.running
+        )
+        assert client_state(o, b.tenant) == b_before
+    if cancel:
+        assert (outcome, status, error_class) == ("done", "cancelled", state.CANCELLED_CLASS)
+    else:
+        assert (outcome, status) == ("released", "pending")
 
 
 # ------------------------------------------------------------------ context.py and gate.py
@@ -360,6 +402,7 @@ CASES: dict[str, Case] = {
         s, a.tenant, t.running, a.user
     ),
     "context.checkpoint (run)": lambda s, st, a, t: _forged(s, st, a, t).checkpoint(),
+    "context.control": lambda s, st, a, t: _forged(s, st, a, t).control(),
     "context.checkpoint (parent)": lambda s, st, a, t: run_context(
         s, st, {**run_row(s, a.tenant, a.pipeline_child), "parent_run_id": t.pipeline}
     ).checkpoint(),
@@ -457,5 +500,7 @@ def test_every_function_taking_a_run_is_a_case() -> None:
     # fenced `ctx.txn()` (the fence is the `context.txn` case); `_deny` goes through
     # `record_decision` and `ctx.audit`
     assert public - covered <= {"gate.uuid_of", "gate.append_decision", "gate.GateResult"}
-    methods = {f"context.{m}" for m in ("checkpoint", "reload_run", "txn", "audit", "env")}
+    methods = {
+        f"context.{m}" for m in ("checkpoint", "control", "reload_run", "txn", "audit", "env")
+    }
     assert methods <= covered
