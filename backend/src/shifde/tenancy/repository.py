@@ -12,6 +12,22 @@ from sqlalchemy.orm import Session
 from shifde.tenancy.models import InstallationSettings, Project, Tenant, Workspace
 
 
+# ------------------------------------------------------------------ workers (platform status)
+def worker_heartbeats(session: Session, window_seconds: int) -> tuple[int, Any]:
+    """(running workers that beat within `window_seconds`, latest heartbeat or None). `workers`
+    is installation-level (runtime_0001: heartbeat rows of host, pid and version, no client
+    column); the caller is the platform administrator (`service.platform_status`)."""
+    row = session.execute(
+        text(
+            "SELECT count(*) FILTER (WHERE status = 'running' "
+            "AND heartbeat_at > now() - make_interval(secs => :win)), max(heartbeat_at) "
+            "FROM shifde.workers"
+        ),
+        {"win": window_seconds},
+    ).one()
+    return int(row[0]), row[1]
+
+
 # ------------------------------------------------------------------ tenants
 def get_tenant(session: Session, tenant_id: UUID) -> Tenant | None:
     return session.get(Tenant, tenant_id)

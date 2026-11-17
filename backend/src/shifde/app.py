@@ -1,7 +1,7 @@
 """FastAPI application factory.
 
-SETH 3ba0e06 `app.py` with the changes recorded in DECISIONS B-2230..B-2236: the 11 routers that
-exist on main (runtime's is APP-2, installation's public branding router is not ported, B-2221),
+SETH 3ba0e06 `app.py` with the changes recorded in DECISIONS B-2230..B-2236: SETH's routers
+(runtime's mounted in APP-2, B-2400; installation's public branding router is not ported, B-2221),
 the OIDC routes (unmounted by B-2232, mounted by B-2263), the limiters and the body cap
 carry_forward assigns to the app, no uvicorn `ProxyHeadersMiddleware` (the client address is
 `resolve_client_ip`, B-201).
@@ -42,6 +42,8 @@ from shifde.observability import tracing
 from shifde.observability.logging import configure_logging
 from shifde.observability.middleware import RequestIdMiddleware
 from shifde.ontology import api as ontology_api
+from shifde.runtime import api as runtime_api
+from shifde.runtime.governance import TokenBudgetHooks
 from shifde.tenancy import api as tenancy_api
 from shifde.vendors import api as vendors_api
 
@@ -107,6 +109,8 @@ def create_app(
         resolver=resolver or default_resolver,
         inner=egress_transport,
     )
+    # the runtime's governance hooks (budgets, policies, alerts), as SETH's app sets them
+    app.state.governance = TokenBudgetHooks()
     install_error_handlers(app)
     # innermost first: the cap answers inside CORS and the request id, so a 413 carries both
     app.add_middleware(MaxBodySizeMiddleware, max_bytes=settings.max_request_body_bytes)
@@ -144,7 +148,9 @@ def create_app(
     features.register("integrate")
     app.include_router(build_api.router, dependencies=guard)
     features.register("build")
-    # `operate` and `pipelines` are registered with runtime's router (APP-2), not before
+    app.include_router(runtime_api.router, dependencies=guard)
+    features.register("operate")
+    features.register("pipelines")
     app.include_router(ontology_api.router, dependencies=guard)
     features.register("ontology")
     app.include_router(governance_api.router, dependencies=guard)

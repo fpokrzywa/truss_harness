@@ -689,6 +689,37 @@ def test_me_permissions_reflect_effective_scope(client: TestClient, world: World
     assert client.get(f"{B}/me/permissions", headers=h).status_code == 404
 
 
+def test_session_advertises_exactly_the_implemented_features(
+    client: TestClient, world: World
+) -> None:
+    # SETH 3ba0e06 `test_p2_iam.py`, unchanged: `operate` and `pipelines` come with the runtime
+    # router (APP-2, B-2400)
+    r = client.post(
+        "/api/auth/local/login",
+        json={"email": VIEWER, "password": world.passwords[VIEWER]},
+    )
+    assert r.status_code == 200 and r.json()["features"] == [
+        "build",
+        "governance",
+        "integrate",
+        "ontology",
+        "operate",
+        "pipelines",
+        "security",
+        "tenancy",
+    ]
+    assert set(client.get("/api/auth/session").json()["features"]) == {
+        "build",
+        "tenancy",
+        "security",
+        "integrate",
+        "ontology",
+        "operate",
+        "pipelines",
+        "governance",
+    }
+
+
 def test_feature_registry_is_per_instance_sorted_and_validates_keys() -> None:
     from shifde.core.features import FeatureRegistry
 

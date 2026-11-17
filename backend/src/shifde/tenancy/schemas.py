@@ -2,7 +2,7 @@
 
 Ported as far as `service` needs (part 2a). Change from SETH: organization lists use
 `OrgSummaryOut`, without the client-written `description` and `settings` (tenancy review 1 item
-4, DECISIONS B-1011). The platform-status shapes come with `platform_status` (B-1013)."""
+4, DECISIONS B-1011). The platform-status shapes are SETH's (`platform_status`, B-2401)."""
 
 from __future__ import annotations
 
@@ -118,3 +118,28 @@ class DashboardOut(BaseModel):
     scope: DashboardScopeOut
     counts: DashboardCountsOut
     recent_activity: list[ActivityOut]
+
+
+class DatabaseStatusOut(BaseModel):
+    status: str
+    revision: str | None
+    head: str
+
+
+class AuthStatusOut(BaseModel):
+    local_enabled: bool
+    oidc_providers: int
+
+
+class WorkerStatusOut(BaseModel):
+    status: Literal["healthy", "stale", "not_running"]
+    count: int = 0
+    last_heartbeat_at: datetime | None = None
+
+
+class PlatformStatusOut(BaseModel):
+    version: str
+    environment: str
+    database: DatabaseStatusOut
+    auth: AuthStatusOut
+    worker: WorkerStatusOut

@@ -1,5 +1,6 @@
-"""The mounted route table, the runtime/branding exclusions, and two seeded organizations seen
-through the mounted API (plan row 19). The OpenID Connect routes are mounted (B-2263)."""
+"""The mounted route table, the branding exclusion, and two seeded organizations seen through the
+mounted API (plan row 19). The OpenID Connect routes (B-2263), the runtime routes and
+`GET /api/v1/platform/status` (APP-2, B-2400, B-2401) are mounted."""
 
 from __future__ import annotations
 
@@ -15,8 +16,7 @@ from tests._support.fullapp import World, fresh_world, full_client, login
 SNAPSHOT = json.loads((Path(__file__).parent / "seth_routes_3ba0e06.json").read_text("utf-8"))
 
 OIDC = {("GET", "/api/auth/oidc/{idp_id}/login"), ("GET", "/api/auth/oidc/{idp_id}/callback")}
-# Routes SETH 3ba0e06 has and this app does not mount yet, each with its reason:
-# `GET /api/v1/platform/status` reads the runtime `workers` table: runtime port (B-1020)
+# mounted with the runtime port (APP-2, B-2401; was B-1020)
 PLATFORM_STATUS = {("GET", "/api/v1/platform/status")}
 # unified addition (kept from the skeleton, B-2231)
 HEALTHZ = {("GET", "/healthz")}
@@ -52,19 +52,18 @@ def _mounted(client: TestClient) -> set[tuple[str, str]]:
     return {(m.upper(), p) for p, ops in paths.items() for m in ops}
 
 
-def test_the_mounted_route_table_is_sethss_minus_runtime_branding_and_status(
+def test_the_mounted_route_table_is_sethss_minus_branding(
     client: TestClient,
 ) -> None:
     seth = _pairs(SNAPSHOT["all"])
     runtime, branding = _pairs(SNAPSHOT["runtime"]), _pairs(SNAPSHOT["branding"])
     assert runtime and branding and seth >= OIDC | PLATFORM_STATUS | SETH_GROUP_WRITES
-    expected = (
-        (seth - runtime - branding - PLATFORM_STATUS - SETH_GROUP_WRITES) | HEALTHZ | UNIFIED_ONLY
-    )
+    expected = (seth - branding - SETH_GROUP_WRITES) | HEALTHZ | UNIFIED_ONLY
     mounted = _mounted(client)
     assert mounted - expected == set(), "mounted but not in SETH"
     assert expected - mounted == set(), "in SETH but not mounted"
     assert mounted >= OIDC  # B-2263: the OpenID Connect routes are SETH's
+    assert mounted >= runtime | PLATFORM_STATUS  # APP-2: SETH's 16 runtime routes and status
     assert len(mounted) > 250
 
 

@@ -224,6 +224,9 @@ ROUTE_TESTS = {
         "test_a_cannot_list_read_create_or_change_bs_projects"
     ),
     ("GET", "/api/v1/orgs/{org}/dashboard"): "test_the_dashboard_counts_only_its_own_client",
+    ("GET", "/api/v1/platform/status"): (
+        "test_platform_status_answers_the_platform_administrator_and_no_client"
+    ),
 }
 
 
@@ -583,3 +586,26 @@ def test_tenant_idp_signs_in_existing_members_only_and_pins_the_session(
     ).scalar_one()
     assert pinned == a.tenant
     assert oidc_flow.failures(owner_session)[-1][0] == "unknown_identity_jit_off"
+
+
+def test_platform_status_answers_the_platform_administrator_and_no_client(
+    settings: Settings, world: World, people: People, owner_session: Session
+) -> None:
+    """SEC Minor-2 (APP-2, B-2401): installation status is the platform administrator's. A's
+    owner, A's viewer, B's owner, a person in both clients and that person's session pinned to B
+    are refused alike (403, no status in the body); the platform administrator gets it."""
+    url = "/api/v1/platform/status"
+    for email in (people.owner_a, people.viewer_a, people.owner_b, people.both):
+        with tenancy_client(settings) as c:
+            login(c, email)
+            r = c.get(url)
+            assert r.status_code == 403, (email, r.text)
+            assert "worker" not in r.json() and "database" not in r.json()
+    token, _ = pinned_session(owner_session, people.both_id, world.b.tenant)
+    with tenancy_client(settings, cookies={COOKIE: token}) as c:
+        assert c.get(url).status_code == 403
+    with tenancy_client(settings) as c:
+        login(c, people.platform)
+        r = c.get(url)
+        assert r.status_code == 200, r.text
+        assert set(r.json()) == {"version", "environment", "database", "auth", "worker"}
