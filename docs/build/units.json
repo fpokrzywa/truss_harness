@@ -78,7 +78,7 @@
         "frontend-nav"
       ],
       "lead_model": "sonnet",
-      "status": "todo",
+      "status": "done",
       "brief": "Port SETH's build and ontology screens (routers already mounted on main). Same approach as front-end areas 1-3 (docs/build/frontend-areas.md, B-1107)."
     },
     {
