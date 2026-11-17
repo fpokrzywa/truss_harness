@@ -43,3 +43,9 @@ One application (SETH) merging SETH, the FDE SDK and Agent Factory into one code
 - `cd frontend; pnpm lint; pnpm typecheck; pnpm test; pnpm build`
 - `python -m unittest discover -s scripts/tests`
 - All of the above from a clean checkout of a ref, one line per gate: `python scripts/gates.py --ref <branch|commit> [--tests tests/<module> ...] [--no-frontend]` (worktree `.worktrees/verify`, logs in `.worktrees/_gate-logs/`; cluster must be running). `pytest -n 8` is faster than `-n auto` on this 96-core machine.
+
+## Software factory
+
+`/factory run` builds every open GitHub issue labeled `factory` through intake, spec, build, gate, review, approve, one PR per issue (concurrency 1; intake runs on sonnet). State is in `factory/jobs/` (gitignored); `factory/bin/job` is its only writer (`factory/bin/job queue` shows what `/factory run` would do). Checks: `bash factory/checks.sh` from a checkout root (cluster running): the gate set above, with backend pytest limited to a core set (row-level security schema, schema comparison with SETH, startup role check, cross-client tests) plus the backend test files the branch changed vs `origin/main`; `FACTORY_FULL_PYTEST=1` runs the whole suite (`-n 8`). The full suite stays a human step before merging. Each job's own database comes from `python scripts/dev_db.py env` (`factory/bin/jobdb ensure` also migrates and seeds it). Dashboard: `cd factory; python -m http.server`, then open http://localhost:8000/dashboard.html.
+
+Each job works in its own git worktree at `.worktrees/<job-id>` (gitignored); exclude `.worktrees/` in any tool that does not read `.gitignore`. The factory is GPLv3 (see `factory/NOTICE.md`): keep it in `factory/` and `.claude/`, never in `backend/src` or `frontend/src`. `factory/*`, `.claude/*`, Alembic migrations and `backend/tests/schema/*` are protected paths: jobs cannot change them.
