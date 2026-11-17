@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import os
 import re
+import secrets
 import tempfile
 import uuid
 from collections.abc import Iterator
@@ -226,6 +227,31 @@ def owner_url(test_database: tuple[str, str]) -> str:
 def worker_admin_url(admin_url: str, test_database: tuple[str, str]) -> str:
     """Superuser URL of this worker's database (for tests that create throwaway roles/objects)."""
     return _with_db(admin_url, make_url(test_database[0]).database or "")
+
+
+@pytest.fixture(scope="session")
+def sample_db_url(run_id: str, admin_url: str) -> Iterator[str]:
+    """A throwaway `shifde_sample`-shaped database + read-only reader role (P3 PostgreSQL target).
+
+    SETH 3ba0e06 `tests/conftest.py::sample_db_url` (B-2420): built through the local cluster's
+    superuser URL exactly like `shifde-admin dev-sample-data`; unique names so concurrent workers
+    and runs never collide; dropped at session end (best effort). The database name carries this
+    run's prefix, so `pytest_sessionfinish` drops it too if the worker dies."""
+    from shifde.cli.sampledata import build_sample_database, drop_sample_database
+
+    suffix = f"{os.getpid()}_{secrets.token_hex(3)}"
+    db_name, role, password = (
+        f"{DB_PREFIX}{run_id}_sample{suffix}",
+        f"shifde_sample_r{run_id}_{suffix}",
+        secrets.token_hex(12),
+    )
+    build_sample_database(admin_url, db_name, role, password)
+    admin = make_url(admin_url)
+    try:
+        yield f"postgresql://{role}:{password}@{admin.host}:{admin.port}/{db_name}"
+    finally:
+        with contextlib.suppress(Exception):  # best effort; a leftover database is harmless
+            drop_sample_database(admin_url, db_name, role)
 
 
 @pytest.fixture(scope="session")

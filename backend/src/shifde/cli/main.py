@@ -1,20 +1,24 @@
 """`shifde-admin` command line (Typer). Runs with owner (migration) credentials.
 
-Not ported (DECISIONS B-1101, B-2221): `profile`, `backup`, `demo`, `dev-sample-data`,
-`dev-sample-pipeline`, `dev-sample-ontology`, `dev-rest-sink` (carry_forward, app part 1)."""
+Not ported (DECISIONS B-1101, B-2221): `profile`, `backup`, `demo`, `dev-sample-pipeline`,
+`dev-sample-ontology`, `dev-rest-sink` (carry_forward, app part 1). `dev-sample-data` is ported
+(app-2 B-2420)."""
 
 from __future__ import annotations
 
 import json
 import os
+import secrets
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated
 
+import psycopg
 import typer
 from alembic import command
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -23,11 +27,13 @@ from shifde.adapters.conformance import SuiteSkipped, run_suite
 from shifde.adapters.evidence import record_run
 from shifde.adapters.registry import AdapterRegistry
 from shifde.audit import service as audit
+from shifde.cli.sampledata import build_sample_database
 from shifde.cli.seeding import STAFF_USERS, seed_dev_data
 from shifde.cli.seeding import USERS as SEED_USERS
 from shifde.core import configtools
 from shifde.core.crypto import CryptoError
 from shifde.core.db import Database
+from shifde.core.devenv import append_dev_env, read_dev_env
 from shifde.core.errors import AppError
 from shifde.core.health import database_reachable, migration_state
 from shifde.core.migrations import alembic_config, code_head
@@ -377,6 +383,58 @@ def adapters_verify(
         raise _fail(f"database error: {exc.__class__.__name__}") from exc
     if failed:
         raise typer.Exit(code=1)
+
+
+SAMPLE_DB = "shifde_sample"
+SAMPLE_ROLE = "shifde_sample_reader"
+
+
+@app.command("dev-sample-data")
+def dev_sample_data(
+    recreate: Annotated[bool, typer.Option(help="Drop and recreate the sample database")] = False,
+) -> None:
+    """Create the `shifde_sample` database + read-only role (SHIFDE_ENV=development only).
+
+    Uses superuser access (SHIFDE_SAMPLE_ADMIN_DATABASE_URL or SHIFDE_TEST_ADMIN_DATABASE_URL, from
+    the environment or .devdata/dev.env). A random reader password is appended to .devdata/dev.env
+    together with SHIFDE_SAMPLE_DATABASE_URL (never printed)."""
+    settings = _settings()
+    if not settings.is_development:
+        raise _fail("dev-sample-data refuses to run unless SHIFDE_ENV=development")
+    dev = read_dev_env()
+    admin_url = (
+        os.environ.get("SHIFDE_SAMPLE_ADMIN_DATABASE_URL")
+        or os.environ.get("SHIFDE_TEST_ADMIN_DATABASE_URL")
+        or dev.get("SHIFDE_SAMPLE_ADMIN_DATABASE_URL")
+        or dev.get("SHIFDE_TEST_ADMIN_DATABASE_URL")
+    )
+    if not admin_url:
+        raise _fail("no superuser URL: set SHIFDE_SAMPLE_ADMIN_DATABASE_URL (or start the dev DB)")
+    password = dev.get("SHIFDE_SAMPLE_READER_PASSWORD") or secrets.token_urlsafe(24)
+    try:
+        build_sample_database(admin_url, SAMPLE_DB, SAMPLE_ROLE, password, recreate=recreate)
+    except psycopg.Error as exc:
+        raise _fail(f"database error: {exc.__class__.__name__}") from exc
+    admin = make_url(admin_url)
+    reader_url = make_url("postgresql://").set(
+        username=SAMPLE_ROLE,
+        password=password,
+        host=admin.host,
+        port=admin.port,
+        database=SAMPLE_DB,
+    )
+    updates = {}
+    if "SHIFDE_SAMPLE_READER_PASSWORD" not in dev:
+        updates["SHIFDE_SAMPLE_READER_PASSWORD"] = password
+    wanted_url = reader_url.render_as_string(hide_password=False)
+    if dev.get("SHIFDE_SAMPLE_DATABASE_URL") != wanted_url:
+        updates["SHIFDE_SAMPLE_DATABASE_URL"] = wanted_url
+    if updates:
+        append_dev_env(updates)
+    typer.echo(
+        f"sample database '{SAMPLE_DB}' ready on {admin.host}:{admin.port} "
+        f"(read-only role '{SAMPLE_ROLE}'; connection URL in .devdata/dev.env)"
+    )
 
 
 @app.command("dev-sample-rates")
