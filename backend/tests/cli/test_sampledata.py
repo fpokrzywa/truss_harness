@@ -58,3 +58,27 @@ def test_dev_sample_data_refuses_outside_development(
     assert result.exit_code == 1
     assert "refuses to run unless SHIFDE_ENV=development" in result.output
     assert built == []
+
+
+@pytest.mark.parametrize(
+    ("command", "module", "seeder"),
+    [
+        ("dev-sample-pipeline", "shifde.cli.sample_pipeline", "seed_sample_pipeline"),
+        ("dev-sample-ontology", "shifde.cli.sample_ontology", "seed_sample_ontology"),
+    ],
+)
+def test_dev_sample_pipeline_and_ontology_refuse_outside_development(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    module: str,
+    seeder: str,
+) -> None:
+    production = settings.model_copy(update={"env": "production"})
+    monkeypatch.setattr(cli_main, "_settings", lambda: production)
+    seeded: list[str] = []
+    monkeypatch.setattr(f"{module}.{seeder}", lambda *a, **k: seeded.append("x"))
+    result = CliRunner().invoke(cli_main.app, [command])
+    assert result.exit_code == 1
+    assert f"{command} refuses to run unless SHIFDE_ENV=development" in result.output
+    assert seeded == []
