@@ -19,7 +19,6 @@ from filelock import FileLock
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import NullPool
 
 from shifde.core.db import Database
 from shifde.core.settings import Settings
@@ -46,7 +45,7 @@ class _Dropper:
     """
 
     def __init__(self, admin_url: str) -> None:
-        self._admin = create_engine(admin_url, isolation_level="AUTOCOMMIT", poolclass=NullPool)
+        self._admin = create_engine(admin_url, isolation_level="AUTOCOMMIT", pool_size=2)
         self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="drop-test-db")
         self._pending: list[Future[None]] = []
 
@@ -73,8 +72,22 @@ def _dropper(admin_url: str) -> Iterator[_Dropper]:
     dropper.close()
 
 
+@pytest.fixture(scope="session")
+def _admin_engine(admin_url: str) -> Iterator[Engine]:
+    """One pooled superuser engine per worker: opening a connection costs about 0.3 s on this
+    machine, and every test used to open (and discard) two."""
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT", pool_size=2, max_overflow=2)
+    yield engine
+    engine.dispose()
+
+
+_READY_TEMPLATES: set[str] = set()  # templates this worker has seen finished (they never change)
+
+
 @pytest.fixture
-def test_database(run_id: str, admin_url: str, _dropper: _Dropper) -> Iterator[tuple[str, str]]:
+def test_database(
+    run_id: str, _admin_engine: Engine, _dropper: _Dropper
+) -> Iterator[tuple[str, str]]:
     """(app_url, owner_url) of a database cloned from the run's template for this test alone;
     dropped in the background once the test ends (`_Dropper`)."""
     app_url = _env("SHIFDE_TEST_DATABASE_URL")
@@ -82,15 +95,18 @@ def test_database(run_id: str, admin_url: str, _dropper: _Dropper) -> Iterator[t
     app_role = make_url(app_url).username or "shifde_app"
     owner_role = make_url(owner_url).username or "shifde_owner"
     name = f"{DB_PREFIX}{run_id}_a{uuid.uuid4().hex[:10]}"
-    admin = create_engine(admin_url, isolation_level="AUTOCOMMIT", poolclass=NullPool)
+    admin = _admin_engine
     try:
-        with FileLock(str(_lock_path(run_id))):  # only the one-time template build is serial
-            template = _ensure_template(admin, run_id, owner_url, app_role)
+        if run_id not in _READY_TEMPLATES:
+            with FileLock(str(_lock_path(run_id))):  # only the one-time template build is serial
+                template = _ensure_template(admin, run_id, owner_url, app_role)
+            _READY_TEMPLATES.add(run_id)
+        else:
+            template = f"{DB_PREFIX}{run_id}_tmpl"
         with admin.connect() as c:  # clones of a finished template can run side by side
             _create_database(c, name, owner_role, app_role, template)
         yield _with_db(app_url, name), _with_db(owner_url, name)
     finally:
-        admin.dispose()
         _dropper.drop(name)
 
 
