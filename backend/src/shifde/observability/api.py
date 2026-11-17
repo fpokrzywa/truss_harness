@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import hmac
 import json
 import threading
 import time
+from concurrent.futures import Future
 from typing import Any  # Any: JSON stats document
 
 import structlog
@@ -41,15 +43,46 @@ def health() -> HealthOut:
     return HealthOut(status="ok", version=__version__)
 
 
-@router.get("/ready", response_model=ReadyOut, responses={503: {"model": ReadyOut}})
-def ready(request: Request) -> JSONResponse:
-    """Readiness: database reachable and its migration revision equals the code head."""
-    db: Database = request.app.state.db
+READY_DEADLINE_SECONDS = 3.0
+_probe_slots = threading.BoundedSemaphore(2)  # at most two probes in flight
+
+
+def _probe(db: Database) -> dict[str, str]:
     checks = {"database": "error", "migrations": "unknown"}
     with db.session() as session:
         if database_reachable(session):
             checks["database"] = "ok"
             checks["migrations"] = migration_state(session).status
+    return checks
+
+
+def _run_probe(db: Database, result: Future[dict[str, str]]) -> None:
+    try:
+        result.set_result(_probe(db))
+    except BaseException as exc:
+        result.set_exception(exc)
+    finally:
+        _probe_slots.release()
+
+
+@router.get("/ready", response_model=ReadyOut, responses={503: {"model": ReadyOut}})
+def ready(request: Request) -> JSONResponse:
+    """Readiness: database reachable and its migration revision equals the code head. The probe
+    runs on a daemon thread under a deadline, so a database that is down answers 503 well before
+    the connect timeout and a stuck probe never delays process exit (audit Item 18, B-2523)."""
+    deadline = time.monotonic() + READY_DEADLINE_SECONDS
+    checks = {"database": "error", "migrations": "unknown"}
+    if _probe_slots.acquire(timeout=READY_DEADLINE_SECONDS):
+        probe: Future[dict[str, str]] = Future()
+        threading.Thread(
+            target=_run_probe,
+            args=(request.app.state.db, probe),
+            name="ready-probe",
+            daemon=True,
+        ).start()
+        # past the deadline: 503; a running probe ends at the connect timeout and frees its slot
+        with contextlib.suppress(TimeoutError):
+            checks = probe.result(timeout=max(0.0, deadline - time.monotonic()))
     ok = checks["database"] == "ok" and checks["migrations"] == "ok"
     body = ReadyOut(status="ready" if ok else "not_ready", checks=checks)
     return JSONResponse(body.model_dump(), status_code=200 if ok else 503)
