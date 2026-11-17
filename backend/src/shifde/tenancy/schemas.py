@@ -94,6 +94,23 @@ class ProjectPatch(_PatchBase):
     pass
 
 
+CaptureContent = Literal["full", "metadata"]
+
+
+class CaptureContentPut(BaseModel):
+    """The client's own `capture_content` setting; `null` unsets it (the environment default)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    capture_content: CaptureContent | None
+    row_version: int = Field(ge=1)
+
+
+class CaptureContentOut(BaseModel):
+    capture_content: CaptureContent | None
+    row_version: int
+
+
 # ---------------------------------------------------------------- dashboard / platform status
 class DashboardScopeOut(BaseModel):
     org: str
