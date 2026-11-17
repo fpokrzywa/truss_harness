@@ -1,8 +1,10 @@
 """A stateful in-memory Databricks platform for tests and demos (no real workspace exists).
 
 `FakeDatabricksPlatform` is the `BundleRunner`, and `platform.workspace` is the
-`workspace_factory`: a `DatabricksAdapter` built over it reads and writes one shared app state, so
-a new adapter over the same fake models a restart. Fault switches are off by default.
+`workspace_factory`. Apps are kept per workspace host (`apps[host][name]`); a `DatabricksAdapter`
+built over the fake reads and writes that state, so a new adapter over the same fake models a
+restart. The CLI deploys as `service_principal` and, like Databricks, may only write under its
+home folder. Fault switches are off by default.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ class FakeWorkspaceGateway:
         self.platform, self.target = platform, target
 
     def get_app(self, name: str) -> dict[str, Any] | None:
-        app = self.platform.apps.get(name)
+        app = self.platform.apps.get(self.target.host, {}).get(name)
         return copy.deepcopy(app) if app is not None else None
 
     def probe(self, warehouse_id: str) -> None:
@@ -40,10 +42,17 @@ class FakeWorkspaceGateway:
 
 
 class FakeDatabricksPlatform:
-    def __init__(self, *, warehouses: set[str] | None = None, hang_timeout: float = 60.0) -> None:
+    def __init__(
+        self,
+        *,
+        service_principal: str,
+        warehouses: set[str] | None = None,
+        hang_timeout: float = 60.0,
+    ) -> None:
+        self.service_principal = service_principal
         self.warehouses: set[str] = set(warehouses or ())
         self.hang_timeout = hang_timeout
-        self.apps: dict[str, dict[str, Any]] = {}
+        self.apps: dict[str, dict[str, dict[str, Any]]] = {}
         self.actions: list[tuple[str, str | None, str]] = []
         self.fail_after_accept = False
         self.crash_app = False
@@ -75,13 +84,17 @@ class FakeDatabricksPlatform:
         config = yaml.safe_load((directory / "databricks.yml").read_text(encoding="utf-8"))
         root_path = str(config["workspace"]["root_path"])
         self.actions.append((action, app_key, root_path))
+        if not root_path.startswith(f"/Workspace/Users/{self.service_principal}/"):
+            # The principal has no write access outside its home folder.
+            raise RuntimeError("Databricks CLI command failed with exit code 1")
         apps = config["resources"]["apps"]
         resource = apps[app_key] if app_key else next(iter(apps.values()))
         name = str(resource["name"])
+        workspace = self.apps.setdefault(host, {})
         if action == "deploy":
-            app = self.apps.get(name)
+            app = workspace.get(name)
             if app is None:
-                app = self.apps[name] = {
+                app = workspace[name] = {
                     "name": name,
                     "id": self._next("native-app"),
                     "url": f"https://{name}.databricksapps.com",
@@ -91,7 +104,7 @@ class FakeDatabricksPlatform:
             if self.fail_after_accept:
                 raise TimeoutError("connection lost after native acceptance")
         elif action == "run":
-            app = self.apps.get(name)
+            app = workspace.get(name)
             if app is None:
                 raise RuntimeError("Databricks CLI command failed with exit code 1")
             if not self.no_new_deployment:

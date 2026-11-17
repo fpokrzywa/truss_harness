@@ -6,6 +6,7 @@ propagates, and the journal turns any uncertain outcome into `NeedsAttention`.
 
 from __future__ import annotations
 
+import re
 import tempfile
 from collections.abc import Callable
 from datetime import timedelta
@@ -69,10 +70,19 @@ from shifde.adapters.native.planning import (
 )
 
 WAREHOUSE_BINDING = "warehouse_id"
+# The deploying service principal's workspace user name; bundles deploy under its home folder.
+PRINCIPAL_BINDING = "service_principal"
+_PRINCIPAL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._+-]{0,254}$")
 
 
 def app_name(application_id: UUID, target_id: UUID) -> str:
     return f"shifde-{application_id.hex[:12]}-{target_id.hex[:8]}"
+
+
+def root_path(principal: str, application_id: UUID, target_id: UUID) -> str:
+    if not _PRINCIPAL.fullmatch(principal) or ".." in principal:
+        raise ValueError("service principal binding is not a valid workspace user name")
+    return f"/Workspace/Users/{principal}/.shifde/{application_id}/{target_id}"
 
 
 def identity(app: dict[str, Any] | None) -> dict[str, Any]:
@@ -159,6 +169,8 @@ class DatabricksAdapter:
         )
 
     def inspect(self, request: InspectRequest, ctx: ReadContext) -> EnvironmentSnapshot:
+        if request.app_name != app_name(request.application_id, ctx.target.id):
+            raise PermissionError("app name is not the one derived for this application and target")
         app = self._workspace(ctx).get_app(request.app_name)
         resources = (
             []
@@ -209,21 +221,10 @@ class DatabricksAdapter:
         report = self.capabilities(ctx)
         if not all(report.supports(key) for key in ("cli", "workspace")):
             raise ValueError("required Databricks capabilities are unsupported or unknown")
-        name = app_name(artifact.application_id, ctx.target.id)
+        details = self._details(artifact, ctx)
+        name = details["app_name"]
         app = self._workspace(ctx).get_app(name)
-        resources: list[ResourceBinding] = []
-        if app:
-            binding = self._resource(
-                app, spec.app_resource_key, artifact.application_id, ctx.target.id
-            )
-            if binding not in ctx.owned_resources:
-                raise PermissionError("refusing to adopt an unowned native app by name")
-            resources = [binding]
-        elif any(
-            item.application_id == artifact.application_id and item.target_id == ctx.target.id
-            for item in ctx.owned_resources
-        ):
-            raise ValueError("owned native resource is missing; resolve drift before redeploying")
+        resources = self._owned(app, artifact, ctx)
         return seal_plan(
             DeploymentPlan(
                 tenant_id=ctx.tenant_id,
@@ -247,18 +248,44 @@ class DatabricksAdapter:
                     ),
                     PlanStep(key="bundle-run", action="start", resource_key=spec.app_resource_key),
                 ],
-                details={
-                    "app_name": name,
-                    "cli_version": CLI_VERSION,
-                    "root_path": (
-                        f"/Workspace/Shared/.shifde/{artifact.application_id}/{ctx.target.id}"
-                    ),
-                    "warehouse_id": ctx.target.bindings[spec.warehouse_binding],
-                },
+                details={"cli_version": CLI_VERSION, **details},
                 expires_at=utcnow() + timedelta(minutes=15),
                 digest="0" * 64,
             )
         )
+
+    @staticmethod
+    def _details(artifact: BuildArtifact, ctx: ReadContext) -> dict[str, str]:
+        """App name, root path and warehouse, derived from the artifact and the target only."""
+        principal = ctx.target.bindings.get(PRINCIPAL_BINDING)
+        if not principal:
+            raise ValueError("required service principal binding is missing")
+        warehouse = ctx.target.bindings.get(artifact.spec.warehouse_binding)
+        if not warehouse:
+            raise ValueError("required warehouse binding is missing")
+        return {
+            "app_name": app_name(artifact.application_id, ctx.target.id),
+            "root_path": root_path(principal, artifact.application_id, ctx.target.id),
+            "warehouse_id": warehouse,
+        }
+
+    def _owned(
+        self, app: dict[str, Any] | None, artifact: BuildArtifact, ctx: ReadContext
+    ) -> list[ResourceBinding]:
+        """The app's binding when `ctx` owns it; refuses an unowned app and a vanished owned one."""
+        if app:
+            binding = self._resource(
+                app, artifact.spec.app_resource_key, artifact.application_id, ctx.target.id
+            )
+            if binding not in ctx.owned_resources:
+                raise PermissionError("refusing to adopt an unowned native app by name")
+            return [binding]
+        if any(
+            item.application_id == artifact.application_id and item.target_id == ctx.target.id
+            for item in ctx.owned_resources
+        ):
+            raise ValueError("owned native resource is missing; resolve drift before redeploying")
+        return []
 
     @staticmethod
     def _check_artifact(artifact: BuildArtifact, ctx: ReadContext) -> None:
@@ -295,6 +322,9 @@ class DatabricksAdapter:
         )
         if actual != expected:
             raise ValueError("artifact does not match deployment plan")
+        details = self._details(artifact, ctx)
+        if any(plan.details.get(key) != value for key, value in details.items()):
+            raise PermissionError("deployment plan details do not match the artifact and target")
         contents = read_archive(ctx.artifacts.read(artifact.archive, ctx.tenant_id))
         validate_source(contents, spec)
         for key in ("bundle-deploy", "bundle-run"):
@@ -319,8 +349,9 @@ class DatabricksAdapter:
         # The TTL limits starting new native work, not replaying a completed receipt.
         validate_plan(plan, ctx.target)
         workspace = self._workspace(ctx)
-        name = str(plan.details["app_name"])
+        name = details["app_name"]
         current = workspace.get_app(name)
+        self._owned(current, artifact, ctx)
         if digest(identity(current)) != plan.snapshot.fingerprint:
             raise ValueError("native resource changed since planning")
         # Fresh trusted configuration; no source-provided hooks/configuration reach the CLI.
@@ -337,8 +368,8 @@ class DatabricksAdapter:
                 spec,
                 host=ctx.target.host,
                 app_name=name,
-                root_path=str(plan.details["root_path"]),
-                warehouse_id=str(plan.details["warehouse_id"]),
+                root_path=details["root_path"],
+                warehouse_id=details["warehouse_id"],
             )
             (directory / "databricks.yml").write_text(
                 yaml.safe_dump(config, sort_keys=False), encoding="utf-8"

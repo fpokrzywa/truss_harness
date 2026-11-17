@@ -204,7 +204,7 @@ def test_cli_failure_hides_output_and_a_timeout_becomes_timeout_error(
 def test_databricks_integration_is_experimental_and_not_live_validated() -> None:
     assert MATURITY == "experimental"
     assert LIVE_VALIDATED is False
-    platform = FakeDatabricksPlatform(warehouses={"wh"})
+    platform = FakeDatabricksPlatform(service_principal="sp", warehouses={"wh"})
     adapter = DatabricksAdapter(cli=platform, workspace_factory=platform.workspace)
     target = _target()
     report = adapter.capabilities(ReadContext(tenant_id=target.tenant_id, target=target))

@@ -64,7 +64,7 @@ def test_deploy_starts_app_after_bundle_and_checks_actual_health(setup: Setup) -
     assert platform.actions[0][2] == platform.actions[1][2]
     assert str(artifact.application_id) in platform.actions[0][2]
     name = app_name(artifact.application_id, setup.read.target.id)
-    assert receipt.resources[0].native_id == platform.apps[name]["id"]
+    assert receipt.resources[0].native_id == setup.apps[name]["id"]
     assert adapter.observe(ObserveRequest(receipt=receipt), setup.read).state == "succeeded"
     assert adapter.verify(VerifyRequest(receipt=receipt), setup.read).passed
 
@@ -110,7 +110,7 @@ def test_stale_and_altered_artifacts_are_rejected_before_mutation(setup: Setup) 
 def test_preexisting_unowned_app_cannot_be_adopted_by_name(setup: Setup) -> None:
     application_id = uuid4()
     name = app_name(application_id, setup.read.target.id)
-    setup.platform.apps[name] = {"name": name, "id": "someone-elses-app"}
+    setup.apps[name] = {"name": name, "id": "someone-elses-app"}
     with pytest.raises(PermissionError):
         setup.prepare(application_id)
 
@@ -147,7 +147,7 @@ def test_local_service_persists_ownership_across_restart(setup: Setup) -> None:
 def test_pending_failed_deployment_cannot_be_hidden_by_previous_active_app(setup: Setup) -> None:
     artifact, plan, deploy = setup.prepare()
     receipt = setup.adapter.apply(ApplyRequest(artifact=artifact, plan=plan), deploy)
-    app = setup.platform.apps[receipt.operation_handles["app_name"]]
+    app = setup.apps[receipt.operation_handles["app_name"]]
     app["active_deployment"]["deployment_id"] = "previous"
     app["pending_deployment"] = {
         "deployment_id": receipt.operation_handles["deployment_id"],
@@ -209,7 +209,7 @@ def test_checkpoint_resume_cannot_start_unproven_remote_source(
     with pytest.raises(SystemExit):
         setup.adapter.apply(ApplyRequest(artifact=artifact, plan=plan), deploy)
     monkeypatch.setattr(deploy.journal, "intent", original_intent)
-    app = setup.platform.apps[str(plan.details["app_name"])]
+    app = setup.apps[str(plan.details["app_name"])]
     app["source_code_path"] = "/Workspace/externally-modified-source"
     with pytest.raises(NeedsAttention, match="provenance"):
         setup.adapter.apply(ApplyRequest(artifact=artifact, plan=plan), deploy)
@@ -232,7 +232,7 @@ def test_fault_fail_after_accept_writes_once_then_needs_attention(setup: Setup) 
     with pytest.raises(TimeoutError):
         setup.adapter.apply(ApplyRequest(artifact=artifact, plan=plan), deploy)
     assert setup.platform.actions == [("deploy", None, str(plan.details["root_path"]))]
-    assert str(plan.details["app_name"]) in setup.platform.apps
+    assert str(plan.details["app_name"]) in setup.apps
     with pytest.raises(NeedsAttention):
         setup.adapter.apply(ApplyRequest(artifact=artifact, plan=plan), deploy)
     assert len(setup.platform.actions) == 1
@@ -272,7 +272,7 @@ def test_fault_hang_times_out_and_the_next_apply_needs_attention(setup: Setup) -
     with pytest.raises(TimeoutError):
         setup.adapter.apply(ApplyRequest(artifact=artifact, plan=plan), deploy)
     assert [item[0] for item in setup.platform.actions] == ["deploy"]
-    assert str(plan.details["app_name"]) in setup.platform.apps
+    assert str(plan.details["app_name"]) in setup.apps
     with pytest.raises(NeedsAttention):
         setup.adapter.apply(ApplyRequest(artifact=artifact, plan=plan), deploy)
     assert len(setup.platform.actions) == 1
