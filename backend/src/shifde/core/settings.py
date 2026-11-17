@@ -47,6 +47,7 @@ def _ephemeral(name: str, make: Callable[[], str]) -> str:
 # IPv6 unique-local range fc00::/7 are the widest legitimate private ranges.
 _MIN_PROXY_PREFIX = {4: 8, 6: 7}
 _PEPPER_ID = re.compile(r"[A-Za-z0-9_-]{1,16}")
+_HOST_SUFFIX = re.compile(r"[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63})+")
 
 
 def _new_pepper() -> str:
@@ -192,6 +193,11 @@ class Settings(BaseSettings):
     shi_provider_api_key: SecretStr | None = None
     # Hard overall deadline of one direct connection invoke (REST / MCP / SQL) through the API.
     connection_call_deadline_seconds: float = 60.0
+    # Native delivery (design 3, B-2501): host suffixes this installation allows for Databricks
+    # deployment targets in addition to the built-in cloud.databricks.com, azuredatabricks.net and
+    # gcp.databricks.com. `SHIFDE_DELIVERY_DATABRICKS_HOST_SUFFIXES` is comma-separated; each entry
+    # is a bare domain of two or more labels (no scheme, port, wildcard or leading dot).
+    delivery_databricks_host_suffixes: Annotated[list[str], NoDecode] = []
     # P5 runtime
     worker_poll_ms: int = 1000
     worker_lease_seconds: int = 60
@@ -229,6 +235,25 @@ class Settings(BaseSettings):
                 yield name, _mask_url(value)
             else:
                 yield name, value
+
+    @field_validator("delivery_databricks_host_suffixes", mode="before")
+    @classmethod
+    def _split_host_suffixes(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [part.strip().lower() for part in value.split(",") if part.strip()]
+        return value
+
+    @field_validator("delivery_databricks_host_suffixes")
+    @classmethod
+    def _valid_host_suffixes(cls, value: list[str]) -> list[str]:
+        suffixes = [entry.strip().lower() for entry in value]
+        for entry in suffixes:
+            if not _HOST_SUFFIX.fullmatch(entry):
+                raise ValueError(
+                    "SHIFDE_DELIVERY_DATABRICKS_HOST_SUFFIXES entries must be bare domains "
+                    "of two or more letter, digit or hyphen labels"
+                )
+        return suffixes
 
     @field_validator("trusted_proxies", mode="before")
     @classmethod
