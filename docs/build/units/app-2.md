@@ -47,7 +47,7 @@ Branch `app-2` (base origin/main `d03febd`, runtime merged). Resource locks held
 
 ## Merge state (lead handoff, 2026-11-17 ~03:20)
 - Branch `app-2-merge-wip` (pushed) = local `app-2` rebased onto origin/main `17d6151` + merge-docs commit `dbde8ce` (STATUS row, DECISIONS B-2400..B-2451, units.json app-2 done, `reviews/app-2-isolation-review-1..2.md`) + a WIP commit with the merge-gate fix round (B-2452 fail-fast second race in `runtime/lifecycle.py` with `tests/runtime/test_execution.py` regression test; B-2453 dev-rest-sink test made hermetic against httpx request logging). `origin/app-2` stays at `5898a48` (pre-rebase); never force-push it.
-- `gates.py --ref dbde8ce --name app-2-merge`: 12/13; pytest 2 failed (the two above), 3176 passed in 1264 s. The fix round's agent ended without reporting: the WIP commit is UNVERIFIED (no ruff/mypy/tests run known).
+- `gates.py --ref dbde8ce --name app-2-merge`: 12/13; pytest 2 failed (the two above), 3176 passed in 1264 s. Fix round verified 2026-11-17 04:10 (session after b4750c53): ruff/mypy/lint-imports 0; `pytest -n 8 tests/app tests/runtime tests/cli` 1219 passed; fail-fast test 5/5; isolation review 3 APPROVED.
 - Merge lock released at handoff; locks routing, migrations, tests-infra still held by app-2.
 - Lead pytest `-n 8 tests/app tests/runtime` at `5898a48`: 1209 passed.
 
