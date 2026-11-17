@@ -49,7 +49,7 @@
         "schema-tests"
       ],
       "lead_model": "opus",
-      "status": "todo",
+      "status": "done",
       "brief": "docs/build/HANDOFF.md step 3. B-2150 approved by the owner on 2026-11-16 (S-006): the one-token edit is made on `runtime` as 7bcab1c (tests/schema/test_rls_schema.py 125 passed). Merge main into the branch's work by rebasing per charter section 11, run all 13 gates on the rebased commit, fast-forward main. Merge note (S-008): every unit's 13 gates include `pnpm build`, which fails on a fresh checkout until `nextjs-security` is merged. Build and test now; take the merge lock only once units.json on origin/main shows nextjs-security done, then rebase onto it."
     },
     {
