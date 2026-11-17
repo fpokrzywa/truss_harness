@@ -4,9 +4,9 @@ Read this first after any compaction or resume. Standing instructions: `docs/bui
 
 States: `todo`, `in progress`, `done`, `blocked` (with evidence), `waiting on owner input`.
 
-**Build paused by the owner on 2026-11-16 at 08:05 (S-003). Resume only when the owner says so.** Current state and next step: `docs/build/HANDOFF.md`.
-- The local cluster on 55450 is down and was not restarted.
-- `suite-speed` is done and merged (B-2330): full backend suite 541 s, under the 20-minute target.
+**Sub-project 1 is complete (unit `goal1-final`, 2026-11-17).** The owner's pause (S-003, 2026-11-16 08:05) ended when the owner resumed the build at 14:15 (S-005). Every SETH module in the design's layer order is done; the software factory is installed (B-2480, B-2481). Next: charter 7 (file the known-defect issues, then sub-projects 2 to 8 through the factory).
+- Local cluster on 55450 is running.
+- `suite-speed` is done and merged (B-2330): full backend suite under the 20-minute target; the final measured time is in the `goal1-final` verification.
 Tokens per model: see `python scripts/usage_report.py` (by unit); the figure below is copied at acceptance.
 
 ## Sub-project 1
@@ -47,7 +47,7 @@ Tokens per model: see `python scripts/usage_report.py` (by unit); the figure bel
 | nextjs-security (Next.js upgrade past GHSA-mfr8-8qww-v76h) | done | `next` 16.4.5 | `gates.py --name nextjs-security-merge` 13/13 on the rebased commit; frontend lint, typecheck, test (378) and build pass; S-009 | |
 | suite speed (full backend suite under the 20-minute target, design 6) | done | branch `suite-speed`, merged to main (this commit's parent chain) | B-2330: `clean_data` DELETEs as the superuser (replica role) instead of TRUNCATE; `tests/app` clones outside the run lock and drops each test's database in a background thread; end-of-run cleanup drops 8 at a time. Full suite `-n 8`: 2140 passed in 541 s (target 1200 s; baseline 1548 s), with another unit's suite running alongside; merge gate time in `.worktrees/_gate-logs/suite-speed-merge`. No test, assertion or check changed. | |
 | two-org side-by-side proof | done (local cluster, S-002; hosted waits on B-009) | branch `two-org-proof`, rebased onto main (unit `two-org-proof`) | Live, 2026-11-17, worktree database on 127.0.0.1:55450: `shifde-admin db upgrade` (default now `heads`, B-2470), `db check` ok, `dev-seed` (orgs `demo-a`, `demo-b`, each with its own staff group), `shifde-api`, then `python -I scripts/two_org_proof.py --base-url http://127.0.0.1:8791`: `TWO-ORG PROOF PASSED: 67 checks`, exit 0 (each of 5 people lists only their own org, reads its workspace and project, administrators see only their own group, every route of the other org answers 404, `?scope=all` 403; the platform administrator lists both). In-process: `tests/app/test_routes.py::test_two_seeded_organizations_with_separate_groups_see_only_themselves`. `gates.py --name two-org-proof-merge`. Notes: `docs/build/units/two-org-proof.md` (B-2471). | lead only |
-| software factory install | todo | | | |
+| software factory install | done | branch `factory-install` (`80355a3`), fast-forwarded to main | zazencodes `94f7ae7`, GPLv3 (B-2480, B-2481). In the worktree: `bash factory/checks.sh` exit 0 ("all checks passed", 4 min 53 s); `factory/bin/job queue` exit 0 (empty queue); scan-secrets 0; scripts unittest 49 OK; no change under `backend/src` or `frontend/src`. 13 merge gates via `gates.py --name goal1-final-merge` | sonnet builder, lead |
 
 ## Audit findings
 
@@ -83,7 +83,7 @@ Also open from reviews (minor, tracked in `carry_forward.md`): SEC Minor-3 (no s
 
 ## Waiting on owner input
 
-- **Build pause (S-003)**: the owner paused the build on 2026-11-16 at 08:05. The local PostgreSQL cluster (55450) is down, maybe stuck partway through restarting (`pg_ctl start` failed twice, `postmaster.pid` present). It is left alone until the owner decides.
+- ~~**Build pause (S-003)**~~: ended by the owner on 2026-11-16 at 14:15 (S-005); the cluster was recovered by unit `cluster`.
 
 - ~~**Permission for one edit to `backend/tests/schema/test_rls_schema.py`**~~ (runtime RT-1, B-1943): granted by the owner on 2026-11-16 (S-006, B-2150); the edit is made and `runtime` is merged (S-010).
 

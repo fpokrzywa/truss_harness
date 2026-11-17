@@ -132,7 +132,7 @@
         "cluster"
       ],
       "lead_model": "opus",
-      "status": "todo",
+      "status": "done",
       "final": true,
       "brief": "Runs in the main checkout with goal 1's own condition, alone."
     }
