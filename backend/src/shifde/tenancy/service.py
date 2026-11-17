@@ -683,6 +683,16 @@ def effective_settings(
     )
 
 
+def tenant_settings(session: Session, tenant_id: UUID) -> dict[str, Any]:
+    """The installation and tenant layers of a client's config, read in the session's own client
+    context: `effective_settings` of a scope with no workspace or project, for callers that hold
+    no `TenantScope` (the runtime's terminal path)."""
+    tenant = repository.get_tenant(session, tenant_id)
+    return resolve_config(
+        repository.get_installation_settings(session), tenant.settings if tenant else None
+    )
+
+
 # ------------------------------------------------------------------ platform status
 def _worker_status(session: Session, settings: Settings) -> WorkerStatusOut:
     """Worker health from the `workers` heartbeat rows: healthy = a worker beat within three lease

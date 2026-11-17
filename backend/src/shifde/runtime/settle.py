@@ -15,10 +15,12 @@ from sqlalchemy.orm import Session
 from shifde.audit import service as audit
 from shifde.core.clock import utcnow
 from shifde.core.context import RequestContext
+from shifde.core.settings import Settings
 from shifde.runtime import repository as repo
 from shifde.runtime import state
+from shifde.tenancy import service as tenancy
 
-__all__ = ["cancel_open_children", "settle_terminal", "wake_parent"]
+__all__ = ["cancel_open_children", "scrub_ended", "settle_terminal", "wake_parent"]
 
 
 def wake_parent(session: Session, run: Any) -> None:  # Any: run row
@@ -50,7 +52,43 @@ def wake_parent(session: Session, run: Any) -> None:  # Any: run row
             repo.enqueue(session, tenant_id, parent_id)
 
 
-def settle_terminal(session: Session, run: Any, to_status: str) -> None:  # Any: run row
+def _capture_full(session: Session, tenant_id: UUID, settings: Settings) -> bool:
+    """Whether run content is captured for the client: its tenant-level `capture_content`;
+    unset means "full" in development and "metadata" otherwise; only "full" is on (the rule of
+    `RunService._capture_full`, B-2275)."""
+    mode = tenancy.tenant_settings(session, tenant_id).get("capture_content")
+    if mode is None:
+        mode = "full" if settings.is_development else "metadata"
+    return bool(mode == "full")
+
+
+def scrub_ended(session: Session, run: Any, settings: Settings) -> None:  # Any: run row
+    """Capture off (F-12, B-2514): called in the transaction in which `run` became terminal.
+    A run's content is scrubbed once both it and its root run are terminal: parents read a
+    child's output after the child ended, so a child that ends under a running root keeps its
+    content until the root's own terminal transition scrubs the whole family. The run is
+    re-read with its own client (another client's run id scrubs nothing)."""
+    tenant_id: UUID = run["tenant_id"]
+    cur = repo.get_run(session, tenant_id, run["id"])
+    if cur is None or cur["status"] not in state.TERMINAL:
+        return
+    if _capture_full(session, tenant_id, settings):
+        return
+    root_id: UUID = cur["root_run_id"]
+    if root_id != cur["id"]:
+        root = repo.get_run(session, tenant_id, root_id)
+        if root is None or root["status"] not in state.TERMINAL:
+            return
+    for run_id in repo.ended_runs_of_root(session, tenant_id, root_id):
+        repo.scrub_run_content(session, tenant_id, run_id)
+
+
+def settle_terminal(
+    session: Session,
+    run: Any,  # Any: run row
+    to_status: str,
+    settings: Settings,
+) -> None:
     """Housekeeping that belongs to the transition into a terminal state.
 
     The database side (`shifde.settle_ended_run`, one implementation shared with the reaper) cancels
@@ -66,7 +104,10 @@ def settle_terminal(session: Session, run: Any, to_status: str) -> None:  # Any:
     sets `error_class=indeterminate_side_effect`, appends an `outcome_unknown` event and opens one
     unknown-outcome approval that cancel and deadline do not close; this side audits it. The
     settle is keyed by the run row's own client (`repo.settle_ended_run`), so a row naming
-    another client's run settles nothing."""
+    another client's run settles nothing.
+
+    With capture off the run's content is scrubbed after the settle, which reads the write
+    arguments the scrub clears (`scrub_ended`)."""
     flagged = repo.settle_ended_run(session, run["tenant_id"], run["id"])
     if flagged > 0:
         audit.record(
@@ -88,6 +129,7 @@ def settle_terminal(session: Session, run: Any, to_status: str) -> None:  # Any:
                 "open_decisions": flagged,
             },
         )
+    scrub_ended(session, run, settings)
     wake_parent(session, run)
 
 
@@ -96,6 +138,7 @@ def cancel_open_children(
     tenant_id: UUID,
     run_id: UUID,
     by: Any,  # Any: UUID | None, the principal recorded as the canceller
+    settings: Settings,
     still_leader: Any = None,  # Any: Callable[[], None] that raises when the lease is lost
 ) -> None:
     """Cancel the open child runs of `run_id`, each in its OWN transaction (child row first, then
@@ -126,7 +169,7 @@ def cancel_open_children(
                 error_message="cancelled with the parent run",
             )
             if row is not None:
-                settle_terminal(session, row, state.CANCELLED)
+                settle_terminal(session, row, state.CANCELLED, settings)
         session.commit()
         repo.finish_run_jobs(session, tenant_id, child["id"])
         session.commit()

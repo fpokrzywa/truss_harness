@@ -58,6 +58,7 @@ from shifde.observability.logging import configure_logging
 from shifde.runtime import lifecycle
 from shifde.runtime import repository as repo
 from shifde.runtime.governance import GovernanceHooks, TokenBudgetHooks
+from shifde.runtime.settle import scrub_ended
 
 log = structlog.get_logger("shifde.worker")
 REAPER_LOCK = "shifde:reaper"
@@ -373,6 +374,8 @@ class Worker:
                     project_id=run["project_id"],
                     details={"run_id": str(run_id), "reason": reason, "by": "reaper"},
                 )
+                # capture off: the reaper ended the run inside the database (B-2514)
+                scrub_ended(s, run, self.settings)
                 s.commit()
         except Exception:  # noqa: BLE001 - auditing the reaper must never stop it
             log.error("worker.reap_audit_failed", exc_info=True)
