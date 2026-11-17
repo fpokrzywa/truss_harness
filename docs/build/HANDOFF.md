@@ -14,12 +14,12 @@ Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md`, then this file. Older
 ## Open items found
 
 1. **Suite time over the design's 20-minute target.** `suite-speed` measured 541 s on an idle machine (B-2330); today's two full runs took 1235.6 s and 1277.7 s. It is not known whether machine load (other sessions, the scripts unittest gate) or test growth (3183 tests now) explains it.
-2. **Fable spend.** `usage_report.py` shows $19.50 on `claude-fable-5-2` (80 requests); the charter forbids Fable for agents. Find which session/agent used it.
+2. **Fable spend.** Closed by S-011: the supervising session's own design phase, no build lead or agent. Originally: `usage_report.py` shows $19.50 on `claude-fable-5-2` (80 requests); the charter forbids Fable for agents. Find which session/agent used it.
 3. `factory/bin/jobdb ensure` / `drop` are untested until a real factory job runs.
 
 ## Exact next step
 
-1. Time the backend suite on an otherwise idle machine: from a clean checkout of main, `cd backend; uv run pytest -n 8 -q` (nothing else running). If under 1200 s, record it in STATUS; if over, profile with `--durations=30` and speed up setup (never skip, deselect or delete a test). Record the result as a STATUS row.
+1. (Timed idle by the supervising session, S-011: 1204.49 s, 4.5 s over; profile and speed up as below.) Time the backend suite on an otherwise idle machine: from a clean checkout of main, `cd backend; uv run pytest -n 8 -q` (nothing else running). If under 1200 s, record it in STATUS; if over, profile with `--durations=30` and speed up setup (never skip, deselect or delete a test). Record the result as a STATUS row.
 2. Then charter 7: file one GitHub issue (label `factory`) per open known defect in STATUS, create the factory labels, and start sub-project 2 (short design, issues, `/factory run`).
 
 ## Worktrees
