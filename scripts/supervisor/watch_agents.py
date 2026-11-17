@@ -122,7 +122,8 @@ def current_leads():
     """{label: sid} for every running lead: parallel unit slots from the supervisor's state file,
     otherwise the single lead in .devdata/lead_session."""
     try:
-        state = json.load(open(f"{REPO}/.devdata/supervisor/state.json", encoding="utf-8"))
+        with open(f"{REPO}/.devdata/supervisor/state.json", encoding="utf-8") as f:
+            state = json.load(f)
     except (OSError, ValueError):
         state = {}
     slots = {f"{uid} {s['sid'][:8]}": s["sid"] for uid, s in (state.get("slots") or {}).items() if s.get("sid")}

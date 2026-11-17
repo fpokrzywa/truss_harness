@@ -102,7 +102,8 @@ def pid_alive(pid) -> bool:
 
 def read_state() -> dict:
     try:
-        return json.load(open(STATE, encoding="utf-8"))
+        with open(STATE, encoding="utf-8") as f:
+            return json.load(f)
     except (OSError, ValueError):
         return {}
 
@@ -114,7 +115,15 @@ def write_state(**kw) -> None:
     tmp = STATE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2)
-    os.replace(tmp, STATE)
+    # On Windows a reader (watchdog, watch_agents) holding state.json open makes the rename fail for
+    # a moment. Retry; a state file one tick old is harmless, a crashed supervisor is not.
+    for attempt in range(50):
+        try:
+            os.replace(tmp, STATE)
+            return
+        except PermissionError:
+            time.sleep(0.1)
+    print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} state.json locked by a reader; skipped this update", flush=True)
 
 
 def transcript(sid: str) -> str | None:
@@ -458,6 +467,19 @@ def _has_ref(repo: str, ref: str) -> bool:
     return bool(git_out(repo, "rev-parse", "--verify", "--quiet", ref))
 
 
+def _worktree_branch(path: str) -> str:
+    """The branch checked out in a worktree, or "" if the path is not one (or HEAD is detached)."""
+    top = git_out(path, "rev-parse", "--show-toplevel")
+    try:
+        own = bool(top) and os.path.samefile(top, path)
+    except OSError:
+        own = False
+    if not own:
+        return ""  # not a worktree of its own (a stray folder inside the main checkout, say)
+    r = git(path, "symbolic-ref", "--quiet", "--short", "HEAD")
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
 def unit_worktree(u: dict, repo: str = REPO) -> str:
     """The worktree holding the unit's branch, created (with the branch, pushed) if needed."""
     branch, current, found = u["branch"], None, None
@@ -468,6 +490,12 @@ def unit_worktree(u: dict, repo: str = REPO) -> str:
             found = current
     if found:
         return found.replace("\\", "/")
+    # A lead may have moved its worktree to another branch (app-2 -> app-2-merge-wip, 2026-11-17).
+    # Its handoff names that branch, so the next lead continues there rather than failing to add
+    # a second worktree at the same path.
+    path = f"{repo}/.worktrees/{u['id']}"
+    if os.path.isdir(path) and _worktree_branch(path):
+        return path
     if not _has_ref(repo, f"refs/heads/{branch}"):
         start = f"origin/{branch}" if _has_ref(repo, f"refs/remotes/origin/{branch}") else "origin/main"
         if git(repo, "branch", branch, start).returncode != 0:
@@ -504,7 +532,10 @@ def free_resources(uid: str, repo: str = REPO) -> list[str]:
 
 def start_unit(u: dict, salvage_note: str):
     path = unit_worktree(u)
-    return Lead(unit_prompt(u, path), path, f"unit-{u['id']}", u.get("lead_model", "opus"), salvage_note)
+    branch = _worktree_branch(path) or u["branch"]
+    if branch != u["branch"]:
+        note(f"unit {u['id']}: worktree is on branch {branch} (left there by the last lead); continuing on it")
+    return Lead(unit_prompt({**u, "branch": branch}, path), path, f"unit-{u['id']}", u.get("lead_model", "opus"), salvage_note)
 
 
 def end_unit(u: dict, lead, outcome) -> tuple[str, str]:

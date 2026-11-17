@@ -251,3 +251,65 @@ class UnitGoalTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RestartOnMovedBranchTests(unittest.TestCase):
+    """2026-11-17: the app-2 lead moved .worktrees/app-2 to branch app-2-merge-wip and handed off; the
+    supervisor then failed to add a second worktree at the same path, five times, and gave up."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.origin, self.repo = root / "origin.git", root / "repo"
+        run = lambda *a, cwd=root: subprocess.run(a, cwd=cwd, check=True, capture_output=True)
+        run("git", "init", "--quiet", "--bare", "-b", "main", str(self.origin))
+        run("git", "clone", "--quiet", str(self.origin), str(self.repo))
+        for k, v in (("user.email", "t@example.invalid"), ("user.name", "t")):
+            run("git", "config", k, v, cwd=self.repo)
+        (self.repo / "a.txt").write_text("a\n")
+        run("git", "add", "-A", cwd=self.repo)
+        run("git", "commit", "--quiet", "-m", "a", cwd=self.repo)
+        run("git", "push", "--quiet", "origin", "HEAD:main", cwd=self.repo)
+        run("git", "branch", "unit-x", cwd=self.repo)
+        run("git", "push", "--quiet", "origin", "unit-x", cwd=self.repo)
+        self.wt = self.repo / ".worktrees" / "x"
+        run("git", "worktree", "add", "--quiet", str(self.wt), "unit-x", cwd=self.repo)
+        run("git", "checkout", "--quiet", "-b", "unit-x-wip", cwd=self.wt)
+        self.run = run
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_moved_worktree_is_reused_and_its_branch_named(self):
+        u = {"id": "x", "branch": "unit-x"}
+        path = supervise.unit_worktree(u, repo=str(self.repo).replace("\\", "/"))
+        self.assertEqual(Path(path).resolve(), self.wt.resolve())
+        self.assertEqual(supervise._worktree_branch(path), "unit-x-wip")
+
+    def test_stray_folder_is_not_taken_for_a_worktree(self):
+        stray = self.repo / ".worktrees" / "stray"
+        stray.mkdir(parents=True)
+        self.assertEqual(supervise._worktree_branch(str(stray)), "")
+
+    def test_state_write_survives_a_reader_holding_the_file(self):
+        calls = {"n": 0}
+        real = supervise.os.replace
+
+        def flaky(src, dst):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise PermissionError(5, "Access is denied")
+            return real(src, dst)
+
+        old = (supervise.SUPDIR, supervise.STATE)
+        supervise.SUPDIR = str(Path(self.tmp.name) / "sup")
+        supervise.STATE = str(Path(supervise.SUPDIR) / "state.json")
+        supervise.os.replace = flaky
+        try:
+            supervise.write_state(status="x")
+            self.assertEqual(json.loads(Path(supervise.STATE).read_text())["status"], "x")
+            calls["n"] = -1000  # never succeeds: the write is skipped, the supervisor keeps running
+            supervise.write_state(status="y")
+        finally:
+            supervise.os.replace = real
+            supervise.SUPDIR, supervise.STATE = old
