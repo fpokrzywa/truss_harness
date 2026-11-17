@@ -14,7 +14,7 @@ from shifde.adapters.base import AdapterFailure, ErrorClass
 from shifde.adapters.conformance import connection as conf_connection
 from shifde.adapters.conformance import exec_ctx, loopback_guard
 from shifde.adapters.rest_http import RestHttpAdapter
-from shifde.adapters.testservers import RestTestServer
+from shifde.adapters.testservers import McpTestServer, RestTestServer
 from shifde.core.egress import (
     LOOPBACK_NETWORKS,
     EgressGuard,
@@ -30,6 +30,7 @@ from tests._support.p3util import (
     connection,
     fake_model_stack,
     invoke_body,
+    pg_body,
     rest_body,
     secret,
 )
@@ -222,3 +223,15 @@ def test_activation_requires_the_test_to_cover_the_current_definition(
 
 
 # ================================================================== round 2
+
+
+# Ported in app-2 part 2c over `sample_db_url` (B-2420, B-2423; SETH test_p3_review.py).
+def test_database_and_mcp_bodies_are_validated(
+    client: TestClient, world: World, sample_db_url: str, mcp_server: McpTestServer
+) -> None:
+    h = login(client, world.passwords, ADMIN)
+    pw = sample_db_url.split(":")[2].split("@")[0]
+    pg = connection(client, h, pg_body(sample_db_url, secret(client, h, "pg", pw)))["id"]
+    activate(client, h, pg)
+    for bad in ({}, {"sql": ""}, {"sql": "SELECT 1", "params": "x"}, {"sql": 5}):
+        assert client.post(f"{A}/connections/{pg}/invoke", json=bad, headers=h).status_code == 422

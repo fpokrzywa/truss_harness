@@ -3,6 +3,8 @@ body validation, reaper, queue isolation and the carried egress / SQL timeout it
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
@@ -14,7 +16,8 @@ from shifde.core.db import Database
 from shifde.runtime import state
 from tests._support.fullapp import World
 from tests._support.p2util import login
-from tests._support.p3util import ADMIN, ADMIN_B
+from tests._support.p3util import ADMIN, ADMIN_B, A, activate, connection, pg_body, secret
+from tests._support.p4util import art, publish, tenant_scope
 from tests._support.p5util import Stack, start_run
 
 
@@ -202,3 +205,35 @@ def test_orchestration_cross_tenant_runs_are_not_found(
         },
     )
     assert r.status_code == 404
+
+
+# Ported in part 2c (B-2422) over `sample_db_url` (B-2420).
+def test_sql_tool_honours_the_tool_timeout_not_only_the_statement_timeout(
+    client: TestClient, world: World, owner_session: Session, sample_db_url: str
+) -> None:
+    h = login(client, world.passwords, ADMIN)
+    pg_password = sample_db_url.split(":")[2].split("@")[0]
+    conn = connection(client, h, pg_body(sample_db_url, secret(client, h, "pg-pass", pg_password)))
+    activate(client, h, conn["id"])  # statement_timeout_ms stays at its 15 s default
+    spec = {
+        "executor": "connection.sql",
+        "binding": {"connection_id": conn["id"], "sql_template": "SELECT pg_sleep(8)"},
+        "input_schema": {"type": "object", "properties": {}},
+        "output_schema": {"type": "object"},
+        "side_effect_class": "read",
+        "required_permissions": [],
+        "invocation_policy": {},
+        "timeout_s": 1,
+        "retry": {"max_attempts": 1, "backoff_s": 0},
+        "audit_level": "metadata",
+        "idempotency": "none",
+    }
+    tool = art(client, h, "tools", "sleepy", spec, tenant_scope(owner_session))
+    version = publish(client, h, "tools", tool["id"])
+    started = time.monotonic()
+    r = client.post(
+        f"{A}/tools/{tool['id']}/test", headers=h, json={"version_id": version["id"], "args": {}}
+    )
+    elapsed = time.monotonic() - started
+    assert r.status_code == 502 and "timeout" in r.json()["detail"].lower(), r.text
+    assert elapsed < 5, f"the tool's timeout_s=1 was not honoured ({elapsed:.1f}s)"

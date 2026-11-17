@@ -23,6 +23,7 @@ from tests._support.p3util import (
     B,
     activate,
     connection,
+    pg_body,
     rest_body,
     secret,
 )
@@ -504,3 +505,90 @@ def test_viewer_cannot_author_tools_and_only_publishers_publish(
         == 403
     )
     assert codes({"errors": []}) == set()
+
+
+# Ported in app-2 part 2c over `sample_db_url` (B-2420, B-2423; SETH test_p4_tools.py).
+def test_sql_tool_binds_parameters_and_stays_read_only(
+    client: TestClient, world: World, owner_session: Session, sample_db_url: str
+) -> None:
+    h = login(client, world.passwords, ADMIN)
+    scope = tenant_scope(owner_session)
+    pg_password = sample_db_url.split(":")[2].split("@")[0]
+    sid = secret(client, h, "pg-pass", pg_password)
+    conn = connection(client, h, pg_body(sample_db_url, sid))
+    activate(client, h, conn["id"])
+
+    def sql_spec(sql: str, side: str = "read", **binding: Any) -> dict[str, Any]:
+        return {
+            "executor": "connection.sql",
+            "binding": {"connection_id": conn["id"], "sql_template": sql, **binding},
+            "input_schema": {
+                "type": "object",
+                "properties": {"dept": {"type": "string"}, "min_id": {"type": "integer"}},
+            },
+            "output_schema": {"type": "object", "required": ["columns", "rows"]},
+            "side_effect_class": side,
+            "required_permissions": [],
+            "invocation_policy": {},
+            "timeout_s": 10,
+            "retry": {"max_attempts": 1, "backoff_s": 0},
+            "audit_level": "metadata",
+            "idempotency": "none",
+        }
+
+    t = art(
+        client,
+        h,
+        "tools",
+        "by-dept",
+        sql_spec("SELECT name FROM employees WHERE department = %(dept)s ORDER BY id", max_rows=2),
+        scope,
+    )
+    assert validate(client, h, t["id"])["valid"] is True
+    total = post(
+        client,
+        f"{A}/connections/{conn['id']}/invoke",
+        h,
+        {"sql": "SELECT count(*) FROM employees"},
+        200,
+    )["result"]["rows"][0][0]
+    dept = post(
+        client,
+        f"{A}/connections/{conn['id']}/invoke",
+        h,
+        {"sql": "SELECT department FROM employees ORDER BY id LIMIT 1"},
+        200,
+    )["result"]["rows"][0][0]
+    res = run_tool(client, h, t["id"], {"dept": dept})
+    assert res["output"]["columns"] == ["name"] and 1 <= len(res["output"]["rows"]) <= 2
+    # an injection attempt is just a (non-matching) value
+    inj = run_tool(client, h, t["id"], {"dept": "x'; DROP TABLE employees; --"})
+    assert inj["output"]["rows"] == []
+    after = post(
+        client,
+        f"{A}/connections/{conn['id']}/invoke",
+        h,
+        {"sql": "SELECT count(*) FROM employees"},
+        200,
+    )["result"]["rows"][0][0]
+    assert after == total
+
+    def codes_of(spec: dict[str, Any], rv: int) -> set[str]:
+        edit(client, h, "tools", t["id"], spec, rv)
+        return {e["code"] for e in validate(client, h, t["id"])["errors"]}
+
+    assert codes_of(sql_spec("DELETE FROM employees"), 1) == {
+        "write_statement_requires_write_class"
+    }
+    assert codes_of(sql_spec("SELECT 1; SELECT 2"), 2) == {"invalid_template"}
+    assert codes_of(sql_spec("SELECT %s"), 3) == {"invalid_template"}
+    assert codes_of(sql_spec("SELECT %(ghost)s"), 4) == {"unknown_argument"}
+    assert codes_of(sql_spec("SELECT 1 WHERE 'a' LIKE 'a%%'"), 5) == set()
+    assert codes_of(
+        sql_spec(
+            "UPDATE employees SET title = 'x'",
+            "write_idempotent",
+        ),
+        6,
+    ) >= {"connection_read_only"}
+    assert codes_of(sql_spec("SELECT 1", max_rows=0), 7) == {"invalid_value"}
