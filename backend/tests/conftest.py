@@ -68,6 +68,21 @@ def pytest_configure(config: pytest.Config) -> None:
         config.stash[_RUN_STASH] = uuid.uuid4().hex[:12]
 
 
+# The longest tests of a full run (measured, idle machine). Collected first so that, under xdist,
+# they start at the head of the run instead of leaving one worker as the tail. Nothing is
+# excluded or changed; only the collection order moves.
+_SLOWEST_FIRST = (
+    "tests/app/test_p8_perf.py::test_dashboards_respond_within_three_seconds_over_a_million_events",
+    "tests/build/test_model_refs.py::test_the_upgrade_fills_own_model_id_of_stored_rows",
+    "tests/app/test_r1_round6.py::test_an_mcp_error_result_on_a_resend_is_a_refusal",
+)
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    rank = {nodeid: n for n, nodeid in enumerate(_SLOWEST_FIRST)}
+    items.sort(key=lambda item: rank.get(item.nodeid, len(rank)))
+
+
 @pytest.hookimpl(optionalhook=True)
 def pytest_configure_node(node: Any) -> None:  # node: xdist WorkerController
     """xdist controller: hand the run id to every worker."""

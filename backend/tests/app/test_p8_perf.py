@@ -9,21 +9,24 @@ root (SETH's location; this file is one directory deeper, hence `parents[3]`).""
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 from fastapi.testclient import TestClient
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import NullPool
 
 from shifde import ledger
 from shifde.core.clock import utcnow
 from tests._support.fullapp import World
 from tests._support.p2util import login, tenant_id
 from tests._support.p3util import ADMIN, A
+from tests.conftest import _env, _with_db
 
 EVENTS = 1_000_000
-CHUNK = 250_000
+CHUNK = 125_000
 LIMIT_SECONDS = 3.0
 REPORT = Path(__file__).resolve().parents[3] / ".devdata" / "p8-perf.txt"
 
@@ -40,6 +43,52 @@ SELECT gen_random_uuid(), :t, now() - ((g % (30 * 86400)) * interval '1 second')
     'XTS'
 FROM generate_series(:a, :b) g
 """
+
+
+def _bulk_load(owner_session: Session, tid: Any, ws: Any, pj: Any) -> None:
+    """Load the million events into this test's own database as the superuser with
+    `session_replication_role = replica` (the rows are valid by construction; no per-row trigger
+    work), with the secondary indexes dropped during the load and rebuilt in one pass afterwards
+    from their own definitions. The table ends with the same rows and the same indexes."""
+    database = owner_session.get_bind().engine.url.database or ""
+    admin = create_engine(
+        _with_db(_env("SHIFDE_TEST_ADMIN_DATABASE_URL"), database), poolclass=NullPool
+    )
+
+    def load(first: int, last: int) -> None:
+        with admin.begin() as w:
+            w.execute(text("SET LOCAL session_replication_role = replica"))
+            w.execute(text(INSERT), {"t": tid, "ws": ws, "pj": pj, "a": first, "b": last})
+
+    try:
+        with admin.begin() as c:
+            indexes = c.execute(
+                text(
+                    "SELECT i.indexname, i.indexdef FROM pg_catalog.pg_indexes i "
+                    "WHERE i.schemaname = 'shifde' AND i.tablename = 'usage_events' "
+                    "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k "
+                    "WHERE k.conindid = (quote_ident(i.schemaname) || '.' || "
+                    "quote_ident(i.indexname))::regclass)"
+                )
+            ).all()
+            for name, _ in indexes:
+                c.execute(text(f'DROP INDEX shifde."{name}"'))
+        ranges = [(s, s + CHUNK - 1) for s in range(1, EVENTS + 1, CHUNK)]
+        with ThreadPoolExecutor(max_workers=len(ranges)) as pool:
+            for done in [pool.submit(load, a, b) for a, b in ranges]:
+                done.result()
+
+        def rebuild_index(definition: str) -> None:
+            with admin.begin() as w:
+                w.execute(text(definition))
+
+        with ThreadPoolExecutor(max_workers=len(indexes)) as pool:
+            for done in [pool.submit(rebuild_index, d) for _, d in indexes]:
+                done.result()
+        with admin.connect().execution_options(isolation_level="AUTOCOMMIT") as c:
+            c.execute(text("VACUUM (ANALYZE) shifde.usage_events"))
+    finally:
+        admin.dispose()
 
 
 def _timed(client: TestClient, h: dict[str, str], url: str) -> tuple[float, dict[str, Any]]:
@@ -62,11 +111,7 @@ def test_dashboards_respond_within_three_seconds_over_a_million_events(
         {"t": tid},
     ).one()
     loaded = time.perf_counter()
-    for start in range(1, EVENTS + 1, CHUNK):
-        owner_session.execute(
-            text(INSERT), {"t": tid, "ws": ws, "pj": pj, "a": start, "b": start + CHUNK - 1}
-        )
-        owner_session.commit()
+    _bulk_load(owner_session, tid, ws, pj)
     load_s = time.perf_counter() - loaded
     from_day = (utcnow() - __import__("datetime").timedelta(days=31)).date()
     to_day = utcnow().date()
