@@ -63,7 +63,7 @@ Source: `docs/build/findings.md` ("known defect" rows). Refreshed on 2026-11-17 
 | Item 12 (REQ F-02) | Archived workspace/project still accepts runs | runtime | closed: connections B-1509; runs and `start_action_run` B-2271 (`tests/runtime/test_service.py`), merged with runtime |
 | Item 12 (REQ F-03) | Orgs cannot be suspended; archived org principals still log in | tenancy, identity | archived client refused at the session pin (tenancy 2a, B-1008..B-1014); `suspended` client status needs a decision (carry_forward) |
 | Item 13 (J-M2) | Admin cannot read run output in prod; `capture_content` has no setter | runtime, tenancy | open: runtime ported as SETH, `capture_content` still has no setter (B-2275) |
-| Item 14 (REQ F-12) | Capture off only hides on read; content still stored | runtime, models_admin | open: writers still store content, only the read hides it (B-2275) |
+| Item 14 (REQ F-12) | Capture off only hides on read; content still stored | runtime, models_admin | fixed in code (B-2514): with capture off an ended run's content is scrubbed when the run and its root have ended; migration `runtime_0002` (UPDATE (content) on `run_artifacts`, UPDATE (arguments) on `tool_invocations`, `run_artifacts_guard`) waits for its three `tests/schema/deliberate_changes.yaml` entries (protected) |
 | Item 15 (REQ F-06) | No tool-invocation audit; `model.invoked` lacks run/workspace/project | runtime, models_admin, audit | open |
 | Item 16 (REQ F-13) | No per-tool approval flag; `audit_level` unused; `allowed_agent_ids` skipped for pipelines | build, runtime | open: pipeline tool nodes use `ToolPolicy(agent_id=None)` (B-2196) |
 | Item 16 (REQ F-09) | REST adapter lacks OAuth2 client credentials | adapters | open |
