@@ -14,7 +14,9 @@ unknown id answer alike), and `runs.lease_job_id` is set only to that job while 
 its lease (review 2 F2, B-2124). The run handed to the executors (`RunContext.run`) is the claimed
 row re-read with the client id (review 7 item 1). The database of the advance, which is also the
 `RunContext.db` of durable usage rows (Item 11), must be the application role: a privileged role
-is refused before anything runs (review 5 item 1, B-2164).
+is refused before anything runs (review 5 item 1, B-2164). A job of a client that is not active
+(suspended or archived) advances nothing and is handed back (`released`), its run left unfailed
+(F-03, B-2512).
 """
 
 from __future__ import annotations
@@ -55,6 +57,7 @@ from shifde.runtime.governance import GovernanceHooks
 from shifde.runtime.graph import GraphRunner
 from shifde.runtime.pipeline import PipelineRunner
 from shifde.runtime.settle import settle_terminal
+from shifde.tenancy import service as tenancy
 
 log = structlog.get_logger("shifde.runtime")
 
@@ -369,6 +372,25 @@ def _advance(
         # it drives nothing
         session.commit()
         return "skipped"
+    header = tenancy.tenant_header(session, tenant_id)
+    if header is not None and header[2] != "active":
+        # a suspended or archived client (F-03, B-2512): the run is not advanced and not failed
+        # (an unreadable client still fails the run when its context is built, B-2243).
+        # A run this job left running goes back to pending; the job is handed back and stays
+        # queued, unclaimable, until the client is active again (`shifde_claim_jobs`).
+        run = repo.get_run(session, tenant_id, run_id)
+        if (
+            run is not None
+            and run["status"] == state.RUNNING
+            and run["lease_job_id"] in (None, job_id)
+            and job["status"] == "leased"
+            and job["lease_owner"] == worker_id
+        ):
+            repo.transition(
+                session, tenant_id, run_id, state.RUNNING, state.PENDING, clear_lease=True
+            )
+        session.commit()
+        return "released"
     run = repo.get_run(session, tenant_id, run_id)
     if run is None or run["status"] in state.TERMINAL or run["status"] == state.WAITING:
         session.commit()
