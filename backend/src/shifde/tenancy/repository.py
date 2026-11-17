@@ -28,6 +28,20 @@ def worker_heartbeats(session: Session, window_seconds: int) -> tuple[int, Any]:
     return int(row[0]), row[1]
 
 
+def installation_idp_count(session: Session) -> int:
+    """Active installation identity providers (`tenant_id IS NULL`), counted as the sign-in
+    page lists them (one per display name and issuer, `installation.service._oidc_providers`).
+    A client's IdP is that client's content and is never counted (B-2441)."""
+    return int(
+        session.execute(
+            text(
+                "SELECT count(DISTINCT (display_name, issuer)) FROM shifde.idp_configs "
+                "WHERE tenant_id IS NULL AND status = 'active'"
+            )
+        ).scalar_one()
+    )
+
+
 # ------------------------------------------------------------------ tenants
 def get_tenant(session: Session, tenant_id: UUID) -> Tenant | None:
     return session.get(Tenant, tenant_id)

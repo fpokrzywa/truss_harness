@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from shifde import __version__
 from shifde.core.settings import Settings
 from tests._support.fullapp import World, login
+from tests.identity import oidc_flow
 
 ADMIN_A = "admin@demo-a.local"
 
@@ -214,6 +215,27 @@ def test_platform_status(client: TestClient, world: World) -> None:
     assert s["database"]["status"] == "ok" and s["database"]["revision"] == s["database"]["head"]
     assert s["auth"] == {"local_enabled": True, "oidc_providers": 0}
     assert s["worker"] == {"status": "not_running", "count": 0, "last_heartbeat_at": None}
+
+
+def test_platform_status_counts_installation_identity_providers_only(
+    client: TestClient, world: World, owner_session: Session
+) -> None:
+    """Review 1 note (B-2441): `auth.oidc_providers` counts the active installation IdPs
+    (`tenant_id IS NULL`, as the installation overview lists them); an active IdP of a client
+    and a disabled installation IdP are not counted."""
+    login(client, world, PLATFORM)
+    tenant_a = owner_session.execute(
+        text("SELECT id FROM shifde.tenants WHERE slug = 'demo-a'")
+    ).scalar_one()
+    oidc_flow.owner_oidc_idp(owner_session, tenant_a, "https://client-idp.example.test")
+    owner_session.commit()
+    assert client.get(STATUS).json()["auth"]["oidc_providers"] == 0  # a client's IdP only
+    oidc_flow.owner_oidc_idp(owner_session, None, "https://install-idp.example.test")
+    oidc_flow.owner_oidc_idp(
+        owner_session, None, "https://disabled-idp.example.test", status="disabled"
+    )
+    owner_session.commit()
+    assert client.get(STATUS).json()["auth"]["oidc_providers"] == 1
 
 
 @pytest.mark.parametrize("who", [VIEWER_A, ADMIN_A, ADMIN_B])

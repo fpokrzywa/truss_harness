@@ -705,7 +705,10 @@ def platform_status(
         version=__version__,
         environment=settings.env,
         database=DatabaseStatusOut(status=state.status, revision=state.revision, head=state.head),
-        auth=AuthStatusOut(local_enabled=settings.auth_local_enabled, oidc_providers=0),
+        auth=AuthStatusOut(
+            local_enabled=settings.auth_local_enabled,
+            oidc_providers=repository.installation_idp_count(session),
+        ),
         worker=_worker_status(session, settings),
     )
     session.rollback()
