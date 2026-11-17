@@ -8,7 +8,7 @@ organization lists come from `shifde_my_memberships` alone (visibility by bindin
 context switching) in the summary shape; the installation-wide list checks the principal, not
 only the database flag; a platform administrator adding themselves to a client and every group
 binding are audited in that client; group bindings for the platform administrator or the
-client's owner only; `platform_status` waits for the runtime's `workers` table (B-1013).
+client's owner only; `platform_status` for the platform administrator only (B-2401).
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from uuid import UUID
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
+from shifde import __version__
 from shifde.audit import service as audit
 from shifde.authz import service as authz
 from shifde.authz.service import ResourceRef
@@ -29,24 +30,30 @@ from shifde.core.clock import utcnow
 from shifde.core.config_resolution import resolve_config
 from shifde.core.context import Principal, RequestContext
 from shifde.core.errors import Conflict, Forbidden, NotFound, ScopeArchived, ValidationFailed
+from shifde.core.health import migration_state
 from shifde.core.ids import uuid7
 from shifde.core.pagination import Page, decode_cursor, encode_cursor, paginate
+from shifde.core.settings import Settings
 from shifde.identity import service as identity
 from shifde.identity.schemas import MemberOut, MemberUserOut
 from shifde.tenancy import repository
 from shifde.tenancy.models import Project, Tenant, Workspace
 from shifde.tenancy.schemas import (
     ActivityOut,
+    AuthStatusOut,
     DashboardCountsOut,
     DashboardOut,
     DashboardScopeOut,
+    DatabaseStatusOut,
     OrgCreate,
     OrgOut,
     OrgPatch,
     OrgSummaryOut,
+    PlatformStatusOut,
     ProjectCreate,
     ProjectOut,
     ProjectPatch,
+    WorkerStatusOut,
     WorkspaceCreate,
     WorkspaceOut,
     WorkspacePatch,
@@ -674,6 +681,35 @@ def effective_settings(
         ws.settings if ws else None,
         project.settings if project else None,
     )
+
+
+# ------------------------------------------------------------------ platform status
+def _worker_status(session: Session, settings: Settings) -> WorkerStatusOut:
+    """Worker health from the `workers` heartbeat rows: healthy = a worker beat within three lease
+    periods (at least 15 seconds); stale = workers exist but none beat recently; not_running =
+    none ever registered (SETH 3ba0e06, J m2)."""
+    count, last = repository.worker_heartbeats(session, max(settings.worker_lease_seconds * 3, 15))
+    status = "healthy" if count > 0 else ("stale" if last is not None else "not_running")
+    return WorkerStatusOut(status=status, count=count, last_heartbeat_at=last)
+
+
+def platform_status(
+    session: Session, settings: Settings, principal: Principal
+) -> PlatformStatusOut:
+    """Version, environment, migrations and worker health of the installation. Platform
+    administrators only (SEC Minor-2: SETH answered any signed-in person, B-2401); reads no client
+    row and switches no context."""
+    _require_platform_admin(session, principal)
+    state = migration_state(session)
+    out = PlatformStatusOut(
+        version=__version__,
+        environment=settings.env,
+        database=DatabaseStatusOut(status=state.status, revision=state.revision, head=state.head),
+        auth=AuthStatusOut(local_enabled=settings.auth_local_enabled, oidc_providers=0),
+        worker=_worker_status(session, settings),
+    )
+    session.rollback()
+    return out
 
 
 # ------------------------------------------------------------------ scope helpers (admin layer)

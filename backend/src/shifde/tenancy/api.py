@@ -3,7 +3,7 @@
 Ported from SETH 3ba0e06 `tenancy/api.py`; the `app` port mounts `router` (B-501). Changes
 (tenancy part 2b, DECISIONS B-1019, B-1020): organization lists return the summary shape
 (B-1011); every `{org}` route resolves the client through `resolve_org` (only a client the caller
-may see, B-1009); `GET /platform/status` moves to the runtime port with the `workers` table.
+may see, B-1009); `GET /platform/status` for platform administrators only (APP-2, B-2401).
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from typing import Literal
 
 from fastapi import APIRouter
 
-from shifde.core.deps import RequestCtxDep, SessionDep
+from shifde.core.deps import RequestCtxDep, SessionDep, SettingsDep
 from shifde.core.pagination import DEFAULT_LIMIT, Page
 from shifde.identity.dependencies import AuthDep
 from shifde.identity.schemas import MemberOut
@@ -24,6 +24,7 @@ from shifde.tenancy.schemas import (
     OrgOut,
     OrgPatch,
     OrgSummaryOut,
+    PlatformStatusOut,
     ProjectCreate,
     ProjectOut,
     ProjectPatch,
@@ -137,7 +138,7 @@ def update_project(scope: ScopeDep, ws: str, proj: str, body: ProjectPatch) -> P
     return service.update_project(scope, ws, proj, body)
 
 
-# ---------------------------------------------------------------- dashboard
+# ---------------------------------------------------------------- dashboard & platform status
 
 
 @router.get("/orgs/{org}/dashboard", tags=["dashboard"])
@@ -145,3 +146,8 @@ def dashboard(
     scope: ScopeDep, workspace: str | None = None, project: str | None = None
 ) -> DashboardOut:
     return service.dashboard(scope, workspace_slug=workspace, project_slug=project)
+
+
+@router.get("/platform/status", tags=["platform"])
+def platform_status(auth: AuthDep, session: SessionDep, settings: SettingsDep) -> PlatformStatusOut:
+    return service.platform_status(session, settings, auth.principal)

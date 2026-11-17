@@ -7,8 +7,9 @@ hint); B's rows are unchanged afterwards; and the same request by B's own owner 
 organization gets another answer (the refusal is not vacuous). A's session with B's slug in the
 path gets the unknown-organization answer: the client comes only from
 `tenancy.dependencies.resolve_org`. Lists never show B's rows, and B's ids or scope slugs in a
-body or a filter answer like unknown ones. Everything runs as `shifde_app` over a minimal app (the
-`app` port mounts the router, APP-2).
+body or a filter answer like unknown ones. Everything runs as `shifde_app`, once over a minimal
+app and once over the mounted application (`shifde.app.create_app`, APP-2, B-2402); the coverage
+check holds for the router and for the runtime routes the mounted application serves.
 """
 
 from __future__ import annotations
@@ -68,9 +69,9 @@ class Two:
     b: Side
 
 
-@pytest.fixture
-def client(settings: Settings) -> Iterator[TestClient]:
-    with runtime_client(settings) as c:
+@pytest.fixture(params=["minimal", "mounted"])
+def client(settings: Settings, request: pytest.FixtureRequest) -> Iterator[TestClient]:
+    with runtime_client(settings, mounted=request.param == "mounted") as c:
         yield c
 
 
@@ -180,6 +181,40 @@ def test_every_runtime_route_has_a_cross_client_case() -> None:
     covered = {(label.split(" ", 1)[0], "/orgs/{org}" + label.split(" ", 1)[1])
                for label, _ in ROUTES} | LISTS  # fmt: skip
     assert served == covered
+
+
+def test_the_mounted_app_serves_exactly_the_covered_runtime_routes(settings: Settings) -> None:
+    """Every runtime route the mounted application serves (matched to the router by operation
+    id) has its case above, and answers 401 without a session like the other `/api/v1` routes
+    (APP-2, B-2402)."""
+    bare = FastAPI()
+    bare.include_router(api.router)
+    runtime_ops = {
+        op["operationId"] for ops in bare.openapi()["paths"].values() for op in ops.values()
+    }
+    with runtime_client(settings, mounted=True) as c:
+        paths = c.get("/api/openapi.json").json()["paths"]
+        served = {
+            (method.upper(), path.removeprefix("/api/v1"))
+            for path, ops in paths.items()
+            for method, op in ops.items()
+            if op["operationId"] in runtime_ops
+        }
+        anonymous = {
+            (method, path): c.request(
+                method,
+                "/api/v1" + path.format(org="x", **{k: str(uuid4()) for k in _PATH_IDS}),
+                json={} if method == "POST" else None,
+            ).status_code
+            for method, path in served
+        }
+    covered = {(label.split(" ", 1)[0], "/orgs/{org}" + label.split(" ", 1)[1])
+               for label, _ in ROUTES} | LISTS  # fmt: skip
+    assert served == covered
+    assert set(anonymous.values()) == {401}, anonymous
+
+
+_PATH_IDS = ("run_id", "artifact_id", "approval_id", "pipeline_id", "ontology_id", "action_key")
 
 
 def _send(client: TestClient, h: dict[str, str], base: str, req: Req) -> httpx.Response:
