@@ -416,6 +416,45 @@ def test_the_database_allows_only_the_placeholder_on_an_ended_runs_artifact(
     assert _arguments(owner_db, ended.run) == [None]
 
 
+def test_the_database_allows_only_clearing_an_ended_runs_arguments(
+    app_db: Database, owner_db: Database
+) -> None:
+    """`tool_invocations_arguments_guard` (runtime_0002): a non-NULL value, NULL on a run that
+    has not ended and NULL together with another column are refused, as `shifde_app` and as the
+    owner; the runtime's status updates (which do not name `arguments`) still work."""
+    tenant = uuid7()
+    with owner_db.session() as o:
+        add_tenants(o, tenant)
+        user = add_person(o, tenant, "runner", "tenant_administrator")
+        active = _seed(o, tenant, user)
+        ended = _seed(o, tenant, user, status="failed")
+        o.commit()
+    refused = [
+        ("UPDATE shifde.tool_invocations SET arguments = '{\"x\": 1}' WHERE run_id = :r",
+         ended.run),
+        ("UPDATE shifde.tool_invocations SET arguments = NULL WHERE run_id = :r", active.run),
+        ("UPDATE shifde.tool_invocations SET arguments = NULL, status = 'failed' "
+         "WHERE run_id = :r", ended.run),
+    ]  # fmt: skip
+    sessions = (lambda: app_session(app_db, tenant), owner_db.session)
+    for opener in sessions:
+        for sql, run in refused:
+            with opener() as s:
+                with pytest.raises(DBAPIError) as err:
+                    s.execute(text(sql), {"r": run})
+                assert getattr(err.value.orig, "sqlstate", None) == "42501", sql
+    assert ARGUMENT in repr(_arguments(owner_db, active.run) + _arguments(owner_db, ended.run))
+    with app_session(app_db, tenant) as s:
+        s.execute(
+            text("UPDATE shifde.tool_invocations SET status = 'failed' WHERE run_id = :r"),
+            {"r": active.run},
+        )
+        repo.scrub_run_content(s, tenant, ended.run)
+        s.commit()
+    assert _arguments(owner_db, ended.run) == [None]
+    assert ARGUMENT in repr(_arguments(owner_db, active.run))
+
+
 # ------------------------------------------------------------------ cross-client
 def _snapshot(owner_db: Database, tenant: UUID) -> tuple[Any, ...]:  # Any: row values
     with owner_db.session() as o:
