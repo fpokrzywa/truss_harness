@@ -614,6 +614,14 @@ def resolve_api_key(session: Session, prefix: str) -> ResolvedKey | None:
     return ResolvedKey(**row) if row else None
 
 
+def client_status(session: Session, tenant_id: UUID) -> str | None:
+    """`tenants.status` of the client in the current client context (its own row under RLS)."""
+    status: str | None = session.execute(
+        text("SELECT status FROM shifde.tenants WHERE id = :t"), {"t": tenant_id}
+    ).scalar_one_or_none()
+    return status
+
+
 def insert_api_key(session: Session, values: dict[str, Any]) -> None:
     session.execute(insert(ApiKey).values(**values))
 
