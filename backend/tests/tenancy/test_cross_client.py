@@ -30,9 +30,10 @@ from shifde.identity import apikeys
 from shifde.tenancy import api as tenancy_api
 from shifde.tenancy import repository
 from tests._support.fake_oidc import resolver as fake_oidc_resolver
+from tests._support.tenants import bind_user
 from tests.identity import oidc_flow
 from tests.identity.harness import COOKIE, login
-from tests.tenancy.conftest import World, app_session
+from tests.tenancy.conftest import World, app_session, owner_member
 from tests.tenancy.routes import (
     People,
     make_people,
@@ -609,3 +610,48 @@ def test_platform_status_answers_the_platform_administrator_and_no_client(
         r = c.get(url)
         assert r.status_code == 200, r.text
         assert set(r.json()) == {"version", "environment", "database", "auth", "worker"}
+
+
+def test_platform_status_refuses_the_platform_administrators_pinned_session_and_api_key(
+    settings: Settings, world: World, people: People, app_db: Database, owner_session: Session
+) -> None:
+    """Review 1 note (B-2442): the platform administrator, made an administrator of A so the pin
+    and the key are valid, is refused (403, no status in the body) on a session pinned to A and
+    with a user API key of A; the same person's unpinned session gets the status (not vacuous)."""
+    url = "/api/v1/platform/status"
+    a = world.a
+    admin_id = owner_session.execute(
+        text("SELECT id FROM shifde.users WHERE primary_email = :e"), {"e": people.platform}
+    ).scalar_one()
+    owner_member(owner_session, a.tenant, admin_id)
+    bind_user(owner_session, a.tenant, admin_id, "tenant_administrator")
+    owner_session.commit()
+    with app_session(app_db, a.tenant) as s:
+        _, key = apikeys.mint(
+            s,
+            settings,
+            tenant_id=a.tenant,
+            name="platform-admin-key",
+            principal_type="user",
+            principal_id=admin_id,
+            scopes=["workspace:read"],
+            resource_scope=None,
+            expires_at=utcnow() + timedelta(days=1),
+            created_by=admin_id,
+        )
+        s.commit()
+    pin_a, _ = pinned_session(owner_session, admin_id, a.tenant)
+    with tenancy_client(settings, cookies={COOKIE: pin_a}) as c:
+        assert c.get(f"/api/v1/orgs/{a.slug}").status_code == 200  # the pin is a valid session
+        r = c.get(url)
+        assert r.status_code == 403, r.text
+        assert "worker" not in r.json() and "database" not in r.json()
+    with tenancy_client(settings) as c:
+        headers = {"Authorization": f"Bearer {key}"}
+        assert c.get(f"/api/v1/orgs/{a.slug}", headers=headers).status_code == 200  # valid key
+        r = c.get(url, headers=headers)
+        assert r.status_code == 403, r.text
+        assert "worker" not in r.json() and "database" not in r.json()
+    free, _ = pinned_session(owner_session, admin_id, None)
+    with tenancy_client(settings, cookies={COOKIE: free}) as c:
+        assert c.get(url).status_code == 200
