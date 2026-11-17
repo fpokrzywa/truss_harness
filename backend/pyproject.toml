@@ -148,6 +148,20 @@ forbidden_modules = [
 ]
 
 [[tool.importlinter.contracts]]
+name = "The executor never reaches the database (adapters.native, later shifde.executor)"
+type = "forbidden"
+# shifde.executor joins source_modules in the issue that creates it (import-linter refuses a
+# source module that does not exist yet).
+source_modules = ["shifde.adapters.native"]
+forbidden_modules = [
+  "sqlalchemy", "psycopg", "alembic", "shifde.core.db", "shifde.delivery", "shifde.executor",
+  "shifde.main", "shifde.app", "shifde.cli", "shifde.runtime", "shifde.ontology", "shifde.build",
+  "shifde.governance", "shifde.admin", "shifde.models_admin", "shifde.connections",
+  "shifde.vendors", "shifde.installation", "shifde.tenancy", "shifde.identity", "shifde.secrets",
+  "shifde.audit", "shifde.authz", "shifde.observability", "shifde.ledger",
+]
+
+[[tool.importlinter.contracts]]
 name = "Only API layers and the app factory may import FastAPI routing; services stay HTTP-free"
 type = "forbidden"
 source_modules = [
