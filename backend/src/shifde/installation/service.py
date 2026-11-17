@@ -35,17 +35,8 @@ def _installation_settings(session: Session) -> dict[str, dict[str, Any]]:
     return {"feature_flags": dict(row[0] or {}), "default_limits": dict(row[1] or {})}
 
 
-def _table_exists(session: Session, name: str) -> bool:
-    """Later modules own `workers` (runtime) and `egress_policies` (connections): until their
-    migrations exist the overview reports those parts absent (B-1105)."""
-    return bool(
-        session.execute(text("SELECT to_regclass(:n) IS NOT NULL"), {"n": name}).scalar_one()
-    )
-
-
 def _workers(session: Session, settings: Settings) -> list[s.WorkerOut] | None:
-    if not _table_exists(session, "shifde.workers"):
-        return None
+    # `workers` is runtime_0001's (the `to_regclass` guard of B-1105 is gone, B-2403)
     rows = session.execute(
         text(
             "SELECT id, heartbeat_at, heartbeat_at > now() - make_interval(secs => :win) "
@@ -83,8 +74,6 @@ def _oidc_providers(session: Session) -> list[s.OidcProviderOut]:
 
 
 def _egress_default_allow_private(session: Session) -> bool:
-    if not _table_exists(session, "shifde.egress_policies"):
-        return False
     value = session.execute(
         text(
             "SELECT allow_private FROM shifde.egress_policies "

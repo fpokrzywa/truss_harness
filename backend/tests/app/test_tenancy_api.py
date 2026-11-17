@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from shifde import __version__
+from shifde.core.settings import Settings
 from tests._support.fullapp import World, login
 
 ADMIN_A = "admin@demo-a.local"
@@ -197,3 +200,60 @@ def test_platform_admin_creates_org_and_lists_all(client: TestClient, world: Wor
     login(client, world, ADMIN_B)
     assert {o["slug"] for o in client.get("/api/v1/orgs").json()["items"]} == {"demo-b", "newco"}
     assert client.get("/api/v1/orgs/newco/workspaces").status_code == 200
+
+
+STATUS = "/api/v1/platform/status"
+
+
+def test_platform_status(client: TestClient, world: World) -> None:
+    """SETH 3ba0e06 `test_api_tenancy.py::test_platform_status`, assertions unchanged; the caller
+    is the platform administrator, not SETH's viewer (SEC Minor-2, B-2401)."""
+    login(client, world, PLATFORM)
+    s = client.get(STATUS).json()
+    assert s["version"] == __version__ and s["environment"] == "test"
+    assert s["database"]["status"] == "ok" and s["database"]["revision"] == s["database"]["head"]
+    assert s["auth"] == {"local_enabled": True, "oidc_providers": 0}
+    assert s["worker"] == {"status": "not_running", "count": 0, "last_heartbeat_at": None}
+
+
+@pytest.mark.parametrize("who", [VIEWER_A, ADMIN_A, ADMIN_B])
+def test_platform_status_refuses_everyone_but_the_platform_administrator(
+    client: TestClient, world: World, who: str
+) -> None:
+    """SEC Minor-2 (B-2401): a viewer, a client's own administrator and the administrator of
+    another client are refused alike, with no installation detail in the answer."""
+    login(client, world, who)
+    r = client.get(STATUS)
+    assert r.status_code == 403, r.text
+    assert "worker" not in r.json() and __version__ not in r.text
+    client.cookies.clear()
+    assert client.get(STATUS).status_code == 401  # and nobody signed in
+
+
+def test_platform_status_worker_health_window(
+    client: TestClient, world: World, owner_session: Session, settings: Settings
+) -> None:
+    """J m2: healthy when a running worker beat within three lease periods (at least 15 s), stale
+    when workers are known but none beat recently; stopped workers never count."""
+    login(client, world, PLATFORM)
+    window = max(settings.worker_lease_seconds * 3, 15)
+
+    def add(wid: str, age: int, status: str = "running") -> None:
+        owner_session.execute(
+            text(
+                "INSERT INTO shifde.workers (id, hostname, pid, heartbeat_at, version, "
+                "concurrency, status) VALUES (:i, 'h', 1, now() - make_interval(secs => :a), "
+                "'v', 1, :s)"
+            ),
+            {"i": wid, "a": age, "s": status},
+        )
+        owner_session.commit()
+
+    add("w-old", window + 30)
+    add("w-stopped", 1, status="stopped")
+    w = client.get(STATUS).json()["worker"]
+    assert w["status"] == "stale" and w["count"] == 0 and w["last_heartbeat_at"] is not None
+    add("w-live", 1)
+    add("w-edge", window - 5)
+    w = client.get(STATUS).json()["worker"]
+    assert w["status"] == "healthy" and w["count"] == 2
