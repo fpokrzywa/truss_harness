@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from shifde.adapters.testservers import RestTestServer
 from shifde.core.settings import Settings
 from shifde.runtime.worker import Worker
 from tests._support.fullapp import World
@@ -27,7 +28,10 @@ from tests._support.p5util import (
     wait_for,
     wait_run,
 )
+from tests._support.p6util import HangServer as PipelineHang
+from tests._support.p6util import World6
 from tests.app.test_p5_worker import HangServer, build
+from tests.app.test_p6_exec2 import hang_pipeline
 
 UNKNOWN = "indeterminate_side_effect"
 
@@ -432,9 +436,48 @@ def test_a_normal_approval_still_expires_with_its_run(
         server.close()
 
 
-# Not ported here (B-2413): `test_pipeline_write_node_in_flight_when_the_worker_dies_then_cancelled`
-# needs SETH's `World6`/`p6util` pipeline harness and `sample_db_url` (the sample database is
-# not ported yet), so it moves with the `test_p6_*` pipeline-run files;
-# `test_migration_downgrade_restores_the_previous_reaper_and_guard` downgrades SETH's
-# `p11_0001` to `p09_0001`, revisions the unified schema does not have (`runtime_0001` creates
-# the final reaper and guard, B-2101).
+# Ported in part 2c (B-2422) over `tests/_support/p6util.py` and `sample_db_url`.
+def test_pipeline_write_node_in_flight_when_the_worker_dies_then_cancelled(
+    client: TestClient,
+    world: World,
+    owner_session: Session,
+    settings: Settings,
+    rest_server: RestTestServer,
+    sample_db_url: str,
+) -> None:
+    w = World6(client, world, owner_session, rest_server, sample_db_url)
+    hang = PipelineHang()
+    try:
+        pipe = hang_pipeline(w, hang, write=True)
+        run = w.run(pipe["id"], {"doc": {"a": 1}})
+        w1 = SubprocessWorker(settings, "w1")
+        try:
+            assert hang.first_started.wait(60), "the write never started"
+            w1.kill()
+        finally:
+            if w1.proc.poll() is None:
+                w1.kill()
+        cancel(client, w.h, run["id"])
+        expire_leases(owner_session)
+        reap(settings)
+        row = run_row(owner_session, run["id"])
+        assert row["status"] == "cancelled" and row["error_class"] == UNKNOWN, row
+        states = step_states(owner_session, run["id"])
+        assert (
+            all(st != "running" for _, st in states)
+            and ("pipeline_node", "indeterminate") in states
+        )
+        api = get_run(client, w.h, run["id"])
+        assert api["outcome_unknown"] is True
+        [appr] = [a for a in w.pending_approvals() if a["reason"] == UNKNOWN]
+        assert appr["arguments"] == {"node": "post", "type": "sink"} and appr["tool"] is None
+        assert w.decide(appr["id"], "mark_succeeded", "checked the target").status_code == 200
+        assert get_run(client, w.h, run["id"])["outcome_unknown"] is False
+        assert hang.count("POST") == 1
+    finally:
+        hang.close()
+
+
+# Not ported here (B-2413): `test_migration_downgrade_restores_the_previous_reaper_and_guard`
+# downgrades SETH's `p11_0001` to `p09_0001`, revisions the unified schema does not have
+# (`runtime_0001` creates the final reaper and guard, B-2101).

@@ -31,6 +31,7 @@ from tests._support.p3util import (
     B,
     activate,
     connection,
+    pg_body,
     rest_body,
     secret,
 )
@@ -907,3 +908,195 @@ def _set_vendor_status(owner_session: Session, key: str, status: str) -> None:
         {"s": status, "k": key},
     )
     owner_session.commit()
+
+
+# Ported in app-2 part 2c over `sample_db_url` (B-2420, B-2423; SETH test_p3_connections.py).
+def test_rest_mcp_and_postgres_connections_with_secret_references(
+    client: TestClient,
+    world: World,
+    rest_server: RestTestServer,
+    mcp_server: McpTestServer,
+    sample_db_url: str,
+) -> None:
+    h = login(client, world.passwords, ADMIN)
+    s_rest = secret(client, h, "rest-token", REST_TOKEN)
+    s_mcp = secret(client, h, "mcp-token", MCP_TOKEN)
+    pg_password = sample_db_url.split(":")[2].split("@")[0]
+    s_pg = secret(client, h, "pg-password", pg_password)
+
+    rest = connection(client, h, rest_body(rest_server, s_rest))
+    mcp = connection(
+        client,
+        h,
+        {
+            "name": "mcp-srv",
+            "connection_type": "mcp",
+            "adapter_key": "mcp_http",
+            "config": {"url": mcp_server.url},
+            "auth_method": "bearer",
+            "secret_id": s_mcp,
+        },
+    )
+    pg = connection(client, h, pg_body(sample_db_url, s_pg))
+
+    for c, secret_id in ((rest, s_rest), (mcp, s_mcp), (pg, s_pg)):
+        assert set(c) >= {
+            "id",
+            "name",
+            "scope",
+            "connection_type",
+            "adapter_key",
+            "config",
+            "auth_method",
+            "secret_id",
+            "secret_set",
+            "egress_policy_id",
+            "access_mode",
+            "status",
+            "health_status",
+            "last_tested_at",
+            "row_version",
+            "created_at",
+            "updated_at",
+        }
+        assert c["secret_set"] is True and c["secret_id"] == secret_id
+        assert c["status"] == "draft" and c["scope"] == {"workspace": None, "project": None}
+        assert "password" not in c["config"] and "token" not in c["config"]
+        # tests pass and are persisted with the six named checks
+        res = client.post(f"{A}/connections/{c['id']}/test", headers=h)
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["outcome"] == "pass" and [x["name"] for x in body["checks"]] == CHECKS
+        assert all(x["status"] in ("pass", "skipped") for x in body["checks"])
+        assert body["duration_ms"] >= 0 and body["error_class"] is None
+        history = client.get(f"{A}/connections/{c['id']}/tests", headers=h).json()["items"]
+        assert [t["id"] for t in history] == [body["id"]]
+
+    # discovery payloads (B4); 404 before any discovery exists
+    assert (
+        client.get(f"{A}/connections/{rest['id']}/discoveries/latest", headers=h).status_code == 404
+    )
+    d = post(client, f"{A}/connections/{rest['id']}/discover", h, {}, 200)
+    assert (
+        d["kind"] == "openapi"
+        and {"method": "GET", "path": "/echo", "summary": "echo"} in d["payload"]["paths"]
+    )
+    d = post(client, f"{A}/connections/{mcp['id']}/discover", h, {}, 200)
+    assert d["kind"] == "mcp_tools" and {t["name"] for t in d["payload"]["tools"]} == {
+        "add",
+        "echo",
+        "flaky",  # R1: the test server's write that errors on a resend
+        "wipe",
+    }
+    d = post(client, f"{A}/connections/{pg['id']}/discover", h, {}, 200)
+    tables = {t["name"]: t for t in d["payload"]["tables"]}
+    assert d["kind"] == "schema" and {
+        "customers",
+        "accounts",
+        "service_requests",
+        "employees",
+    } <= set(tables)
+    assert {"name": "tax_id", "type": "text", "nullable": True} in tables["customers"]["columns"]
+    latest = client.get(f"{A}/connections/{pg['id']}/discoveries/latest", headers=h).json()
+    assert latest["id"] == d["id"] and set(latest) == {"id", "kind", "discovered_at", "payload"}
+
+    # activate + invoke (read-only by default)
+    for c in (rest, mcp, pg):
+        activate(client, h, c["id"])
+    r = post(
+        client,
+        f"{A}/connections/{rest['id']}/invoke",
+        h,
+        {"method": "GET", "path": "/echo", "query": {"q": "1"}},
+        200,
+    )
+    assert r["result"]["status"] == 200 and r["result"]["body"]["query"] == {"q": "1"}
+    assert set(r) == {"result", "truncated", "duration_ms"} and r["truncated"] is False
+    m = post(
+        client,
+        f"{A}/connections/{mcp['id']}/invoke",
+        h,
+        {"tool": "add", "arguments": {"a": 40, "b": 2}},
+        200,
+    )
+    assert m["result"]["is_error"] is False and "42" in json.dumps(m["result"])
+    q = post(
+        client,
+        f"{A}/connections/{pg['id']}/invoke",
+        h,
+        {
+            "sql": "SELECT id, name FROM customers WHERE region = %s ORDER BY id",
+            "params": ["north"],
+        },
+        200,
+    )
+    assert q["result"]["columns"] == ["id", "name"] and q["result"]["rows"]
+    # list filters (B1 slugs + type/status)
+    listed = client.get(f"{A}/connections?type=database&status=active", headers=h).json()
+    assert [c["id"] for c in listed["items"]] == [pg["id"]] and listed["next_cursor"] is None
+    assert len(client.get(f"{A}/connections", headers=h).json()["items"]) == 3
+
+
+# Ported in app-2 part 2c over `sample_db_url` (B-2420, B-2423; SETH test_p3_connections.py).
+def test_database_invoke_is_read_only_unless_read_write_and_connection_write(
+    client: TestClient, world: World, sample_db_url: str, owner_session: Session
+) -> None:
+    h = login(client, world.passwords, ADMIN)
+    pw = sample_db_url.split(":")[2].split("@")[0]
+    cid = connection(client, h, pg_body(sample_db_url, secret(client, h, "pg", pw)))["id"]
+    activate(client, h, cid)
+    url = f"{A}/connections/{cid}/invoke"
+    ins = "INSERT INTO customers (id, name, email, region, segment, created_at) VALUES (900, 'n', 'e', 'north', 'consumer', now())"
+    for stmt in (
+        ins,
+        "DELETE FROM customers",
+        "SELECT 1; SELECT 2",
+        "WITH d AS (DELETE FROM customers RETURNING id) SELECT * FROM d",
+    ):
+        r = client.post(url, json={"sql": stmt}, headers=h)
+        assert r.status_code == 422, (stmt, r.text)
+    # asking for write on a read-only connection is refused outright
+    denied = client.post(url, json={"sql": ins, "write": True}, headers=h)
+    assert denied.status_code == 403
+    # read_write + connection:write: the adapter allows it, the reader role's grants still refuse
+    row = _row(client, h, cid)
+    assert (
+        client.patch(
+            f"{A}/connections/{cid}",
+            headers=h,
+            json={"access_mode": "read_write", "row_version": row["row_version"]},
+        ).status_code
+        == 200
+    )
+    assert _row(client, h, cid)["status"] == "draft"  # a changed definition must be re-tested
+    activate(client, h, cid)
+    r = client.post(url, json={"sql": ins, "write": True}, headers=h)
+    assert r.status_code == 422  # least privilege at the database: SELECT-only role
+    # the row cap and statement timeout come from the connection config
+    assert (
+        client.patch(
+            f"{A}/connections/{cid}",
+            headers=h,
+            json={
+                "config": {**_row(client, h, cid)["config"], "max_rows": 3},
+                "row_version": _row(client, h, cid)["row_version"],
+            },
+        ).status_code
+        == 200
+    )
+    activate(client, h, cid)
+    capped = post(client, url, h, {"sql": "SELECT * FROM service_requests ORDER BY id"}, 200)
+    assert capped["truncated"] is True and len(capped["result"]["rows"]) == 3
+    audit = (
+        owner_session.execute(
+            text(
+                "SELECT details FROM shifde.audit_events WHERE action = 'connection.invoked' ORDER BY id"
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert audit and all("params" not in json.dumps(a) for a in audit)
+    # a principal without connection:use cannot invoke at all
+    hv = login(client, world.passwords, VIEWER)
+    assert client.post(url, json={"sql": "SELECT 1"}, headers=hv).status_code == 403
