@@ -64,7 +64,7 @@
         "migrations"
       ],
       "lead_model": "opus",
-      "status": "todo",
+      "status": "done",
       "brief": "docs/build/HANDOFF.md step 4, including its isolation review."
     },
     {
