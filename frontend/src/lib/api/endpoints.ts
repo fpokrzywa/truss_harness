@@ -1,5 +1,6 @@
 import { api as defaultClient, type ApiClient } from './client';
 import { createBuildEndpoints } from './build-endpoints';
+import { createOntologyEndpoints } from './ontology-endpoints';
 import { createGovernanceEndpoints } from './governance-endpoints';
 import { createIntegrateEndpoints } from './integrate-endpoints';
 import { createSecurityEndpoints } from './security-endpoints';
@@ -97,6 +98,7 @@ export function createEndpoints(client: ApiClient = defaultClient) {
     ...createIntegrateEndpoints(client),
     ...createGovernanceEndpoints(client),
     ...createBuildEndpoints(client),
+    ...createOntologyEndpoints(client),
     // Further per-area endpoint groups (build, operate, pipelines, ontology) are spread in
     // here as each area lands.
     myPermissions: (org: string, workspace?: string, project?: string) =>
