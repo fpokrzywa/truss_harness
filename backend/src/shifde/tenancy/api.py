@@ -5,7 +5,8 @@ Ported from SETH 3ba0e06 `tenancy/api.py`; the `app` port mounts `router` (B-501
 (B-1011); every `{org}` route resolves the client through `resolve_org` (only a client the caller
 may see, B-1009); `GET /platform/status` for platform administrators only (APP-2, B-2401);
 `POST /platform/orgs/{org}/suspend` and `/unsuspend` for platform administrators only (F-03,
-B-2511).
+B-2511); a client that is not active is refused on every `{org}` route but `GET` / `PATCH
+/orgs/{org}`, which still admit its owner and the platform administrator (B-2512).
 """
 
 from __future__ import annotations
@@ -19,7 +20,13 @@ from shifde.core.pagination import DEFAULT_LIMIT, Page
 from shifde.identity.dependencies import AuthDep
 from shifde.identity.schemas import MemberOut
 from shifde.tenancy import service
-from shifde.tenancy.dependencies import CursorQuery, IncludeArchivedQuery, LimitQuery, ScopeDep
+from shifde.tenancy.dependencies import (
+    CursorQuery,
+    IncludeArchivedQuery,
+    LimitQuery,
+    OrgStatusScopeDep,
+    ScopeDep,
+)
 from shifde.tenancy.schemas import (
     DashboardOut,
     OrgCreate,
@@ -63,12 +70,12 @@ def create_org(body: OrgCreate, auth: AuthDep, session: SessionDep, ctx: Request
 
 
 @router.get("/orgs/{org}", tags=["orgs"])
-def get_org(scope: ScopeDep) -> OrgOut:
+def get_org(scope: OrgStatusScopeDep) -> OrgOut:
     return service.get_org(scope)
 
 
 @router.patch("/orgs/{org}", tags=["orgs"])
-def update_org(scope: ScopeDep, body: OrgPatch) -> OrgOut:
+def update_org(scope: OrgStatusScopeDep, body: OrgPatch) -> OrgOut:
     return service.update_org(scope, body)
 
 

@@ -6,11 +6,17 @@ slug, and each change is one audit row in that client's own log. A session pinne
 suspended client is refused like one pinned to an archived client, and resolves again after
 unsuspend; no run starts in a suspended client. The owner sees the status but cannot edit, or
 unsuspend, the client.
+
+Lead isolation review (B-2512), for a suspended and an archived client alike: every `{org}`
+route of every module answers 409 `scope_archived`, except `GET /orgs/{org}` for the owner and
+the platform administrator (and `PATCH /orgs/{org}`, the archived client's restore); an API key
+of the client answers like an invalid key, with the rejection audited in that client.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import timedelta
 from uuid import UUID
 
 import httpx
@@ -19,10 +25,12 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from shifde.adapters.runtime import IntegrationRuntime
+from shifde.core.clock import utcnow
 from shifde.core.db import Database
 from shifde.core.errors import NotFound, ScopeArchived
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
+from shifde.identity import apikeys
 from shifde.identity import repository as identity_repo
 from shifde.identity import service as identity_service
 from shifde.runtime import schemas as rs
@@ -32,6 +40,7 @@ from shifde.tenancy import service as tenancy
 from tests._support.tenants import bind_user
 from tests.build.service_support import REGISTRY, service_for
 from tests.identity.harness import COOKIE, login
+from tests.runtime.routes import runtime_client
 from tests.tenancy.conftest import Client, World, app_session, owner_member
 from tests.tenancy.routes import People, make_people, pinned_session, tenancy_client
 
@@ -275,7 +284,7 @@ def test_the_owner_sees_the_suspension_and_cannot_edit_or_lift_it(
         headers = login(c, people.owner_a)
         listed = c.get("/api/v1/orgs")
         assert [(o["slug"], o["status"]) for o in listed.json()["items"]] == [(a.slug, "suspended")]
-        own = c.get(f"/api/v1/orgs/{a.slug}")
+        own = c.get(f"/api/v1/orgs/{a.slug}")  # the status view (B-2512)
         assert own.status_code == 200 and own.json()["status"] == "suspended"
         version = own.json()["row_version"]
         for patch in ({"status": "active"}, {"status": "archived"}, {"name": "renamed"}):
@@ -298,3 +307,122 @@ def test_the_owner_cannot_patch_a_client_to_suspended(
         r = c.patch(f"/api/v1/orgs/{a.slug}", json=body, headers=headers)
         assert r.status_code == 422, r.text
     assert _row(owner_session, a.tenant) == before
+
+
+# ------------------------------------------------------------------ (h) refused on every route
+def _answers(r: httpx.Response, active: bool, status: str, ok: int = 200) -> None:
+    """`ok` while the client is active; 409 `scope_archived` naming the status otherwise."""
+    if active:
+        assert r.status_code == ok, r.text
+        return
+    assert r.status_code == 409, r.text
+    assert (r.json()["code"], r.json()["detail"]) == ("scope_archived", f"organization is {status}")
+
+
+@pytest.mark.parametrize("status", ["suspended", "archived"])
+def test_a_client_that_is_not_active_is_refused_on_every_route_but_its_status_view(
+    settings: Settings, world: World, people: People, owner_session: Session, status: str
+) -> None:
+    """Reads and writes of the tenancy module, of another module (runs, approvals) and of a
+    probe client route answer 409 `scope_archived` for the owner; `GET /orgs/{org}` still
+    answers the owner and the platform administrator, not a viewer. Active again, all answer."""
+    a = world.a
+    admin = _user_id(owner_session, people.platform)  # a viewer of A, so A is visible to them
+    owner_member(owner_session, a.tenant, admin)
+    bind_user(owner_session, a.tenant, admin, "viewer")
+    owner_session.commit()
+    org = f"/api/v1/orgs/{a.slug}"
+    reads = (f"{org}/members", f"{org}/workspaces", f"{org}/dashboard", f"{org}/runs",
+             f"{org}/approvals")  # fmt: skip
+
+    def check(active: bool) -> None:
+        with runtime_client(settings, mounted=True) as c:
+            headers = login(c, people.owner_a)
+            own = c.get(org)
+            assert own.status_code == 200, own.text
+            assert own.json()["status"] == ("active" if active else status)
+            for url in reads:
+                _answers(c.get(url), active, status)
+            decide = c.post(f"{org}/approvals/{uuid7()}/decide", json={"decision": "approve"},
+                            headers=headers)  # fmt: skip
+            _answers(decide, active, status, ok=404)  # an unknown approval while active
+            body = {"slug": f"w-{uuid7().hex[-8:]}", "name": "W"}
+            _answers(c.post(f"{org}/workspaces", json=body, headers=headers), active, status, 201)
+        with runtime_client(settings, mounted=True) as c:
+            login(c, people.viewer_a)
+            _answers(c.get(org), active, status)
+        with runtime_client(settings, mounted=True) as c:
+            login(c, people.platform)
+            assert c.get(org).status_code == 200
+            _answers(c.get(f"{org}/workspaces"), active, status)
+        with tenancy_client(settings) as c:
+            login(c, people.owner_a)
+            _answers(c.get(f"/api/v1/probe-scoped/orgs/{a.slug}/api-keys"), active, status)
+
+    check(active=True)  # not vacuous
+    if status == "suspended":
+        with tenancy_client(settings) as c:
+            assert c.post(_url(a.slug), headers=login(c, people.platform)).status_code == 200
+    else:
+        _set_status(owner_session, a.tenant, "archived")
+    check(active=False)
+    with tenancy_client(settings) as c:
+        if status == "suspended":
+            r = c.post(_url(a.slug, "unsuspend"), headers=login(c, people.platform))
+        else:  # the owner's restore of an archived client still answers
+            headers = login(c, people.owner_a)
+            version = c.get(org).json()["row_version"]
+            r = c.patch(org, json={"status": "active", "row_version": version}, headers=headers)
+        assert r.status_code == 200, r.text
+    check(active=True)
+
+
+# ------------------------------------------------------------------ (i) API keys
+def _rejections(owner: Session, tenant: UUID) -> list[object]:
+    owner.rollback()
+    return list(
+        owner.execute(
+            text(
+                "SELECT details->>'reason' FROM shifde.audit_events WHERE tenant_id = :t "
+                "AND action = :a ORDER BY occurred_at, id"
+            ),
+            {"t": tenant, "a": apikeys.REJECTED_ACTION},
+        ).scalars()
+    )
+
+
+@pytest.mark.parametrize("status", ["suspended", "archived"])
+def test_an_api_key_of_a_client_that_is_not_active_answers_like_an_invalid_key(
+    settings: Settings, world: World, app_db: Database, owner_session: Session, status: str
+) -> None:
+    """The verified key of a suspended or archived client gets the invalid-key answer, and the
+    rejection is one audit row in that client only; active again, the key answers."""
+    a, b = world.a, world.b
+    owner_session.execute(
+        text(
+            "INSERT INTO shifde.role_bindings (id, tenant_id, subject_type, subject_id, "
+            "role_id, scope_type, scope_id) SELECT :i, :t, 'service_account', :s, r.id, "
+            "'tenant', :t FROM shifde.roles r WHERE r.tenant_id IS NULL AND r.key = 'viewer'"
+        ),
+        {"i": uuid7(), "t": a.tenant, "s": a.service_account},
+    )
+    owner_session.commit()
+    with app_session(app_db, a.tenant) as s:
+        _, key = apikeys.mint(s, settings, tenant_id=a.tenant, name="probe",
+                              principal_type="service_account", principal_id=a.service_account,
+                              scopes=["workspace:read"], resource_scope=None,
+                              expires_at=utcnow() + timedelta(days=1), created_by=None)  # fmt: skip
+        s.commit()
+    wrong = key[:-1] + ("a" if key[-1] != "a" else "b")  # a wrong secret: an invalid key
+    org = f"/api/v1/orgs/{a.slug}"
+    with tenancy_client(settings) as c:
+        assert c.get(org, headers={"Authorization": f"Bearer {key}"}).status_code == 200
+        _set_status(owner_session, a.tenant, status)
+        refused = c.get(org, headers={"Authorization": f"Bearer {key}"})
+        invalid = c.get(org, headers={"Authorization": f"Bearer {wrong}"})
+        _same(refused, invalid, 401)
+        assert _rejections(owner_session, a.tenant) == [f"client_{status}"]
+        assert _rejections(owner_session, b.tenant) == []
+        _set_status(owner_session, a.tenant, "active")
+        assert c.get(org, headers={"Authorization": f"Bearer {key}"}).status_code == 200
+    assert _rejections(owner_session, a.tenant) == [f"client_{status}"]

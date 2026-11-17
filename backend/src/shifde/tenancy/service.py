@@ -149,6 +149,10 @@ def _is_platform_admin(session: Session, principal: Principal) -> bool:
     )
 
 
+def is_platform_admin(session: Session, principal: Principal) -> bool:
+    return _is_platform_admin(session, principal)
+
+
 def _require_platform_admin(session: Session, principal: Principal) -> None:
     if not _is_platform_admin(session, principal):
         raise Forbidden("this is a platform administrator action")
