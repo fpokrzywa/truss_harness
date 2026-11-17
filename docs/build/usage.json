@@ -1,36 +1,36 @@
 {
-  "generated": "2026-11-16T13:11:37+00:00",
+  "generated": "2026-11-17T12:45:30+00:00",
   "note": "est_usd is an estimate at list price, not a bill",
   "totals": {
     "all": "all",
-    "input": 17702,
-    "output": 7560699,
-    "cache_write_5m": 34361067,
-    "cache_write_1h": 5272084,
-    "cache_read": 1100452681,
-    "requests": 8636,
-    "est_usd": 519.0064
+    "input": 20716,
+    "output": 8353028,
+    "cache_write_5m": 37769786,
+    "cache_write_1h": 7570903,
+    "cache_read": 1246685934,
+    "requests": 10088,
+    "est_usd": 592.6826
   },
   "by_model": [
     {
       "model": "claude-opus-5-5",
-      "input": 13610,
-      "output": 5665426,
-      "cache_write_5m": 21884697,
-      "cache_write_1h": 4854163,
-      "cache_read": 870499114,
-      "requests": 6608,
-      "est_usd": 435.7196
+      "input": 16040,
+      "output": 6319040,
+      "cache_write_5m": 24722285,
+      "cache_write_1h": 6798381,
+      "cache_read": 997807584,
+      "requests": 7774,
+      "est_usd": 504.0049
     },
     {
       "model": "claude-sonnet-5-5",
-      "input": 3708,
-      "output": 1425477,
-      "cache_write_5m": 11401134,
-      "cache_write_1h": 0,
-      "cache_read": 206835170,
-      "requests": 1836,
-      "est_usd": 63.4485
+      "input": 4226,
+      "output": 1526891,
+      "cache_write_5m": 11881644,
+      "cache_write_1h": 354601,
+      "cache_read": 223910577,
+      "requests": 2089,
+      "est_usd": 68.7909
     },
     {
       "model": "claude-fable-5-2",
@@ -44,45 +44,45 @@
     },
     {
       "model": "claude-haiku-5-5",
-      "input": 224,
-      "output": 265603,
-      "cache_write_5m": 882803,
+      "input": 290,
+      "output": 302904,
+      "cache_write_5m": 973424,
       "cache_write_1h": 0,
-      "cache_read": 9519183,
-      "requests": 112,
-      "est_usd": 0.3384
+      "cache_read": 11368559,
+      "requests": 145,
+      "est_usd": 0.3868
     }
   ],
   "by_agent_type": [
     {
       "agent_type": "module-builder-critical",
-      "input": 7408,
-      "output": 3387096,
-      "cache_write_5m": 14072012,
+      "input": 8464,
+      "output": 3647015,
+      "cache_write_5m": 16433817,
       "cache_write_1h": 0,
-      "cache_read": 508859899,
-      "requests": 3648,
-      "est_usd": 239.9036
+      "cache_read": 552053979,
+      "requests": 4161,
+      "est_usd": 265.554
     },
     {
       "agent_type": "lead",
-      "input": 3150,
-      "output": 1187857,
+      "input": 4692,
+      "output": 1587031,
       "cache_write_5m": 0,
-      "cache_write_1h": 5272084,
-      "cache_read": 270103017,
-      "requests": 1448,
-      "est_usd": 126.6255
+      "cache_write_1h": 7570903,
+      "cache_read": 361988701,
+      "requests": 2181,
+      "est_usd": 168.2915
     },
     {
       "agent_type": "isolation-reviewer",
-      "input": 3174,
-      "output": 1256204,
-      "cache_write_5m": 7812685,
+      "input": 3250,
+      "output": 1274871,
+      "cache_write_5m": 7923236,
       "cache_write_1h": 0,
-      "cache_read": 102788911,
-      "requests": 1573,
-      "est_usd": 84.758
+      "cache_read": 103697307,
+      "requests": 1611,
+      "est_usd": 85.8661
     },
     {
       "agent_type": "module-builder",
@@ -96,23 +96,33 @@
     },
     {
       "agent_type": "general-purpose",
-      "input": 38,
-      "output": 38462,
-      "cache_write_5m": 192433,
+      "input": 136,
+      "output": 68442,
+      "cache_write_5m": 663852,
       "cache_write_1h": 0,
-      "cache_read": 2346501,
-      "requests": 19,
-      "est_usd": 3.9324
+      "cache_read": 4817240,
+      "requests": 66,
+      "est_usd": 6.3695
     },
     {
       "agent_type": "frontend-builder",
-      "input": 212,
-      "output": 86810,
-      "cache_write_5m": 458193,
+      "input": 330,
+      "output": 118593,
+      "cache_write_5m": 664153,
       "cache_write_1h": 0,
-      "cache_read": 9629570,
-      "requests": 106,
-      "est_usd": 2.977
+      "cache_read": 13669075,
+      "requests": 165,
+      "est_usd": 4.2139
+    },
+    {
+      "agent_type": "Explore",
+      "input": 58,
+      "output": 15505,
+      "cache_write_5m": 168363,
+      "cache_write_1h": 0,
+      "cache_read": 1885473,
+      "requests": 29,
+      "est_usd": 1.5292
     },
     {
       "agent_type": "verifier",
@@ -136,13 +146,13 @@
     },
     {
       "agent_type": "scout",
-      "input": 150,
-      "output": 211012,
-      "cache_write_5m": 529418,
+      "input": 216,
+      "output": 248313,
+      "cache_write_5m": 620039,
       "cache_write_1h": 0,
-      "cache_read": 6961364,
-      "requests": 75,
-      "est_usd": 0.2413
+      "cache_read": 8810740,
+      "requests": 108,
+      "est_usd": 0.2898
     },
     {
       "agent_type": "web-fetch",
@@ -158,13 +168,13 @@
   "by_unit": [
     {
       "unit": "lead",
-      "input": 3150,
-      "output": 1187857,
+      "input": 4692,
+      "output": 1587031,
       "cache_write_5m": 0,
-      "cache_write_1h": 5272084,
-      "cache_read": 270103017,
-      "requests": 1448,
-      "est_usd": 126.6255
+      "cache_write_1h": 7570903,
+      "cache_read": 361988701,
+      "requests": 2181,
+      "est_usd": 168.2915
     },
     {
       "unit": "runtime",
@@ -237,6 +247,16 @@
       "est_usd": 23.3328
     },
     {
+      "unit": "app-2",
+      "input": 914,
+      "output": 248100,
+      "cache_write_5m": 1866770,
+      "cache_write_1h": 0,
+      "cache_read": 36475321,
+      "requests": 444,
+      "est_usd": 20.0738
+    },
+    {
       "unit": "models_admin",
       "input": 682,
       "output": 321683,
@@ -255,6 +275,16 @@
       "cache_read": 33799685,
       "requests": 288,
       "est_usd": 17.3806
+    },
+    {
+      "unit": "unassigned",
+      "input": 484,
+      "output": 178545,
+      "cache_write_5m": 1607096,
+      "cache_write_1h": 0,
+      "cache_read": 17778303,
+      "requests": 240,
+      "est_usd": 13.5839
     },
     {
       "unit": "ontology",
@@ -307,16 +337,6 @@
       "est_usd": 5.2223
     },
     {
-      "unit": "unassigned",
-      "input": 76,
-      "output": 76069,
-      "cache_write_5m": 635405,
-      "cache_write_1h": 0,
-      "cache_read": 4046537,
-      "requests": 38,
-      "est_usd": 4.6247
-    },
-    {
       "unit": "core",
       "input": 206,
       "output": 100657,
@@ -367,6 +387,26 @@
       "est_usd": 1.634
     },
     {
+      "unit": "runtime-merge",
+      "input": 58,
+      "output": 9283,
+      "cache_write_5m": 196869,
+      "cache_write_1h": 0,
+      "cache_read": 1263163,
+      "requests": 27,
+      "est_usd": 1.4229
+    },
+    {
+      "unit": "factory-install",
+      "input": 40,
+      "output": 20697,
+      "cache_write_5m": 274550,
+      "cache_write_1h": 0,
+      "cache_read": 1207576,
+      "requests": 20,
+      "est_usd": 1.0142
+    },
+    {
       "unit": "installation",
       "input": 54,
       "output": 29305,
@@ -385,6 +425,16 @@
       "cache_read": 1694923,
       "requests": 24,
       "est_usd": 0.5671
+    },
+    {
+      "unit": "fe-areas-5",
+      "input": 52,
+      "output": 12599,
+      "cache_write_5m": 98839,
+      "cache_write_1h": 0,
+      "cache_read": 1669743,
+      "requests": 26,
+      "est_usd": 0.5402
     },
     {
       "unit": "fe-areas-3",
@@ -440,23 +490,23 @@
   "by_sub_project": [
     {
       "sub_project": "sp1",
-      "input": 14552,
-      "output": 6372842,
-      "cache_write_5m": 34361067,
+      "input": 16024,
+      "output": 6765997,
+      "cache_write_5m": 37769786,
       "cache_write_1h": 0,
-      "cache_read": 830349664,
-      "requests": 7188,
-      "est_usd": 392.3809
+      "cache_read": 884697233,
+      "requests": 7907,
+      "est_usd": 424.3911
     },
     {
       "sub_project": "lead",
-      "input": 3150,
-      "output": 1187857,
+      "input": 4692,
+      "output": 1587031,
       "cache_write_5m": 0,
-      "cache_write_1h": 5272084,
-      "cache_read": 270103017,
-      "requests": 1448,
-      "est_usd": 126.6255
+      "cache_write_1h": 7570903,
+      "cache_read": 361988701,
+      "requests": 2181,
+      "est_usd": 168.2915
     }
   ],
   "by_day": [
@@ -482,13 +532,13 @@
     },
     {
       "day": "2026-11-16",
-      "input": 3782,
-      "output": 1278836,
-      "cache_write_5m": 8467189,
-      "cache_write_1h": 1016168,
-      "cache_read": 229547518,
-      "requests": 1852,
-      "est_usd": 102.2522
+      "input": 4738,
+      "output": 1576442,
+      "cache_write_5m": 8832421,
+      "cache_write_1h": 2508989,
+      "cache_read": 291669391,
+      "requests": 2307,
+      "est_usd": 132.4012
     },
     {
       "day": "2026-11-13",
@@ -499,6 +549,16 @@
       "cache_read": 97275410,
       "requests": 734,
       "est_usd": 64.2802
+    },
+    {
+      "day": "2026-11-17",
+      "input": 2058,
+      "output": 494723,
+      "cache_write_5m": 3043487,
+      "cache_write_1h": 805998,
+      "cache_read": 84111380,
+      "requests": 997,
+      "est_usd": 43.5272
     }
   ],
   "rounds_per_unit": [
@@ -528,6 +588,15 @@
       "review": 0,
       "inventory": 0,
       "other": 5
+    },
+    {
+      "unit": "app-2",
+      "build": 6,
+      "verify": 0,
+      "fix": 1,
+      "review": 0,
+      "inventory": 0,
+      "other": 3
     },
     {
       "unit": "audit",
@@ -575,6 +644,15 @@
       "other": 3
     },
     {
+      "unit": "factory-install",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 0
+    },
+    {
       "unit": "fe-areas-1",
       "build": 1,
       "verify": 0,
@@ -594,6 +672,15 @@
     },
     {
       "unit": "fe-areas-3",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 0
+    },
+    {
+      "unit": "fe-areas-5",
       "build": 1,
       "verify": 0,
       "fix": 0,
@@ -690,6 +777,15 @@
       "review": 1,
       "inventory": 0,
       "other": 15
+    },
+    {
+      "unit": "runtime-merge",
+      "build": 0,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 1
     },
     {
       "unit": "secrets",

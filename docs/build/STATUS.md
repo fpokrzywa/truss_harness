@@ -6,7 +6,7 @@ States: `todo`, `in progress`, `done`, `blocked` (with evidence), `waiting on ow
 
 **Sub-project 1 is complete (unit `goal1-final`, 2026-11-17).** The owner's pause (S-003, 2026-11-16 08:05) ended when the owner resumed the build at 14:15 (S-005). Every SETH module in the design's layer order is done; the software factory is installed (B-2480, B-2481). Next: charter 7 (file the known-defect issues, then sub-projects 2 to 8 through the factory).
 - Local cluster on 55450 is running.
-- `suite-speed` is done and merged (B-2330): full backend suite under the 20-minute target; the final measured time is in the `goal1-final` verification.
+- `suite-speed` is done and merged (B-2330): full backend suite under the 20-minute target; measured 541 s at `suite-speed` on an idle machine; at the `goal1-final-merge` gates (13/13 on `2905331`) the full suite took **1235.6 s (3183 passed), over the 1200 s target** on that run. Reported as measured; no test was removed or skipped.
 Tokens per model: see `python scripts/usage_report.py` (by unit); the figure below is copied at acceptance.
 
 ## Sub-project 1
