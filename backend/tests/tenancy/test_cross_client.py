@@ -228,6 +228,12 @@ ROUTE_TESTS = {
     ("GET", "/api/v1/platform/status"): (
         "test_platform_status_answers_the_platform_administrator_and_no_client"
     ),
+    ("POST", "/api/v1/platform/orgs/{org}/suspend"): (
+        "test_suspending_a_changes_nothing_of_b_and_only_the_administrator_may"
+    ),
+    ("POST", "/api/v1/platform/orgs/{org}/unsuspend"): (
+        "test_suspending_a_changes_nothing_of_b_and_only_the_administrator_may"
+    ),
 }
 
 
@@ -655,3 +661,76 @@ def test_platform_status_refuses_the_platform_administrators_pinned_session_and_
     free, _ = pinned_session(owner_session, admin_id, None)
     with tenancy_client(settings, cookies={COOKIE: free}) as c:
         assert c.get(url).status_code == 200
+
+
+def test_suspending_a_changes_nothing_of_b_and_only_the_administrator_may(
+    settings: Settings, world: World, people: People, owner_session: Session
+) -> None:
+    """F-03 (B-2511): the platform administrator suspends A. A's pin resolves before and is
+    refused after; B's tenant row, B's pinned session, B's audit log and B's owner creating a
+    workspace are unchanged. A's and B's other people get 403 for both slugs and both routes."""
+    a, b = world.a, world.b
+    users = {
+        e: owner_session.execute(
+            text("SELECT id FROM shifde.users WHERE primary_email = :e"), {"e": e}
+        ).scalar_one()
+        for e in (people.owner_a, people.owner_b)
+    }
+    pin_a, _ = pinned_session(owner_session, users[people.owner_a], a.tenant)
+    pin_b, _ = pinned_session(owner_session, users[people.owner_b], b.tenant)
+
+    def b_state() -> tuple[object, ...]:
+        owner_session.rollback()
+        row = owner_session.execute(
+            text("SELECT status, row_version FROM shifde.tenants WHERE id = :t"), {"t": b.tenant}
+        ).one()
+        audit = owner_session.execute(
+            text("SELECT id, action FROM shifde.audit_events WHERE tenant_id = :t ORDER BY id"),
+            {"t": b.tenant},
+        ).all()
+        return tuple(row), tuple(audit)
+
+    with tenancy_client(settings, cookies={COOKIE: pin_a}) as c:
+        assert c.get(f"/api/v1/orgs/{a.slug}").status_code == 200  # not vacuous
+    for email in (people.owner_a, people.viewer_a, people.owner_b, people.both):
+        with tenancy_client(settings) as c:
+            headers = login(c, email)
+            for slug in (a.slug, b.slug):
+                for action in ("suspend", "unsuspend"):
+                    r = c.post(f"/api/v1/platform/orgs/{slug}/{action}", headers=headers)
+                    assert r.status_code == 403, (email, slug, action, r.text)
+    before = b_state()  # after the sign-ins above, which B's log records
+    with tenancy_client(settings) as c:
+        headers = login(c, people.platform)
+        r = c.post(f"/api/v1/platform/orgs/{a.slug}/suspend", headers=headers)
+        assert r.status_code == 200 and r.json()["status"] == "suspended", r.text
+    assert b_state() == before
+    owner_session.rollback()
+    suspended = owner_session.execute(
+        text("SELECT tenant_id FROM shifde.audit_events WHERE action = 'tenancy.org.suspended' "
+             "AND target_id IN (:a, :b)"),
+        {"a": str(a.tenant), "b": str(b.tenant)},
+    ).scalars().all()  # fmt: skip
+    assert suspended == [a.tenant]
+    with tenancy_client(settings, cookies={COOKIE: pin_a}) as c:
+        assert c.get(f"/api/v1/orgs/{a.slug}").status_code == 401
+    with tenancy_client(settings, cookies={COOKIE: pin_b}) as c:
+        assert c.get(f"/api/v1/orgs/{b.slug}").json()["status"] == "active"
+    with tenancy_client(settings) as c:
+        headers = login(c, people.owner_b)
+        body = {"slug": f"w-{uuid7().hex[-12:]}", "name": "after"}
+        created = c.post(f"/api/v1/orgs/{b.slug}/workspaces", json=body, headers=headers)
+        assert created.status_code == 201, created.text
+        r = c.post(f"/api/v1/platform/orgs/{a.slug}/unsuspend", headers=headers)
+        assert r.status_code == 403
+    with tenancy_client(settings) as c:
+        headers = login(c, people.platform)
+        r = c.post(f"/api/v1/platform/orgs/{a.slug}/unsuspend", headers=headers)
+        assert r.status_code == 200 and r.json()["status"] == "active", r.text
+    owner_session.rollback()
+    unsuspended = owner_session.execute(
+        text("SELECT tenant_id FROM shifde.audit_events WHERE action = 'tenancy.org.unsuspended' "
+             "AND target_id IN (:a, :b)"),
+        {"a": str(a.tenant), "b": str(b.tenant)},
+    ).scalars().all()  # fmt: skip
+    assert unsuspended == [a.tenant]

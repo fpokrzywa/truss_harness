@@ -3,7 +3,9 @@
 Ported from SETH 3ba0e06 `tenancy/api.py`; the `app` port mounts `router` (B-501). Changes
 (tenancy part 2b, DECISIONS B-1019, B-1020): organization lists return the summary shape
 (B-1011); every `{org}` route resolves the client through `resolve_org` (only a client the caller
-may see, B-1009); `GET /platform/status` for platform administrators only (APP-2, B-2401).
+may see, B-1009); `GET /platform/status` for platform administrators only (APP-2, B-2401);
+`POST /platform/orgs/{org}/suspend` and `/unsuspend` for platform administrators only (F-03,
+B-2511).
 """
 
 from __future__ import annotations
@@ -151,3 +153,15 @@ def dashboard(
 @router.get("/platform/status", tags=["platform"])
 def platform_status(auth: AuthDep, session: SessionDep, settings: SettingsDep) -> PlatformStatusOut:
     return service.platform_status(session, settings, auth.principal)
+
+
+@router.post("/platform/orgs/{org}/suspend", tags=["platform"])
+def suspend_org(auth: AuthDep, session: SessionDep, ctx: RequestCtxDep, org: str) -> OrgSummaryOut:
+    return service.suspend_org(session, ctx, auth.principal, org)
+
+
+@router.post("/platform/orgs/{org}/unsuspend", tags=["platform"])
+def unsuspend_org(
+    auth: AuthDep, session: SessionDep, ctx: RequestCtxDep, org: str
+) -> OrgSummaryOut:
+    return service.unsuspend_org(session, ctx, auth.principal, org)

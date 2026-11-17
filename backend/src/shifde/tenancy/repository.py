@@ -53,7 +53,7 @@ def list_tenants(
     """All tenants; only meaningful in platform-admin context (tenants RLS policy)."""
     stmt = select(Tenant)
     if not include_archived:
-        stmt = stmt.where(Tenant.status == "active")
+        stmt = stmt.where(Tenant.status != "archived")
     if after is not None:
         stmt = stmt.where(Tenant.id > after)
     return list(session.scalars(stmt.order_by(Tenant.id).limit(limit)))

@@ -37,6 +37,8 @@ UNIFIED_ONLY = {
     ("PATCH", "/api/v1/platform/groups/{group_id}"),
     ("POST", "/api/v1/platform/groups"),
     ("POST", "/api/v1/platform/orgs/{org}/group-bindings"),
+    ("POST", "/api/v1/platform/orgs/{org}/suspend"),  # F-03, B-2511
+    ("POST", "/api/v1/platform/orgs/{org}/unsuspend"),
     ("PUT", "/api/v1/platform/groups/{group_id}/members"),
     ("PUT", "/api/v1/platform/orgs/{org}/shi-provider-access"),
     ("PUT", "/api/v1/platform/shi-provider"),
