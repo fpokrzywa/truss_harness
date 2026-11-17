@@ -96,6 +96,14 @@ export interface PlatformStatus {
   worker: { status: string; count?: number; last_heartbeat_at?: string | null };
 }
 
+export interface PlatformStatus {
+  version: string;
+  environment: string;
+  database: { status: string; revision?: string | null; head?: string | null };
+  auth: { local_enabled: boolean; oidc_providers: number };
+  worker: { status: string; count?: number; last_heartbeat_at?: string | null };
+}
+
 export interface Readiness {
   status: string;
   checks?: Record<string, string>;

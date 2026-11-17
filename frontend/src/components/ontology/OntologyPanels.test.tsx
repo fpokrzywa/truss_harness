@@ -7,6 +7,7 @@ import { artifact, version } from '@/test/build';
 import { stubOntology } from '@/test/ontology';
 import { bodyOf, list } from '@/test/security';
 import { jsonResponse, problemResponse, renderWithClient, type Handler } from '@/test/utils';
+import { ActionsPanel } from './ActionsPanel';
 import { ExplorerPanel } from './ExplorerPanel';
 import { LineagePanel } from './LineagePanel';
 import { PoliciesPanel } from './PoliciesPanel';
@@ -461,5 +462,140 @@ describe('LineagePanel', () => {
     await waitFor(() =>
       expect(within(screen.getByRole('table')).getAllByText('Ada')).toHaveLength(2),
     );
+  });
+});
+
+const PA = artifact({
+  id: 'o-1',
+  scope: { type: 'project', id: 'p-1' },
+  latest_published_version: { id: 'v-2', version_no: 2 },
+});
+
+describe('ActionsPanel', () => {
+  const INVOKE = `POST ${O}/actions/crm.escalate/invoke`;
+  const run = (status: string) => ({ id: 'run-9', status, kind: 'ontology_action' });
+
+  async function invoke(status: string) {
+    const fetchMock = stubOntology({
+      ...versionRoutes,
+      [INVOKE]: () => jsonResponse(run(status), { status: 202 }),
+    });
+    renderWithClient(<ActionsPanel org="acme" artifact={PA} canInvoke />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Invoke crm.escalate' }));
+    const dialog = screen.getByRole('dialog');
+    await user.type(within(dialog).getByLabelText('Object primary key'), '1');
+    await user.click(within(dialog).getByRole('button', { name: 'Invoke' }));
+    return { fetchMock, dialog };
+  }
+
+  it('creates a run and links to it', async () => {
+    const { fetchMock, dialog } = await invoke('pending');
+    const link = await within(dialog).findByRole('link', { name: 'run-9' });
+    expect(link).toHaveAttribute('href', '/o/acme/runs/run-9');
+    expect(bodyOf(fetchMock, INVOKE)).toEqual({ object_pk: '1' });
+    expect(within(dialog).queryByText(/waiting for approval/)).not.toBeInTheDocument();
+  });
+
+  it('explains approval when the run is waiting_for_approval', async () => {
+    const { dialog } = await invoke('waiting_for_approval');
+    expect(await within(dialog).findByText(/waiting for approval/)).toBeInTheDocument();
+    expect(within(dialog).getByRole('link', { name: 'Approvals' })).toHaveAttribute(
+      'href',
+      '/o/acme/approvals',
+    );
+  });
+
+  it('sends extra params and rejects non-object JSON', async () => {
+    stubOntology({ ...versionRoutes });
+    renderWithClient(<ActionsPanel org="acme" artifact={PA} canInvoke />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Invoke crm.escalate' }));
+    const dialog = screen.getByRole('dialog');
+    await user.type(within(dialog).getByLabelText('Object primary key'), '1');
+    await user.type(within(dialog).getByLabelText(/Extra parameters/), '[[1]');
+    expect(within(dialog).getByText('Extra parameters must be a JSON object.')).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Invoke' })).toBeDisabled();
+  });
+
+  it('project-scoped ontologies need no workspace or project', async () => {
+    const fetchMock = stubOntology({ ...versionRoutes });
+    renderWithClient(<ActionsPanel org="acme" artifact={PA} canInvoke />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Invoke crm.escalate' }));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).queryByLabelText('Workspace')).not.toBeInTheDocument();
+    expect(within(dialog).queryByLabelText('Project')).not.toBeInTheDocument();
+    expect(fetchMock.calls.some((c) => c.key.endsWith('/workspaces'))).toBe(false);
+  });
+
+  const WS = { id: 'ws-1', slug: 'ops', name: 'Ops', status: 'active', row_version: 1 };
+  const scopeRoutes: Record<string, Handler> = {
+    ...versionRoutes,
+    'GET /api/v1/orgs/acme/workspaces': () =>
+      list([WS, { ...WS, id: 'ws-2', slug: 'dev', name: 'Dev' }]),
+    'GET /api/v1/orgs/acme/workspaces/ops/projects': () =>
+      list([{ ...WS, id: 'p-1', slug: 'portal', name: 'Portal' }]),
+    'GET /api/v1/orgs/acme/workspaces/dev/projects': () => list([]),
+  };
+
+  it('tenant-scoped ontologies must pick a workspace and project and send their slugs', async () => {
+    const fetchMock = stubOntology({
+      ...scopeRoutes,
+      [INVOKE]: () => jsonResponse(run('pending'), { status: 202 }),
+    });
+    renderWithClient(<ActionsPanel org="acme" artifact={A} canInvoke />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Invoke crm.escalate' }));
+    const dialog = screen.getByRole('dialog');
+    await user.type(within(dialog).getByLabelText('Object primary key'), '1');
+    const submit = within(dialog).getByRole('button', { name: 'Invoke' });
+    expect(submit).toBeDisabled();
+    await within(dialog).findByRole('option', { name: /Ops/ });
+    await user.selectOptions(within(dialog).getByLabelText('Workspace'), 'ops');
+    expect(submit).toBeDisabled();
+    await within(dialog).findByRole('option', { name: /Portal/ });
+    await user.selectOptions(within(dialog).getByLabelText('Project'), 'portal');
+    await user.click(submit);
+    await within(dialog).findByRole('link', { name: 'run-9' });
+    expect(bodyOf(fetchMock, INVOKE)).toEqual({
+      object_pk: '1',
+      workspace: 'ops',
+      project: 'portal',
+    });
+  });
+
+  it('workspace-scoped ontologies prefill and lock their workspace', async () => {
+    const fetchMock = stubOntology({
+      ...scopeRoutes,
+      [INVOKE]: () => jsonResponse(run('pending'), { status: 202 }),
+    });
+    const WA = artifact({
+      id: 'o-1',
+      scope: { type: 'workspace', id: 'ws-1' },
+      latest_published_version: { id: 'v-2', version_no: 2 },
+    });
+    renderWithClient(<ActionsPanel org="acme" artifact={WA} canInvoke />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Invoke crm.escalate' }));
+    const dialog = screen.getByRole('dialog');
+    await waitFor(() => expect(within(dialog).getByLabelText('Workspace')).toHaveValue('ops'));
+    expect(within(dialog).getByLabelText('Workspace')).toBeDisabled();
+    await user.type(within(dialog).getByLabelText('Object primary key'), '7');
+    await within(dialog).findByRole('option', { name: /Portal/ });
+    await user.selectOptions(within(dialog).getByLabelText('Project'), 'portal');
+    await user.click(within(dialog).getByRole('button', { name: 'Invoke' }));
+    await within(dialog).findByRole('link', { name: 'run-9' });
+    expect(bodyOf(fetchMock, INVOKE)).toEqual({
+      object_pk: '7',
+      workspace: 'ops',
+      project: 'portal',
+    });
+  });
+
+  it('hides invoke without ontology:query', async () => {
+    stubOntology({ ...versionRoutes });
+    renderWithClient(<ActionsPanel org="acme" artifact={A} canInvoke={false} />);
+    await screen.findByRole('list', { name: 'Actions' });
+    expect(screen.queryByRole('button', { name: 'Invoke crm.escalate' })).not.toBeInTheDocument();
   });
 });

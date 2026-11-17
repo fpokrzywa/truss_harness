@@ -1,0 +1,166 @@
+/* Command center surface. Colours and fonts come from the tokens in globals.css. */
+
+/* ---- Slide-in for card arrays and sections ---- */
+.cc-reveal {
+  opacity: 0;
+  transform: translateY(1.5rem);
+  transition:
+    opacity 500ms ease-out,
+    transform 500ms cubic-bezier(0.2, 0.7, 0.2, 1);
+  transition-delay: calc(var(--cc-i, 0) * 70ms);
+}
+.cc-reveal[data-revealed='true'] {
+  opacity: 1;
+  transform: none;
+}
+
+/* ---- Readout: each line wipes on when scrolling reaches it. Hidden lines stay readable to AT. ---- */
+.cc-line {
+  opacity: 0;
+  clip-path: inset(0 100% 0 0);
+  transition:
+    opacity 120ms linear,
+    clip-path 380ms steps(24);
+}
+.cc-line[data-printed='true'] {
+  opacity: 1;
+  clip-path: inset(0);
+}
+.cc-caret {
+  display: inline-block;
+  width: 0.6em;
+  height: 1em;
+  margin-left: 0.5em;
+  vertical-align: text-bottom;
+  background: var(--color-shi-green);
+}
+
+/* ---- Truss ---- */
+.cc-member {
+  fill: none;
+  stroke-linecap: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: cc-draw 900ms ease-out forwards;
+  animation-delay: calc(var(--cc-i, 0) * 45ms);
+}
+.cc-member-web {
+  stroke: var(--color-shi-light);
+  stroke-width: 1;
+}
+.cc-member-live {
+  stroke: var(--color-shi-pink);
+  stroke-width: 2.5;
+  filter: drop-shadow(0 0 6px var(--color-shi-pink));
+}
+.cc-member-fault {
+  stroke: var(--color-shi-orange);
+  stroke-width: 2.5;
+}
+.cc-member-idle {
+  stroke: var(--color-shi-light);
+  stroke-width: 1.5;
+}
+.cc-joint {
+  opacity: 0;
+  animation: cc-appear 300ms ease-out forwards;
+  animation-delay: calc(var(--cc-i, 0) * 45ms + 500ms);
+}
+.cc-laser {
+  fill: none;
+  stroke: var(--color-shi-pink);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-dasharray: 0.06 0.94;
+  filter: drop-shadow(0 0 8px var(--color-shi-pink));
+  animation: cc-travel 5s linear infinite;
+}
+.cc-truss[data-paused='true'] .cc-laser {
+  animation-play-state: paused;
+}
+
+@keyframes cc-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes cc-appear {
+  to {
+    opacity: 1;
+  }
+}
+@keyframes cc-travel {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* ---- Administration buttons: heavy border; the darker hover blue keeps white text at 7:1. ---- */
+.cc-admin-button {
+  display: flex;
+  min-height: 2.75rem;
+  align-items: center;
+  border: 3px solid var(--color-shi-light);
+  padding: 0.375rem 0.75rem;
+  font-size: 1rem;
+  line-height: 1.25;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--color-shi-ink);
+  transition:
+    background-color 120ms linear,
+    box-shadow 120ms linear,
+    transform 120ms linear;
+}
+.cc-admin-button:hover {
+  border-color: var(--color-shi-ink);
+  background-color: var(--color-shi-mid-deep);
+  box-shadow: 4px 4px 0 var(--color-shi-pink);
+  transform: translate(-2px, -2px);
+}
+
+/* ---- Run strip tooltip ---- */
+.cc-tip {
+  visibility: hidden;
+}
+.cc-run:hover .cc-tip,
+.cc-run:focus-visible .cc-tip {
+  visibility: visible;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-reveal,
+  .cc-line,
+  .cc-admin-button {
+    opacity: 1;
+    transform: none;
+    clip-path: none;
+    transition: none;
+  }
+  .cc-admin-button:hover {
+    transform: none;
+  }
+  .cc-member {
+    stroke-dashoffset: 0;
+    animation: none;
+  }
+  .cc-joint {
+    opacity: 1;
+    animation: none;
+  }
+  .cc-laser {
+    display: none;
+  }
+}
+
+@media print {
+  .cc-reveal,
+  .cc-line {
+    opacity: 1;
+    transform: none;
+    clip-path: none;
+  }
+}

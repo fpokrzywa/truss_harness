@@ -3,6 +3,8 @@ import { createBuildEndpoints } from './build-endpoints';
 import { createOntologyEndpoints } from './ontology-endpoints';
 import { createGovernanceEndpoints } from './governance-endpoints';
 import { createIntegrateEndpoints } from './integrate-endpoints';
+import { createOperateEndpoints } from './operate-endpoints';
+import { createPipelineEndpoints } from './pipeline-endpoints';
 import { createSecurityEndpoints } from './security-endpoints';
 import type {
   AuthConfig,
@@ -13,6 +15,7 @@ import type {
   MyPermissions,
   Org,
   PlatformInstallation,
+  PlatformStatus,
   Project,
   Readiness,
   Session,
@@ -63,6 +66,8 @@ export function createEndpoints(client: ApiClient = defaultClient) {
     platformInstallation: () =>
       client.request<PlatformInstallation>('/api/v1/platform/installation'),
 
+    platformStatus: () => client.request<PlatformStatus>('/api/v1/platform/status'),
+
     listOrgs: (all = false) =>
       client.request<ListResponse<Org>>('/api/v1/orgs', {
         query: { limit: 200, scope: all ? 'all' : undefined },
@@ -99,8 +104,8 @@ export function createEndpoints(client: ApiClient = defaultClient) {
     ...createGovernanceEndpoints(client),
     ...createBuildEndpoints(client),
     ...createOntologyEndpoints(client),
-    // Further per-area endpoint groups (build, operate, pipelines, ontology) are spread in
-    // here as each area lands.
+    ...createOperateEndpoints(client),
+    ...createPipelineEndpoints(client),
     myPermissions: (org: string, workspace?: string, project?: string) =>
       client.request<MyPermissions>(`${orgPath(org)}/me/permissions`, {
         query: { workspace, project },

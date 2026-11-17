@@ -25,6 +25,17 @@ import { PromptPreviewPanel, PromptTestPanel } from './PromptPanels';
 import { SkillEditor, normalizeSkillSpec, skillBlockers } from './SkillEditor';
 import { ToolEditor, normalizeToolSpec, toolBlockers } from './ToolEditor';
 import { ToolTestPanel } from './ToolTestPanel';
+import {
+  PipelineEditor,
+  normalizePipelineSpec,
+  pipelineBlockers,
+} from '../pipelines/PipelineEditor';
+import { PipelineHistory } from '../pipelines/PipelineHistory';
+import { PipelineRunProvider } from '../pipelines/PipelineRunContext';
+import { PipelineRunPanel, PipelineTestPanel } from '../pipelines/PipelineRunPanels';
+import { PipelineValidationPanel } from '../pipelines/PipelineValidationPanel';
+import { SchedulesPanel } from '../pipelines/SchedulesPanel';
+import { ActionsPanel } from '../ontology/ActionsPanel';
 import { ExplorerPanel } from '../ontology/ExplorerPanel';
 import { LineagePanel } from '../ontology/LineagePanel';
 import {
@@ -46,7 +57,17 @@ function PromptPanels(p: TestPanelProps<ReturnType<typeof normalizePromptSpec>>)
   );
 }
 
-type Tab = 'editor' | 'versions' | 'compare' | 'policies' | 'explorer' | 'lineage';
+type Tab =
+  | 'editor'
+  | 'versions'
+  | 'compare'
+  | 'run'
+  | 'history'
+  | 'schedules'
+  | 'policies'
+  | 'explorer'
+  | 'lineage'
+  | 'actions';
 
 export function ArtifactDetailView({
   kind,
@@ -107,12 +128,24 @@ function Detail({
     { id: 'editor', label: 'Editor' },
     { id: 'versions', label: 'Versions' },
     { id: 'compare', label: 'Compare' },
+    ...(kind === 'pipelines'
+      ? [
+          { id: 'run' as const, label: 'Run' },
+          { id: 'history' as const, label: 'History' },
+          { id: 'schedules' as const, label: 'Schedules' },
+        ]
+      : []),
     ...(kind === 'ontologies'
       ? [
           ...(can('ontology:manage_policies')
             ? [{ id: 'policies' as const, label: 'Policies' }]
             : []),
-          ...(can('ontology:query') ? [{ id: 'explorer' as const, label: 'Explorer' }] : []),
+          ...(can('ontology:query')
+            ? [
+                { id: 'explorer' as const, label: 'Explorer' },
+                { id: 'actions' as const, label: 'Actions' },
+              ]
+            : []),
           { id: 'lineage' as const, label: 'Lineage' },
         ]
       : []),
@@ -160,32 +193,40 @@ function Detail({
           </button>
         ))}
       </div>
-      <div role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`}>
-        {tab === 'editor' && (
-          <KindEditor
-            org={org}
-            kind={kind}
-            artifact={artifact}
-            canUpdate={canUpdate}
-            canPublish={canPublish}
-          />
-        )}
-        {tab === 'versions' && (
-          <VersionsPanel
-            org={org}
-            kind={kind}
-            artifact={artifact}
-            canUpdate={canUpdate}
-            canPublish={canPublish}
-          />
-        )}
-        {tab === 'compare' && <DiffPanel org={org} kind={kind} artifact={artifact} />}
-        {tab === 'policies' && <PoliciesPanel org={org} artifact={artifact} />}
-        {tab === 'explorer' && <ExplorerPanel org={org} artifact={artifact} />}
-        {tab === 'lineage' && (
-          <LineagePanel org={org} artifact={artifact} highlight={lineageHighlight} />
-        )}
-      </div>
+      <PipelineRunProvider key={tab}>
+        <div role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`}>
+          {tab === 'editor' && (
+            <KindEditor
+              org={org}
+              kind={kind}
+              artifact={artifact}
+              canUpdate={canUpdate}
+              canPublish={canPublish}
+            />
+          )}
+          {tab === 'versions' && (
+            <VersionsPanel
+              org={org}
+              kind={kind}
+              artifact={artifact}
+              canUpdate={canUpdate}
+              canPublish={canPublish}
+            />
+          )}
+          {tab === 'compare' && <DiffPanel org={org} kind={kind} artifact={artifact} />}
+          {tab === 'run' && <PipelineRunPanel org={org} artifact={artifact} />}
+          {tab === 'history' && <PipelineHistory org={org} pipelineId={artifact.id} />}
+          {tab === 'schedules' && <SchedulesPanel org={org} pipelineId={artifact.id} />}
+          {tab === 'policies' && <PoliciesPanel org={org} artifact={artifact} />}
+          {tab === 'explorer' && <ExplorerPanel org={org} artifact={artifact} />}
+          {tab === 'actions' && (
+            <ActionsPanel org={org} artifact={artifact} canInvoke={can('ontology:query')} />
+          )}
+          {tab === 'lineage' && (
+            <LineagePanel org={org} artifact={artifact} highlight={lineageHighlight} />
+          )}
+        </div>
+      </PipelineRunProvider>
     </>
   );
 }
@@ -243,8 +284,16 @@ function KindEditor(props: {
         />
       );
     case 'pipelines':
-      // Pipeline editor arrives with runtime (it shows run outcomes on its canvas); no route leads here.
-      return null;
+      return (
+        <DraftEditor
+          {...common}
+          normalize={normalizePipelineSpec}
+          Editor={PipelineEditor}
+          TestPanel={PipelineTestPanel}
+          ValidationView={PipelineValidationPanel}
+          blockers={pipelineBlockers}
+        />
+      );
     case 'ontologies':
       return (
         <DraftEditor

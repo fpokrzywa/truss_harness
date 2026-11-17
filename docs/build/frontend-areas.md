@@ -90,9 +90,9 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 | `src/lib/api-origin.ts` | ported |  |
 | `src/lib/api/client.test.ts` | ported |  |
 | `src/lib/api/client.ts` | ported |  |
-| `src/lib/api/endpoints.ts` | ported, modified | session/scope plumbing plus tenancy create/archive workspace and project; the security endpoint group is spread in; other per-area groups are spread back in as areas land |
+| `src/lib/api/endpoints.ts` | ported, modified | session/scope plumbing plus tenancy create/archive workspace and project; the security endpoint group is spread in; other per-area groups are spread back in as areas land; fe-areas-5 added `platformStatus` and spread the operate and pipeline endpoint groups |
 | `src/lib/api/errors.ts` | ported |  |
-| `src/lib/api/types.ts` | ported, modified | verbatim plus `MyPermissions` and `PermissionDef` copied from `security-types.ts` |
+| `src/lib/api/types.ts` | ported, modified | verbatim plus `MyPermissions` and `PermissionDef` copied from `security-types.ts`; `PlatformStatus` added (fe-areas-5) |
 | `src/lib/hooks.ts` | ported | session, scope and permission hooks the shell chrome needs. |
 | `src/lib/markdown.test.tsx` | ported |  |
 | `src/lib/markdown.tsx` | ported | generic safe markdown renderer; shell. |
@@ -110,6 +110,9 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 | `src/test/utils.tsx` | ported |  |
 | `tsconfig.json` | ported |  |
 | `vitest.config.ts` | ported |  |
+
+
+Files not in SETH: `src/lib/contrast.ts` (shell, new in fe-areas-5): `contrastRatio` extracted from SETH `branding.ts` for `lib/command.test.ts`.
 
 ## audit
 
@@ -154,11 +157,11 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 | File | Status | Notes |
 |---|---|---|
 | `src/app/(app)/o/[org]/govern/performance/page.tsx` | ported | |
-| `src/app/(app)/platform/status/page.tsx` | later | UNSURE: as PlatformStatusView.; blocked: `GET /api/v1/platform/status` does not exist (observability exposes only `/api/health`, `/api/ready`, `/api/metrics`); the page also needs ledger/governance `governance-types` and `lib/governance` (owner: ledger) |
-| `src/components/PlatformStatusView.test.tsx` | later | blocked: `GET /api/v1/platform/status` does not exist (observability exposes only `/api/health`, `/api/ready`, `/api/metrics`); the page also needs ledger/governance `governance-types` and `lib/governance` (owner: ledger) |
-| `src/components/PlatformStatusView.tsx` | later | UNSURE: platform status page; no area named for it, observability chosen.; blocked: `GET /api/v1/platform/status` does not exist (observability exposes only `/api/health`, `/api/ready`, `/api/metrics`); the page also needs ledger/governance `governance-types` and `lib/governance` (owner: ledger) |
-| `src/components/governance/TelemetryPanel.test.tsx` | later | blocked: `GET /api/v1/platform/status` does not exist (observability exposes only `/api/health`, `/api/ready`, `/api/metrics`); the page also needs ledger/governance `governance-types` and `lib/governance` (owner: ledger) |
-| `src/components/governance/TelemetryPanel.tsx` | later | UNSURE: telemetry shown on platform status.; blocked: `GET /api/v1/platform/status` does not exist (observability exposes only `/api/health`, `/api/ready`, `/api/metrics`); the page also needs ledger/governance `governance-types` and `lib/governance` (owner: ledger) |
+| `src/app/(app)/platform/status/page.tsx` | ported |  |
+| `src/components/PlatformStatusView.test.tsx` | ported, modified | verbatim except the `profile: null` line removed from the `installation` fixture (the unified `PlatformInstallation` drops `profile`, B-1101) |
+| `src/components/PlatformStatusView.tsx` | ported |  |
+| `src/components/governance/TelemetryPanel.test.tsx` | ported |  |
+| `src/components/governance/TelemetryPanel.tsx` | ported |  |
 
 ## ledger
 
@@ -323,8 +326,8 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 
 | File | Status | Notes |
 |---|---|---|
-| `src/app/(app)/o/[org]/approvals/layout.tsx` | later | blocked: approvals routes belong to runtime; owner: runtime |
-| `src/app/(app)/o/[org]/approvals/page.tsx` | later | blocked: approvals routes belong to runtime; owner: runtime |
+| `src/app/(app)/o/[org]/approvals/layout.tsx` | ported |  |
+| `src/app/(app)/o/[org]/approvals/page.tsx` | ported |  |
 | `src/app/(app)/o/[org]/govern/budgets/page.tsx` | ported | |
 | `src/app/(app)/o/[org]/govern/decisions/page.tsx` | ported | |
 | `src/app/(app)/o/[org]/govern/overview/page.tsx` | ported | |
@@ -342,17 +345,17 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 | `src/components/governance/PoliciesView.tsx` | ported | |
 | `src/components/governance/PricingView.test.tsx` | ported | |
 | `src/components/governance/PricingView.tsx` | ported | |
-| `src/components/operate/ApprovalsView.outcome.test.tsx` | later | blocked: operate types/hooks serve runs, approvals and pipelines (runtime routes); owner: runtime |
-| `src/components/operate/ApprovalsView.test.tsx` | later | blocked: operate types/hooks serve runs, approvals and pipelines (runtime routes); owner: runtime |
-| `src/components/operate/ApprovalsView.tsx` | later | blocked: operate types/hooks serve runs, approvals and pipelines (runtime routes); owner: runtime |
+| `src/components/operate/ApprovalsView.outcome.test.tsx` | ported |  |
+| `src/components/operate/ApprovalsView.test.tsx` | ported |  |
+| `src/components/operate/ApprovalsView.tsx` | ported |  |
 | `src/lib/api/build-endpoints.ts` | ported, modified | full SETH file replaces the governance slice (B-2210) |
 | `src/lib/api/build-types.ts` | ported, modified | full SETH file replaces the governance slice (B-2210) |
-| `src/lib/api/operate-endpoints.ts` | later | area follows its types file.; blocked: operate types/hooks serve runs, approvals and pipelines (runtime routes); owner: runtime |
+| `src/lib/api/operate-endpoints.ts` | ported |  |
 | `src/lib/api/operate-types.ts` | ported | pulled forward by the build unit (types and test stub only: the orchestration spec types and `stubOperate`); the runtime unit adds the rest of its slice |
 | `src/lib/build-hooks.ts` | ported, modified | full SETH file replaces the governance slice (B-2210) |
-| `src/lib/operate-hooks.ts` | later | blocked: operate types/hooks serve runs, approvals and pipelines (runtime routes); owner: runtime |
-| `src/lib/run-utils.test.ts` | later | blocked: serves runs and approvals (runtime routes); owner: runtime |
-| `src/lib/run-utils.ts` | later | blocked: serves runs and approvals (runtime routes); owner: runtime |
+| `src/lib/operate-hooks.ts` | ported |  |
+| `src/lib/run-utils.test.ts` | ported |  |
+| `src/lib/run-utils.ts` | ported |  |
 | `src/test/operate.ts` | ported | pulled forward by the build unit (types and test stub only: the orchestration spec types and `stubOperate`); the runtime unit adds the rest of its slice |
 
 ## build
@@ -364,9 +367,9 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 | `src/app/(app)/o/[org]/build/layout.tsx` | ported | |
 | `src/app/(app)/o/[org]/build/orchestrations/[id]/page.tsx` | ported | |
 | `src/app/(app)/o/[org]/build/orchestrations/page.tsx` | ported | |
-| `src/app/(app)/o/[org]/build/pipelines/[id]/page.tsx` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
-| `src/app/(app)/o/[org]/build/pipelines/layout.tsx` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
-| `src/app/(app)/o/[org]/build/pipelines/page.tsx` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
+| `src/app/(app)/o/[org]/build/pipelines/[id]/page.tsx` | ported |  |
+| `src/app/(app)/o/[org]/build/pipelines/layout.tsx` | ported |  |
+| `src/app/(app)/o/[org]/build/pipelines/page.tsx` | ported |  |
 | `src/app/(app)/o/[org]/build/prompts/[id]/page.tsx` | ported | |
 | `src/app/(app)/o/[org]/build/prompts/page.tsx` | ported | |
 | `src/app/(app)/o/[org]/build/publish-requests/page.tsx` | ported | |
@@ -377,7 +380,7 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 | `src/components/build/AgentEditor.test.tsx` | ported | |
 | `src/components/build/AgentEditor.tsx` | ported | |
 | `src/components/build/AgentTestPanel.tsx` | ported | |
-| `src/components/build/ArtifactDetailView.tsx` | ported, modified | pipeline kind and the ontology Actions tab removed (pipeline editor and `ActionsPanel` are `later`); the pipeline case renders nothing and no route leads to it |
+| `src/components/build/ArtifactDetailView.tsx` | ported | pipeline tabs and the ontology Actions tab restored (fe-areas-5) |
 | `src/components/build/ArtifactListView.test.tsx` | ported | |
 | `src/components/build/ArtifactListView.tsx` | ported | |
 | `src/components/build/DraftEditor.tabs.test.tsx` | ported | |
@@ -400,30 +403,30 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 | `src/components/build/VersionsPanel.tsx` | ported | |
 | `src/components/build/pickers.tsx` | ported | |
 | `src/components/build/shared.tsx` | ported | |
-| `src/components/operate/CancelRunButton.tsx` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
+| `src/components/operate/CancelRunButton.tsx` | ported |  |
 | `src/components/operate/RunAgentLink.test.tsx` | ported | hidden until the backend advertises `operate` |
 | `src/components/operate/RunAgentLink.tsx` | ported | hidden until the backend advertises `operate` |
-| `src/components/operate/parts.tsx` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
-| `src/components/pipelines/LazyPipelineCanvas.tsx` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
-| `src/components/pipelines/NodeConfigPanel.tsx` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
-| `src/components/pipelines/NodePalette.tsx` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
-| `src/components/pipelines/NodeStatusList.outcome.test.tsx` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
-| `src/components/pipelines/NodeStatusList.tsx` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
-| `src/components/pipelines/PipelineCanvas.tsx` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
-| `src/components/pipelines/PipelineEditor.outcome.test.tsx` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
-| `src/components/pipelines/PipelineEditor.test.tsx` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
-| `src/components/pipelines/PipelineEditor.tsx` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
-| `src/components/pipelines/PipelineHistory.tsx` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
-| `src/components/pipelines/PipelineRun.test.tsx` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
-| `src/components/pipelines/PipelineRunContext.tsx` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
-| `src/components/pipelines/PipelineRunPanels.tsx` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
-| `src/components/pipelines/PipelineScreens.test.tsx` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
-| `src/components/pipelines/PipelineValidationPanel.tsx` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
-| `src/components/pipelines/SchedulesPanel.tsx` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
-| `src/components/pipelines/TransformEditor.tsx` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
+| `src/components/operate/parts.tsx` | ported |  |
+| `src/components/pipelines/LazyPipelineCanvas.tsx` | ported |  |
+| `src/components/pipelines/NodeConfigPanel.tsx` | ported |  |
+| `src/components/pipelines/NodePalette.tsx` | ported |  |
+| `src/components/pipelines/NodeStatusList.outcome.test.tsx` | ported |  |
+| `src/components/pipelines/NodeStatusList.tsx` | ported |  |
+| `src/components/pipelines/PipelineCanvas.tsx` | ported |  |
+| `src/components/pipelines/PipelineEditor.outcome.test.tsx` | ported |  |
+| `src/components/pipelines/PipelineEditor.test.tsx` | ported |  |
+| `src/components/pipelines/PipelineEditor.tsx` | ported |  |
+| `src/components/pipelines/PipelineHistory.tsx` | ported |  |
+| `src/components/pipelines/PipelineRun.test.tsx` | ported |  |
+| `src/components/pipelines/PipelineRunContext.tsx` | ported |  |
+| `src/components/pipelines/PipelineRunPanels.tsx` | ported |  |
+| `src/components/pipelines/PipelineScreens.test.tsx` | ported |  |
+| `src/components/pipelines/PipelineValidationPanel.tsx` | ported |  |
+| `src/components/pipelines/SchedulesPanel.tsx` | ported |  |
+| `src/components/pipelines/TransformEditor.tsx` | ported |  |
 | `src/lib/agent-spec.test.ts` | ported | |
 | `src/lib/agent-spec.ts` | ported | |
-| `src/lib/api/pipeline-endpoints.ts` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
+| `src/lib/api/pipeline-endpoints.ts` | ported |  |
 | `src/lib/api/pipeline-types.ts` | ported | |
 | `src/lib/expr.test.ts` | ported | |
 | `src/lib/expr.ts` | ported | |
@@ -431,7 +434,7 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 | `src/lib/graph.test.ts` | ported | |
 | `src/lib/graph.ts` | ported | |
 | `src/lib/pipeline-config.ts` | ported | |
-| `src/lib/pipeline-hooks.ts` | later | blocked: pipelines: the editor, run, history and schedule panels need runtime routes (`/runs`, `pipelines/{id}/runs`, `schedules`; `operate` and `pipelines` register with runtime, `app.py`) and `operate-hooks`; with runtime |
+| `src/lib/pipeline-hooks.ts` | ported |  |
 | `src/lib/pipeline-params.test.ts` | ported | |
 | `src/lib/pipeline-params.ts` | ported | |
 | `src/lib/pipeline-spec.test.ts` | ported | |
@@ -453,7 +456,7 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 | `src/app/(app)/o/[org]/build/ontologies/page.tsx` | ported | |
 | `src/components/ontology/ActionsEditor.test.tsx` | ported | |
 | `src/components/ontology/ActionsEditor.tsx` | ported | |
-| `src/components/ontology/ActionsPanel.tsx` | later | blocked: ActionsPanel: `POST /api/v1/orgs/{org}/ontologies/{id}/actions/{key}/invoke` does not exist (ontology api has no actions route) and it renders operate run chips; with runtime |
+| `src/components/ontology/ActionsPanel.tsx` | ported |  |
 | `src/components/ontology/ExplorerPanel.tsx` | ported | |
 | `src/components/ontology/LazyOntologyCanvas.tsx` | ported | |
 | `src/components/ontology/LineagePanel.tsx` | ported | |
@@ -463,7 +466,7 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 | `src/components/ontology/OntologyEditor.test.tsx` | ported | |
 | `src/components/ontology/OntologyEditor.tsx` | ported | |
 | `src/components/ontology/OntologyGate.test.tsx` | ported | |
-| `src/components/ontology/OntologyPanels.test.tsx` | ported, modified | the `ActionsPanel` describe block and its fixtures (`PA`) removed with `ActionsPanel` (`later`, the actions invoke route is absent); no other test changed |
+| `src/components/ontology/OntologyPanels.test.tsx` | ported | pipeline tabs and the ontology Actions tab restored (fe-areas-5) |
 | `src/components/ontology/OntologyValidationPanel.tsx` | ported | |
 | `src/components/ontology/PoliciesPanel.tsx` | ported | |
 | `src/components/ontology/PrincipalAttributesDialog.tsx` | ported | |
@@ -480,35 +483,35 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 
 | File | Status | Notes |
 |---|---|---|
-| `src/app/(app)/o/[org]/command/command.css` | later |  |
-| `src/app/(app)/o/[org]/command/layout.tsx` | later |  |
-| `src/app/(app)/o/[org]/command/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/runs/[id]/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/runs/layout.tsx` | later |  |
-| `src/app/(app)/o/[org]/runs/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/w/[ws]/p/[proj]/run/layout.tsx` | later |  |
-| `src/app/(app)/o/[org]/w/[ws]/p/[proj]/run/page.tsx` | later |  |
-| `src/app/(app)/o/[org]/w/[ws]/p/[proj]/runs/layout.tsx` | later |  |
-| `src/app/(app)/o/[org]/w/[ws]/p/[proj]/runs/page.tsx` | later |  |
-| `src/components/command/AdminPanel.tsx` | later |  |
-| `src/components/command/CommandCenter.test.tsx` | later |  |
-| `src/components/command/CommandCenter.tsx` | later |  |
-| `src/components/command/NetworkMatrix.tsx` | later |  |
-| `src/components/command/Reveal.tsx` | later |  |
-| `src/components/command/RunTelemetry.tsx` | later |  |
-| `src/components/command/StartupReadout.tsx` | later |  |
-| `src/components/command/Tabs.tsx` | later |  |
-| `src/components/command/ToneGlyph.tsx` | later |  |
-| `src/components/command/TrussHero.tsx` | later |  |
-| `src/components/operate/RunConsole.test.tsx` | later |  |
-| `src/components/operate/RunConsole.tsx` | later |  |
-| `src/components/operate/RunDetailView.outcome.test.tsx` | later |  |
-| `src/components/operate/RunDetailView.test.tsx` | later |  |
-| `src/components/operate/RunDetailView.tsx` | later |  |
-| `src/components/operate/RunHistoryView.outcome.test.tsx` | later |  |
-| `src/components/operate/RunHistoryView.test.tsx` | later |  |
-| `src/components/operate/RunHistoryView.tsx` | later |  |
-| `src/components/operate/Timeline.tsx` | later |  |
-| `src/components/pipelines/RunNodesTab.tsx` | later | UNSURE: pipeline file, but only `operate/RunDetailView` (runtime) imports it, so runtime by the layer rule. |
-| `src/lib/command.test.ts` | later |  |
-| `src/lib/command.ts` | later |  |
+| `src/app/(app)/o/[org]/command/command.css` | ported |  |
+| `src/app/(app)/o/[org]/command/layout.tsx` | ported |  |
+| `src/app/(app)/o/[org]/command/page.tsx` | ported |  |
+| `src/app/(app)/o/[org]/runs/[id]/page.tsx` | ported |  |
+| `src/app/(app)/o/[org]/runs/layout.tsx` | ported |  |
+| `src/app/(app)/o/[org]/runs/page.tsx` | ported |  |
+| `src/app/(app)/o/[org]/w/[ws]/p/[proj]/run/layout.tsx` | ported |  |
+| `src/app/(app)/o/[org]/w/[ws]/p/[proj]/run/page.tsx` | ported |  |
+| `src/app/(app)/o/[org]/w/[ws]/p/[proj]/runs/layout.tsx` | ported |  |
+| `src/app/(app)/o/[org]/w/[ws]/p/[proj]/runs/page.tsx` | ported |  |
+| `src/components/command/AdminPanel.tsx` | ported |  |
+| `src/components/command/CommandCenter.test.tsx` | ported |  |
+| `src/components/command/CommandCenter.tsx` | ported |  |
+| `src/components/command/NetworkMatrix.tsx` | ported |  |
+| `src/components/command/Reveal.tsx` | ported |  |
+| `src/components/command/RunTelemetry.tsx` | ported |  |
+| `src/components/command/StartupReadout.tsx` | ported |  |
+| `src/components/command/Tabs.tsx` | ported |  |
+| `src/components/command/ToneGlyph.tsx` | ported |  |
+| `src/components/command/TrussHero.tsx` | ported |  |
+| `src/components/operate/RunConsole.test.tsx` | ported |  |
+| `src/components/operate/RunConsole.tsx` | ported |  |
+| `src/components/operate/RunDetailView.outcome.test.tsx` | ported |  |
+| `src/components/operate/RunDetailView.test.tsx` | ported |  |
+| `src/components/operate/RunDetailView.tsx` | ported |  |
+| `src/components/operate/RunHistoryView.outcome.test.tsx` | ported |  |
+| `src/components/operate/RunHistoryView.test.tsx` | ported |  |
+| `src/components/operate/RunHistoryView.tsx` | ported |  |
+| `src/components/operate/Timeline.tsx` | ported |  |
+| `src/components/pipelines/RunNodesTab.tsx` | ported |  |
+| `src/lib/command.test.ts` | ported, modified | verbatim except the `contrastRatio` import now comes from `./contrast` (colour maths of `branding.ts`; runtime branding is not ported, B-1101) |
+| `src/lib/command.ts` | ported |  |
