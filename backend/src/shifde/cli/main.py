@@ -437,6 +437,75 @@ def dev_sample_data(
     )
 
 
+@app.command("dev-sample-pipeline")
+def dev_sample_pipeline(
+    org: Annotated[str, typer.Option(help="Organization slug")] = "demo-a",
+    admin: Annotated[str, typer.Option(help="Organization administrator (from dev-users.txt)")] = (
+        "admin@demo-a.local"
+    ),
+    rest_port: Annotated[int, typer.Option(help="Port of the local REST sink")] = 8765,
+) -> None:
+    """Seed the reference pipeline `customer-risk-review` (SHIFDE_ENV=development only).
+
+    Needs `dev-seed` and `dev-sample-data` first. Creates (idempotently, through the public API)
+    the sample PostgreSQL connection, the REST sink connection, a deterministic fake model, a
+    published prompt + agent and the published pipeline. Run it from the UI (Build -> Pipelines)
+    with `shifde-worker` and `shifde-admin dev-rest-sink` running."""
+    from shifde.cli.sample_pipeline import SeedError, seed_sample_pipeline
+
+    settings = _settings()
+    if not settings.is_development:
+        raise _fail("dev-sample-pipeline refuses to run unless SHIFDE_ENV=development")
+    try:
+        seeded = seed_sample_pipeline(settings, org=org, admin_email=admin, rest_port=rest_port)
+    except SeedError as exc:
+        raise _fail(str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise _fail(f"database error: {exc.__class__.__name__}") from exc
+    state = "created" if seeded.created else "already present"
+    typer.echo(f"reference pipeline 'customer-risk-review' {state} in {org}")
+    typer.echo(f"  pipeline id {seeded.pipeline_id} (published version {seeded.version_id})")
+    typer.echo('  run it with params {"region": "north", "threshold": 3} (needs shifde-worker;')
+    typer.echo("  the approval node pauses before the delivery to the REST sink)")
+    typer.echo(f"  start the delivery target with 'shifde-admin dev-rest-sink' ({seeded.rest_url})")
+
+
+@app.command("dev-sample-ontology")
+def dev_sample_ontology(
+    org: Annotated[str, typer.Option(help="Organization slug")] = "demo-a",
+    admin: Annotated[str, typer.Option(help="Organization administrator (from dev-users.txt)")] = (
+        "admin@demo-a.local"
+    ),
+) -> None:
+    """Seed the reference ontology `customer-service` (SHIFDE_ENV=development only).
+
+    Needs `dev-seed` and `dev-sample-data` first. Creates (idempotently, through the public API)
+    the sample PostgreSQL connection, the ontology (Customer, Account, Service Request, Assigned
+    Employee), its source mappings, a harmless registered action, the published version and the
+    access policies (Developer: non-restricted, service requests limited to the developer's own
+    region; Tenant Administrator: plus the restricted tax id). Explore it in the UI (Build ->
+    Ontology)."""
+    from shifde.cli.sample_ontology import seed_sample_ontology
+    from shifde.cli.sample_pipeline import SeedError
+
+    settings = _settings()
+    if not settings.is_development:
+        raise _fail("dev-sample-ontology refuses to run unless SHIFDE_ENV=development")
+    try:
+        seeded = seed_sample_ontology(settings, org=org, admin_email=admin)
+    except SeedError as exc:
+        raise _fail(str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise _fail(f"database error: {exc.__class__.__name__}") from exc
+    state = "created" if seeded.created else "already present"
+    typer.echo(f"reference ontology 'customer-service' {state} in {org}")
+    typer.echo(f"  ontology id {seeded.ontology_id} (published version {seeded.version_id})")
+    typer.echo(f"  {seeded.policies_created} access polic(ies) added; source: dev-sample-postgres")
+    typer.echo("  no customer data was copied: queries run at the source when you explore")
+    typer.echo("  developers see service requests of their own region: set the `region` attribute")
+    typer.echo("  with PUT /ontology-principal-attributes/user/{id} (until then none are visible)")
+
+
 @app.command("dev-sample-rates")
 def dev_sample_rates(
     currency: Annotated[str, typer.Option(help="Currency of the sample rates")] = "USD",
