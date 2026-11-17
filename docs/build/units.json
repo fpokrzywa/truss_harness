@@ -135,6 +135,19 @@
       "status": "done",
       "final": true,
       "brief": "Runs in the main checkout with goal 1's own condition, alone."
+    },
+    {
+      "id": "suite-speed-2",
+      "title": "Full backend suite back under the 20-minute target (HANDOFF step 1)",
+      "branch": "suite-speed-2",
+      "depends_on": [
+        "goal1-final"
+      ],
+      "resources": [
+        "tests-infra"
+      ],
+      "lead_model": "opus",
+      "status": "done"
     }
   ],
   "resources": {
