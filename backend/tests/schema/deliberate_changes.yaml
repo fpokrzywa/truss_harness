@@ -670,8 +670,3 @@
   path: [constraints, fk_approvals__tool_version]
   reason: "client-keyed composite foreign key where SETH had a bare id column: constraints bypass row-level security, so without it a row of client A could name client B's object and a later join on the id alone would read B's row (B-116 item 9, B-607, B-2102). (tenant_id, tool_version_id) -> artifact_versions (tenant_id, id)."
   migration: runtime_0001
-
-- table: tenants
-  path: [constraints, tenants_status_check]
-  reason: "a client can be suspended (findings Item 12, F-03, DECISIONS B-2511): status admits 'suspended' beside 'active' and 'archived'; only the platform administrator suspends or unsuspends, and a suspended client is refused at the session pin and at run start like an archived one"
-  migration: tenancy_0005
