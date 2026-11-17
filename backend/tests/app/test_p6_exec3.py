@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from shifde.adapters.testservers import RestTestServer
+from shifde.cli.sample_pipeline import reference_pipeline_spec
 from shifde.core.settings import Settings
 from tests._support.fullapp import World
 from tests._support.p3util import A
@@ -144,5 +145,15 @@ def test_publish_approval_applies_to_pipelines_and_stores_refs_on_approval(
     assert version["validation_report"]["valid"] is True
 
 
-# Not ported yet (B-2421): test_the_dev_sample_pipeline_spec_validates_and_publishes needs
-# shifde.cli.sample_pipeline.reference_pipeline_spec; `sample_pipeline.py` is not ported (B-2221).
+def test_the_dev_sample_pipeline_spec_validates_and_publishes(
+    client: TestClient,
+    world: World,
+    owner_session: Session,
+    rest_server: RestTestServer,
+    sample_db_url: str,
+) -> None:
+    w = World6(client, world, owner_session, rest_server, sample_db_url)
+    spec = reference_pipeline_spec(w.pg, w.rest_id, f"latest:{w.stack.agent['id']}")
+    pipe = w.pipeline("customer-risk-review", spec)
+    assert pipe["version"]["state"] == "published"
+    assert pipe["version"]["validation_report"]["topo_order"][0] == "src"
