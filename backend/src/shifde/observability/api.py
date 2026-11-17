@@ -6,6 +6,7 @@ import hmac
 import json
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any  # Any: JSON stats document
 
 import structlog
@@ -41,15 +42,30 @@ def health() -> HealthOut:
     return HealthOut(status="ok", version=__version__)
 
 
-@router.get("/ready", response_model=ReadyOut, responses={503: {"model": ReadyOut}})
-def ready(request: Request) -> JSONResponse:
-    """Readiness: database reachable and its migration revision equals the code head."""
-    db: Database = request.app.state.db
+READY_DEADLINE_SECONDS = 3.0
+_probe_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ready-probe")
+
+
+def _probe(db: Database) -> dict[str, str]:
     checks = {"database": "error", "migrations": "unknown"}
     with db.session() as session:
         if database_reachable(session):
             checks["database"] = "ok"
             checks["migrations"] = migration_state(session).status
+    return checks
+
+
+@router.get("/ready", response_model=ReadyOut, responses={503: {"model": ReadyOut}})
+def ready(request: Request) -> JSONResponse:
+    """Readiness: database reachable and its migration revision equals the code head. The probe
+    runs under a deadline, so a database that is down answers 503 well before the connect timeout
+    (audit Item 18, B-2516)."""
+    probe = _probe_pool.submit(_probe, request.app.state.db)
+    try:
+        checks = probe.result(timeout=READY_DEADLINE_SECONDS)
+    except TimeoutError:
+        probe.cancel()  # a queued probe never starts; a running one ends at the connect timeout
+        checks = {"database": "error", "migrations": "unknown"}
     ok = checks["database"] == "ok" and checks["migrations"] == "ok"
     body = ReadyOut(status="ready" if ok else "not_ready", checks=checks)
     return JSONResponse(body.model_dump(), status_code=200 if ok else 503)
