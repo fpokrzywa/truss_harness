@@ -1,4 +1,6 @@
 export type ScopeStatus = 'active' | 'archived';
+/** A client's status: only the platform administrator suspends one (F-03). */
+export type OrgStatus = 'active' | 'suspended' | 'archived';
 
 export interface User {
   id: string;
@@ -12,7 +14,7 @@ export interface Org {
   slug: string;
   name: string;
   description?: string | null;
-  status: ScopeStatus;
+  status: OrgStatus;
   row_version: number;
   created_at?: string;
   updated_at?: string;
