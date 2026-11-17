@@ -1,8 +1,8 @@
 {
-  "session_id": "6ba4d0b2-fccf-49ab-9fb0-d2dc0c262511",
-  "head_sha": "c7fe0dd8c13edc4efc837056e4a981c481e91ad4",
+  "session_id": "9d515262-f16e-4c3b-916e-92e381a57d51",
+  "head_sha": "b396839a8e360fc3ce3ee1cf9b50f384334cc9a8",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "Time the full backend suite on an idle machine against the 20-minute target (HANDOFF.md step 1), then charter 7: file factory issues for the open known defects and start sub-project 2",
-  "written_at": "2026-11-17T13:32:53Z"
+  "next_step": "Run /factory run on the 28 open factory issues (SP2 #19-#28 in dependency order first, known defects #1-#18 alongside); lead runs full suite and isolation-reviewer on every escalated PR before merging",
+  "written_at": "2026-11-17T17:25:21Z"
 }
