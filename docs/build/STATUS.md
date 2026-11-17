@@ -46,7 +46,7 @@ Tokens per model: see `python scripts/usage_report.py` (by unit); the figure bel
 | front-end areas 5 (runtime: runs, approvals, command center, pipelines, ontology Actions panel; platform status page) | done (partial: security groups screens stay `later`, org-scoped group routes missing) | this branch, rebased on main | `gates.py --name fe-areas-5-merge`: 13 gates; 742 front-end tests. Notes: `docs/build/units/fe-areas-5.md`. | sonnet builder |
 | nextjs-security (Next.js upgrade past GHSA-mfr8-8qww-v76h) | done | `next` 16.4.5 | `gates.py --name nextjs-security-merge` 13/13 on the rebased commit; frontend lint, typecheck, test (378) and build pass; S-009 | |
 | suite speed (full backend suite under the 20-minute target, design 6) | done | branch `suite-speed`, merged to main (this commit's parent chain) | B-2330: `clean_data` DELETEs as the superuser (replica role) instead of TRUNCATE; `tests/app` clones outside the run lock and drops each test's database in a background thread; end-of-run cleanup drops 8 at a time. Full suite `-n 8`: 2140 passed in 541 s (target 1200 s; baseline 1548 s), with another unit's suite running alongside; merge gate time in `.worktrees/_gate-logs/suite-speed-merge`. No test, assertion or check changed. | |
-| two-org side-by-side proof | todo | | | |
+| two-org side-by-side proof | done (local cluster, S-002; hosted waits on B-009) | branch `two-org-proof`, rebased onto main (unit `two-org-proof`) | Live, 2026-11-17, worktree database on 127.0.0.1:55450: `shifde-admin db upgrade` (default now `heads`, B-2470), `db check` ok, `dev-seed` (orgs `demo-a`, `demo-b`, each with its own staff group), `shifde-api`, then `python -I scripts/two_org_proof.py --base-url http://127.0.0.1:8791`: `TWO-ORG PROOF PASSED: 67 checks`, exit 0 (each of 5 people lists only their own org, reads its workspace and project, administrators see only their own group, every route of the other org answers 404, `?scope=all` 403; the platform administrator lists both). In-process: `tests/app/test_routes.py::test_two_seeded_organizations_with_separate_groups_see_only_themselves`. `gates.py --name two-org-proof-merge`. Notes: `docs/build/units/two-org-proof.md` (B-2471). | lead only |
 | software factory install | todo | | | |
 
 ## Audit findings
@@ -55,19 +55,19 @@ In scope for sub-project 1: C1, C2, batch R2 (ported code), R3 cost items (budge
 
 ### Known defects (major findings left open after sub-project 1)
 
-Source: `docs/build/findings.md` ("known defect" rows). State as of session 4 (main `7c36f81`); each becomes a factory issue after sub-project 1 (charter 7). Not final until `runtime`, `build`, `governance`, `ontology`, `models_admin` and `app` land, which may close or narrow some.
+Source: `docs/build/findings.md` ("known defect" rows). Refreshed on 2026-11-17 by unit `two-org-proof` after `runtime`, `build`, `governance`, `ontology`, `models_admin` and `app` landed (B-2471). Each open row becomes a factory issue after sub-project 1 (charter 7). C1 (charter 5 item 3) is closed: B-2122, B-2145, B-2194, B-2243, the end-to-end worker test B-2295 and the pipeline write node through a `SubprocessWorker` B-2422.
 
 | Finding | Summary | Owner | State now |
 |---|---|---|---|
-| Item 12 (REQ F-02) | Archived workspace/project still accepts runs | runtime | connections half fixed (B-1509); runs half fixed on branch `runtime` (RT-11, B-2271), closes at the runtime merge |
+| Item 12 (REQ F-02) | Archived workspace/project still accepts runs | runtime | closed: connections B-1509; runs and `start_action_run` B-2271 (`tests/runtime/test_service.py`), merged with runtime |
 | Item 12 (REQ F-03) | Orgs cannot be suspended; archived org principals still log in | tenancy, identity | archived client refused at the session pin (tenancy 2a, B-1008..B-1014); `suspended` client status needs a decision (carry_forward) |
-| Item 13 (J-M2) | Admin cannot read run output in prod; `capture_content` has no setter | runtime, tenancy | open (runtime not ported) |
-| Item 14 (REQ F-12) | Capture off only hides on read; content still stored | runtime, models_admin | open |
+| Item 13 (J-M2) | Admin cannot read run output in prod; `capture_content` has no setter | runtime, tenancy | open: runtime ported as SETH, `capture_content` still has no setter (B-2275) |
+| Item 14 (REQ F-12) | Capture off only hides on read; content still stored | runtime, models_admin | open: writers still store content, only the read hides it (B-2275) |
 | Item 15 (REQ F-06) | No tool-invocation audit; `model.invoked` lacks run/workspace/project | runtime, models_admin, audit | open |
-| Item 16 (REQ F-13) | No per-tool approval flag; `audit_level` unused; `allowed_agent_ids` skipped for pipelines | build, runtime | open |
+| Item 16 (REQ F-13) | No per-tool approval flag; `audit_level` unused; `allowed_agent_ids` skipped for pipelines | build, runtime | open: pipeline tool nodes use `ToolPolicy(agent_id=None)` (B-2196) |
 | Item 16 (REQ F-09) | REST adapter lacks OAuth2 client credentials | adapters | open |
-| Item 18 (J-M4) | DB down: `/api/ready` slow to 503 | core, observability | core connect/statement timeouts fixed (B-203); readiness check with app |
-| Item 19 (ARCH M3) | Wedged worker never recovered | runtime, core | open |
+| Item 18 (J-M4) | DB down: `/api/ready` slow to 503 | core, observability | narrowed: connect and statement timeouts in API and worker (B-203, `app.py`, B-2294); `/api/ready` mounted with the app. Time to 503 with the database down not measured |
+| Item 19 (ARCH M3) | Wedged worker never recovered | runtime, core | narrowed (B-2294): statement timeout, the heartbeat drops a run past its deadline and the reaper settles it. Left: a wedged thread keeps its executor slot until the process restarts |
 | Item 20 (ARCH M4; REQ F-11) | No retention purge/maintenance; partitions absent; `run_artifacts` undeletable | cli, audit, ledger, runtime | open |
 | Item 21 (ARCH M2) | API runs adapters inline (connections, models, ontology) | app, connections, models_admin, ontology | open (connections ported inline as in SETH) |
 | Item 22 (REQ F-17) | No SAST, coverage gate, OpenAPI diff | repo infra | CI added by the skeleton; the rest open |
@@ -76,7 +76,7 @@ Source: `docs/build/findings.md` ("known defect" rows). State as of session 4 (m
 | Item 23 (REQ F-23) | Traceability matrix unreliable | docs | open |
 | ARCH M11 | Classification x provider-trust egress control and `data:export` not implemented | runtime, ontology, models_admin, governance | open |
 | REQ F-08 | RLS is tenant-only; PRD requires workspace and project | authz, tenancy | open (workspace/project scoping enforced in the PDP and services, not RLS) |
-| REQ F-10 | Approval rules skip pipeline runs; no data-export or target-env rule | runtime, governance | open |
+| REQ F-10 | Approval rules skip pipeline runs; no data-export or target-env rule | runtime, governance | open: approval rules not consulted for pipeline write nodes (B-2196) |
 | REQ F-22 | No real IdP sign-in tested | identity | open: fake IdP only; Entra in sub-project 3 (waiting on owner input) |
 
 Also open from reviews (minor, tracked in `carry_forward.md`): SEC Minor-3 (no secret delete path), the connections review 2 C2 race (next unit), the IdP-sync self-add (before OIDC is mounted).

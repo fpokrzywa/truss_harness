@@ -106,7 +106,7 @@
       ],
       "resources": [],
       "lead_model": "opus",
-      "status": "todo",
+      "status": "done",
       "brief": "HANDOFF.md step 5: the proof on the local cluster (S-002, seed dev-seed) and the known-defects refresh in STATUS (RT-11/RT-12 closed or narrowed Item 12, C1, ARCH M3)."
     },
     {
