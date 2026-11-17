@@ -589,3 +589,33 @@ def usage_record_build(
     except (SQLAlchemyError, AppError) as exc:
         raise _fail(f"{exc.__class__.__name__}: {exc}") from exc
     typer.echo("recorded" if created else "already recorded (idempotent)")
+
+
+@app.command("dev-rest-sink")
+def dev_rest_sink(
+    port: Annotated[int, typer.Option(help="Port to listen on (127.0.0.1 only)")] = 8765,
+) -> None:
+    """Run the local REST sink (the pipeline's designated side-effect target) until Ctrl-C.
+
+    SHIFDE_ENV=development only. It echoes what it receives (never credentials) and requires the
+    bearer token stored in .devdata/dev.env (SHIFDE_DEV_REST_TOKEN)."""
+    import time
+
+    from shifde.adapters.testservers import RestTestServer
+    from shifde.cli.sample_pipeline import dev_rest_token
+
+    if not _settings().is_development:
+        raise _fail("dev-rest-sink refuses to run unless SHIFDE_ENV=development")
+    server = RestTestServer(token=dev_rest_token(), port=port).start()
+    typer.echo(f"REST sink listening on http://127.0.0.1:{port} (Ctrl-C to stop)")
+    try:
+        seen = 0
+        while True:
+            time.sleep(1)
+            for entry in server.requests[seen:]:
+                typer.echo(f"  {entry['method']} {entry['path']}")
+            seen = len(server.requests)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.stop()
