@@ -3,8 +3,15 @@ published agent stacks and API shortcuts."""
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import signal
+import subprocess
+import sys
+import threading
 import time
+from collections.abc import Iterator
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -12,6 +19,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from shifde.core.settings import Settings
+from shifde.runtime.worker import Worker
 from tests._support.p3util import A, connection, fake_model_stack
 from tests._support.p4util import (
     agent_spec,
@@ -31,6 +39,82 @@ def tool_call_reply(name: str, args: dict[str, Any]) -> str:
 
 def fast(settings: Settings, **over: Any) -> Settings:
     return settings.model_copy(update={"runtime_retry_base_seconds": 0.01, **over})
+
+
+@contextlib.contextmanager
+def thread_worker(
+    settings: Settings, *, lease: int = 5, reap: float = 0.3, concurrency: int = 2
+) -> Iterator[Worker]:
+    """A real Worker running on a thread of the test process (fast iteration)."""
+    worker = Worker(
+        fast(settings),
+        worker_id=f"test-{time.monotonic_ns()}",
+        concurrency=concurrency,
+        lease_seconds=lease,
+        poll_ms=100,
+        reap_seconds=reap,
+    )
+    thread = threading.Thread(target=worker.run, daemon=True)
+    thread.start()
+    try:
+        yield worker
+    finally:
+        worker.request_stop()
+        thread.join(timeout=30)
+
+
+class SubprocessWorker:
+    """`python -m shifde.runtime.worker` as a separate process against the test database."""
+
+    def __init__(self, settings: Settings, worker_id: str, lease: int = 4) -> None:
+        env = {
+            **os.environ,
+            "SHIFDE_ENV": "test",
+            "SHIFDE_DATABASE_URL": settings.database_url,
+            "SHIFDE_SECRET_KEYS": settings.secret_keys.get_secret_value()
+            if settings.secret_keys
+            else "",
+            "SHIFDE_API_KEY_PEPPER": settings.api_key_pepper.get_secret_value()
+            if settings.api_key_pepper
+            else "",
+            "SHIFDE_RUNTIME_RETRY_BASE_SECONDS": "0.01",
+            "SHIFDE_LOG_LEVEL": "WARNING",
+        }
+        flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+        self.proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "shifde.runtime.worker",
+                "--worker-id",
+                worker_id,
+                "--lease-seconds",
+                str(lease),
+                "--poll-ms",
+                "100",
+                "--reap-seconds",
+                "0.5",
+                "--concurrency",
+                "2",
+            ],
+            env=env,
+            creationflags=flags,
+        )
+
+    def kill(self) -> None:
+        self.proc.kill()  # TerminateProcess / SIGKILL: no cleanup runs
+        self.proc.wait(timeout=20)
+
+    def stop(self) -> int:
+        if self.proc.poll() is None:
+            sig = signal.CTRL_BREAK_EVENT if sys.platform == "win32" else signal.SIGTERM
+            self.proc.send_signal(sig)
+            try:
+                self.proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait(timeout=20)
+        return int(self.proc.returncode)
 
 
 def wait_for(fn: Any, timeout: float = 30.0, every: float = 0.1) -> Any:  # Any: predicate result
