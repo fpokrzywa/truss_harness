@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any  # Any: connection rows / adapter JSON payloads
+from typing import Any, Literal  # Any: connection rows / adapter JSON payloads
 from uuid import UUID
 
 from pydantic import ValidationError as PydanticValidationError
@@ -36,10 +38,14 @@ from shifde.adapters.base import (
 )
 from shifde.adapters.runtime import IntegrationRuntime
 from shifde.audit import service as audit
+from shifde.authz import service as authz
 from shifde.authz.service import ResourceRef
 from shifde.connections import egress, repository
 from shifde.connections import schemas as s
+from shifde.core import db
 from shifde.core.clock import utcnow
+from shifde.core.context import RequestContext
+from shifde.core.db import Database
 from shifde.core.errors import (
     AdapterNotImplemented,
     AppError,
@@ -74,6 +80,8 @@ CONFIG_AFFECTING = frozenset(
     {"config", "auth_method", "secret_ref_id", "egress_policy_id", "access_mode", "vendor_id"}
 )
 TEST_VALIDITY = timedelta(hours=24)
+TEST_JOB_KIND = "connection.test"  # `shifde.jobs.kind` of a queued connection test (B-2610)
+ERROR_CODE = re.compile(r"[a-z][a-z_]*")  # an `AppError.code` the worker stored as `last_error`
 
 
 def failure_to_error(exc: AdapterFailure) -> AppError:
@@ -661,10 +669,79 @@ class ConnectionService:
         return self.runtime.registry.get(row["adapter_key"])
 
     # ================================================================== test / discover
-    def test(self, connection_id: UUID) -> s.TestResultOut:
+    def _testable(self, connection_id: UUID) -> tuple[Mapping[str, Any], Any]:
+        """The connection row and its adapter, for a caller allowed to test it (404 when the
+        connection is unreadable, 403 otherwise, 422 adapter_not_implemented when planned)."""
         row = self._get_row(connection_id)
         self._require("connection:test", row)
-        adapter = self._adapter(row)  # 422 adapter_not_implemented for planned adapters
+        return row, self._adapter(row)
+
+    def enqueue_test(self, connection_id: UUID) -> s.TestJobOut:
+        """Queue the connection test on the worker (ARCH M2, B-2610): the API process never calls
+        the adapter. An active test job of the connection is answered instead of a second one."""
+        self._testable(connection_id)
+        p = self.sc.principal
+        payload = {
+            "connection_id": str(connection_id),
+            "test_id": str(uuid7()),  # the result row's id, allocated now (payload is immutable)
+            "principal_id": str(p.principal_id),
+            "principal_type": p.principal_type,
+            "api_key_id": str(p.api_key_id) if p.api_key_id else None,
+        }
+        job = repository.enqueue_test_job(
+            self._session,
+            tenant_id=self.sc.tenant_id,
+            kind=TEST_JOB_KIND,
+            job_id=uuid7(),
+            connection_id=connection_id,
+            payload=payload,
+        )
+        self._session.commit()
+        return self._job_out(job)
+
+    def test_job(self, connection_id: UUID, job_id: UUID) -> s.TestJobOut:
+        row = self._get_row(connection_id)
+        self._require("connection:read", row)
+        job = repository.get_test_job(
+            self._session,
+            job_id,
+            tenant_id=self.sc.tenant_id,
+            kind=TEST_JOB_KIND,
+            connection_id=connection_id,
+        )
+        if job is None:
+            raise NotFound("test job not found")
+        return self._job_out(job)
+
+    def _job_out(self, job: Mapping[str, Any]) -> s.TestJobOut:
+        payload = job["payload"]
+        found = repository.get_test(
+            self._session, UUID(payload["test_id"]), tenant_id=self.sc.tenant_id
+        )
+        status: Literal["queued", "running", "done", "failed"]
+        error: str | None = None
+        if found is not None:
+            status = "done"
+        elif job["status"] == "queued":
+            status = "queued"
+        elif job["status"] == "leased":
+            status = "running"
+        else:  # dead, or closed without a result (the reaper's `stale lease`)
+            status = "failed"
+            code = job["last_error"] or ""
+            error = code if ERROR_CODE.fullmatch(code) else "worker_lost"
+        return s.TestJobOut(
+            id=job["id"],
+            connection_id=UUID(payload["connection_id"]),
+            status=status,
+            result=_test_out(found) if found is not None else None,
+            error=error,
+            created_at=job["created_at"],
+        )
+
+    def execute_test(self, connection_id: UUID, test_id: UUID) -> s.TestResultOut:
+        """Run the adapter test and record it as `test_id` (the worker side of `enqueue_test`)."""
+        row, adapter = self._testable(connection_id)
         started = utcnow()
         t0 = time.monotonic()
         checks: list[dict[str, str]] = []
@@ -694,7 +771,6 @@ class ConnectionService:
             checks = [{"name": "capability", "status": "fail", "detail": message}]
         finished = utcnow()
         duration_ms = int((time.monotonic() - t0) * 1000)
-        test_id = uuid7()
         repository.insert_test(
             self._session,
             {
@@ -759,20 +835,7 @@ class ConnectionService:
         )
         page, more = paginate(rows, limit)
         return Page(
-            items=[
-                s.TestResultOut(
-                    id=r["id"],
-                    connection_id=r["connection_id"],
-                    outcome=r["outcome"],
-                    checks=[s.CheckOut(**c) for c in r["checks"]],
-                    error_class=r["error_class"],
-                    duration_ms=r["duration_ms"],
-                    started_at=r["started_at"],
-                    finished_at=r["finished_at"],
-                    created_at=r["finished_at"],
-                )
-                for r in page
-            ],
+            items=[_test_out(r) for r in page],
             next_cursor=encode_cursor(page[-1]["id"]) if more and page else None,
         )
 
@@ -1013,6 +1076,88 @@ class ConnectionService:
             raise failure_to_error(exc) from exc
         self._session.commit()  # secret-access rows are written; never held across the call
         return adapter, self._exec_ctx(row, deadline), cfg
+
+
+def _test_out(r: Mapping[str, Any]) -> s.TestResultOut:
+    return s.TestResultOut(
+        id=r["id"],
+        connection_id=r["connection_id"],
+        outcome=r["outcome"],
+        checks=[s.CheckOut(**c) for c in r["checks"]],
+        error_class=r["error_class"],
+        duration_ms=r["duration_ms"],
+        started_at=r["started_at"],
+        finished_at=r["finished_at"],
+        created_at=r["finished_at"],
+    )
+
+
+@dataclass(frozen=True)
+class _Requester:
+    """Who queued a test job (`authz.execution.RunRef`): re-derived when the job runs."""
+
+    tenant_id: UUID
+    initiated_by_principal_id: UUID
+    principal_type: str
+    api_key_id: UUID | None
+
+
+def run_test_job(
+    database: Database, runtime: IntegrationRuntime, tenant_id: UUID, job_id: UUID
+) -> str | None:
+    """Execute the `connection.test` job `job_id` of `tenant_id` (called by `shifde-worker`).
+
+    Jobs carry no permissions: the requester is re-derived from the database and `connection:test`
+    is checked again. Returns None once the test is recorded (now or by an earlier run of the same
+    job), else the error code of the refusal; nothing is recorded then."""
+    request_id = f"connection-test-{job_id}"
+    session = database.session()
+    db.init_context(session, request_id)
+    try:
+        db.set_tenant(session, tenant_id)
+        job = repository.get_test_job(session, job_id, tenant_id=tenant_id, kind=TEST_JOB_KIND)
+        if job is None:
+            return NotFound.code
+        payload = job["payload"]
+        test_id = UUID(payload["test_id"])
+        if repository.get_test(session, test_id, tenant_id=tenant_id) is not None:
+            return None
+        try:
+            principal = authz.execution_principal(
+                session,
+                _Requester(
+                    tenant_id,
+                    UUID(payload["principal_id"]),
+                    payload["principal_type"],
+                    UUID(payload["api_key_id"]) if payload["api_key_id"] else None,
+                ),
+            )
+            header = tenancy.tenant_header(session, tenant_id)
+            if header is None:
+                raise authz.ExecutionDenied("the client is not available")
+            scope = TenantScope(
+                session=session,
+                ctx=RequestContext(request_id=request_id, principal=principal, tenant_id=tenant_id),
+                principal=principal,
+                tenant_id=tenant_id,
+                tenant_slug=header[0],
+                tenant_name=header[1],
+                tenant_status=header[2],
+                pdp=authz.new_pdp(session, principal, tenant_id),
+            )
+            ConnectionService(scope, runtime).execute_test(UUID(payload["connection_id"]), test_id)
+        except (AppError, IntegrityError) as exc:
+            session.rollback()
+            # a unique violation on the pre-allocated id: another run of this job recorded it
+            # (and its audit event and health update); nothing more is written
+            if repository.get_test(session, test_id, tenant_id=tenant_id) is not None:
+                return None
+            if isinstance(exc, IntegrityError):
+                raise
+            return exc.code
+        return None
+    finally:
+        session.close()
 
 
 def definition_fingerprint(row: Mapping[str, Any]) -> str:

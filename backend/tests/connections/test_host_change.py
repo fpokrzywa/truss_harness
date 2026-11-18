@@ -26,6 +26,7 @@ from shifde.adapters.testservers import RestTestServer
 from shifde.connections import repository as connections_repository
 from shifde.core.db import Database, set_tenant
 from shifde.core.settings import Settings
+from tests._support.conntests import run_test
 from tests.connections.routes import (
     REST_TOKEN,
     activate,
@@ -129,7 +130,7 @@ def test_a_role_without_secret_use_cannot_repoint_a_credentialed_connection(
     assert row["config"]["base_url"] == setup.good.base_url
     assert row["status"] == "active" and row["secret_set"] is True
     # every path that would send the secret reaches only the original host
-    assert c.post(f"{A}/connections/{setup.cid}/test", headers=hm).status_code == 200
+    assert run_test(c, hm, A, setup.cid)["status"] == "done"
     assert c.post(f"{A}/connections/{setup.cid}/discover", headers=hm).status_code in (200, 422)
     assert evil.requests == [] and _deliveries(evil) == 0
 
@@ -232,7 +233,7 @@ def test_an_explicit_detach_together_with_a_host_change_sends_no_secret(
         },
     )
     assert r.status_code == 200 and r.json()["secret_set"] is False  # the caller said so
-    assert c.post(f"{A}/connections/{setup.cid}/test", headers=hm).status_code == 200
+    assert run_test(c, hm, A, setup.cid)["status"] == "done"
     assert _deliveries(evil) == 0  # reached the listener, but without the credential
     assert evil.requests  # (it was contacted, anonymously)
 
@@ -263,7 +264,7 @@ def test_a_detached_secret_cannot_be_rebound_after_the_host_change_without_secre
     # a new connection to `evil` naming the secret is refused the same way
     body = {**rest_body(evil, setup.secret_id, name="to-evil")}
     connection(c, hm, body, A, status=404)
-    assert c.post(f"{A}/connections/{setup.cid}/test", headers=hm).status_code == 200
+    assert run_test(c, hm, A, setup.cid)["status"] == "done"
     assert _deliveries(evil) == 0
 
 
@@ -483,7 +484,7 @@ def test_a_secret_bound_between_the_managers_read_and_write_stops_the_repoint(
     assert r.status_code == 409, r.text
     row = setup.row(hm, pid)
     assert row["config"]["base_url"] == setup.good.base_url and row["secret_set"] is True
-    assert c.post(f"{A}/connections/{pid}/test", headers=hm).status_code == 200
+    assert run_test(c, hm, A, pid)["status"] == "done"
     assert evil.requests == [] and _deliveries(evil) == 0
 
 
@@ -496,8 +497,8 @@ def test_a_definition_changed_between_the_read_and_write_of_an_activation_is_not
     c, A, admin = setup.client, setup.A, setup.as_admin()
     plain = connection(c, admin, rest_body(setup.good, setup.secret_id, name="tested"), A)
     pid = str(plain["id"])
-    tested = c.post(f"{A}/connections/{pid}/test", headers=admin)
-    assert tested.status_code == 200 and tested.json()["outcome"] == "pass", tested.text
+    tested = run_test(c, admin, A, pid)
+    assert tested["status"] == "done" and tested["result"]["outcome"] == "pass", tested
     read = setup.row(admin, pid)["row_version"]  # R: after the test recorded its outcome
     fired = _write_after_read(
         monkeypatch,

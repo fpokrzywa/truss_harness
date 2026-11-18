@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.engine import make_url
 
 from shifde.adapters.testservers import RestTestServer
+from shifde.connections import service as connections
 from shifde.core.devenv import append_dev_env, read_dev_env
 from shifde.core.settings import DEV_USERS_FILE, Settings
 
@@ -197,6 +198,7 @@ class _Api:
         self.client = TestClient(
             factory(local), base_url="https://testserver", headers={"Origin": origin}
         )
+        self.org = org
         self.base = f"/api/v1/orgs/{org}"
         r = self.client.post("/api/auth/local/login", json={"email": email, "password": password})
         if r.status_code != 200:
@@ -241,10 +243,27 @@ def _ensure_secret(api: _Api, name: str, value: str) -> str:
     return str(api.call("POST", "/secrets", {"name": name, "value": value})["id"])
 
 
+def _run_test(api: _Api, connection_id: str) -> dict[str, Any]:  # Any: JSON
+    """POST the connection test (202, a queued job) and run that job in-process with the worker's
+    own `run_test_job`, so no running `shifde-worker` is needed (DECISIONS B-2614)."""
+    job = api.call("POST", f"/connections/{connection_id}/test", ok=(202,))
+    if job["status"] in ("queued", "running"):
+        orgs = api.client.get("/api/v1/orgs", headers=api.headers).json()["items"]
+        tenant_id = UUID(str(next(o["id"] for o in orgs if o["slug"] == api.org)))
+        app: Any = api.client.app  # Any: the in-process FastAPI app
+        connections.run_test_job(app.state.db, app.state.integration, tenant_id, UUID(job["id"]))
+        job = api.call("GET", f"/connections/{connection_id}/test-jobs/{job['id']}")
+    if job["status"] != "done":
+        raise SeedError(
+            f"the test job of connection {connection_id} ended {job['status']}: {job['error']}"
+        )
+    return dict(job["result"])
+
+
 def _ensure_active(api: _Api, name: str, body: dict[str, Any]) -> str:  # Any: JSON
     row = api.find("/connections", "name", name) or api.call("POST", "/connections", body)
     if row["status"] != "active":
-        tested = api.call("POST", f"/connections/{row['id']}/test")
+        tested = _run_test(api, str(row["id"]))
         if tested["outcome"] != "pass":
             raise SeedError(f"connection {name!r} failed its test: {tested.get('detail', '')}")
         fresh = api.call("GET", f"/connections/{row['id']}")

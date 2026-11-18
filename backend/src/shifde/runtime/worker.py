@@ -22,6 +22,11 @@ heartbeated, so its lease expires and the reaper settles the run (ARCH M3, B-229
 abandons that job: its thread (which Python cannot kill) no longer counts against `concurrency`,
 so the worker keeps claiming new work, and whatever it does when it returns late is fenced by the
 run's lease token (B-2590).
+
+Jobs are dispatched by `kind` (ARCH M2, B-2610): `run.advance` advances its run; `connection.test`
+(no run) runs `connections.service.run_test_job` in the job's own client as its requester,
+re-derived from the database, and ends `done`, or `dead` with the refusal's error code; any other
+kind ends `dead` without running.
 """
 
 from __future__ import annotations
@@ -35,7 +40,7 @@ import threading
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -50,6 +55,7 @@ from shifde import __version__
 from shifde.adapters.registry import AdapterRegistry
 from shifde.adapters.runtime import IntegrationRuntime
 from shifde.audit import service as audit
+from shifde.connections import service as connections
 from shifde.core import db
 from shifde.core.clock import utcnow
 from shifde.core.context import RequestContext
@@ -67,6 +73,8 @@ from shifde.runtime.settle import scrub_ended
 log = structlog.get_logger("shifde.worker")
 REAPER_LOCK = "shifde:reaper"
 EXIT_UNSAFE_ROLE = 3  # as `shifde-api` (shifde.main)
+ADVANCE_KIND = "run.advance"
+UNKNOWN_KIND = "unknown job kind"
 REASON_ACTION = {
     "lease_lost": "run.lease_lost",
     "worker_lost": "run.failed",
@@ -82,7 +90,10 @@ REASON_ACTION = {
 class _Job:
     id: UUID
     tenant_id: UUID
-    run_id: UUID
+    run_id: UUID | None  # None: a run-less job (`connection.test`, ARCH M2)
+    kind: str = ADVANCE_KIND
+    started: datetime = field(default_factory=utcnow)  # dispatched by this worker
+    error: str | None = None  # `last_error` of a job finished `dead`
     lease_lost: threading.Event = field(default_factory=threading.Event)
     # wedged past its run's deadline: no longer heartbeated, waited for or counted (ARCH M3)
     abandoned: threading.Event = field(default_factory=threading.Event)
@@ -194,7 +205,7 @@ class Worker:
         """Start each claimed job; return how many were actually started."""
         started = 0
         for row in rows:
-            job = _Job(row["job_id"], row["tenant_id"], row["run_id"])
+            job = _Job(row["job_id"], row["tenant_id"], row["run_id"], row["kind"])
             with self._lock:
                 busy = job.id in self._inflight
                 if not busy:
@@ -228,7 +239,21 @@ class Worker:
     def _work(self, job: _Job) -> None:
         outcome = "error"
         try:
-            outcome = lifecycle.advance(
+            outcome = self._execute(job)
+        except Exception:  # noqa: BLE001 - leave the lease to expire; the reaper requeues it
+            log.error("worker.job_failed", job_id=str(job.id), exc_info=True)
+        finally:
+            self._settle_job(job, outcome)
+            with self._lock:
+                if self._inflight.get(job.id) is job:  # never drop a newer entry for this id
+                    del self._inflight[job.id]
+                self._idle.notify_all()
+            self.wake.set()
+
+    def _execute(self, job: _Job) -> str:
+        """Run the job by its kind; an unknown kind is never run (it ends `dead`)."""
+        if job.kind == ADVANCE_KIND and job.run_id is not None:
+            return lifecycle.advance(
                 self.db,
                 self.settings,
                 self.runtime,
@@ -240,21 +265,20 @@ class Worker:
                 job.lease_lost,
                 job.id,
             )
-        except Exception:  # noqa: BLE001 - leave the lease to expire; the reaper requeues it
-            log.error("worker.job_failed", job_id=str(job.id), exc_info=True)
-        finally:
-            self._settle_job(job, outcome)
-            with self._lock:
-                if self._inflight.get(job.id) is job:  # never drop a newer entry for this id
-                    del self._inflight[job.id]
-                self._idle.notify_all()
-            self.wake.set()
+        if job.kind == connections.TEST_JOB_KIND:
+            # in the job's own client, as its requester re-derived from the database (B-2610)
+            job.error = connections.run_test_job(self.db, self.runtime, job.tenant_id, job.id)
+        else:
+            job.error = UNKNOWN_KIND
+        return "done" if job.error is None else "dead"
 
     def _settle_job(self, job: _Job, outcome: str) -> None:
         try:
             with self.db.session() as s:
                 db.set_tenant(s, job.tenant_id)
                 if outcome in ("lease_lost", "error"):
+                    if job.run_id is None:
+                        return  # a run-less job: the lease expires and the reaper closes it
                     # Finish our own job only when the run no longer depends on it (settled, or
                     # executed under another job's lease). A pending / running-under-us run keeps
                     # the lease: it expires and the reaper requeues the job.
@@ -277,6 +301,10 @@ class Worker:
                     return
                 if outcome == "released":
                     repo.release_job(s, job.tenant_id, job.id, self.worker_id)
+                elif outcome == "dead":
+                    repo.finish_job(
+                        s, job.tenant_id, job.id, self.worker_id, "dead", last_error=job.error
+                    )
                 else:
                     repo.finish_job(s, job.tenant_id, job.id, self.worker_id)
                 s.commit()
@@ -328,7 +356,10 @@ class Worker:
             log.error("worker.heartbeat_failed", exc_info=True)
 
     def _wedged(self, s: Session, job: _Job) -> bool:
-        """The job's run (read in the job's own client) is past its deadline by `wedged_after`."""
+        """The job's run (read in the job's own client) is past its deadline by `wedged_after`;
+        a run-less job, `wedged_after` after this worker dispatched it."""
+        if job.run_id is None:
+            return utcnow() > job.started + self.wedged_after
         cur = repo.control_state(s, job.tenant_id, job.run_id)
         deadline = cur["deadline_at"] if cur is not None else None
         return deadline is not None and utcnow() > deadline + self.wedged_after

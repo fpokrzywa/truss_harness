@@ -36,7 +36,7 @@ Counts: critical 2, major 36, minor 30. Critical/major by sub-project-1 scope: C
 | Item 18 (J-M4) | major | R5 | DB down: /api/ready takes 130 s to 503; no connect/statement timeout | core, observability | core/db.py:118-124; observability/api.py:44-55 | known defect |
 | Item 19 (ARCH M3) | major | R5 | Wedged worker never recovered; no statement/lock/idle timeouts | runtime, core | runtime/worker.py:246-269; core/db.py | fixed in code (B-2590, `tests/runtime/test_worker.py`) |
 | Item 20 (ARCH M4; REQ F-11) | major | R5 | No retention purge or maintenance command; partitions absent; run_artifacts undeletable | cli, audit, ledger, runtime | cli/main.py; runtime/repository.py | known defect |
-| Item 21 (ARCH M2) | major | R5 | API runs adapters inline (connections, models, ontology) | app, connections, models_admin, ontology | connections/api.py:79-81, 104-108; models_admin/api.py:49, 115-123 | known defect |
+| Item 21 (ARCH M2) | major | R5 | API runs adapters inline (connections, models, ontology) | app, connections, models_admin, ontology | connections/api.py:79-81, 104-108; models_admin/api.py:49, 115-123 | narrowed, not closed: the connection test runs on the worker (issue #10, B-2610); model checks, ontology syncs/materialize, and connection discover and invoke remain inline |
 | Item 22 (REQ F-17) | major | R5 | No CI, SAST, coverage gate, OpenAPI diff | repo infra | backend/pyproject.toml | known defect (CI added by skeleton; SAST/coverage/OpenAPI diff open) |
 | Item 22 (REQ F-21) | major | R5 | No repeatable browser E2E suite | frontend | frontend | known defect |
 | Item 22 (REQ F-16) | major | R5 | API latency and harness overhead never measured | new harness | n/a | known defect |

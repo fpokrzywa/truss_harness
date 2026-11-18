@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.engine import make_url
 
 from shifde.adapters.testservers import RestTestServer
+from tests._support.conntests import run_test
 from tests._support.p2util import post
 
 A = "/api/v1/orgs/demo-a"
@@ -36,8 +37,8 @@ def connection(
 
 
 def activate(client: TestClient, h: dict[str, str], cid: str, org: str = A) -> dict[str, Any]:
-    tested = client.post(f"{org}/connections/{cid}/test", headers=h)
-    assert tested.status_code == 200 and tested.json()["outcome"] == "pass", tested.text
+    tested = run_test(client, h, org, cid)  # 202, then the worker's job (ARCH M2)
+    assert tested["status"] == "done" and tested["result"]["outcome"] == "pass", tested
     row = client.get(f"{org}/connections/{cid}", headers=h).json()
     done = client.post(
         f"{org}/connections/{cid}/status",

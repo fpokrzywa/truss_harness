@@ -76,9 +76,14 @@ def set_connection_status(
     return svc.set_status(connection_id, body)
 
 
-@router.post("/orgs/{org}/connections/{connection_id}/test", tags=["connections"])
-def test_connection(svc: Connections, connection_id: UUID) -> s.TestResultOut:
-    return svc.test(connection_id)
+@router.post("/orgs/{org}/connections/{connection_id}/test", status_code=202, tags=["connections"])
+def test_connection(svc: Connections, connection_id: UUID) -> s.TestJobOut:
+    return svc.enqueue_test(connection_id)
+
+
+@router.get("/orgs/{org}/connections/{connection_id}/test-jobs/{job_id}", tags=["connections"])
+def get_connection_test_job(svc: Connections, connection_id: UUID, job_id: UUID) -> s.TestJobOut:
+    return svc.test_job(connection_id, job_id)
 
 
 @router.get("/orgs/{org}/connections/{connection_id}/tests", tags=["connections"])

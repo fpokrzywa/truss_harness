@@ -128,13 +128,18 @@ def test_reaper_still_requeues_a_job_whose_worker_died_before_claiming_the_run(
     owner_session.execute(
         text(
             "UPDATE shifde.jobs SET status = 'leased', lease_owner = 'dead', attempts = 1, "
-            "lease_expires_at = now() - interval '1 second'"
+            "lease_expires_at = now() - interval '1 second' WHERE kind = 'run.advance'"
         )
     )
     owner_session.commit()
     owner_session.execute(text("SELECT * FROM shifde.shifde_reap_expired_leases()")).all()
     owner_session.commit()
-    assert owner_session.execute(text("SELECT status FROM shifde.jobs")).scalar_one() == "queued"
+    assert (
+        owner_session.execute(
+            text("SELECT status FROM shifde.jobs WHERE kind = 'run.advance'")
+        ).scalar_one()
+        == "queued"
+    )
     assert (
         owner_session.execute(
             text("SELECT status FROM shifde.runs WHERE id = :r"), {"r": rid}
@@ -580,7 +585,7 @@ def test_a_job_claimed_twice_is_not_run_twice_and_its_claim_is_handed_back(
 
     monkeypatch.setattr(worker, "_work", blocked_work)
     try:
-        row = {"job_id": jid, "tenant_id": tid, "run_id": UUID(rid)}
+        row = {"job_id": jid, "tenant_id": tid, "run_id": UUID(rid), "kind": "run.advance"}
         worker._dispatch([row])
         wait_for(lambda: len(started) == 1, 10)
         first = worker._inflight[jid]

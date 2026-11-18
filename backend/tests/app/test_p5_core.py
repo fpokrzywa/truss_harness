@@ -118,9 +118,9 @@ def _running_run_with_job(
     owner.execute(
         text(
             "UPDATE shifde.jobs SET status = 'leased', lease_owner = 'dead', attempts = :a, "
-            "max_attempts = :m, lease_expires_at = now() - interval '1 second'"
-        ),
-        {"a": attempts, "m": max_attempts},
+            "max_attempts = :m, lease_expires_at = now() - interval '1 second' WHERE run_id = :r"
+        ),  # the run's own job (the stack's connection test is a job too, ARCH M2)
+        {"a": attempts, "m": max_attempts, "r": rid},
     )
     owner.commit()
     return str(rid)
@@ -133,10 +133,9 @@ def test_reaper_requeues_an_expired_lease_and_returns_the_run_to_pending(
     reaped = owner_session.execute(text("SELECT * FROM shifde.shifde_reap_expired_leases()")).all()
     owner_session.commit()
     assert [(str(r[1]), r[2]) for r in reaped] == [(rid, "lease_lost")]
-    assert owner_session.execute(text("SELECT status, lease_owner FROM shifde.jobs")).one() == (
-        "queued",
-        None,
-    )
+    assert owner_session.execute(
+        text("SELECT status, lease_owner FROM shifde.jobs WHERE run_id = :r"), {"r": rid}
+    ).one() == ("queued", None)
     status = owner_session.execute(
         text("SELECT status, lease_token FROM shifde.runs WHERE id = :r"), {"r": rid}
     ).one()
@@ -161,7 +160,12 @@ def test_reaper_fails_the_run_when_the_job_has_no_attempts_left(
         text("SELECT status, error_class FROM shifde.runs WHERE id = :r"), {"r": rid}
     ).one()
     assert run == ("failed", "internal")
-    assert owner_session.execute(text("SELECT status FROM shifde.jobs")).scalar_one() == "dead"
+    assert (
+        owner_session.execute(
+            text("SELECT status FROM shifde.jobs WHERE run_id = :r"), {"r": rid}
+        ).scalar_one()
+        == "dead"
+    )
 
 
 def test_reaper_times_out_runs_past_their_deadline_and_finalizes_cancellation(

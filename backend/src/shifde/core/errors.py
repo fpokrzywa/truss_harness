@@ -87,6 +87,12 @@ class ConnectionDisabled(AppError):
     status, code, title = 409, "connection_disabled", "Conflict"
 
 
+class ConnectionTestBusy(AppError):
+    """No active test job could be queued or read back (ARCH M2): retryable."""
+
+    status, code, title = 409, "connection_test_busy", "Conflict"
+
+
 class ModelUnavailable(AppError):
     status, code, title = 409, "model_unavailable", "Conflict"
 

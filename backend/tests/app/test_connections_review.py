@@ -20,6 +20,7 @@ from shifde.core.egress import (
     EgressGuard,
     EgressPolicy,
 )
+from tests._support.conntests import result_of, run_test
 from tests._support.fullapp import World
 from tests._support.p2util import login, new_user, system_role
 from tests._support.p3util import (
@@ -67,7 +68,7 @@ def test_model_connections_cannot_be_invoked_as_raw_connections(
     )
     # the refusal is audited, and testing a model connection stays possible
     ha = login(client, world.passwords, ADMIN)
-    assert client.post(f"{A}/connections/{ids['connection']}/test", headers=ha).status_code == 200
+    assert run_test(client, ha, A, ids["connection"])["status"] == "done"
     failures = owner_session.execute(
         text(
             "SELECT count(*) FROM shifde.audit_events WHERE action = 'connection.invoked' "
@@ -182,7 +183,7 @@ def test_degraded_connections_are_denied(
     cid = connection(client, h, rest_body(rest_server, s))["id"]
     activate(client, h, cid)
     client.post(f"{A}/secrets/{s}/rotate", json={"value": "rotated-token-888"}, headers=h)
-    assert client.post(f"{A}/connections/{cid}/test", headers=h).json()["outcome"] == "fail"
+    assert result_of(client, h, A, cid)["outcome"] == "fail"
     r = client.post(f"{A}/connections/{cid}/invoke", json={"path": "/echo"}, headers=h)
     assert r.status_code == 409 and r.json()["code"] == "connection_disabled"
 
@@ -193,7 +194,7 @@ def test_activation_requires_the_test_to_cover_the_current_definition(
 ) -> None:
     h = login(client, world.passwords, ADMIN)
     cid = connection(client, h, rest_body(rest_server, secret(client, h, "t", REST_TOKEN)))["id"]
-    assert client.post(f"{A}/connections/{cid}/test", headers=h).json()["outcome"] == "pass"
+    assert result_of(client, h, A, cid)["outcome"] == "pass"
     # simulate a PATCH that raced the test: the definition changed but last_tested_at survived
     owner_session.execute(
         text(
@@ -211,7 +212,7 @@ def test_activation_requires_the_test_to_cover_the_current_definition(
         headers=h,
     )
     assert r.status_code == 409
-    assert client.post(f"{A}/connections/{cid}/test", headers=h).json()["outcome"] == "pass"
+    assert result_of(client, h, A, cid)["outcome"] == "pass"
     row = client.get(f"{A}/connections/{cid}", headers=h).json()
     ok = client.post(
         f"{A}/connections/{cid}/status",

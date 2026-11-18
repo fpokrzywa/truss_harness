@@ -45,6 +45,16 @@ const PASS = {
   ],
 };
 
+// ARCH M2: the POST queues the test (202); the result comes from the job's status route
+const QUEUED = {
+  id: 'j-1',
+  connection_id: 'c-1',
+  status: 'queued',
+  result: null,
+  error: null,
+  created_at: '2026-11-18T10:00:00Z',
+};
+
 describe('ConnectionDetailView', () => {
   it('shows config and the secret by name only, with activation messaging', async () => {
     stubInt(route({}));
@@ -96,11 +106,17 @@ describe('ConnectionDetailView', () => {
   it('renders per-check detail of a test run', async () => {
     stubInt({
       ...route({}),
-      'POST /api/v1/orgs/acme/connections/c-1/test': () => jsonResponse(PASS),
+      'POST /api/v1/orgs/acme/connections/c-1/test': () => jsonResponse(QUEUED, { status: 202 }),
+      'GET /api/v1/orgs/acme/connections/c-1/test-jobs/j-1': () =>
+        jsonResponse({ ...QUEUED, status: 'done', result: PASS }),
     });
     renderWithClient(<ConnectionDetailView id="c-1" />);
     await userEvent.click(await screen.findByRole('button', { name: 'Test connection' }));
-    const table = await screen.findByRole('table', { name: 'Checks for this test run' });
+    const table = await screen.findByRole(
+      'table',
+      { name: 'Checks for this test run' },
+      { timeout: 5000 },
+    );
     const names = within(table)
       .getAllByRole('row')
       .slice(1)
@@ -108,6 +124,23 @@ describe('ConnectionDetailView', () => {
     expect(names).toEqual(['config', 'egress', 'dns', 'tls', 'auth', 'capability']);
     expect(within(table).getByText('bearer accepted')).toBeInTheDocument();
     expect(within(table).getByText('skipped')).toBeInTheDocument();
+  });
+
+  it('shows why a queued test did not run', async () => {
+    stubInt({
+      ...route({}),
+      'POST /api/v1/orgs/acme/connections/c-1/test': () => jsonResponse(QUEUED, { status: 202 }),
+      'GET /api/v1/orgs/acme/connections/c-1/test-jobs/j-1': () =>
+        jsonResponse({ ...QUEUED, status: 'failed', error: 'forbidden' }),
+    });
+    renderWithClient(<ConnectionDetailView id="c-1" />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Test connection' }));
+    expect(
+      await screen.findByText(/The connection test did not run \(forbidden\)/, undefined, {
+        timeout: 5000,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('table', { name: 'Checks for this test run' })).toBeNull();
   });
 
   it('disables test, discovery and the console for a planned adapter and says why', async () => {

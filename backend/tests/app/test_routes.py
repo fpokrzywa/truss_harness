@@ -43,6 +43,8 @@ UNIFIED_ONLY = {
     ("PUT", "/api/v1/platform/orgs/{org}/shi-provider-access"),
     ("PUT", "/api/v1/platform/shi-provider"),
     ("PUT", "/api/v1/orgs/{org}/capture-content"),  # J-M2, B-2550
+    # ARCH M2 (issue #10, B-2610): the connection test runs on the worker; its job's status
+    ("GET", "/api/v1/orgs/{org}/connections/{connection_id}/test-jobs/{job_id}"),
 }
 # native delivery (design 2026-11-17 section 9 item 2, B-2501): not a SETH module
 DELIVERY = {
