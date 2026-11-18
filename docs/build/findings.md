@@ -34,7 +34,7 @@ Counts: critical 2, major 36, minor 30. Critical/major by sub-project-1 scope: C
 | Item 16 (REQ F-09) | major | R3 | REST adapter lacks OAuth2 client credentials | adapters | adapters/rest_http.py:117 | closed: B-2580, `rest.http` `oauth2_client_credentials` (`tests/adapters/test_f09_oauth2_rest.py`) |
 | Item 17 (ARCH M7) | major | R5 | Restore/rollback can leave services stopped and report falsely | install scripts | scripts/shifde-ctl.ps1 | dropped: code not ported |
 | Item 18 (J-M4) | major | R5 | DB down: /api/ready takes 130 s to 503; no connect/statement timeout | core, observability | core/db.py:118-124; observability/api.py:44-55 | known defect |
-| Item 19 (ARCH M3) | major | R5 | Wedged worker never recovered; no statement/lock/idle timeouts | runtime, core | runtime/worker.py:246-269; core/db.py | known defect |
+| Item 19 (ARCH M3) | major | R5 | Wedged worker never recovered; no statement/lock/idle timeouts | runtime, core | runtime/worker.py:246-269; core/db.py | fixed in code (B-2590, `tests/runtime/test_worker.py`) |
 | Item 20 (ARCH M4; REQ F-11) | major | R5 | No retention purge or maintenance command; partitions absent; run_artifacts undeletable | cli, audit, ledger, runtime | cli/main.py; runtime/repository.py | known defect |
 | Item 21 (ARCH M2) | major | R5 | API runs adapters inline (connections, models, ontology) | app, connections, models_admin, ontology | connections/api.py:79-81, 104-108; models_admin/api.py:49, 115-123 | known defect |
 | Item 22 (REQ F-17) | major | R5 | No CI, SAST, coverage gate, OpenAPI diff | repo infra | backend/pyproject.toml | known defect (CI added by skeleton; SAST/coverage/OpenAPI diff open) |

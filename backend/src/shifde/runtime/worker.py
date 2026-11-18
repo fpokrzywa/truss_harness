@@ -8,6 +8,8 @@ by polling. The API never executes model or tool calls.
 Shutdown (SIGINT / SIGTERM / CTRL_BREAK): stop claiming; running runs notice at their next
 checkpoint and are handed back (running -> pending, job released) so another worker continues
 them; whatever does not finish within the grace period is left to lease expiry + the reaper.
+Each job runs on its own daemon thread, so a thread abandoned as wedged is never waited for at
+shutdown and never holds up process exit.
 
 Client isolation (RT-12, B-2291..B-2294): the worker's database is the application role (refused
 at startup otherwise, like the API: `run` exits 3, and `Database` itself refuses a privileged role,
@@ -16,7 +18,10 @@ cross-client definers `shifde_claim_jobs` / `shifde_reap_expired_leases` on a se
 client context (B-2103); every other statement runs in the claimed (or reaped) row's own client:
 the `(job_id, tenant_id, run_id)` the claim returned is what `lifecycle.advance` gets, and every job
 heartbeat, release and finish names that client. A job wedged past its run's deadline is no longer
-heartbeated, so its lease expires and the reaper settles the run (ARCH M3, B-2294).
+heartbeated, so its lease expires and the reaper settles the run (ARCH M3, B-2294). The worker
+abandons that job: its thread (which Python cannot kill) no longer counts against `concurrency`,
+so the worker keeps claiming new work, and whatever it does when it returns late is fenced by the
+run's lease token (B-2590).
 """
 
 from __future__ import annotations
@@ -29,7 +34,6 @@ import sys
 import threading
 import time
 from collections.abc import Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
@@ -80,6 +84,8 @@ class _Job:
     tenant_id: UUID
     run_id: UUID
     lease_lost: threading.Event = field(default_factory=threading.Event)
+    # wedged past its run's deadline: no longer heartbeated, waited for or counted (ARCH M3)
+    abandoned: threading.Event = field(default_factory=threading.Event)
 
 
 class Worker:
@@ -111,7 +117,9 @@ class Worker:
             statement_timeout_ms=settings.db_statement_timeout_ms,
         )
         # a job still running this long after its run's deadline is wedged: stop heartbeating it
-        # so the lease expires and the reaper settles the run (ARCH M3)
+        # so the lease expires and the reaper settles the run, and abandon its thread: it is never
+        # killed, no longer counts against `concurrency`, is not waited for at shutdown, and its
+        # late return is fenced by the run's lease token (ARCH M3, B-2590)
         self.wedged_after = timedelta(seconds=max(2 * self.lease, 60))
         self.runtime = runtime or IntegrationRuntime(
             settings=settings, registry=AdapterRegistry.load(), resolver=default_resolver
@@ -121,9 +129,7 @@ class Worker:
         self.wake = threading.Event()
         self._inflight: dict[UUID, _Job] = {}
         self._lock = threading.Lock()
-        self._executor = ThreadPoolExecutor(
-            max_workers=self.concurrency, thread_name_prefix="shifde-run"
-        )
+        self._idle = threading.Condition(self._lock)  # a job ended or was abandoned
 
     # ------------------------------------------------------------------ lifecycle
     def run(self) -> None:
@@ -153,7 +159,8 @@ class Worker:
 
     def _shutdown(self) -> None:
         log.info("worker.stopping", worker_id=self.worker_id)
-        self._executor.shutdown(wait=True, cancel_futures=True)
+        with self._idle:
+            self._idle.wait_for(lambda: not self._active())
         try:
             with self.db.session() as s:
                 repo.beat_worker(s, self.worker_id, "stopped")
@@ -165,7 +172,7 @@ class Worker:
     # ------------------------------------------------------------------ claiming
     def _claim_and_dispatch(self) -> None:
         with self._lock:
-            free = self.concurrency - len(self._inflight)
+            free = self.concurrency - len(self._active())
         if free <= 0:
             return
         try:
@@ -199,7 +206,9 @@ class Worker:
                 log.warning("worker.reclaimed_inflight_job", job_id=str(job.id))
                 self._release_claim(job)
                 continue
-            self._executor.submit(self._work, job)
+            threading.Thread(
+                target=self._work, args=(job,), daemon=True, name=f"shifde-run-{job.id}"
+            ).start()
             started += 1
         return started
 
@@ -238,6 +247,7 @@ class Worker:
             with self._lock:
                 if self._inflight.get(job.id) is job:  # never drop a newer entry for this id
                     del self._inflight[job.id]
+                self._idle.notify_all()
             self.wake.set()
 
     def _settle_job(self, job: _Job, outcome: str) -> None:
@@ -273,17 +283,25 @@ class Worker:
         except Exception:  # noqa: BLE001 - the lease expires and the run is already settled
             log.error("worker.job_settle_failed", job_id=str(job.id), exc_info=True)
 
+    def _active(self) -> list[_Job]:
+        """The in-flight jobs not abandoned as wedged (call with `self._lock` held)."""
+        return [job for job in self._inflight.values() if not job.abandoned.is_set()]
+
     # ------------------------------------------------------------------ heartbeat
     def _heartbeat_loop(self) -> None:
         interval = max(self.lease / 4, 0.2)
-        while not self.stop.is_set() or self._inflight:
+        while not self.stop.is_set() or self._has_active():
             self._beat()
-            if self.stop.wait(interval) and not self._inflight:
+            if self.stop.wait(interval) and not self._has_active():
                 return
+
+    def _has_active(self) -> bool:
+        with self._lock:
+            return bool(self._active())
 
     def _beat(self) -> None:
         with self._lock:
-            jobs = list(self._inflight.values())
+            jobs = self._active()
         try:
             with self.db.session() as s:
                 repo.beat_worker(s, self.worker_id)
@@ -297,6 +315,9 @@ class Worker:
                         if not job.lease_lost.is_set():
                             log.warning("worker.wedged_job_abandoned", job_id=str(job.id))
                             job.lease_lost.set()
+                        with self._lock:
+                            job.abandoned.set()
+                            self._idle.notify_all()
                         continue
                     alive = repo.heartbeat_job(s, job.tenant_id, job.id, self.worker_id, self.lease)
                     s.commit()
