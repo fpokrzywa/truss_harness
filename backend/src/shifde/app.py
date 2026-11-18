@@ -30,6 +30,7 @@ from shifde.core.problem import PROBLEM_RESPONSES, install_error_handlers
 from shifde.core.ratelimit import SlidingWindowLimiter
 from shifde.core.settings import Settings, get_settings
 from shifde.core.ssrf import OutboundHttp, Resolver, default_resolver
+from shifde.delivery import api as delivery_api
 from shifde.governance import api as governance_api
 from shifde.identity import api as auth_api
 from shifde.identity.dependencies import require_auth
@@ -155,4 +156,5 @@ def create_app(
     features.register("ontology")
     app.include_router(governance_api.router, dependencies=guard)
     features.register("governance")
+    app.include_router(delivery_api.router, dependencies=guard)
     return app

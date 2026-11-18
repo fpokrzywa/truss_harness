@@ -9,6 +9,8 @@ States: `todo`, `in progress`, `done`, `blocked` (with evidence), `waiting on ow
 - `suite-speed` is done and merged (B-2330): full backend suite under the 20-minute target; measured 541 s at `suite-speed` on an idle machine; at the `goal1-final-merge` gates (13/13 on `2905331`) the full suite took **1235.6 s (3183 passed), over the 1200 s target** on that run. Reported as measured; no test was removed or skipped. On an idle machine (S-011): 1204.49 s, 4.5 s over. **Unit `suite-speed-2` (B-2510): 3183 passed in 1097.3 s on an otherwise idle machine, under the 1200 s target**; tests-only speed-ups, no test removed, skipped or changed in what it asserts.
 Tokens per model: see `python scripts/usage_report.py` (by unit); the figure below is copied at acceptance.
 
+**Charter 7 progress (2026-11-17 evening):** merged through the factory: #19 SP2-1 (PR #30), #7 J-M4 `/api/ready` (PR #32), #3 F-12 capture off (PR #31, lead-added schema entries, B-2530). In review: #20 SP2-2 (PR #35, build round 4 queued: one head-pin test), #1 F-03 suspend (PR #29, isolation APPROVED, full gates pending). Waiting: #2 J-M2 (needs a tenancy migration granting UPDATE (settings); start after #1 merges), #4 onward and SP2-3..10 queued at concurrency 1. Follow-ups #33, #34, #36 filed (B-2532). Sub-projects 2-8 are not done.
+
 ## Sub-project 1
 
 | Unit | State | Commit | Verification summary | Tokens (by model, at acceptance) |
