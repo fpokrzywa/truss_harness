@@ -1,31 +1,34 @@
-# Handoff — 2026-11-17, after unit `suite-speed-2` (lead)
+# Handoff — 2026-11-17 evening, charter 7 factory run (lead)
 
-Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md`, then this file. Older handoff: `af7dbb8:docs/build/HANDOFF.md`.
+Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md` (see "Charter 7 progress"), then this file. Older handoff: `69be4b9:docs/build/HANDOFF.md`.
 
-**State:** no agent and no gate run is running; no merge is half done; no lock is held (`python scripts/unit.py locks` is empty); `main` = `origin/main`.
+**State:** no agent and no gate run is running; no merge is half done. `main` = `origin/main` (plus this handoff commit).
 
 ## What was just finished
 
-- Unit `suite-speed-2` (B-2510) merged to main `69be4b9` after 13/13 gates (`suite-speed-2-merge2`): full backend suite 3183 passed in 1149.2 s, under the 1200 s target. Tests-only changes; nothing removed, skipped or loosened. It is not in `units.json` (that file lists goal-1 units; `scripts/tests/test_parallel.py` pins `goal1-final` last).
-- Charter 7 started:
-  - Labels `factory`, `factory:needs-info`, `factory:needs-human`, `known-defect`, `sp2` created.
-  - 18 known-defect issues filed, #1-#18 (one per open row of STATUS "Known defects").
-  - Sub-project 2 short design `docs/superpowers/specs/2026-11-17-subproject-2-native-delivery-databricks-design.md`: drafted by an opus agent, read-checked by a fresh sonnet builder (30 guesses), all settled in its section 9 (B-2500, B-2501). Committed `3292ab3`.
-  - Sub-project 2 cut into 10 issues #19-#28 (titles `SP2-1`..`SP2-10`, labels `factory`, `sp2`), in dependency order; (C) ones are isolation-critical.
+- Merged: PR #32 (job 006, #7 J-M4 `/api/ready` 3 s deadline, B-2523) and PR #31 (job 004, #3 F-12 capture off, `b0baaaa`; four `deliberate_changes.yaml` entries added by the lead after isolation review, full gates 12/13 with the one failure a load 502 that passed on rerun, B-2530).
+- New lead ruling B-2530: protected schema declaration entries (yaml, definer allow-list) are added by the lead on the PR branch after isolation review, then full gates, then `gh pr merge --match-head-commit`. Never `test_rls_schema.py`.
+- Follow-up issues filed: #33, #34, #36 (B-2532). Binding criterion added on #21 (workspace-alias check).
 
 ## Exact next step
 
-1. `factory/bin/job queue` to see the queue (28 issues), then `/factory run`. Suggested order: SP2 issues #19-#28 first (they chain: 1, 2, 3, 4, 5, 6, 7; FE 8 after 3; 9 after 6 and 8; 10 last), with known-defect issues between them as capacity allows; all known defects must be closed or accepted by the end of sub-project 4.
-2. For every PR the factory escalates (all migrations and all (C) issues will be escalated by the approver, B-2481): run the full suite on it (`python scripts/gates.py --ref <sha> --name <job>`) and `isolation-reviewer`, then merge or send back (charter 7.5).
-3. After SP2: record its done-when result in STATUS (expected: met against the fake platform; live validation waiting on owner input, no `.devdata/databricks.env`), then sub-project 3's short design (Entra waits on owner input: no `.devdata/entra.env`).
+1. `/factory run`. `factory/bin/job queue` shows `resume 20 005-sp2-2-delivery-targets build round 4`: spawn a new `builder` (name `builder-005-sp2-2-delivery-targets`, port 5150) told it is resuming, "The user gave feedback: read feedback-3.md ...". It updates the head-pin test `tests/identity/test_schema.py::test_a_head_named_in_depends_on_is_not_a_version_head` (delivery_0001 is now the head, not tenancy_0004). It will likely end BLOCKED or READY; either way the lead then: merge origin/main into the branch if main moved, `python scripts/gates.py --ref <sha> --name gate-005`, and if 13/13 (rerun any load-only timeouts in isolation), `gh pr ready 35; gh pr merge 35 --merge --match-head-commit <sha>`. Isolation review of PR #35 is already APPROVED (port fix and two tests done in round 3); only re-review if round 4 touches more than tests.
+2. Then job 001 (#1 F-03, PR #29, head `5fef51e`, parked `needs-human`): isolation re-check APPROVED. Merge origin/main into its worktree branch (expect conflicts in DECISIONS.md and in `tests/identity/test_schema.py` head pins: after both, heads include `tenancy_0005`, `delivery_0001`, `runtime_0003`), push, full gates, merge by hand. If the merge needs code changes, send them through `factory/bin/job feedback 1` instead of editing.
+3. Then job 002 (#2 J-M2, `needs-human`): give feedback that it may add a new tenancy migration (next after `tenancy_0005`) granting `UPDATE (settings)` on `tenants` to `shifde_app`, and stop BLOCKED with the `deliberate_changes.yaml` entry (B-2530 flow).
+4. Then the queue at concurrency 1: #4 onward, SP2-3..SP2-10 (#21-#28), #33, #34, #36.
 
-## Things learned
+## Open branches and worktrees
 
-- One factory job (intake, spec, build, gate, reviews, approve) will likely not fit in a lead context already past ~140k; start `/factory run` in a fresh session.
-- Heredocs containing apostrophes inside a Bash tool command can fail to parse; write helper scripts with the Write tool to `%TEMP%` instead.
-- `lint-imports` can crash with a cp1252 UnicodeEncodeError when its output is redirected; `PYTHONIOENCODING=utf-8` avoids it (gates.py is unaffected).
-- A rebased unit branch cannot be pushed to its own remote branch without force; per charter 11 it reaches origin only by fast-forwarding main (origin `suite-speed-2` keeps the pre-rebase commit `d3c9819`).
+- `.worktrees/005-sp2-2-delivery-targets` on `factory/005-sp2-2-delivery-targets` @ `56dec89` (pushed, clean), PR #35 draft.
+- `.worktrees/001-f-03-suspend-a` on `factory/001-f-03-suspend-a` @ `5fef51e` (pushed, clean), PR #29.
+- `.worktrees/002-j-m2-supported-setter` (job 002, WIP `2e73a90`, no PR).
+- `.worktrees/gate-004`, `.worktrees/gate-005`, possibly `.worktrees/gate-001` (stopped run): gate checkouts, safe to remove with `git worktree remove`.
+- Merged job worktrees `003-*`, `004-*`, `006-*` can be removed.
 
-## Worktrees
+## Traps
 
-`.worktrees/suite-speed-2` (merged), `.worktrees/suite-speed-2-merge` (gate checkout) and all older worktrees listed by `git worktree list` are merged and can be removed.
+- Two jobs can pick the same next migration number; the second to merge renumbers (B-2532).
+- Builders' permission classifier refuses even temporary local edits to protected files; they report the entry instead. The lead's own edits worked.
+- Full suite under load: 502 upstream timeouts and `test_p8_perf` timing fail; rerun the failing file in the gate worktree before judging.
+- Writing files with Windows Python from bash: use repo paths, not `/tmp` (different roots).
+- DECISIONS numbers: job branches pick numbers independently; check for clashes at merge (main has B-2523 = `/api/ready`, B-2530..B-2532 = lead; branch 005 uses B-2524..B-2526, branch 001 B-2511/B-2512, F-12 B-2514).
