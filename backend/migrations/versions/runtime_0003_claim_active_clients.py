@@ -1,7 +1,7 @@
 """Runtime: the queue claim skips the jobs of a client that is not active (findings Item 12, F-03).
 
-Revision ID: runtime_0002
-Revises: runtime_0001
+Revision ID: runtime_0003
+Revises: runtime_0002
 
 Lead isolation review of F-03 (DECISIONS B-2512): `shifde_claim_jobs` leased queued jobs of every
 client, so a run queued before its client was suspended (or archived) still ran. The function is
@@ -23,8 +23,8 @@ from types import ModuleType
 
 from alembic import op
 
-revision = "runtime_0002"
-down_revision = "runtime_0001"
+revision = "runtime_0003"
+down_revision = "runtime_0002"
 branch_labels = None
 depends_on = None
 
