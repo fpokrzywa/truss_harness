@@ -16,7 +16,7 @@ Source: `docs/superpowers/specs/2026-11-13-seth-unified-platform-design.md`, sec
 | F-5.3-08 | A client platform belongs to one organization. | deferred | none: arrives in sub-project 2 (deployment targets) |
 | F-5.3-09 | An executor belongs to one organization. | deferred | none: arrives in sub-project 2 (executors) |
 | F-5.3-10 | Artifacts are stored under the organization and checked on every read. | covered | `backend/tests/runtime/test_cross_client.py`<br>`backend/tests/runtime/test_routes_cross_client.py`<br>`backend/tests/runtime/test_repository.py`<br>`backend/tests/runtime/test_pipeline.py` |
-| F-5.3-11 | Agent memory and run history never cross organizations. | covered | `backend/tests/runtime/test_cross_client.py`<br>`backend/tests/runtime/test_routes_cross_client.py`<br>`backend/tests/runtime/test_repository.py`<br>`backend/tests/runtime/test_lifecycle.py`<br>`backend/tests/governance/test_cross_client.py`<br>`backend/tests/app/test_r1_round2.py` |
+| F-5.3-11 | Run history never crosses organizations (agent memory is not built yet: no test). | covered | `backend/tests/runtime/test_cross_client.py`<br>`backend/tests/runtime/test_routes_cross_client.py`<br>`backend/tests/runtime/test_repository.py`<br>`backend/tests/runtime/test_lifecycle.py`<br>`backend/tests/governance/test_cross_client.py`<br>`backend/tests/app/test_r1_round2.py` |
 | F-5.3-12 | Client data and model providers: SHI's model keys are off per client by default. | covered | `backend/tests/models_admin/test_shi_gate.py` |
 | F-5.3-13 | Client credentials: stored encrypted per organization, confirmed read-only. | covered | `backend/tests/secrets/test_cross_client.py`<br>`backend/tests/connections/test_regressions.py`<br>`backend/tests/connections/test_host_change.py` |
 

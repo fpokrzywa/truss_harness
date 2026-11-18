@@ -132,7 +132,7 @@ ENTRIES: tuple[Entry, ...] = (
     ),
     Entry(
         "F-5.3-11",
-        "Agent memory and run history never cross organizations.",
+        "Run history never crosses organizations (agent memory is not built yet: no test).",
         "covered",
         (
             _T + "runtime/test_cross_client.py",
