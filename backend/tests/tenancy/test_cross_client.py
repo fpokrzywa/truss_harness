@@ -199,6 +199,9 @@ ROUTE_TESTS = {
     ("POST", "/api/v1/orgs"): "test_only_the_platform_administrator_creates_a_client",
     ("GET", "/api/v1/orgs/{org}"): "test_a_cannot_read_or_change_bs_client",
     ("PATCH", "/api/v1/orgs/{org}"): "test_a_cannot_read_or_change_bs_client",
+    ("PUT", "/api/v1/orgs/{org}/capture-content"): (
+        "test_only_a_clients_owner_sets_its_capture_content_and_never_bs"
+    ),
     ("GET", "/api/v1/orgs/{org}/members"): "test_members_are_listed_only_in_their_own_client",
     ("GET", "/api/v1/orgs/{org}/workspaces"): (
         "test_a_cannot_list_read_create_or_change_bs_workspaces"
@@ -361,6 +364,57 @@ def test_a_cannot_read_or_change_bs_client(
         login(c, people.owner_b)
         assert c.get(f"/api/v1/orgs/{b.slug}").status_code == 200
         _same_404(c.get(f"/api/v1/orgs/{a.slug}"), c.get("/api/v1/orgs/no-such-client"))
+
+
+def test_only_a_clients_owner_sets_its_capture_content_and_never_bs(
+    settings: Settings, world: World, people: People, owner_session: Session
+) -> None:
+    """J-M2 (B-2550): A's owner sets A's value; A's owner, A's viewer and a viewer of both
+    clients get, for B's slug, exactly the unknown-slug 404 (or 403 where they are members),
+    and B's settings, row_version and audit log are unchanged; the same the other way round."""
+    a, b = world.a, world.b
+    action = "tenancy.org.capture_content.updated"
+
+    def state(tenant: UUID) -> tuple[dict[str, object], int, int]:
+        """(settings, row_version, capture_content events) of `tenant`, read as the owner."""
+        owner_session.rollback()
+        settings_, version = owner_session.execute(
+            text("SELECT settings, row_version FROM shifde.tenants WHERE id = :t"), {"t": tenant}
+        ).one()
+        events = owner_session.execute(
+            text("SELECT count(*) FROM shifde.audit_events WHERE tenant_id = :t AND action = :a"),
+            {"t": tenant, "a": action},
+        ).scalar_one()
+        return dict(settings_ or {}), version, events
+
+    def put(c: httpx.Client, slug: str, version: int, headers: dict[str, str]) -> httpx.Response:
+        body = {"capture_content": "full", "row_version": version}
+        return c.put(f"/api/v1/orgs/{slug}/capture-content", json=body, headers=headers)
+
+    b_before = state(b.tenant)
+    b_version = b_before[1]
+    with tenancy_client(settings) as c:
+        headers = login(c, people.owner_a)
+        a_version = c.get(f"/api/v1/orgs/{a.slug}").json()["row_version"]
+        own = put(c, a.slug, a_version, headers)
+        assert own.status_code == 200 and own.json()["capture_content"] == "full", own.text
+        _same_404(put(c, b.slug, b_version, headers), put(c, "no-such-client", 1, headers))
+    a_after = state(a.tenant)
+    assert a_after[0] == {"capture_content": "full"} and a_after[2] == 1  # audited in A
+    with tenancy_client(settings) as c:  # a non-owner of A: refused in A, invisible B
+        headers = login(c, people.viewer_a)
+        assert put(c, a.slug, a_version + 1, headers).status_code == 403
+        _same_404(put(c, b.slug, b_version, headers), put(c, "no-such-client", 1, headers))
+    with tenancy_client(settings) as c:  # a viewer in both clients: refused in each
+        headers = login(c, people.both)
+        assert put(c, a.slug, a_version + 1, headers).status_code == 403
+        assert put(c, b.slug, b_version, headers).status_code == 403
+    assert state(b.tenant) == b_before
+    with tenancy_client(settings) as c:  # and the other way round
+        headers = login(c, people.owner_b)
+        _same_404(put(c, a.slug, a_version + 1, headers), put(c, "no-such-client", 1, headers))
+    assert state(a.tenant) == a_after
+    assert state(b.tenant) == b_before
 
 
 def test_members_are_listed_only_in_their_own_client(

@@ -10,7 +10,8 @@ only the database flag; a platform administrator adding themselves to a client a
 binding are audited in that client; group bindings for the platform administrator or the
 client's owner only; `platform_status` for the platform administrator only (B-2401);
 `suspend_org` / `unsuspend_org` for the platform administrator only, audited in that client, and
-no owner edit of a suspended client (F-03, B-2511).
+no owner edit of a suspended client (F-03, B-2511); `set_capture_content` writes the client's own
+`capture_content` setting, audited (J-M2, B-2550).
 """
 
 from __future__ import annotations
@@ -43,6 +44,8 @@ from shifde.tenancy.models import Project, Tenant, Workspace
 from shifde.tenancy.schemas import (
     ActivityOut,
     AuthStatusOut,
+    CaptureContentOut,
+    CaptureContentPut,
     DashboardCountsOut,
     DashboardOut,
     DashboardScopeOut,
@@ -321,6 +324,45 @@ def update_org(scope: TenantScope, body: OrgPatch) -> OrgOut:
         details={"changed": sorted(values)},
     )
     out = _org_out(updated)
+    _commit(scope.session, "organization")
+    return out
+
+
+def set_capture_content(scope: TenantScope, body: CaptureContentPut) -> CaptureContentOut:
+    """Set (or with `null` unset) the client's own `capture_content` setting, keeping every other
+    settings key; audited in that client with the old and the new value (J-M2, issue #2)."""
+    scope.pdp.require("tenant:admin", scope.tenant_ref)
+    tenant = repository.get_tenant(scope.session, scope.tenant_id)
+    if tenant is None:  # pragma: no cover
+        raise NotFound("organization not found")
+    if tenant.status == "suspended":  # only the platform administrator lifts it (B-2511)
+        raise ScopeArchived("organization is suspended")
+    if tenant.status == "archived":
+        raise ScopeArchived("archived scopes are read-only; reactivate it first")
+    settings = dict(tenant.settings or {})
+    old = settings.get("capture_content")
+    if body.capture_content is None:
+        settings.pop("capture_content", None)
+    else:
+        settings["capture_content"] = body.capture_content
+    updated = repository.update_tenant(
+        scope.session, scope.tenant_id, body.row_version, {"settings": settings}
+    )
+    if updated is None:
+        raise Conflict("row_version mismatch: the organization was modified; reload and retry")
+    audit.record(
+        scope.session,
+        scope.ctx,
+        action="tenancy.org.capture_content.updated",
+        tenant_id=scope.tenant_id,
+        target_type="org",
+        target_id=scope.tenant_id,
+        target_label=f"org:{tenant.slug}",
+        details={"setting": "capture_content", "old": old, "new": body.capture_content},
+    )
+    out = CaptureContentOut(
+        capture_content=updated.settings.get("capture_content"), row_version=updated.row_version
+    )
     _commit(scope.session, "organization")
     return out
 
