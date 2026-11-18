@@ -670,3 +670,23 @@
   path: [constraints, fk_approvals__tool_version]
   reason: "client-keyed composite foreign key where SETH had a bare id column: constraints bypass row-level security, so without it a row of client A could name client B's object and a later join on the id alone would read B's row (B-116 item 9, B-607, B-2102). (tenant_id, tool_version_id) -> artifact_versions (tenant_id, id)."
   migration: runtime_0001
+
+- table: run_artifacts
+  path: [triggers, trg_run_artifacts_append_only]
+  reason: "Findings Item 14 (REQ F-12, B-2514): with capture off an ended run's content is replaced by the placeholder {\"scrubbed\": true}. The trigger now calls shifde.run_artifacts_guard(), which still refuses every DELETE and every UPDATE except content set to the placeholder with every other column unchanged, on an artifact whose run is terminal (SETH: shifde.reject_mutation(), append-only for every role)."
+  migration: runtime_0002
+
+- table: run_artifacts
+  path: [privileges, columns, content]
+  reason: "Findings Item 14 (REQ F-12, B-2514): shifde_app may UPDATE content only, to scrub an ended run's artifacts with capture off; run_artifacts_guard refuses any other change."
+  migration: runtime_0002
+
+- table: tool_invocations
+  path: [privileges, columns, arguments]
+  reason: "Findings Item 14 (REQ F-12, B-2514): shifde_app may UPDATE arguments, set to NULL when an ended run is scrubbed with capture off (settle_ended_run already falls back to the approval's arguments); trg_tool_invocations_arguments_guard refuses any other change."
+  migration: runtime_0002
+
+- table: tool_invocations
+  path: [triggers, trg_tool_invocations_arguments_guard]
+  reason: "Findings Item 14 (REQ F-12, B-2514): BEFORE UPDATE OF arguments, shifde.tool_invocations_arguments_guard() (invoker rights, fixed search_path) refuses every update naming arguments except setting it to NULL with every other column unchanged, on an invocation whose run (matched on the row's own tenant_id, run_id) is terminal (SETH: no such trigger, arguments not updatable)."
+  migration: runtime_0002
