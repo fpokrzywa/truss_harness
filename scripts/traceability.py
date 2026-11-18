@@ -35,6 +35,7 @@ CROSS_CLIENT = tuple(
     for p in (
         "admin/test_cross_client.py",
         "app/test_cross_client.py",
+        "app/test_oidc_cross_client.py",
         "audit/test_cross_client.py",
         "authz/test_cross_client.py",
         "build/test_cross_client.py",
@@ -58,7 +59,6 @@ CROSS_CLIENT = tuple(
         "vendors/test_cross_client.py",
     )
 )
-RUNTIME = (_T + "runtime/test_cross_client.py", _T + "runtime/test_routes_cross_client.py")
 
 ENTRIES: tuple[Entry, ...] = (
     Entry(
@@ -95,7 +95,11 @@ ENTRIES: tuple[Entry, ...] = (
         "F-5.3-06",
         "Access is through SHI-wide groups bound to a role inside a client.",
         "covered",
-        (_T + "identity/test_platform_groups.py", _T + "tenancy/test_bindings.py"),
+        (
+            _T + "identity/test_platform_groups.py",
+            _T + "tenancy/test_bindings.py",
+            _T + "app/test_oidc_cross_client.py",
+        ),
     ),
     Entry(
         "F-5.3-07",
@@ -119,13 +123,25 @@ ENTRIES: tuple[Entry, ...] = (
         "F-5.3-10",
         "Artifacts are stored under the organization and checked on every read.",
         "covered",
-        RUNTIME,
+        (
+            _T + "runtime/test_cross_client.py",
+            _T + "runtime/test_routes_cross_client.py",
+            _T + "runtime/test_repository.py",
+            _T + "runtime/test_pipeline.py",
+        ),
     ),
     Entry(
         "F-5.3-11",
         "Agent memory and run history never cross organizations.",
         "covered",
-        RUNTIME,
+        (
+            _T + "runtime/test_cross_client.py",
+            _T + "runtime/test_routes_cross_client.py",
+            _T + "runtime/test_repository.py",
+            _T + "runtime/test_lifecycle.py",
+            _T + "governance/test_cross_client.py",
+            _T + "app/test_r1_round2.py",
+        ),
     ),
     Entry(
         "F-5.3-12",
