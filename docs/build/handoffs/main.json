@@ -1,8 +1,8 @@
 {
-  "session_id": "02494822-83f1-48b6-ade8-d7084bfcc1c9",
-  "head_sha": "1bda5df0920ba263de98901260f1e8847532bcb7",
+  "session_id": "0f3b0080-6594-4e90-8c8d-2a7308094617",
+  "head_sha": "2f31673e79c735c57b8ad51301dd4ec84c35a5ce",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "/factory run: job create 9 (ARCH M4 / F-11 retention purge), then the queue at concurrency 1 (#10-#18, #21-#28, #33, #34, #36, #39, #41, #44) per HANDOFF.md",
-  "written_at": "2026-11-18T09:37:24Z"
+  "next_step": "/factory run: queue resumes at #11 (concurrency 1); then #12-#18, SP2-3..SP2-10 (#21-#28), #33, #34, #36, #39, #41, #44, #46, #47. Run gates.py full suite before each merge.",
+  "written_at": "2026-11-18T17:38:58Z"
 }
