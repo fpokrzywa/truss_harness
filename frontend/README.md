@@ -14,6 +14,7 @@ pnpm lint
 pnpm typecheck
 pnpm test
 pnpm build
+pnpm e2e          # Playwright (Chromium): seeds this checkout's database, starts the API on 8780 and Next on 3780
 ```
 
 `SHIFDE_API_ORIGIN` is read at request time by `src/proxy.ts`, never baked into the build.
