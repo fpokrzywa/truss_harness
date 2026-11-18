@@ -56,7 +56,8 @@ def update_returning(
             sets.append(f"{column} = :{column}")
             params[column] = value
     sql = (
-        f"UPDATE shifde.{table} SET {', '.join(sets)} WHERE id = :id{scope} "
+        # names are checked identifiers on the updatable allowlist; values bound
+        f"UPDATE shifde.{table} SET {', '.join(sets)} WHERE id = :id{scope} "  # nosec B608
         f"AND (CAST(:expected AS int) IS NULL OR row_version = :expected) RETURNING {columns}"
     )
     return session.execute(text(sql), params).mappings().first()

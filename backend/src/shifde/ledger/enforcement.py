@@ -102,7 +102,8 @@ def used_and_held(
 def budgets_in_scope(session: Session, scope: BudgetScope) -> list[dict[str, Any]]:
     rows = session.execute(
         text(
-            "SELECT b.id, b.tenant_id, b.scope_type, b.scope_id, b.period, b.metric, "
+            # scope_match takes a constant alias; values are bound
+            "SELECT b.id, b.tenant_id, b.scope_type, b.scope_id, b.period, b.metric, "  # nosec B608
             "b.limit_tokens, b.limit_runs, b.amount, b.currency, b.enforcement, b.on_exceed, "
             "b.alert_thresholds FROM shifde.budgets b "
             f"WHERE b.tenant_id = :tenant AND b.status = 'active' AND {scope_match('b')} "
@@ -127,7 +128,8 @@ def budgets_in_scope(session: Session, scope: BudgetScope) -> list[dict[str, Any
 def quotas_in_scope(session: Session, scope: BudgetScope) -> list[dict[str, Any]]:
     rows = session.execute(
         text(
-            "SELECT q.id, q.scope_type, q.scope_id, q.metric, q.limit_value "
+            # scope_match takes a constant alias; values are bound
+            "SELECT q.id, q.scope_type, q.scope_id, q.metric, q.limit_value "  # nosec B608
             f"FROM shifde.quotas q WHERE q.tenant_id = :tenant AND q.status = 'active' "
             f"AND {scope_match('q')} "
             "ORDER BY q.id"

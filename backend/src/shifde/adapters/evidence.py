@@ -56,7 +56,9 @@ def latest_runs(session: Session) -> dict[str, ConformanceRun]:
     """The most recent run (any outcome) per adapter."""
     rows = session.execute(
         text(
-            f"SELECT DISTINCT ON (adapter_key) {_COLUMNS} FROM shifde.adapter_conformance_runs "
+            # columns are module constants; values are bound
+            f"SELECT DISTINCT ON (adapter_key) {_COLUMNS} FROM "  # nosec B608
+            "shifde.adapter_conformance_runs "
             "ORDER BY adapter_key, finished_at DESC, id DESC"
         )
     ).all()
@@ -66,7 +68,9 @@ def latest_runs(session: Session) -> dict[str, ConformanceRun]:
 def list_runs(session: Session, adapter_key: str, limit: int = 50) -> list[ConformanceRun]:
     rows = session.execute(
         text(
-            f"SELECT {_COLUMNS} FROM shifde.adapter_conformance_runs WHERE adapter_key = :k "
+            # columns are module constants; values are bound
+            f"SELECT {_COLUMNS} FROM shifde.adapter_conformance_runs WHERE "  # nosec B608
+            "adapter_key = :k "
             "ORDER BY finished_at DESC, id DESC LIMIT :n"
         ),
         {"k": adapter_key, "n": limit},

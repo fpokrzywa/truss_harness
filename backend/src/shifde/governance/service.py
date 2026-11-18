@@ -1233,7 +1233,8 @@ class GovernanceService:
         return int(
             self.session.execute(
                 text(
-                    "SELECT count(*) FROM shifde.runs r WHERE r.tenant_id = :t "
+                    # predicate from the RUN_ENTITY constant map; values bound
+                    "SELECT count(*) FROM shifde.runs r WHERE r.tenant_id = :t "  # nosec B608
                     "AND r.parent_run_id IS NULL AND (CAST(:since AS timestamptz) IS NULL "
                     "OR r.created_at >= :since) AND COALESCE(r.error_class, '') <> 'budget_denied' "
                     f"AND {budgeting.RUN_ENTITY[str(rule['scope_type'])]}"

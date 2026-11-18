@@ -965,7 +965,8 @@ class PipelineRunner:
                 raise NodeError(state.VALIDATION, "the dataset is not a table name")
             limit = int(cfg.get("limit", 1000))
             table = ".".join('"' + p + '"' for p in parts)
-            sql = f"SELECT * FROM {table} LIMIT %(row_limit)s"
+            # each dataset part matches IDENT and is quoted; limit bound
+            sql = f"SELECT * FROM {table} LIMIT %(row_limit)s"  # nosec B608
             params: dict[str, Any] = {"row_limit": limit}
         else:
             limit = int(cfg.get("max_rows", 1000))

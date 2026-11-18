@@ -93,7 +93,7 @@ _ROLE_SQL = text(
                  WHERE d.datname = current_database() AND d.datdba = r.oid) AS owns_database
     FROM reachable r
     ORDER BY is_self DESC, r.rolname
-    """
+    """  # nosec B608  # _USER_SCHEMA is a module constant; values are bound
 )
 
 

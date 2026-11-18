@@ -75,7 +75,11 @@ def _used_sql(
         params["cur"] = b["currency"]
     else:
         select = "COALESCE(sum(u.input_tokens + u.output_tokens), 0)"
-    return f"SELECT {select} FROM shifde.usage_events u WHERE {' AND '.join(where)}", params
+    return (
+        # fixed fragments built in code; values are bound
+        f"SELECT {select} FROM shifde.usage_events u WHERE {' AND '.join(where)}",  # nosec B608
+        params,
+    )
 
 
 def _held_sql(
@@ -105,7 +109,8 @@ def _held_sql(
     else:
         select = "COALESCE(sum(res.amount), 0)"
     return (
-        f"SELECT {select} FROM shifde.budget_reservations res "
+        # fixed fragments built in code; values are bound
+        f"SELECT {select} FROM shifde.budget_reservations res "  # nosec B608
         "JOIN shifde.runs r ON r.id = res.run_id AND r.tenant_id = res.tenant_id "
         "JOIN shifde.runs rr ON rr.id = r.root_run_id AND rr.tenant_id = res.tenant_id "
         f"WHERE {' AND '.join(where)}",

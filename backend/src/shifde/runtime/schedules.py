@@ -81,7 +81,8 @@ class ScheduleService:
         rows = (
             self.session.execute(
                 text(
-                    "SELECT " + COLUMNS + " FROM shifde.pipeline_schedules "
+                    # columns are module constants; values are bound
+                    "SELECT " + COLUMNS + " FROM shifde.pipeline_schedules "  # nosec B608
                     "WHERE tenant_id = :t AND pipeline_id = :p ORDER BY id"
                 ),
                 {"t": self.sc.tenant_id, "p": art["id"]},
@@ -194,7 +195,8 @@ class ScheduleService:
         row = (
             self.session.execute(
                 text(
-                    f"SELECT {COLUMNS} FROM shifde.pipeline_schedules "
+                    # columns are module constants; values are bound
+                    f"SELECT {COLUMNS} FROM shifde.pipeline_schedules "  # nosec B608
                     "WHERE tenant_id = :t AND id = :id"
                 ),
                 {"t": self.sc.tenant_id, "id": schedule_id},

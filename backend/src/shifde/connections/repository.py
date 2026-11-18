@@ -88,7 +88,8 @@ def _update_owned(
             sets.append(f"{column} = :{column}")
             params[column] = value
     sql = (
-        f"UPDATE shifde.{table} SET {', '.join(sets)} WHERE id = :id "
+        # SET names checked against the code allowlist; values are bound
+        f"UPDATE shifde.{table} SET {', '.join(sets)} WHERE id = :id "  # nosec B608
         "AND tenant_id IS NOT DISTINCT FROM CAST(:t AS uuid) "
         f"AND (CAST(:expected AS int) IS NULL OR row_version = :expected) RETURNING {columns}"
     )
@@ -100,7 +101,8 @@ def get_connection(session: Session, connection_id: UUID, *, tenant_id: UUID) ->
     return (
         session.execute(
             text(
-                f"SELECT {CONNECTION_COLUMNS} FROM shifde.connections "
+                # columns are module constants; values are bound
+                f"SELECT {CONNECTION_COLUMNS} FROM shifde.connections "  # nosec B608
                 "WHERE id = :id AND tenant_id = :t"
             ),
             {"id": connection_id, "t": tenant_id},
@@ -125,7 +127,8 @@ def list_connections(
     limit: int,
 ) -> list[Row]:
     sql = (
-        f"SELECT {CONNECTION_COLUMNS} FROM shifde.connections WHERE tenant_id = :t "
+        # columns are module constants; values are bound
+        f"SELECT {CONNECTION_COLUMNS} FROM shifde.connections WHERE tenant_id = :t "  # nosec B608
         "AND (CAST(:type AS text) IS NULL OR connection_type = :type) "
         "AND (CAST(:status AS text) IS NULL OR status = :status) "
         "AND (CAST(:workspace AS uuid) IS NULL OR workspace_id = :workspace) "
@@ -239,7 +242,9 @@ def list_tests(
     return list(
         session.execute(
             text(
-                f"SELECT {TEST_COLUMNS} FROM shifde.connection_tests WHERE connection_id = :c "
+                # columns are module constants; values are bound
+                f"SELECT {TEST_COLUMNS} FROM shifde.connection_tests WHERE "  # nosec B608
+                "connection_id = :c "
                 "AND tenant_id = :t "
                 "AND (CAST(:after AS uuid) IS NULL OR id < :after) ORDER BY id DESC LIMIT :n"
             ),
@@ -254,7 +259,9 @@ def latest_test(session: Session, connection_id: UUID, *, tenant_id: UUID) -> Ro
     return (
         session.execute(
             text(
-                f"SELECT {TEST_COLUMNS} FROM shifde.connection_tests WHERE connection_id = :c "
+                # columns are module constants; values are bound
+                f"SELECT {TEST_COLUMNS} FROM shifde.connection_tests WHERE "  # nosec B608
+                "connection_id = :c "
                 "AND tenant_id = :t ORDER BY finished_at DESC, id DESC LIMIT 1"
             ),
             {"c": connection_id, "t": tenant_id},
@@ -268,7 +275,8 @@ def get_test(session: Session, test_id: UUID, *, tenant_id: UUID) -> Row | None:
     return (
         session.execute(
             text(
-                f"SELECT {TEST_COLUMNS} FROM shifde.connection_tests WHERE id = :id "
+                # columns are module constants; values are bound
+                f"SELECT {TEST_COLUMNS} FROM shifde.connection_tests WHERE id = :id "  # nosec B608
                 "AND tenant_id = :t"
             ),
             {"id": test_id, "t": tenant_id},
@@ -319,7 +327,9 @@ def _active_test_job(
     return (
         session.execute(
             text(
-                f"SELECT {JOB_COLUMNS} FROM shifde.jobs WHERE tenant_id = :t AND kind = :k "
+                # columns are module constants; values are bound
+                f"SELECT {JOB_COLUMNS} FROM shifde.jobs WHERE tenant_id = :t AND "  # nosec B608
+                "kind = :k "
                 "AND dedupe_key = :dk AND status IN ('queued', 'leased')"
             ),
             {"t": tenant_id, "k": kind, "dk": dedupe_key},
@@ -341,7 +351,9 @@ def get_test_job(
     return (
         session.execute(
             text(
-                f"SELECT {JOB_COLUMNS} FROM shifde.jobs WHERE id = :id AND tenant_id = :t "
+                # columns are module constants; values are bound
+                f"SELECT {JOB_COLUMNS} FROM shifde.jobs WHERE id = :id AND tenant_id "  # nosec B608
+                "= :t "
                 "AND kind = :k AND (CAST(:c AS text) IS NULL OR payload->>'connection_id' = :c)"
             ),
             {
@@ -389,7 +401,8 @@ def get_egress_policy(session: Session, policy_id: UUID, *, tenant_id: UUID | No
     return (
         session.execute(
             text(
-                f"SELECT {EGRESS_COLUMNS} FROM shifde.egress_policies WHERE id = :id "
+                # columns are module constants; values are bound
+                f"SELECT {EGRESS_COLUMNS} FROM shifde.egress_policies WHERE id = :id "  # nosec B608
                 "AND tenant_id IS NOT DISTINCT FROM CAST(:t AS uuid)"
             ),
             {"id": policy_id, "t": tenant_id},
@@ -409,7 +422,9 @@ def get_default_policy(session: Session, tenant_id: UUID | None) -> Row | None:
     return (
         session.execute(
             text(
-                f"SELECT {EGRESS_COLUMNS} FROM shifde.egress_policies WHERE is_default "
+                # columns are module constants; values are bound
+                f"SELECT {EGRESS_COLUMNS} FROM shifde.egress_policies WHERE "  # nosec B608
+                "is_default "
                 "AND tenant_id IS NOT DISTINCT FROM CAST(:t AS uuid)"
             ),
             {"t": tenant_id},
@@ -425,7 +440,9 @@ def list_egress_policies(
     return list(
         session.execute(
             text(
-                f"SELECT {EGRESS_COLUMNS} FROM shifde.egress_policies WHERE tenant_id = :t "
+                # columns are module constants; values are bound
+                f"SELECT {EGRESS_COLUMNS} FROM shifde.egress_policies WHERE "  # nosec B608
+                "tenant_id = :t "
                 "AND (CAST(:after AS uuid) IS NULL OR id > :after) ORDER BY id LIMIT :n"
             ),
             {"t": tenant_id, "after": after, "n": limit},

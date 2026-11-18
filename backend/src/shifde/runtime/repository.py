@@ -111,7 +111,8 @@ def insert_run(session: Session, v: Mapping[str, Any]) -> Row:  # Any: column va
     params["id"] = run_id
     params["root_run_id"] = v.get("root_run_id") or run_id
     sql = (
-        f"INSERT INTO shifde.runs ({', '.join(present)}) "
+        # column names come from the code-owned list; values bound
+        f"INSERT INTO shifde.runs ({', '.join(present)}) "  # nosec B608
         f"VALUES ({', '.join(':' + c for c in present)}) RETURNING {RUN_COLUMNS}"
     )
     row = session.execute(text(sql), params).mappings().one()
@@ -140,7 +141,11 @@ def create_run(
 def get_run(session: Session, tenant_id: UUID, run_id: UUID) -> Row | None:
     return (
         session.execute(
-            text(f"SELECT {RUN_COLUMNS} FROM shifde.runs WHERE id = :id AND tenant_id = :t"),
+            text(
+                # columns are module constants; values are bound
+                f"SELECT {RUN_COLUMNS} FROM shifde.runs WHERE id = :id AND "  # nosec B608
+                "tenant_id = :t"
+            ),
             {"id": run_id, "t": tenant_id},
         )
         .mappings()
@@ -154,7 +159,8 @@ def run_by_idempotency(
     return (
         session.execute(
             text(
-                f"SELECT {RUN_COLUMNS} FROM shifde.runs "
+                # columns are module constants; values are bound
+                f"SELECT {RUN_COLUMNS} FROM shifde.runs "  # nosec B608
                 "WHERE tenant_id = :t AND initiated_by_principal_id = :p AND idempotency_key = :k"
             ),
             {"t": tenant_id, "p": principal_id, "k": key},
@@ -246,7 +252,8 @@ def list_runs(
             "AND a.status = 'pending' AND (d.id = runs.id OR d.root_run_id = runs.id))"
         )
     sql = (
-        f"SELECT {RUN_COLUMNS} FROM shifde.runs WHERE {' AND '.join(where)} "
+        # filters are fixed fragments; values are bound
+        f"SELECT {RUN_COLUMNS} FROM shifde.runs WHERE {' AND '.join(where)} "  # nosec B608
         "ORDER BY id DESC LIMIT :limit"
     )
     return list(session.execute(text(sql), params).mappings().all())
@@ -353,7 +360,11 @@ def transition(
         params["tok"] = token
     row = (
         session.execute(
-            text(f"UPDATE shifde.runs SET {', '.join(sets)} WHERE {where} RETURNING {RUN_COLUMNS}"),
+            text(
+                # SET names checked against the code allowlist; values are bound
+                f"UPDATE shifde.runs SET {', '.join(sets)} WHERE {where} RETURNING "  # nosec B608
+                f"{RUN_COLUMNS}"
+            ),
             params,
         )
         .mappings()
@@ -410,7 +421,11 @@ def add_usage(session: Session, tenant_id: UUID, run_id: UUID, **deltas: int) ->
         sets.append(f"{column} = {column} + :{column}")
     if sets:
         session.execute(
-            text(f"UPDATE shifde.runs SET {', '.join(sets)} WHERE id = :id AND tenant_id = :t"),
+            text(
+                # SET names checked against the code allowlist; values are bound
+                f"UPDATE shifde.runs SET {', '.join(sets)} WHERE id = :id AND "  # nosec B608
+                "tenant_id = :t"
+            ),
             {"id": run_id, "t": tenant_id, **deltas},
         )
 
@@ -433,7 +448,8 @@ def children_of(session: Session, tenant_id: UUID, parent_id: UUID) -> list[Row]
     return list(
         session.execute(
             text(
-                f"SELECT {RUN_COLUMNS} FROM shifde.runs WHERE parent_run_id = :p "
+                # columns are module constants; values are bound
+                f"SELECT {RUN_COLUMNS} FROM shifde.runs WHERE parent_run_id = :p "  # nosec B608
                 "AND tenant_id = :t ORDER BY id"
             ),
             {"p": parent_id, "t": tenant_id},
@@ -447,7 +463,9 @@ def lock_run(session: Session, tenant_id: UUID, run_id: UUID) -> Row | None:
     return (
         session.execute(
             text(
-                f"SELECT {RUN_COLUMNS} FROM shifde.runs WHERE id = :id AND tenant_id = :t "
+                # columns are module constants; values are bound
+                f"SELECT {RUN_COLUMNS} FROM shifde.runs WHERE id = :id AND tenant_id "  # nosec B608
+                "= :t "
                 "FOR NO KEY UPDATE"
             ),
             {"id": run_id, "t": tenant_id},
@@ -588,7 +606,8 @@ def insert_step(session: Session, v: Mapping[str, Any]) -> Row:  # Any: column v
     params = {c: v[c] for c in present[1:]}
     params["id"] = uuid7()
     sql = (
-        f"INSERT INTO shifde.run_steps ({', '.join(present)}) "
+        # column names come from the code-owned list; values bound
+        f"INSERT INTO shifde.run_steps ({', '.join(present)}) "  # nosec B608
         f"VALUES ({', '.join(':' + c for c in present)}) RETURNING {STEP_COLUMNS}"
     )
     return session.execute(text(sql), params).mappings().one()
@@ -628,7 +647,9 @@ def update_step(
     row = (
         session.execute(
             text(
-                f"UPDATE shifde.run_steps SET {', '.join(sets)} WHERE id = :id AND tenant_id = :t "
+                # SET names checked against the code allowlist; values are bound
+                f"UPDATE shifde.run_steps SET {', '.join(sets)} WHERE id = :id AND "  # nosec B608
+                "tenant_id = :t "
                 f"RETURNING {STEP_COLUMNS}"
             ),
             params,
@@ -643,7 +664,8 @@ def list_steps(session: Session, tenant_id: UUID, run_id: UUID) -> list[Row]:
     return list(
         session.execute(
             text(
-                f"SELECT {STEP_COLUMNS} FROM shifde.run_steps WHERE run_id = :id "
+                # columns are module constants; values are bound
+                f"SELECT {STEP_COLUMNS} FROM shifde.run_steps WHERE run_id = :id "  # nosec B608
                 "AND tenant_id = :t ORDER BY seq, attempt"
             ),
             {"id": run_id, "t": tenant_id},
@@ -658,7 +680,8 @@ def get_invocation(session: Session, tenant_id: UUID, key: str) -> Row | None:
     return (
         session.execute(
             text(
-                f"SELECT {INVOCATION_COLUMNS} FROM shifde.tool_invocations "
+                # columns are module constants; values are bound
+                f"SELECT {INVOCATION_COLUMNS} FROM shifde.tool_invocations "  # nosec B608
                 "WHERE tenant_id = :t AND idempotency_key = :k"
             ),
             {"t": tenant_id, "k": key},
@@ -672,7 +695,8 @@ def get_invocation_by_id(session: Session, tenant_id: UUID, inv_id: UUID) -> Row
     return (
         session.execute(
             text(
-                f"SELECT {INVOCATION_COLUMNS} FROM shifde.tool_invocations "
+                # columns are module constants; values are bound
+                f"SELECT {INVOCATION_COLUMNS} FROM shifde.tool_invocations "  # nosec B608
                 "WHERE id = :id AND tenant_id = :t"
             ),
             {"id": inv_id, "t": tenant_id},
@@ -688,7 +712,9 @@ def insert_invocation(session: Session, v: Mapping[str, Any]) -> Row:  # Any: co
     return (
         session.execute(
             text(
-                "INSERT INTO shifde.tool_invocations (id, tenant_id, run_id, call_ref, epoch, "
+                # columns are module constants; values are bound
+                "INSERT INTO shifde.tool_invocations (id, tenant_id, run_id, "  # nosec B608
+                "call_ref, epoch, "
                 "tool_version_id, side_effect_class, idempotency_key, status, request_hash, "
                 "arguments) "
                 "VALUES (:id, :tenant_id, :run_id, :call_ref, :epoch, :tool_version_id, "
@@ -723,7 +749,8 @@ def update_invocation(
         params[column] = value
     session.execute(
         text(
-            f"UPDATE shifde.tool_invocations SET {', '.join(sets)} "
+            # SET names checked against the code allowlist; values are bound
+            f"UPDATE shifde.tool_invocations SET {', '.join(sets)} "  # nosec B608
             "WHERE id = :id AND tenant_id = :t"
         ),
         params,
@@ -747,7 +774,9 @@ def insert_approval(session: Session, v: Mapping[str, Any]) -> Row:  # Any: colu
     return (
         session.execute(
             text(
-                f"INSERT INTO shifde.approvals ({', '.join(cols)}, arguments, context_summary, "
+                # column names come from the code-owned list; values bound
+                f"INSERT INTO shifde.approvals ({', '.join(cols)}, arguments, "  # nosec B608
+                "context_summary, "
                 f"required_permission) VALUES ({', '.join(':' + c for c in cols)}, "
                 "CAST(:arguments AS jsonb), CAST(:context_summary AS jsonb), :required_permission) "
                 f"RETURNING {APPROVAL_COLUMNS}"
@@ -766,7 +795,8 @@ def get_approval(
     return (
         session.execute(
             text(
-                f"SELECT {APPROVAL_COLUMNS} FROM shifde.approvals "
+                # columns and lock suffix are constants; values are bound
+                f"SELECT {APPROVAL_COLUMNS} FROM shifde.approvals "  # nosec B608
                 f"WHERE id = :id AND tenant_id = :t{suffix}"
             ),
             {"id": approval_id, "t": tenant_id},
@@ -782,7 +812,9 @@ def find_approval(
     return (
         session.execute(
             text(
-                f"SELECT {APPROVAL_COLUMNS} FROM shifde.approvals WHERE tenant_id = :t "
+                # columns are module constants; values are bound
+                f"SELECT {APPROVAL_COLUMNS} FROM shifde.approvals WHERE tenant_id = "  # nosec B608
+                ":t "
                 "AND run_id = :r AND call_ref = :c AND reason = :reason AND epoch = :e"
             ),
             {"t": tenant_id, "r": run_id, "c": call_ref, "reason": reason, "e": epoch},
@@ -806,7 +838,8 @@ def list_approvals(
     return list(
         session.execute(
             text(
-                "WITH RECURSIVE tree(id) AS ("
+                # columns are module constants; values are bound
+                "WITH RECURSIVE tree(id) AS ("  # nosec B608
                 " SELECT id FROM shifde.runs WHERE id = CAST(:tree AS uuid) AND tenant_id = :t"
                 " UNION ALL"
                 " SELECT c.id FROM shifde.runs c JOIN tree ON c.parent_run_id = tree.id"
@@ -848,7 +881,9 @@ def decide_approval(
     return (
         session.execute(
             text(
-                "UPDATE shifde.approvals SET status = :st, decision = :d, decided_by = :by, "
+                # columns are module constants; values are bound
+                "UPDATE shifde.approvals SET status = :st, decision = :d, decided_by "  # nosec B608
+                "= :by, "
                 "decided_at = now(), decision_note = :note WHERE id = :id AND tenant_id = :t "
                 f"AND status = 'pending' RETURNING {APPROVAL_COLUMNS}"
             ),

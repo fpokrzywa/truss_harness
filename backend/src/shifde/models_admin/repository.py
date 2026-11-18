@@ -86,7 +86,8 @@ def _update_owned(
             sets.append(f"{column} = :{column}")
             params[column] = value
     sql = (
-        f"UPDATE shifde.{table} SET {', '.join(sets)} WHERE id = :id "
+        # SET names checked against the code allowlist; values are bound
+        f"UPDATE shifde.{table} SET {', '.join(sets)} WHERE id = :id "  # nosec B608
         "AND tenant_id IS NOT DISTINCT FROM CAST(:t AS uuid) "
         f"AND (CAST(:expected AS int) IS NULL OR row_version = :expected) RETURNING {columns}"
     )
@@ -100,7 +101,8 @@ def get_provider(
     return (
         session.execute(
             text(
-                f"SELECT {PROVIDER_COLUMNS} FROM shifde.model_providers "
+                # columns are module constants; values are bound
+                f"SELECT {PROVIDER_COLUMNS} FROM shifde.model_providers "  # nosec B608
                 f"WHERE id = :id AND {_OWN_OR_SHARED}"
             ),
             {"id": provider_id, "t": tenant_id, "shared": shared},
@@ -116,7 +118,9 @@ def list_providers(
     return list(
         session.execute(
             text(
-                f"SELECT {PROVIDER_COLUMNS} FROM shifde.model_providers WHERE {_OWN_OR_SHARED} "
+                # columns are module constants; values are bound
+                f"SELECT {PROVIDER_COLUMNS} FROM shifde.model_providers WHERE "  # nosec B608
+                f"{_OWN_OR_SHARED} "
                 "AND (CAST(:after AS uuid) IS NULL OR id > :after) ORDER BY id LIMIT :n"
             ),
             {"t": tenant_id, "shared": shared, "after": after, "n": limit},
@@ -163,7 +167,8 @@ def get_shi_provider(session: Session) -> Row | None:
     return (
         session.execute(
             text(
-                f"SELECT {PROVIDER_COLUMNS} FROM shifde.model_providers "
+                # columns are module constants; values are bound
+                f"SELECT {PROVIDER_COLUMNS} FROM shifde.model_providers "  # nosec B608
                 "WHERE id = :id AND tenant_id IS NULL"
             ),
             {"id": SHI_PROVIDER_ID},
@@ -198,7 +203,11 @@ def update_provider(
 def get_model(session: Session, model_id: UUID, *, tenant_id: UUID, shared: bool) -> Row | None:
     return (
         session.execute(
-            text(f"SELECT {MODEL_COLUMNS} FROM shifde.models WHERE id = :id AND {_OWN_OR_SHARED}"),
+            text(
+                # columns are module constants; values are bound
+                f"SELECT {MODEL_COLUMNS} FROM shifde.models WHERE id = :id AND "  # nosec B608
+                f"{_OWN_OR_SHARED}"
+            ),
             {"id": model_id, "t": tenant_id, "shared": shared},
         )
         .mappings()
@@ -214,7 +223,8 @@ def get_models(
     return list(
         session.execute(
             text(
-                f"SELECT {MODEL_COLUMNS} FROM shifde.models "
+                # columns are module constants; values are bound
+                f"SELECT {MODEL_COLUMNS} FROM shifde.models "  # nosec B608
                 f"WHERE id = ANY(CAST(:ids AS uuid[])) AND {_OWN_OR_SHARED}"
             ),
             {"ids": list(model_ids), "t": tenant_id, "shared": shared},
@@ -237,7 +247,8 @@ def list_models(
     return list(
         session.execute(
             text(
-                f"SELECT {MODEL_COLUMNS} FROM shifde.models WHERE {_OWN_OR_SHARED} "
+                # columns are module constants; values are bound
+                f"SELECT {MODEL_COLUMNS} FROM shifde.models WHERE {_OWN_OR_SHARED} "  # nosec B608
                 "AND (CAST(:provider AS uuid) IS NULL OR provider_id = :provider) "
                 "AND (CAST(:lifecycle AS text) IS NULL OR lifecycle = :lifecycle) "
                 "AND (CAST(:after AS uuid) IS NULL OR id > :after) ORDER BY id LIMIT :n"
@@ -365,7 +376,9 @@ def get_route(session: Session, route_id: UUID, *, tenant_id: UUID) -> Row | Non
     return (
         session.execute(
             text(
-                f"SELECT {ROUTE_COLUMNS} FROM shifde.model_routes WHERE id = :id AND tenant_id = :t"
+                # columns are module constants; values are bound
+                f"SELECT {ROUTE_COLUMNS} FROM shifde.model_routes WHERE id = :id AND "  # nosec B608
+                "tenant_id = :t"
             ),
             {"id": route_id, "t": tenant_id},
         )
@@ -378,7 +391,9 @@ def list_routes(session: Session, after: UUID | None, limit: int, *, tenant_id: 
     return list(
         session.execute(
             text(
-                f"SELECT {ROUTE_COLUMNS} FROM shifde.model_routes WHERE tenant_id = :t "
+                # columns are module constants; values are bound
+                f"SELECT {ROUTE_COLUMNS} FROM shifde.model_routes WHERE tenant_id = "  # nosec B608
+                ":t "
                 "AND (CAST(:after AS uuid) IS NULL OR id > :after) ORDER BY id LIMIT :n"
             ),
             {"t": tenant_id, "after": after, "n": limit},
@@ -426,7 +441,11 @@ def update_route(
 def get_shi_access(session: Session, *, tenant_id: UUID) -> Row | None:
     return (
         session.execute(
-            text(f"SELECT {ACCESS_COLUMNS} FROM shifde.shi_provider_access WHERE tenant_id = :t"),
+            text(
+                # columns are module constants; values are bound
+                f"SELECT {ACCESS_COLUMNS} FROM shifde.shi_provider_access WHERE "  # nosec B608
+                "tenant_id = :t"
+            ),
             {"t": tenant_id},
         )
         .mappings()
@@ -454,7 +473,9 @@ def set_shi_access(
     return (
         session.execute(
             text(
-                "INSERT INTO shifde.shi_provider_access AS a (tenant_id, enabled, changed_by) "
+                # columns are module constants; values are bound
+                "INSERT INTO shifde.shi_provider_access AS a (tenant_id, enabled, "  # nosec B608
+                "changed_by) "
                 "VALUES (:t, :e, shifde.current_principal_id()) ON CONFLICT (tenant_id) DO UPDATE "
                 "SET enabled = :e, changed_by = shifde.current_principal_id(), "
                 "changed_at = now(), row_version = a.row_version + 1 "
