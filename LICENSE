@@ -1,0 +1,28 @@
+Copyright (c) 2026 3C Publish LLC. All rights reserved.
+
+This software and its source code are proprietary and confidential to
+3C Publish LLC. No permission is granted to use, copy, modify, merge,
+publish, distribute, sublicense, or sell this software or any part of it
+without prior written permission from 3C Publish LLC.
+
+Making the source code viewable on a public hosting service (such as
+GitHub) does not grant any license or right to use it.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+3C PUBLISH LLC BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Exceptions
+
+1. Software factory. The files under factory/, under .claude/skills/factory/,
+   and the factory agents in .claude/agents/ (intake, spec-writer, builder,
+   reviewer-code, reviewer-security, reviewer-ui, reviewer-ux, approver) are
+   licensed under the GNU General Public License v3.0, as described in
+   factory/NOTICE.md. The full GPLv3 text is in factory/LICENSE. The notice
+   above does not restrict those files.
+
+2. Third-party dependencies. Third-party dependencies remain under their own
+   licenses.
