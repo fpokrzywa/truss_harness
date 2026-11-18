@@ -499,6 +499,43 @@ def insert_artifact(
     return art_id
 
 
+SCRUBBED = {"scrubbed": True}
+
+
+def scrub_run_content(session: Session, tenant_id: UUID, run_id: UUID) -> None:
+    """Capture off (F-12, B-2514): replace the content of every artifact of this run of
+    `tenant_id` by `SCRUBBED` (id, kind, step, size and hash stay) and clear its tool invocations'
+    arguments. Idempotent; another client's run or an unknown id scrubs nothing. The database
+    allows the artifact update only on a run that has ended (`run_artifacts_guard`)."""
+    session.execute(
+        text(
+            "UPDATE shifde.run_artifacts SET content = CAST(:c AS jsonb) "
+            "WHERE tenant_id = :t AND run_id = :r AND content <> CAST(:c AS jsonb)"
+        ),
+        {"t": tenant_id, "r": run_id, "c": j(SCRUBBED)},
+    )
+    session.execute(
+        text(
+            "UPDATE shifde.tool_invocations SET arguments = NULL "
+            "WHERE tenant_id = :t AND run_id = :r AND arguments IS NOT NULL"
+        ),
+        {"t": tenant_id, "r": run_id},
+    )
+
+
+def ended_runs_of_root(session: Session, tenant_id: UUID, root_run_id: UUID) -> list[UUID]:
+    """The terminal runs of `tenant_id` whose root run is `root_run_id` (the root included)."""
+    return list(
+        session.execute(
+            text(
+                "SELECT id FROM shifde.runs WHERE tenant_id = :t AND root_run_id = :root "
+                "AND status IN ('completed', 'failed', 'cancelled', 'timed_out') ORDER BY id"
+            ),
+            {"t": tenant_id, "root": root_run_id},
+        ).scalars()
+    )
+
+
 def get_artifact(
     session: Session, tenant_id: UUID, artifact_id: UUID | None
 ) -> Any:  # Any: JSON content

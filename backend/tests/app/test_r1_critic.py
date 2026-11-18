@@ -573,7 +573,7 @@ def test_the_python_settle_path_runs_as_the_app_role_and_opens_the_approval(
                 error_message="internal error (OperationalError)",
             )
             assert row is not None
-            settle_terminal(s, row, "failed")
+            settle_terminal(s, row, "failed", settings)
             s.commit()
         row2 = run_row(owner_session, run["id"])
         assert row2["status"] == "failed" and row2["error_class"] == UNKNOWN

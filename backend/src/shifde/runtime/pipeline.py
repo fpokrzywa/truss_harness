@@ -692,6 +692,7 @@ class PipelineRunner:
             ctx.tenant_id,
             ctx.run_id,
             self.stored["initiated_by_principal_id"],
+            ctx.settings,
             still_leader,
         )
 
