@@ -1,9 +1,10 @@
 """Databricks workspace address normalization (design sections 3 and 9 item 14, DECISIONS B-2501).
 
 One normalizer for target registration and, later, the executor's credential audience check: an
-address is reduced to `https://<host>[:<port>]` (lowercase host, default port dropped) and accepted
-only on an allow-listed Databricks host suffix. `address_key` is the sha256 of that string; the
-one-platform-per-organization claim stores only the key. Pure string handling: no DNS, no network,
+address is reduced to `https://<host>` (lowercase host, `:443` dropped, any other port refused, so
+the claim key is host-only, B-2524) and accepted only on an allow-listed Databricks host suffix.
+`address_key` is the sha256 of that string; the one-platform-per-organization claim stores only
+the key. Pure string handling: no DNS, no network,
 no settings (the installation's extra suffixes are passed in by the caller).
 """
 
@@ -18,7 +19,6 @@ from urllib.parse import urlsplit
 DATABRICKS_HOST_SUFFIXES = ("cloud.databricks.com", "azuredatabricks.net", "gcp.databricks.com")
 
 _LABEL = re.compile(r"[a-z0-9-]{1,63}")
-_PORT = re.compile(r"[1-9][0-9]{0,4}")
 
 
 class AddressRefused(ValueError):
@@ -45,10 +45,11 @@ def _is_ip(host: str) -> bool:
 
 
 def normalize_databricks_address(url: str, extra_suffixes: Iterable[str] = ()) -> str:
-    """`https://<host>[:<port>]` for an allow-listed Databricks workspace URL, else
-    `AddressRefused`. Refused: any scheme but https, user info, a path other than `/`, a query or
-    fragment (even empty), whitespace or control characters, non-ASCII, IP literals, malformed
-    labels, and a host that is not `<label>.<suffix>` for a listed suffix."""
+    """`https://<host>` for an allow-listed Databricks workspace URL, else `AddressRefused`.
+    Refused: any scheme but https, any explicit port but 443 (another port would give the same host
+    a second claim key, B-2524), user info, a path other than `/`, a query or fragment (even
+    empty), whitespace or control characters, non-ASCII, IP literals, malformed labels, and a host
+    that is not `<label>.<suffix>` for a listed suffix."""
     if not url.isascii() or any(ch.isspace() or not ch.isprintable() for ch in url):
         raise AddressRefused
     if "?" in url or "#" in url:
@@ -60,9 +61,7 @@ def normalize_databricks_address(url: str, extra_suffixes: Iterable[str] = ()) -
     if "@" in netloc or netloc.startswith("["):
         raise AddressRefused
     host, colon, port = netloc.partition(":")
-    if colon and not _PORT.fullmatch(port):
-        raise AddressRefused
-    if colon and int(port) > 65535:
+    if colon and port != "443":
         raise AddressRefused
     host = host.lower()
     if not host or _is_ip(host):
@@ -71,8 +70,6 @@ def normalize_databricks_address(url: str, extra_suffixes: Iterable[str] = ()) -
     suffixes = (*DATABRICKS_HOST_SUFFIXES, *(s.lower() for s in extra_suffixes))
     if not any(host.endswith("." + suffix) for suffix in suffixes):
         raise AddressRefused
-    if port and port != "443":
-        return f"https://{host}:{port}"
     return f"https://{host}"
 
 

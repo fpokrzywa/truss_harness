@@ -24,7 +24,6 @@ def test_each_builtin_suffix_is_accepted(suffix: str) -> None:
     [
         ("HTTPS://ADB-1.Cloud.Databricks.COM", "https://adb-1.cloud.databricks.com"),
         ("https://adb-1.cloud.databricks.com:443", "https://adb-1.cloud.databricks.com"),
-        ("https://adb-1.cloud.databricks.com:8443", "https://adb-1.cloud.databricks.com:8443"),
         ("https://adb-1.cloud.databricks.com/", "https://adb-1.cloud.databricks.com"),
         ("https://ADB-1.cloud.databricks.com:443/", "https://adb-1.cloud.databricks.com"),
         ("https://a.b.azuredatabricks.net", "https://a.b.azuredatabricks.net"),
@@ -68,6 +67,9 @@ def test_an_extra_suffix_is_accepted_only_when_passed() -> None:
         "https://adb-1.cloud.databricks.com.",
         "https://adb..cloud.databricks.com",
         "https://adb_1.cloud.databricks.com",
+        "https://adb-1.cloud.databricks.com:8443",
+        "https://adb-1.cloud.databricks.com:80",
+        "https://adb-1.cloud.databricks.com:0443",
         "https://adb-1.cloud.databricks.com:0",
         "https://adb-1.cloud.databricks.com:99999",
         "https://adb-1.cloud.databricks.com:",
