@@ -390,7 +390,8 @@ class PipelineRunner:
 
     def _tool_policy(self, nid: str, resolved: Mapping[str, Resolved]) -> steps.ToolPolicy:
         """A GRANTED approval on a live path to THIS node waives only the default
-        write_non_idempotent per-call approval; otherwise it stays; destructive is always forced."""
+        write_non_idempotent per-call approval (never a tool's own `require_approval`); otherwise it
+        stays; destructive is always forced."""
         guarded = any(
             self.nodes[a]["type"] == "approval"
             for a in self._live_upstream(nid, resolved, through_approvals=True)
@@ -399,6 +400,7 @@ class PipelineRunner:
             approval_classes=frozenset() if guarded else DEFAULT_APPROVALS,
             agent_id=None,
             pinned_version_ids=self.pinned_tools,
+            node_call=True,
         )
 
     def _is_side_effect(self, nid: str) -> bool:

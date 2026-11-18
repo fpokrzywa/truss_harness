@@ -50,8 +50,10 @@ from shifde.runtime import gate, ontology_exec, policies, state
 from shifde.runtime import repository as repo
 from shifde.runtime.context import RunContext
 from shifde.runtime.governance import Reservation, ReserveDetail
+from shifde.runtime.settle import capture_full
 
 MAX_OUTPUT_BYTES = 1_000_000
+MAX_AUDIT_OUTPUT_BYTES = 8 * 1024  # `audit_level: full`: larger outputs keep a preview
 
 
 def json_safe(value: Any) -> Any:  # Any: tool result
@@ -241,10 +243,18 @@ def _step_event(
     )
 
 
-def _tool_audit(ctx: RunContext, call: ToolCall, step: Mapping[str, Any]) -> None:
+def _tool_audit(
+    ctx: RunContext,
+    call: ToolCall,
+    step: Mapping[str, Any],
+    output: Any = None,  # Any: the attempt's stored (scrubbed) output, if it stored one
+) -> None:
     """`run.tool_invoked` for one finished `tool_call` step, inside the caller's `ctx.txn()`.
 
-    Names the tool and the attempt's outcome only: never the arguments, their hash or the output.
+    Names the tool and the attempt's outcome only: never the arguments, their hash or the output,
+    unless the tool's `audit_level` is "full" and the client captures content (audit rows are
+    append-only, so capture off must keep them content-free); then the scrubbed arguments and the
+    stored output (a preview above 8 KiB) are added.
     """
     status = str(step["status"])
     error_class = step["error_class"] if status != "succeeded" else None
@@ -255,22 +265,28 @@ def _tool_audit(ctx: RunContext, call: ToolCall, step: Mapping[str, Any]) -> Non
     else:  # the audit outcome CHECK has no "indeterminate": `details.status` keeps it apart
         outcome = "failure"
     invocation = step["tool_invocation_id"]
-    ctx.audit(
-        "run.tool_invoked",
-        {
-            "tool_key": call.tool.artifact_key,
-            "tool_version_id": str(call.tool.version_id),
-            "tool_version_no": call.tool.version_no,
-            "side_effect_class": str(call.tool.spec["side_effect_class"]),
-            "step_seq": step["seq"],
-            "attempt": step["attempt"],
-            "status": status,
-            "error_class": error_class,
-            "tool_invocation_id": str(invocation) if invocation is not None else None,
-        },
-        outcome=outcome,
-        commit=False,
-    )
+    details: dict[str, Any] = {
+        "tool_key": call.tool.artifact_key,
+        "tool_version_id": str(call.tool.version_id),
+        "tool_version_no": call.tool.version_no,
+        "side_effect_class": str(call.tool.spec["side_effect_class"]),
+        "step_seq": step["seq"],
+        "attempt": step["attempt"],
+        "status": status,
+        "error_class": error_class,
+        "tool_invocation_id": str(invocation) if invocation is not None else None,
+    }
+    if call.tool.spec.get("audit_level") == "full" and capture_full(
+        ctx.session, ctx.tenant_id, ctx.settings
+    ):
+        details["arguments"] = _journal_arguments(call.args)
+        if output is not None:
+            stored = scrub(output)
+            raw = json.dumps(stored, default=str)
+            if len(raw.encode()) > MAX_AUDIT_OUTPUT_BYTES:
+                stored = {"truncated": True, "preview": raw[:8000]}
+            details["output"] = stored
+    ctx.audit("run.tool_invoked", details, outcome=outcome, commit=False)
 
 
 def _cost_limit(value: object) -> Decimal | None:
@@ -575,6 +591,7 @@ class ToolPolicy:
     agent_id: UUID | None  # the calling agent artifact (invocation_policy.allowed_agent_ids)
     pinned_version_ids: frozenset[UUID]  # tools this agent / node may call
     force_approval: bool = False  # orchestration approval node already required one
+    node_call: bool = False  # agentless pipeline / graph tool node: refused by `allowed_agent_ids`
 
 
 def _no_nul(value: Any) -> Any:  # Any: JSON value
@@ -706,6 +723,8 @@ def _policy(ctx: RunContext, call: ToolCall, policy: ToolPolicy) -> gate.Check:
         if tool.version_id not in policy.pinned_version_ids:
             return ("tool_not_pinned", "the tool is not pinned by this agent version")
         allowed = inv.get("allowed_agent_ids")
+        if isinstance(allowed, list) and policy.node_call:
+            return ("agent_not_allowed", "the tool allows only the agents it lists, not tool nodes")
         if (
             isinstance(allowed, list)
             and policy.agent_id is not None
@@ -933,6 +952,8 @@ def run_tool(ctx: RunContext, call: ToolCall, policy: ToolPolicy) -> Any:  # Any
     if not retry_authorized:
         needed, reason = _approval_needed(side, policy)
         needed = needed or policy.force_approval
+        # the tool's own flag (F-13) can only ADD an approval, like a governance rule
+        needed = needed or (spec.get("invocation_policy") or {}).get("require_approval") is True
         # configurable governance rules can only ADD an approval (never waive one)
         rule = policies.tool_approval(ctx, call, side)
         if rule is not None and not needed:
@@ -1386,7 +1407,7 @@ def _execute_attempts(
             _step_event(
                 ctx, "step_finished", row, {"status": "failed" if violation else "succeeded"}
             )
-            _tool_audit(ctx, call, row)
+            _tool_audit(ctx, call, row, safe)
         if violation:
             raise state.RunFailed(
                 state.SCHEMA_VIOLATION, f"the tool output violates its schema: {violation[0][1]}"

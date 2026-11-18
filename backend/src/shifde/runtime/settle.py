@@ -52,7 +52,7 @@ def wake_parent(session: Session, run: Any) -> None:  # Any: run row
             repo.enqueue(session, tenant_id, parent_id)
 
 
-def _capture_full(session: Session, tenant_id: UUID, settings: Settings) -> bool:
+def capture_full(session: Session, tenant_id: UUID, settings: Settings) -> bool:
     """Whether run content is captured for the client: its tenant-level `capture_content`;
     unset means "full" in development and "metadata" otherwise; only "full" is on (the rule of
     `RunService._capture_full`, B-2275)."""
@@ -72,7 +72,7 @@ def scrub_ended(session: Session, run: Any, settings: Settings) -> None:  # Any:
     cur = repo.get_run(session, tenant_id, run["id"])
     if cur is None or cur["status"] not in state.TERMINAL:
         return
-    if _capture_full(session, tenant_id, settings):
+    if capture_full(session, tenant_id, settings):
         return
     root_id: UUID = cur["root_run_id"]
     if root_id != cur["id"]:
