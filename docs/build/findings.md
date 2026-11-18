@@ -38,7 +38,7 @@ Counts: critical 2, major 36, minor 30. Critical/major by sub-project-1 scope: C
 | Item 20 (ARCH M4; REQ F-11) | major | R5 | No retention purge or maintenance command; partitions absent; run_artifacts undeletable | cli, audit, ledger, runtime | cli/main.py; runtime/repository.py | known defect |
 | Item 21 (ARCH M2) | major | R5 | API runs adapters inline (connections, models, ontology) | app, connections, models_admin, ontology | connections/api.py:79-81, 104-108; models_admin/api.py:49, 115-123 | narrowed, not closed: the connection test runs on the worker (issue #10, B-2610); model checks, ontology syncs/materialize, and connection discover and invoke remain inline |
 | Item 22 (REQ F-17) | major | R5 | No CI, SAST, coverage gate, OpenAPI diff | repo infra | backend/pyproject.toml | closed (issue #11, B-2620..B-2624): bandit SAST, coverage floor and OpenAPI diff in CI |
-| Item 22 (REQ F-21) | major | R5 | No repeatable browser E2E suite | frontend | frontend | known defect |
+| Item 22 (REQ F-21) | major | R5 | No repeatable browser E2E suite | frontend | frontend | closed (issue #12, B-2625..B-2630): Playwright suite `cd frontend; pnpm e2e` (sign in, organization selector, workspaces, demo-a cannot see demo-b) |
 | Item 22 (REQ F-16) | major | R5 | API latency and harness overhead never measured | new harness | n/a | known defect |
 | Item 23 (REQ F-19) | major | R5 | Install validator step fails on clean commit | install validator | scripts/validate/validate-install.ps1 | dropped: code not ported |
 | Item 23 (J-M1) | major | R5 | Release bundle older than HEAD; dirty-tree builds allowed | release packaging | scripts/build-release.ps1 | dropped: code not ported |

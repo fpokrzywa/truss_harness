@@ -30,6 +30,7 @@ One application (SETH) merging SETH, the FDE SDK and Agent Factory into one code
 - Python 3.13 for the backend: `uv python install 3.13` if `uv sync` cannot find one.
 - Backend: `cd backend; $env:UV_LINK_MODE='copy'; uv sync` then `uv run pytest -n auto` (all) or `uv run pytest tests/<module>` (one module).
 - Frontend: `cd frontend; pnpm install; pnpm dev`.
+- Browser end-to-end suite (Playwright, Chromium): cluster running, `cd frontend; pnpm install --frozen-lockfile`, once `pnpm exec playwright install chromium`; then `cd frontend; pnpm e2e`. It prepares this checkout's database (`dev_db.py env`, `db upgrade`, `dev-seed`, keeping existing passwords), then starts the API on 8780 and Next on 3780 and signs in as `admin@demo-a.local`. Local only: not part of `factory/checks.sh` or CI.
 - Token usage: `python scripts/usage_report.py`.
 - Retention purge (content scrub of old, ended runs, as the app role): `cd backend; uv run shifde-admin maintenance purge --older-than <days> [--dry-run]`.
 - SETH schema snapshot (only if SETH's reference commit changes): `cd backend; uv run python ../scripts/make_seth_schema_snapshot.py` (cluster running) rewrites `backend/tests/schema/seth_3ba0e06.json`.
