@@ -100,6 +100,7 @@ type = "layers"
 layers = [
   "shifde.main",
   "shifde.app | shifde.cli",
+  "shifde.delivery",
   "shifde.runtime",
   "shifde.ontology",
   "shifde.build",
@@ -133,6 +134,7 @@ containers = [
   "shifde.ontology",
   "shifde.runtime",
   "shifde.governance",
+  "shifde.delivery",
 ]
 exhaustive = false
 
@@ -198,6 +200,7 @@ source_modules = [
   "shifde.ledger.pricing", "shifde.ledger.usage", "shifde.ledger.budgeting",
   "shifde.ledger.enforcement",
   "shifde.runtime.policies", "shifde.observability.tracing", "shifde.observability.metrics",
+  "shifde.delivery.service", "shifde.delivery.repository",
 ]
 forbidden_modules = ["fastapi", "starlette"]
 
@@ -209,6 +212,7 @@ source_modules = [
   "shifde.secrets", "shifde.admin", "shifde.vendors", "shifde.connections",
   "shifde.models_admin", "shifde.build", "shifde.ontology", "shifde.runtime",
   "shifde.governance", "shifde.ledger",
+  "shifde.delivery",
 ]
 forbidden_modules = [
   "shifde.secrets.repository", "shifde.secrets.models",
@@ -218,6 +222,7 @@ forbidden_modules = [
   "shifde.audit.repository", "shifde.audit.models",
   "shifde.vendors.repository", "shifde.connections.repository", "shifde.models_admin.repository",
   "shifde.build.repository", "shifde.ontology.repository", "shifde.governance.repository",
+  "shifde.delivery.repository",
 ]
 allow_indirect_imports = true
 ignore_imports = [
@@ -236,4 +241,5 @@ ignore_imports = [
   "shifde.ontology.** -> shifde.ontology.repository",
   "shifde.runtime.** -> shifde.runtime.repository",
   "shifde.governance.** -> shifde.governance.repository",
+  "shifde.delivery.** -> shifde.delivery.repository",
 ]

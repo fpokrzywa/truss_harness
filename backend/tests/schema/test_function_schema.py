@@ -236,6 +236,17 @@ SECURITY_DEFINER_ALLOWLIST: dict[str, str] = {
         "the metrics endpoint (queue depth and age, run outcomes by kind/status/class, model "
         "calls by provider, budget denials); returns no client id, run id or content."
     ),
+    "shifde.delivery_claim_platform(text, text)": (
+        "delivery_0001 (B-2501, B-2524): owned by shifde_owner, search_path pg_catalog, pg_temp, "
+        "every object schema-qualified, EXECUTE for shifde_app only, writes no app.* setting. The "
+        "only writer of delivery_platform_claims (shifde_app has no INSERT there). The client and "
+        "principal come from current_tenant_id() / current_principal_id() only (42501 without "
+        "either). Under pg_advisory_xact_lock on (platform_kind, address_key) it returns the "
+        "caller's own claim, inserts one for the caller, or NULL when another client holds the "
+        "address, so it names no client, id or row of another client; reads other clients' claims "
+        "only as an EXISTS test; trusts app.tenant_id/app.principal_id as set after authorization; "
+        "archive releases under the same lock."
+    ),
 }
 
 _CONTEXT = {"provolatile": "s", "lang": "sql", "rettype": None}
