@@ -267,6 +267,143 @@ def test_a_detached_secret_cannot_be_rebound_after_the_host_change_without_secre
     assert _deliveries(evil) == 0
 
 
+# ------------------------------------------------------------------ OAuth2 token URL (F-09)
+def _oauth2_body(good: RestTestServer, secret_id: str, name: str, token_url: str | None) -> Any:
+    config = {"base_url": good.base_url, "health_path": "/health", "client_id": "c1"}
+    return {
+        "name": name,
+        "connection_type": "rest",
+        "adapter_key": "rest.http",
+        "config": {**config, **({"oauth2_url": token_url} if token_url else {})},
+        "auth_method": "oauth2_client_credentials",
+        "secret_id": secret_id,
+    }
+
+
+# (label, oauth2_url before, oauth2_url after): None = absent
+TOKEN_URL_CHANGES = [
+    ("added", None, "evil"),
+    ("changed", "good", "evil"),
+    ("removed", "good", None),
+]
+
+
+@pytest.mark.parametrize(
+    ("label", "before", "after"), TOKEN_URL_CHANGES, ids=[c[0] for c in TOKEN_URL_CHANGES]
+)
+@pytest.mark.parametrize("secret_use", [False, True], ids=["refused", "with_secret_use"])
+def test_repointing_the_oauth2_token_url_needs_secret_use(
+    setup: Setup,
+    evil: RestTestServer,
+    label: str,
+    before: str | None,
+    after: str | None,
+    secret_use: bool,
+) -> None:
+    """`oauth2_url` is where OAuth2 sends the bound client secret: adding, changing or removing
+    it is a destination change (FR-CON-011)."""
+    hosts = {"good": setup.good, "evil": evil}
+
+    def url(key: str | None) -> str | None:
+        return f"{hosts[key].base_url}/token" if key else None
+
+    c, A = setup.client, setup.A
+    body = _oauth2_body(setup.good, setup.secret_id, f"oauth2-{label}", url(before))
+    created = connection(c, setup.as_admin(), body, A)
+    if secret_use:
+        grant(setup.owner_db, setup.world.a.tenant, setup.manager_id, ["secret:use", "secret:read"])
+    hm = setup.as_manager()
+    cfg = {**body["config"], "oauth2_url": url(after)}
+    r = setup.patch(hm, created["id"], {"config": {k: v for k, v in cfg.items() if v}})
+    if secret_use:
+        assert r.status_code == 200, r.text
+        assert r.json()["config"].get("oauth2_url") == url(after)
+    else:
+        assert r.status_code == 403, r.text
+        assert "secret:use" in r.text
+        assert setup.row(hm, created["id"])["config"] == body["config"]
+    assert evil.requests == []
+
+
+@pytest.mark.parametrize("secret_use", [False, True], ids=["refused", "with_secret_use"])
+def test_switching_auth_method_to_oauth2_alone_needs_secret_use(
+    setup: Setup, secret_use: bool
+) -> None:
+    """Isolation review 1 finding 1: a PATCH of only `auth_method` (bearer -> OAuth2) sends the
+    bound secret to a token URL instead of `base_url`, so it is a destination change."""
+    if secret_use:
+        grant(setup.owner_db, setup.world.a.tenant, setup.manager_id, ["secret:use", "secret:read"])
+    hm = setup.as_manager()
+    r = setup.patch(hm, setup.cid, {"auth_method": "oauth2_client_credentials"})
+    if secret_use:
+        assert r.status_code == 200, r.text
+        assert r.json()["auth_method"] == "oauth2_client_credentials"
+    else:
+        assert r.status_code == 403, r.text
+        assert "secret:use" in r.text
+        assert setup.row(hm)["auth_method"] == "bearer"
+
+
+@pytest.mark.parametrize("secret_use", [False, True], ids=["refused", "with_secret_use"])
+def test_switching_auth_method_with_a_token_url_needs_secret_use(
+    setup: Setup, evil: RestTestServer, secret_use: bool
+) -> None:
+    if secret_use:
+        grant(setup.owner_db, setup.world.a.tenant, setup.manager_id, ["secret:use", "secret:read"])
+    hm = setup.as_manager()
+    cfg = {
+        "base_url": setup.good.base_url,
+        "health_path": "/health",
+        "oauth2_url": f"{evil.base_url}/token",
+        "client_id": "c1",
+    }
+    r = setup.patch(hm, setup.cid, {"auth_method": "oauth2_client_credentials", "config": cfg})
+    assert r.status_code == (200 if secret_use else 403), r.text
+    assert evil.requests == []
+
+
+@pytest.mark.parametrize("secret_use", [False, True], ids=["refused", "with_secret_use"])
+def test_switching_auth_method_away_from_oauth2_needs_secret_use(
+    setup: Setup, secret_use: bool
+) -> None:
+    c, A = setup.client, setup.A
+    token_url = f"{setup.good.base_url}/token"
+    created = connection(
+        c, setup.as_admin(), _oauth2_body(setup.good, setup.secret_id, "from-oauth2", token_url), A
+    )
+    if secret_use:
+        grant(setup.owner_db, setup.world.a.tenant, setup.manager_id, ["secret:use", "secret:read"])
+    hm = setup.as_manager()
+    cfg = {"base_url": setup.good.base_url, "health_path": "/health"}
+    r = setup.patch(hm, created["id"], {"auth_method": "bearer", "config": cfg})
+    assert r.status_code == (200 if secret_use else 403), r.text
+
+
+def test_switching_between_methods_that_send_to_the_base_url_needs_no_secret_use(
+    setup: Setup,
+) -> None:
+    hm = setup.as_manager()
+    r = setup.patch(hm, setup.cid, {"auth_method": "api_key"})
+    assert r.status_code == 200, r.text  # the secret still goes to base_url only
+
+
+@pytest.mark.parametrize("field", ["oauth2_url", "client_id", "scope"])
+def test_oauth2_fields_are_refused_under_other_auth_methods(
+    setup: Setup, evil: RestTestServer, field: str
+) -> None:
+    """The planted-URL path: an OAuth2 field cannot sit in the config of a bearer connection,
+    waiting for a later switch of `auth_method`."""
+    c, A, admin = setup.client, setup.A, setup.as_admin()
+    value = f"{evil.base_url}/token" if field == "oauth2_url" else "x"
+    cfg = {"base_url": setup.good.base_url, "health_path": "/health", field: value}
+    r = setup.patch(admin, setup.cid, {"config": cfg})
+    assert r.status_code == 422, r.text
+    assert field in r.text
+    body = {**rest_body(setup.good, setup.secret_id, name=f"planted-{field}"), "config": cfg}
+    connection(c, admin, body, A, status=422)
+    assert evil.requests == []
+
+
 # ------------------------------------------------------------------ the read-to-write race
 def _write_after_read(
     monkeypatch: pytest.MonkeyPatch,

@@ -242,6 +242,24 @@ class ConnectionService:
             )
         if auth_method == "none" and secret_id is not None:
             raise ValidationFailed("a secret cannot be attached when auth_method is 'none'")
+        misplaced = sorted(
+            f
+            for f, methods in desc.auth_only_fields.items()
+            if f in config and auth_method not in methods
+        )
+        if misplaced:
+            raise ValidationFailed(
+                f"config fields {', '.join(misplaced)} do not apply to auth_method {auth_method!r}",
+                errors=[
+                    {
+                        "loc": ["body", "config", f],
+                        "msg": "only allowed with auth_method "
+                        + " or ".join(desc.auth_only_fields[f]),
+                        "type": "config",
+                    }
+                    for f in misplaced
+                ],
+            )
         adapter = self.runtime.registry.get(adapter_key)
         assert adapter is not None  # descriptor() found it above
         errors = adapter.validate_config(config)
@@ -278,11 +296,16 @@ class ConnectionService:
             raise NotFound("secret not found") from exc
 
     def _destination_changed(
-        self, descriptor: AdapterDescriptor, old: Mapping[str, Any], new: Mapping[str, Any]
+        self,
+        descriptor: AdapterDescriptor,
+        old: tuple[str, Mapping[str, Any]],
+        new: tuple[str, Mapping[str, Any]],
     ) -> bool:
-        """True when a config field that decides where the credential is sent differs. A field
-        that is missing on one side and present on the other counts as a change."""
-        return any(old.get(f) != new.get(f) for f in descriptor.destination_fields)
+        """True when the credential's effective destination differs between the old and the new
+        (auth_method, config): a destination field's value changed, or a change of auth method
+        brings a destination field into effect or takes one out (to or from OAuth2's
+        `oauth2_url`). A field that is missing on one side and present on the other counts."""
+        return descriptor.destination(*old) != descriptor.destination(*new)
 
     def _require_secret_use_for_host_change(self, secret_id: UUID) -> None:
         """FR-CON-011: a credential must not follow a changed destination unless the caller could
@@ -492,8 +515,12 @@ class ConnectionService:
         if (
             merged_secret is not None
             and merged_secret == row["secret_ref_id"]
-            and "config" in values
-            and self._destination_changed(desc, row["config"] or {}, values["config"])
+            and ("config" in values or "auth_method" in values)
+            and self._destination_changed(
+                desc,
+                (row["auth_method"], row["config"] or {}),
+                (merged_auth, values.get("config", row["config"]) or {}),
+            )
         ):
             # the secret stays bound and its destination moves: re-confirm with secret:use
             self._require_secret_use_for_host_change(merged_secret)
