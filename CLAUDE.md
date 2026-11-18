@@ -33,6 +33,7 @@ One application (SETH) merging SETH, the FDE SDK and Agent Factory into one code
 - Browser end-to-end suite (Playwright, Chromium): cluster running, `cd frontend; pnpm install --frozen-lockfile`, once `pnpm exec playwright install chromium`; then `cd frontend; pnpm e2e`. It prepares this checkout's database (`dev_db.py env`, `db upgrade`, `dev-seed`, keeping existing passwords), then starts the API on 8780 and Next on 3780 and signs in as `admin@demo-a.local`. Local only: not part of `factory/checks.sh` or CI.
 - API latency (F-16, cluster running): `cd backend; $env:SHIFDE_PERF_ITERATIONS='200'; uv run pytest tests/perf/test_api_latency.py -q -s` prints p50/p95 per main route and appends them to `.devdata/f16-latency.txt`; method, budgets and measured numbers in `docs/build/perf.md`.
 - Token usage: `python scripts/usage_report.py`.
+- Traceability matrix (design 5.3 -> tests): `python scripts/traceability.py` writes `docs/requirements/TRACEABILITY.md`; `python scripts/traceability.py --check` fails on a missing test file or a stale matrix.
 - Retention purge (content scrub of old, ended runs, as the app role): `cd backend; uv run shifde-admin maintenance purge --older-than <days> [--dry-run]`.
 - SETH schema snapshot (only if SETH's reference commit changes): `cd backend; uv run python ../scripts/make_seth_schema_snapshot.py` (cluster running) rewrites `backend/tests/schema/seth_3ba0e06.json`.
 
