@@ -32,6 +32,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from shifde.build import repository as build_repo
+from shifde.build import tool_runtime
 from shifde.build.executors import ONTOLOGY_QUERY
 from shifde.core.clock import utcnow
 from shifde.core.db import Database
@@ -221,6 +222,43 @@ def test_a_tool_node_runs_only_the_runs_pinned_tool_and_a_condition_reads_its_ou
         (a.tenant, "t", "succeeded"),
         (a.tenant, "c", "succeeded"),
     ]
+
+
+@pytest.mark.parametrize("listed", [True, False])
+def test_a_tool_node_is_refused_by_a_tool_that_lists_its_allowed_agents(
+    listed: bool,
+    pair: tuple[Client, Client],
+    opened: Any,
+    owner_db: Database,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F-13 (B-2570): an orchestration tool node has no calling agent, so a tool with an
+    `allowed_agent_ids` list refuses it (`agent_not_allowed`) without being invoked; the same tool
+    without the list runs."""
+    a, _ = pair
+    policy = {"allowed_agent_ids": [str(a.agent_art)]} if listed else {}
+    with owner_db.session() as o:
+        _, tool = add_published(o, a.tenant, "tools", _key("tool"),
+                                {**NONE_TOOL, "invocation_policy": policy})  # fmt: skip
+        o.commit()
+    run = _orch(owner_db, a, [_tool("t", tool)], pins=[(tool, "tool")])
+    given: list[object] = []
+
+    def invoke_once(conns: object, spec: object, args: object, **kw: Any) -> object:
+        given.append(args)
+        return {"done": True}
+
+    monkeypatch.setattr(tool_runtime, "invoke_once", invoke_once)
+    if not listed:
+        with opened(a.tenant) as s:
+            GraphRunner(_ctx(s, settings, a, run)).run()
+        assert given == [{"item": "hello"}]
+        return
+    with opened(a.tenant) as s, pytest.raises(state.GateDenied) as denied:
+        GraphRunner(_ctx(s, settings, a, run)).run()
+    assert denied.value.reason == "agent_not_allowed"
+    assert given == []
 
 
 TOOL_CASES = ["unknown id", "own unpinned tool", "other client's tool", "own agent as a tool"]

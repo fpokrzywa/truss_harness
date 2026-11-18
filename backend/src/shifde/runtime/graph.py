@@ -146,6 +146,7 @@ class GraphRunner:
             approval_classes=DEFAULT_APPROVALS,
             agent_id=None,
             pinned_version_ids=frozenset(t.version_id for t in self.tool_refs.values()),
+            node_call=True,
         )
 
         while True:

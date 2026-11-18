@@ -307,10 +307,18 @@ def test_tool_structure_errors_carry_paths_and_codes(
                 "idempotency_required",
             ),
             ({**good, "binding": None}, "binding", "required"),
+            (
+                {**good, "invocation_policy": {"require_approval": "yes"}},
+                "invocation_policy.require_approval",
+                "invalid_value",
+            ),
         ]
         for spec, path, code in cases:
             found = {(e.path, e.code) for e in _tool_report(env, spec).errors}
             assert (path, code) in found, (path, code, found)
+        for flag in (True, False):  # F-13: a boolean `require_approval` validates
+            flagged = {**good, "invocation_policy": {"require_approval": flag}}
+            assert _tool_report(env, flagged).valid
         s.rollback()
 
 
