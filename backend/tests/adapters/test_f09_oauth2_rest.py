@@ -187,6 +187,14 @@ def test_descriptor_offers_oauth2_and_guards_the_token_url() -> None:
     assert "oauth2_url" in d.destination_fields and "base_url" in d.destination_fields
 
 
+def test_the_token_url_is_a_destination_only_under_oauth2() -> None:
+    d = RestHttpAdapter.descriptor
+    cfg = {"base_url": "https://api.example", "oauth2_url": "https://idp.example/token"}
+    assert d.destination("bearer", cfg) == {"base_url": "https://api.example"}
+    assert d.destination("oauth2_client_credentials", cfg) == cfg
+    assert set(d.auth_only_fields) == {"oauth2_url", "client_id", "scope"}
+
+
 def test_validate_config_checks_the_token_url_like_the_base_url() -> None:
     a = RestHttpAdapter()
     base = {"base_url": "https://api.example"}

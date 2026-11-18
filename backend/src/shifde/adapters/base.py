@@ -9,7 +9,7 @@ evidence (see `shifde.adapters.maturity`) and can never be declared in code or b
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, ClassVar, Literal, Protocol  # Any: JSON documents / JSON Schema
@@ -61,6 +61,10 @@ class AdapterDescriptor:
     # change to one needs `secret:use` on the bound secret (FR-CON-011); see ConnectionService.
     destination_fields: tuple[str, ...] = ()
     auth_methods: tuple[str, ...] = ("none",)
+    # Config properties that apply only under the listed auth methods (`oauth2_url` only for
+    # OAuth2): ConnectionService refuses them under any other method, and a destination field
+    # listed here is a destination only under those methods (see `destination`).
+    auth_only_fields: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     connection_type: str | None = None  # rest|mcp|database|data_platform|model_api (B5)
     # Ceiling the code may claim. `validated` is intentionally not representable here.
     declared_maturity: Literal["planned", "experimental"] = "experimental"
@@ -68,6 +72,15 @@ class AdapterDescriptor:
     @property
     def implemented(self) -> bool:
         return self.declared_maturity != "planned"
+
+    def destination(self, auth_method: str, config: Mapping[str, Any]) -> dict[str, Any]:
+        """Where a bound credential is sent under `auth_method`: the destination fields in effect
+        for that method and their values (a missing field is `None`)."""
+        return {
+            f: config.get(f)
+            for f in self.destination_fields
+            if auth_method in self.auth_only_fields.get(f, (auth_method,))
+        }
 
 
 class ErrorClass(StrEnum):

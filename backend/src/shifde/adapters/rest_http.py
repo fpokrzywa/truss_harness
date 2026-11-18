@@ -157,6 +157,7 @@ class RestHttpAdapter:
         secret_fields=("token", "api_key", "password"),
         destination_fields=("base_url", "oauth2_url"),
         auth_methods=("none", "api_key", "bearer", "basic", "oauth2_client_credentials"),
+        auth_only_fields={f: (OAUTH2,) for f in ("oauth2_url", "client_id", "scope")},
         connection_type="rest",
     )
 
