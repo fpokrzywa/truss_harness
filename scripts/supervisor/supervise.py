@@ -184,12 +184,23 @@ def handed_off_since(sid: str, since: float) -> bool:
     return False
 
 
+def api_error_since(sid: str, since: float) -> str:
+    """The error kind of the lead's last API error message after `since` ("" if none)."""
+    err = ""
+    for d in _entries_since(sid, since):
+        if d.get("type") == "assistant" and d.get("isApiErrorMessage"):
+            err = str(d.get("error") or "")
+    return err
+
+
 def goal_met_since(sid: str, since: float) -> bool:
+    """True only for a judged met. When Claude Code clears a goal after an unrecoverable error (an
+    expired sign-in, 2026-11-18) it records goal_status met=true with sentinel=true: not a result."""
     met = False
     for d in _entries_since(sid, since):
         a = d.get("attachment")
         if isinstance(a, dict) and a.get("type") == "goal_status":
-            met = bool(a.get("met"))
+            met = bool(a.get("met")) and not a.get("sentinel")
     return met
 
 
@@ -425,6 +436,11 @@ def supervise(n: int, run=run_lead, sleep=time.sleep, repo: str = REPO, goal_don
         if not kind.startswith("handoff") and sid and met(sid, started):
             return finish(f"GOAL-DONE goal={n}" if n == 1 else f"GOAL-MET goal={n} sid={sid} (verify by hand)")
         note(f"end classified: {kind}: {detail}")
+        if not kind.startswith("handoff") and sid and api_error_since(sid, started) == "authentication_failed":
+            alert("Build lead could not sign in",
+                  f"Goal {n}: lead {sid} stopped because its Claude sign-in expired. Run `claude auth login` "
+                  "(or `claude setup-token` and set CLAUDE_CODE_OAUTH_TOKEN for unattended runs). The "
+                  "supervisor keeps restarting with backoff.")
         if kind == "handoff":
             failures = 0
             continue

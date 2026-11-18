@@ -274,3 +274,32 @@ class WatchdogTests(RepoCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GoalStatusTests(unittest.TestCase):
+    """2026-11-18: a lead's sign-in expired; Claude Code cleared the goal and recorded met=true with
+    sentinel=true, and the supervisor reported GOAL-MET for goal 2."""
+
+    def transcript_with(self, entries):
+        tmp = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False, encoding="utf-8")
+        for e in entries:
+            tmp.write(json.dumps({"timestamp": "2026-11-18T12:58:30Z", **e}) + "\n")
+        tmp.close()
+        self.addCleanup(os.remove, tmp.name)
+        old = supervise.transcript
+        supervise.transcript = lambda sid: tmp.name
+        self.addCleanup(setattr, supervise, "transcript", old)
+
+    def test_goal_cleared_after_an_error_is_not_met_and_the_error_is_seen(self):
+        self.transcript_with([
+            {"type": "assistant", "isApiErrorMessage": True, "error": "authentication_failed",
+             "message": {"content": [{"type": "text", "text": "Failed to authenticate"}]}},
+            {"type": "attachment", "attachment": {"type": "goal_status", "met": True, "sentinel": True}},
+        ])
+        self.assertFalse(supervise.goal_met_since("s", 0.0))
+        self.assertEqual(supervise.api_error_since("s", 0.0), "authentication_failed")
+
+    def test_a_judged_met_still_counts(self):
+        self.transcript_with([{"type": "attachment", "attachment": {"type": "goal_status", "met": True}}])
+        self.assertTrue(supervise.goal_met_since("s", 0.0))
+        self.assertEqual(supervise.api_error_since("s", 0.0), "")
