@@ -523,6 +523,21 @@ def scrub_run_content(session: Session, tenant_id: UUID, run_id: UUID) -> None:
     )
 
 
+def unscrubbed_counts(session: Session, tenant_id: UUID, run_id: UUID) -> tuple[int, int]:
+    """(artifacts, tool invocations) of this run of `tenant_id` that `scrub_run_content` would
+    change: artifact content not yet `SCRUBBED`, invocation arguments not yet NULL."""
+    row = session.execute(
+        text(
+            "SELECT (SELECT count(*) FROM shifde.run_artifacts WHERE tenant_id = :t "
+            "AND run_id = :r AND content <> CAST(:c AS jsonb)), "
+            "(SELECT count(*) FROM shifde.tool_invocations WHERE tenant_id = :t "
+            "AND run_id = :r AND arguments IS NOT NULL)"
+        ),
+        {"t": tenant_id, "r": run_id, "c": j(SCRUBBED)},
+    ).one()
+    return int(row[0]), int(row[1])
+
+
 def ended_runs_of_root(session: Session, tenant_id: UUID, root_run_id: UUID) -> list[UUID]:
     """The terminal runs of `tenant_id` whose root run is `root_run_id` (the root included)."""
     return list(

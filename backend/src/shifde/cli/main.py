@@ -1,4 +1,6 @@
-"""`shifde-admin` command line (Typer). Runs with owner (migration) credentials.
+"""`shifde-admin` command line (Typer). Runs with owner (migration) credentials, except
+`maintenance purge`, which runs as the application role so row-level security confines each
+client's pass (B-2600).
 
 Not ported (DECISIONS B-1101, B-2221): `profile`, `backup`, `demo`, `dev-sample-pipeline`,
 `dev-sample-ontology`, `dev-rest-sink` (carry_forward, app part 1). `dev-sample-data` is ported
@@ -6,6 +8,7 @@ Not ported (DECISIONS B-1101, B-2221): `profile`, `backup`, `demo`, `dev-sample-
 
 from __future__ import annotations
 
+import getpass
 import json
 import os
 import secrets
@@ -27,12 +30,15 @@ from shifde.adapters.conformance import SuiteSkipped, run_suite
 from shifde.adapters.evidence import record_run
 from shifde.adapters.registry import AdapterRegistry
 from shifde.audit import service as audit
+from shifde.cli.maintenance import purge
 from shifde.cli.sampledata import build_sample_database
 from shifde.cli.seeding import STAFF_USERS, seed_dev_data
 from shifde.cli.seeding import USERS as SEED_USERS
 from shifde.core import configtools
+from shifde.core.clock import utcnow
 from shifde.core.crypto import CryptoError
 from shifde.core.db import Database
+from shifde.core.dbrole import UnsafeDatabaseRole
 from shifde.core.devenv import append_dev_env, read_dev_env
 from shifde.core.errors import AppError
 from shifde.core.health import database_reachable, migration_state
@@ -61,6 +67,8 @@ usage_app = typer.Typer(help="Usage ledger maintenance.", no_args_is_help=True)
 app.add_typer(usage_app, name="usage")
 config_app = typer.Typer(help="Configuration schema and validation.", no_args_is_help=True)
 app.add_typer(config_app, name="config")
+maintenance_app = typer.Typer(help="Retention and maintenance.", no_args_is_help=True)
+app.add_typer(maintenance_app, name="maintenance")
 
 
 def _fail(message: str) -> typer.Exit:
@@ -285,6 +293,56 @@ def audit_verify(org: Annotated[str, typer.Option(help="Organization slug")]) ->
         err=True,
     )
     raise typer.Exit(code=2)
+
+
+@maintenance_app.command("purge")
+def maintenance_purge(
+    older_than: Annotated[
+        int,
+        typer.Option(
+            "--older-than",
+            min=1,
+            max=36500,
+            help="Scrub runs that ended more than this many days ago (the client's retention "
+            "settings can only lengthen it)",
+        ),
+    ],
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Report the counts and change nothing")
+    ] = False,
+) -> None:
+    """Scrub the stored content of old, ended runs, client by client (as the application role).
+
+    Artifact content becomes {"scrubbed": true} and tool-call arguments NULL; nothing is deleted.
+    A client on legal hold is skipped. A real run writes one audit event per client."""
+    settings = _settings()
+    try:
+        database = Database(settings.database_url, pool_size=1, max_overflow=0)
+    except UnsafeDatabaseRole as exc:
+        raise _fail(f"refusing to purge: {exc}") from exc
+    except SQLAlchemyError as exc:
+        raise _fail(f"database error: {exc.__class__.__name__}") from exc
+    try:
+        for client in purge(
+            database,
+            older_than_days=older_than,
+            now=utcnow(),
+            dry_run=dry_run,
+            actor_label=f"shifde-admin:{getpass.getuser()}",
+        ):
+            if client.legal_hold:
+                typer.echo(f"{client.slug}: skipped (legal hold)")
+                continue
+            typer.echo(
+                f"{client.slug}: runs {client.runs}, artifacts {client.artifacts}, "
+                f"tool invocations {client.tool_invocations} (cutoff {client.cutoff.isoformat()})"
+            )
+    except SQLAlchemyError as exc:
+        raise _fail(f"database error: {exc.__class__.__name__}") from exc
+    finally:
+        database.dispose()
+    if dry_run:
+        typer.echo("dry run: nothing changed")
 
 
 def _read_dev_users() -> dict[str, str]:
