@@ -1,8 +1,8 @@
 {
-  "session_id": "9d515262-f16e-4c3b-916e-92e381a57d51",
-  "head_sha": "b396839a8e360fc3ce3ee1cf9b50f384334cc9a8",
+  "session_id": "d83f48e6-7778-4a88-abd1-8b52947156ca",
+  "head_sha": "d9754898eebb312b619adceae1b711b6d5e239b4",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "Run /factory run on the 28 open factory issues (SP2 #19-#28 in dependency order first, known defects #1-#18 alongside); lead runs full suite and isolation-reviewer on every escalated PR before merging",
-  "written_at": "2026-11-17T17:25:21Z"
+  "next_step": "/factory run: resume job 005 (#20) build round 4 (feedback-3.md, head-pin test), then lead full gates and merge PR #35; then merge PR #29 (job 001) per HANDOFF.md steps 2-4",
+  "written_at": "2026-11-18T01:35:43Z"
 }
