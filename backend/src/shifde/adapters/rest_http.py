@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, ClassVar  # Any: decoded JSON bodies
 
+import httpx
+
 from shifde.adapters.base import (
     AdapterDescriptor,
     AdapterFailure,
@@ -27,18 +29,49 @@ from shifde.adapters.httputil import (
     join_url,
     standard_network_checks,
 )
+from shifde.adapters.oauth2 import AUTH_METHOD as OAUTH2
+from shifde.adapters.oauth2 import OAuth2Tokens
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _url_errors(path: str, url: str) -> list[ConfigError]:
+    """An absolute http(s) URL with no credentials, query string or fragment."""
+    if not url.startswith(("http://", "https://")):
+        return [ConfigError(path, "must be an absolute http(s) URL")]
+    if "@" in url.split("//", 1)[1].split("/", 1)[0]:
+        return [ConfigError(path, "credentials in the URL are not allowed")]
+    try:
+        check_base_url(url)
+    except AdapterFailure as exc:
+        return [ConfigError(path, exc.message)]
+    return []
 
 
 class RestHttpSession:
     def __init__(self, ctx: ExecContext, conn: ConnectionConfig) -> None:
         self._ctx = ctx
         self._conn = conn
+        self._oauth2 = OAuth2Tokens(ctx, conn) if conn.auth_method == OAUTH2 else None
         self._client = ctx.egress.client(
-            headers={**conn.config.get("default_headers", {}), **auth_headers(conn)}
+            headers={
+                **conn.config.get("default_headers", {}),
+                **({} if self._oauth2 else auth_headers(conn)),
+            }
         )
+
+    def send(self, method: str, url: str, **kwargs: Any) -> httpx.Response:  # Any: httpx options
+        """One request; under OAuth2 with a Bearer token, and on a 401 once more with a new one."""
+        if self._oauth2 is None:
+            return self._client.request(method, url, **kwargs)
+        headers = dict(kwargs.pop("headers", None) or {})
+        headers["Authorization"] = f"Bearer {self._oauth2.token()}"
+        response = self._client.request(method, url, headers=headers, **kwargs)
+        if response.status_code != 401:
+            return response
+        headers["Authorization"] = f"Bearer {self._oauth2.refresh()}"
+        return self._client.request(method, url, headers=headers, **kwargs)
 
     def invoke(self, request: dict[str, Any], *, write: bool = False) -> InvokeResult:
         try:
@@ -62,7 +95,7 @@ class RestHttpSession:
             if str(k).lower() not in FORBIDDEN_HEADERS
         }
         try:
-            response = self._client.request(
+            response = self.send(
                 method,
                 url,
                 params=request.get("query"),
@@ -106,6 +139,13 @@ class RestHttpAdapter:
                     "title": "OpenAPI document path",
                 },
                 "username": {"type": "string", "title": "Username (basic auth)"},
+                "oauth2_url": {
+                    "type": "string",
+                    "format": "uri",
+                    "title": "OAuth2 token endpoint URL",
+                },
+                "client_id": {"type": "string", "title": "OAuth2 client id"},
+                "scope": {"type": "string", "title": "OAuth2 scope"},
                 "api_key_header": {"type": "string", "default": "X-API-Key"},
                 "default_headers": {
                     "type": "object",
@@ -115,24 +155,15 @@ class RestHttpAdapter:
             },
         },
         secret_fields=("token", "api_key", "password"),
-        destination_fields=("base_url",),
-        auth_methods=("none", "api_key", "bearer", "basic"),
+        destination_fields=("base_url", "oauth2_url"),
+        auth_methods=("none", "api_key", "bearer", "basic", "oauth2_client_credentials"),
         connection_type="rest",
     )
 
     def validate_config(self, config: dict[str, Any]) -> list[ConfigError]:
         def extra(cfg: dict[str, Any]) -> list[ConfigError]:
-            errs: list[ConfigError] = []
+            errs = _url_errors("base_url", str(cfg.get("base_url", "")))
             base = str(cfg.get("base_url", ""))
-            if not base.startswith(("http://", "https://")):
-                errs.append(ConfigError("base_url", "must be an absolute http(s) URL"))
-            elif "@" in base.split("//", 1)[1].split("/", 1)[0]:
-                errs.append(ConfigError("base_url", "credentials in the URL are not allowed"))
-            if not errs:
-                try:
-                    check_base_url(base)
-                except AdapterFailure as exc:
-                    errs.append(ConfigError("base_url", exc.message))
             if not errs:
                 for key in ("health_path", "openapi_path"):
                     if key in cfg:  # the same check a call makes, so a bad path fails here
@@ -145,6 +176,8 @@ class RestHttpAdapter:
             for name in cfg.get("default_headers", {}):
                 if str(name).lower() in FORBIDDEN_HEADERS:
                     errs.append(ConfigError(f"default_headers/{name}", "header is not allowed"))
+            if "oauth2_url" in cfg:
+                errs.extend(_url_errors("oauth2_url", str(cfg["oauth2_url"])))
             return errs
 
         return validate_against_schema(self.descriptor, config, extra=extra)
@@ -156,10 +189,18 @@ class RestHttpAdapter:
         if errors:
             rec.fail("config", "; ".join(f"{e.path}: {e.message}" for e in errors)[:400])
             return ProbeOutcome(rec.finish(), ErrorClass.CONFIG, "configuration is invalid")
+        if conn.auth_method == OAUTH2:
+            try:
+                OAuth2Tokens(ctx, conn)
+            except AdapterFailure as exc:
+                rec.fail("config", exc.message)
+                return ProbeOutcome(rec.finish(), ErrorClass.CONFIG, "configuration is invalid")
         rec.ok("config", "configuration is valid")
         base = str(conn.config["base_url"])
-        if not standard_network_checks(ctx, base, rec):
-            return ProbeOutcome(rec.finish(), ErrorClass.EGRESS, "destination denied by policy")
+        urls = [base] + ([str(conn.config["oauth2_url"])] if conn.auth_method == OAUTH2 else [])
+        for checked in urls:
+            if not standard_network_checks(ctx, checked, rec):
+                return ProbeOutcome(rec.finish(), ErrorClass.EGRESS, "destination denied by policy")
         try:
             url = join_url(base, str(conn.config.get("health_path", "/")))
             session = RestHttpSession(ctx, conn)
@@ -167,10 +208,12 @@ class RestHttpAdapter:
             rec.fail("capability", exc.message)
             return ProbeOutcome(rec.finish(), exc.error_class, exc.message)
         try:
-            response = session._client.get(url)
+            response = session.send("GET", url)
         except Exception as exc:  # noqa: BLE001 - classified below, never leaks the message
             failure = classify_exception(exc)
-            name = {ErrorClass.TLS: "tls", ErrorClass.DNS: "dns"}.get(failure.error_class)
+            name = {ErrorClass.TLS: "tls", ErrorClass.DNS: "dns", ErrorClass.AUTH: "auth"}.get(
+                failure.error_class
+            )
             rec.fail(name or "capability", failure.message)
             return ProbeOutcome(rec.finish(), failure.error_class, failure.message)
         finally:
@@ -195,7 +238,7 @@ class RestHttpAdapter:
             url = join_url(
                 str(conn.config["base_url"]), str(conn.config.get("openapi_path", "/openapi.json"))
             )
-            response = session._client.get(url)
+            response = session.send("GET", url)
         except Exception as exc:  # noqa: BLE001
             raise classify_exception(exc) from exc
         finally:
