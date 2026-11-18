@@ -1,30 +1,29 @@
-# Handoff — 2026-11-18 00:20, charter 7 factory run (lead, session 0f98da4a)
+# Handoff — 2026-11-18 02:45, charter 7 factory run (lead, session after 0f98da4a)
 
-Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md` ("Charter 7 progress"), then this file. Older handoff: `e528bb6:docs/build/HANDOFF.md`.
+Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md` ("Charter 7 progress"), then this file. Older handoff: `4c0401c:docs/build/HANDOFF.md`.
 
 **State:** no agent and no gate run is running; no merge is half done. `main` = `origin/main` (plus this handoff commit).
 
 ## What was just finished
 
-- Merged: PR #35 (job 005, #20 SP2-2 delivery targets, 13/13, `06878e1`), PR #29 (job 001, #1 F-03, `5ac5ea9`, B-2560), PR #37 (job 002, #2 J-M2, isolation review APPROVED, lead yaml entry, 13/13, `978ca66`, B-2563).
-- `factory/bin/job queue` fix for hand-merged jobs (B-2561, `19c06ce`).
-- Follow-up #39 filed (tenants settings key trigger + DB-level grant test).
+- Merged PR #38 (job 007, #4 F-06, `8494063`; isolation review `reviews/f06-isolation-review-1.md` APPROVED).
+- Merged PR #40 (job 008, #5 F-13, `458c404`): approver escalated two product calls, lead decided them (B-2565), isolation review APPROVED (`reviews/f13-isolation-review-1.md`), `gates.py --name 008-merge` 13/13 (full suite 3460 passed in 1550 s, with a builder running alongside). Follow-ups filed as issue #41.
+- `factory/checks.sh` retries `next build` only on "Another next build process is already running" (B-2564, `dbd6ccc`); the lock flake hit again with no other gate running.
 
 ## Exact next step
 
-1. `/factory run`. `factory/bin/job queue` should show `resume 4 007-f-06-tool-invocation review round 3`. Spawn in one message `reviewer-code` (model sonnet) and `reviewer-security` (model opus) with the job header and `Review round 3.` Then all PASS → `job advance 007 approve`, spawn `approver` (`PR: #38. Final round: 3.`), then `factory/bin/job merge 007-f-06-tool-invocation`. Round 3 is the last round: any CHANGES → needs-human; then the lead fixes via `job feedback 4`.
-   - Job 007 touches `runtime/steps.py` (audit events, no migration). Charter 4 lists runtime as critical: before merge, have `isolation-reviewer` read PR #38 (the factory's security reviewer is not the isolation review).
-2. Then the queue at concurrency 1: #5 onward, SP2-3..SP2-10 (#21-#28), #33, #34, #36, #39.
+1. `/factory run`. Job `009-f-09-rest-adapter` (#6, PR #42) is in **review round 2** (gate PASS). In one message spawn `reviewer-code` (model sonnet) and `reviewer-security` (model opus) with the job header and `Review round 2. Write your review to round-2/review-<r>.md`, plus `isolation-reviewer` on PR #42 telling it round 1 was BLOCKED (`factory/jobs/009-f-09-rest-adapter/isolation-review-1.md`) and to confirm both findings are closed (C2 via `auth_method`-only PATCH; connections-level 403 tests with positive controls). Read-only; it replies inline, the lead saves it to `docs/build/reviews/f09-isolation-review-2.md` on the PR branch.
+2. Job 009 went through `needs-human` + `job feedback 6`, so after reviews the approver may escalate again (adapter outbound change always escalates). If so: lead is the human (charter 7.5): `job advance 009 needs-human`, then in the worktree `git merge origin/main` (DECISIONS conflicts: keep both sides, ascending ids), push, `python scripts/gates.py --ref <full sha> --name 009-merge` (background, timeout 7200000), then `gh pr merge 42 --merge`, then `factory/bin/job queue` records it merged. Update the F-09 row in STATUS to closed.
+3. Then the queue at concurrency 1: #8 onward (known defects), SP2-3..SP2-10 (#21-#28), #33, #34, #36, #39, #41.
 
 ## Open branches and worktrees
 
-- `.worktrees/007-f-06-tool-invocation` on `factory/007-f-06-tool-invocation` @ `36d32eb` (pushed, clean), PR #38 draft.
-- Merged job worktrees `001-*`, `002-*` and gate checkouts `gate-001`, `gate-002`, `gate-004`, `gate-005`: safe to remove (`git worktree remove --force`; pnpm node_modules makes it slow — run in the background).
+- `.worktrees/009-f-09-rest-adapter` on `factory/009-f-09-rest-adapter` @ `582eb7e` (pushed, clean), PR #42 draft/ready.
+- `.worktrees/008-f-13-per-tool`, `.worktrees/008-merge` (gate checkout): merged, safe to remove in the background (`git worktree remove --force`).
 
 ## Traps
 
-- Do not run two full gates (or a factory gate beside a `gates.py` run) at once: under load the full suite takes 50+ min (gates.py run hit the 60-min background limit), `test_p8_perf` and DB connect timeouts flake, and `next build` failed twice with "Another next build process is already running" (B-2562). Give `gates.py` background runs `timeout` 7200000.
-- Tell builders not to run the full backend suite (they stall waiting on it); the lead runs `scripts/gates.py` at merge.
-- `factory/bin/job queue` can take 10+ minutes when it removes a merged job's worktree; run it in the background. If a `jobdb drop` hangs holding the factory lock, kill it and rerun `python factory/bin/jobdb drop <job>`.
-- Protected-path entries (`deliberate_changes.yaml`, definer allow-list) are added by the lead on the PR branch after isolation review (B-2530); never `test_rls_schema.py`.
-- DECISIONS numbers: lead used B-2560..B-2563; job 007 uses B-2540; job 002 used B-2550. Give each new builder a free range.
+- The approver only sees factory reviews: when the lead's isolation review BLOCKS, save it in the job folder and tell the approver to read it; it then ESCALATEs and `job advance <id> needs-human` + `job feedback <n>` start the next round with a fresh budget.
+- Reviewers sometimes reply inline without writing `round-N/review-<r>.md`; say in the prompt where to write it.
+- Do not run two full gates at once; builders run only their module tests (say so in the brief). Give each builder a DECISIONS range: used so far B-2564, B-2565 (lead), B-2570 (job 008), B-2580, B-2581 (job 009). Next free: B-2566.. for the lead, B-2590.. for job 010.
+- A session whose cwd is inside a job worktree blocks `job merge` from removing it (WinError 32); `cd` back to the main checkout before merging.
