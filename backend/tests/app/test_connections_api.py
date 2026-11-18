@@ -18,6 +18,7 @@ from shifde.core import db as dbmod
 from shifde.core.context import Principal, RequestContext
 from shifde.core.errors import ConnectionDisabled, Forbidden, NotFound
 from shifde.tenancy.scope import TenantScope
+from tests._support.conntests import result_of, run_test
 from tests._support.fullapp import World
 from tests._support.p2util import login, new_user, post, system_role
 from tests._support.p3util import (
@@ -103,7 +104,7 @@ def test_failed_tests_are_classified_and_never_leak_the_secret(
     h = login(client, world.passwords, ADMIN)
     wrong = "totally-wrong-token-xyz"
     bad = connection(client, h, rest_body(rest_server, secret(client, h, "bad", wrong), "bad-auth"))
-    res = client.post(f"{A}/connections/{bad['id']}/test", headers=h).json()
+    res = result_of(client, h, A, bad["id"])
     assert res["outcome"] == "fail" and res["error_class"] == "auth"
     by_name = {c["name"]: c["status"] for c in res["checks"]}
     assert (
@@ -118,7 +119,7 @@ def test_failed_tests_are_classified_and_never_leak_the_secret(
         h,
         {**rest_body(rest_server, None, "dead"), "config": {"base_url": "http://127.0.0.1:9"}},
     )
-    dead = client.post(f"{A}/connections/{refused['id']}/test", headers=h).json()
+    dead = result_of(client, h, A, refused["id"])
     assert dead["outcome"] == "fail" and dead["error_class"] in ("network", "timeout")
     # destinations the egress policy forbids fail at the egress check, before any connect
     meta = connection(
@@ -126,7 +127,7 @@ def test_failed_tests_are_classified_and_never_leak_the_secret(
         h,
         {**rest_body(rest_server, None, "meta"), "config": {"base_url": "http://169.254.169.254"}},
     )
-    out = client.post(f"{A}/connections/{meta['id']}/test", headers=h).json()
+    out = result_of(client, h, A, meta["id"])
     by_name = {c["name"]: c["status"] for c in out["checks"]}
     assert (
         out["error_class"] == "egress" and by_name["dns"] == "fail" or by_name["egress"] == "fail"
@@ -307,10 +308,10 @@ def test_failed_test_on_active_connection_degrades_it_and_a_pass_restores_it(
     cid = connection(client, h, rest_body(rest_server, s))["id"]
     activate(client, h, cid)
     client.post(f"{A}/secrets/{s}/rotate", json={"value": "rotated-token-777"}, headers=h)
-    assert client.post(f"{A}/connections/{cid}/test", headers=h).json()["outcome"] == "fail"
+    assert result_of(client, h, A, cid)["outcome"] == "fail"
     assert _row(client, h, cid)["status"] == "degraded"
     client.post(f"{A}/secrets/{s}/rotate", json={"value": REST_TOKEN}, headers=h)
-    assert client.post(f"{A}/connections/{cid}/test", headers=h).json()["outcome"] == "pass"
+    assert result_of(client, h, A, cid)["outcome"] == "pass"
     assert _row(client, h, cid)["status"] == "active"
 
 
@@ -462,7 +463,7 @@ def test_unauthorized_use_is_prevented_and_tenants_are_isolated(
         [system_role(owner_session, "developer")],
     )
     assert client.post(f"{A}/connections/{cid}/invoke", json=invoke, headers=hd).status_code == 200
-    assert client.post(f"{A}/connections/{cid}/test", headers=hd).status_code == 200
+    assert run_test(client, hd, A, cid)["status"] == "done"
     assert client.patch(f"{A}/connections/{cid}", json={"name": "d"}, headers=hd).status_code == 403
     assert (
         client.post(
@@ -640,7 +641,7 @@ def test_egress_policy_api_shapes_and_enforcement(
         ).status_code
         == 200
     )
-    test = client.post(f"{A}/connections/{cid}/test", headers=h).json()
+    test = result_of(client, h, A, cid)
     assert test["outcome"] == "fail" and test["error_class"] == "egress"
     # tenant default layer: loopback allowed again by CIDR, but a tenant default can only narrow
     loop = post(
@@ -963,9 +964,7 @@ def test_rest_mcp_and_postgres_connections_with_secret_references(
         assert c["status"] == "draft" and c["scope"] == {"workspace": None, "project": None}
         assert "password" not in c["config"] and "token" not in c["config"]
         # tests pass and are persisted with the six named checks
-        res = client.post(f"{A}/connections/{c['id']}/test", headers=h)
-        assert res.status_code == 200, res.text
-        body = res.json()
+        body = result_of(client, h, A, c["id"])
         assert body["outcome"] == "pass" and [x["name"] for x in body["checks"]] == CHECKS
         assert all(x["status"] in ("pass", "skipped") for x in body["checks"])
         assert body["duration_ms"] >= 0 and body["error_class"] is None

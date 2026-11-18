@@ -72,7 +72,14 @@ def _state(owner_db: Database, world: World, cid: str) -> tuple[Any, ...]:
             text("SELECT count(*) FROM shifde.connection_discoveries WHERE connection_id = :i"),
             {"i": cid},
         ).scalar_one()
-    return (tuple(row), tests, found)
+        jobs = o.execute(  # its test jobs (ARCH M2): none is queued by the member
+            text(
+                "SELECT id, status FROM shifde.jobs WHERE kind = 'connection.test' "
+                "AND payload->>'connection_id' = :i ORDER BY id"
+            ),
+            {"i": cid},
+        ).all()
+    return (tuple(row), tests, found, [tuple(j) for j in jobs])
 
 
 def test_a_connection_in_an_unreadable_workspace_answers_like_an_unknown_id(
@@ -116,7 +123,7 @@ def test_a_connection_in_an_unreadable_workspace_answers_like_an_unknown_id(
         ("GET", "/discoveries/latest", None, 200),
         ("POST", "/discover", None, 200),
         ("POST", "/invoke", invoke, 200),
-        ("POST", "/test", None, 200),
+        ("POST", "/test", None, 202),
         ("PATCH", "", {"name": "renamed"}, 200),
         ("POST", "/status", {"status": "disabled"}, 200),
     ]
@@ -131,6 +138,12 @@ def test_a_connection_in_an_unreadable_workspace_answers_like_an_unknown_id(
             client.request(method, f"{A}/connections/{hidden}{suffix}", headers=h, json=payload),
             missing,
         )
+    # the status route of the hidden connection's test job (ARCH M2): the unknown-connection 404
+    hidden_job = _state(owner_db, world, hidden)[3][-1][0]
+    _same_404(
+        client.get(f"{A}/connections/{hidden}/test-jobs/{hidden_job}", headers=h),
+        client.get(f"{A}/connections/{nobody}/test-jobs/{hidden_job}", headers=h),
+    )
     assert _state(owner_db, world, hidden) == before  # unchanged, no test or discovery added
     assert len(evil.requests) == evil_before  # the hidden connection was never driven
     assert any(r["path"] == "/health" for r in rest_server.requests)  # the member's own were

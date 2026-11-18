@@ -131,7 +131,28 @@ def _b_state(owner_db: Database, two: Two) -> tuple[Any, ...]:
             text("SELECT name, row_version FROM shifde.egress_policies WHERE id = :i"),
             {"i": two.b.policy},
         ).one()
-    return (tuple(row), tests, found, tuple(pol))
+        jobs = o.execute(  # B's queue: A never queues a test job for B (ARCH M2)
+            text(
+                "SELECT id, kind, status, payload, last_error FROM shifde.jobs "
+                "WHERE tenant_id = :t ORDER BY id"
+            ),
+            {"t": two.b.tenant},
+        ).all()
+    return (tuple(row), tests, found, tuple(pol), [tuple(j) for j in jobs])
+
+
+def _test_job(owner_db: Database, side: Side) -> str:
+    """The connection test job `activate` ran for `side`'s connection."""
+    with owner_db.session() as o:
+        return str(
+            o.execute(
+                text(
+                    "SELECT id FROM shifde.jobs WHERE tenant_id = :t AND kind = 'connection.test' "
+                    "AND payload->>'connection_id' = :c ORDER BY id DESC LIMIT 1"
+                ),
+                {"t": side.tenant, "c": side.connection},
+            ).scalar_one()
+        )
 
 
 # ------------------------------------------------------------------ route table
@@ -150,6 +171,9 @@ ROUTE_TESTS = {
     ),
     ("GET", "/api/v1/orgs/{org}/connections/{connection_id}/tests"): (
         "test_a_cannot_reach_bs_connection"
+    ),
+    ("GET", "/api/v1/orgs/{org}/connections/{connection_id}/test-jobs/{job_id}"): (
+        "test_a_cannot_read_bs_test_job"
     ),
     ("POST", "/api/v1/orgs/{org}/connections/{connection_id}/discover"): (
         "test_a_cannot_reach_bs_connection"
@@ -226,7 +250,7 @@ def test_a_cannot_reach_bs_connection(
         ("GET", "/discoveries/latest", None, 200),
         ("POST", "/discover", None, 200),
         ("POST", "/invoke", invoke, 200),
-        ("POST", "/test", None, 200),
+        ("POST", "/test", None, 202),
         ("PATCH", "", {"name": "renamed"}, 200),
         ("POST", "/status", {"status": "disabled"}, 200),
     ]
@@ -244,6 +268,34 @@ def test_a_cannot_reach_bs_connection(
     a_calls = [r for r in rest_server.requests if r["method"] == "GET" and r["path"] == "/health"]
     assert a_calls  # A's own calls reached A's listener
     assert b_server.requests == b_before  # B's connection was never used by A
+
+
+def test_a_cannot_read_bs_test_job(client: TestClient, owner_db: Database, two: Two) -> None:
+    """ARCH M2 (issue #10): B's test job id is unknown to A whichever connection or organization
+    A names it under: under A's own connection, the 404 of an unknown job id; under B's
+    connection, that of an unknown connection id; under B's organization, that of an unknown
+    organization."""
+    A, h = two.a.base, as_user(client, two.a.email)
+    before = _b_state(owner_db, two)
+    own_job, b_job, nobody = _test_job(owner_db, two.a), _test_job(owner_db, two.b), uuid7()
+    own = client.get(f"{A}/connections/{two.a.connection}/test-jobs/{own_job}", headers=h)
+    assert own.status_code == 200 and own.json()["status"] == "done", own.text  # own job first
+    missing = client.get(f"{A}/connections/{two.a.connection}/test-jobs/{nobody}", headers=h)
+    assert missing.json()["detail"] == "test job not found"
+    _same_404(
+        client.get(f"{A}/connections/{two.a.connection}/test-jobs/{b_job}", headers=h), missing
+    )
+    # under B's connection id: the answer an unknown connection id gets
+    _same_404(
+        client.get(f"{A}/connections/{two.b.connection}/test-jobs/{b_job}", headers=h),
+        client.get(f"{A}/connections/{uuid7()}/test-jobs/{b_job}", headers=h),
+    )
+    path = f"/connections/{two.b.connection}/test-jobs/{b_job}"
+    unknown = org(f"no-such-{uuid7().hex[-12:]}")
+    _same_404(
+        client.get(f"{two.b.base}{path}", headers=h), client.get(f"{unknown}{path}", headers=h)
+    )
+    assert _b_state(owner_db, two) == before
 
 
 def test_a_lists_only_its_own_rows(client: TestClient, two: Two) -> None:

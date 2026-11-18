@@ -32,6 +32,7 @@ of A's run or decision through the routes.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -45,8 +46,10 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from shifde.adapters.runtime import IntegrationRuntime
+from shifde.adapters.testservers import RestTestServer
 from shifde.build import tool_runtime
 from shifde.build.env import VersionRef
+from shifde.connections import service as connections
 from shifde.core.clock import utcnow
 from shifde.core.db import Database
 from shifde.core.dbrole import UnsafeDatabaseRole
@@ -599,3 +602,134 @@ def test_a_wedged_run_thread_gives_up_its_slot_and_the_worker_claims_new_work(
         assert _state(owner_db, b.tenant) == b_before  # the worker and its reaper left B alone
     finally:
         release.set()
+
+
+# ------------------------------------------------------------------ run-less jobs (ARCH M2)
+@dataclass(frozen=True)
+class T:
+    tenant: UUID
+    connection: UUID
+    job: UUID
+    test_id: UUID
+
+
+def _test_job(o: Session, tenant: UUID, server: RestTestServer) -> T:
+    """A queued `connection.test` job of `tenant` for a REST connection to `server`, requested by
+    a client administrator (the payload the connections route writes)."""
+    user = add_person(o, tenant, "tester", "tenant_administrator")
+    cid, job, test_id = uuid7(), uuid7(), uuid7()
+    o.execute(
+        text(
+            "INSERT INTO shifde.connections (id, tenant_id, name, connection_type, adapter_key, "
+            "config, auth_method, access_mode) VALUES (:i, :t, :n, 'rest', 'rest.http', "
+            "CAST(:c AS jsonb), 'none', 'read')"
+        ),
+        {"i": cid, "t": tenant, "n": f"conn-{cid.hex}",
+         "c": json.dumps({"base_url": server.base_url, "health_path": "/health"})},
+    )  # fmt: skip
+    payload = {"connection_id": str(cid), "test_id": str(test_id), "principal_id": str(user),
+               "principal_type": "user", "api_key_id": None}  # fmt: skip
+    o.execute(
+        text(
+            "INSERT INTO shifde.jobs (id, tenant_id, kind, payload, dedupe_key) "
+            "VALUES (:i, :t, :k, CAST(:p AS jsonb), :dk)"
+        ),
+        {"i": job, "t": tenant, "k": connections.TEST_JOB_KIND, "p": json.dumps(payload),
+         "dk": f"connection-test:{cid}"},
+    )  # fmt: skip
+    return T(tenant, cid, job, test_id)
+
+
+@pytest.fixture
+def server() -> Iterator[RestTestServer]:
+    with RestTestServer() as s:
+        yield s
+
+
+def _tests_of(owner_db: Database, tenant: UUID) -> list[tuple[Any, ...]]:
+    return _q(owner_db, "SELECT id, connection_id, outcome, tested_by FROM shifde.connection_tests "
+              "WHERE tenant_id = :t ORDER BY id", t=tenant)  # fmt: skip
+
+
+def test_a_worker_loop_runs_a_connection_test_job_in_its_own_client(
+    world: World, owner_db: Database, server: RestTestServer, running: Callable[..., Worker]
+) -> None:
+    with owner_db.session() as o:
+        t = _test_job(o, world.a.tenant, server)
+        o.commit()
+    b_before = _state(owner_db, world.b.tenant)
+    running("w-conn")
+    job = "SELECT status, last_error, run_id FROM shifde.jobs WHERE id = :j"
+    _until(lambda: _q(owner_db, job, j=t.job) == [("done", None, None)])
+    [(test_id, cid, outcome, _)] = _tests_of(owner_db, world.a.tenant)
+    assert (test_id, cid, outcome) == (t.test_id, t.connection, "pass")
+    assert any(r["path"] == "/health" for r in server.requests)
+    health = "SELECT health_status FROM shifde.connections WHERE id = :c"
+    assert _q(owner_db, health, c=t.connection) == [("healthy",)]
+    assert _tests_of(owner_db, world.b.tenant) == []
+    assert _state(owner_db, world.b.tenant) == b_before
+
+
+def test_a_job_of_an_unknown_kind_ends_dead_and_is_never_run(
+    world: World,
+    owner_db: Database,
+    running: Callable[..., Worker],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ran: list[object] = []
+    monkeypatch.setattr(worker_mod.lifecycle, "advance", lambda *a, **kw: ran.append(a) or "done")
+    monkeypatch.setattr(worker_mod.connections, "run_test_job", lambda *a: ran.append(a))
+    job = uuid7()
+    with owner_db.session() as o:
+        insert(o, "jobs", id=job, tenant_id=world.a.tenant, kind="mystery.kind",
+               dedupe_key=f"mystery:{job}")  # fmt: skip
+        o.commit()
+    running("w-kind")
+    done = "SELECT status, last_error FROM shifde.jobs WHERE id = :j"
+    _until(lambda: _q(owner_db, done, j=job) == [("dead", worker_mod.UNKNOWN_KIND)])
+    assert ran == []
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_a_connection_test_job_naming_another_clients_id_touches_nothing_of_that_client(
+    mode: str,
+    world: World,
+    owner_db: Database,
+    settings: Settings,
+    owner_url: str,
+    server: RestTestServer,
+) -> None:
+    """A run-less job carrying A's client id with B's job id (a forged claim row): running it,
+    heartbeating it and finishing it (done, dead, error) change none of B's rows and never test
+    B's connection; B's own client id does. As `shifde_app` and as the schema owner."""
+    with owner_db.session() as o:
+        b = _test_job(o, world.b.tenant, server)
+        o.execute(text("UPDATE shifde.jobs SET status = 'leased', lease_owner = 'w-y', "
+                       "lease_expires_at = now() + interval '1 hour' WHERE id = :j"),
+                  {"j": b.job})  # fmt: skip
+        o.commit()
+    before, tests_before = _state(owner_db, b.tenant), _tests_of(owner_db, b.tenant)
+    w = _worker(settings, "w-y")
+    if mode == "schema-owner":
+        _on_owner(w, owner_url)
+    try:
+        forged = _Job(b.job, world.a.tenant, None, connections.TEST_JOB_KIND)
+        w._inflight[forged.id] = forged
+        w._beat()
+        assert forged.lease_lost.is_set()  # not B's job in A's client: no heartbeat
+        assert w._execute(forged) == "dead" and forged.error == "not_found"
+        for outcome in ("dead", "done", "error", "lease_lost"):
+            w._settle_job(forged, outcome)
+            assert _state(owner_db, b.tenant) == before, outcome
+        assert _tests_of(owner_db, b.tenant) == tests_before == []
+        assert server.requests == []  # B's connection was never driven
+        own = _Job(b.job, b.tenant, None, connections.TEST_JOB_KIND)  # not vacuous
+        w._inflight = {own.id: own}
+        w._beat()
+        assert not own.lease_lost.is_set()
+        assert w._execute(own) == "done" and own.error is None
+        w._settle_job(own, "done")
+        assert _q(owner_db, "SELECT status FROM shifde.jobs WHERE id = :j", j=b.job) == [("done",)]
+        assert [r[0] for r in _tests_of(owner_db, b.tenant)] == [b.test_id]
+    finally:
+        w.db.dispose()

@@ -32,6 +32,7 @@ from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.identity.dependencies import require_auth
 from shifde.secrets import service as secrets_service
+from tests._support.conntests import run_test
 from tests._support.tenants import bind_user
 from tests.identity import harness
 from tests.tenancy.conftest import app_session, owner_member
@@ -93,8 +94,8 @@ def connection(
 
 
 def activate(client: TestClient, h: dict[str, str], cid: str, base: str) -> dict[str, Any]:
-    tested = client.post(f"{base}/connections/{cid}/test", headers=h)
-    assert tested.status_code == 200 and tested.json()["outcome"] == "pass", tested.text
+    tested = run_test(client, h, base, cid)  # 202, then the worker's job (ARCH M2)
+    assert tested["status"] == "done" and tested["result"]["outcome"] == "pass", tested
     row = client.get(f"{base}/connections/{cid}", headers=h).json()
     done = client.post(
         f"{base}/connections/{cid}/status",
