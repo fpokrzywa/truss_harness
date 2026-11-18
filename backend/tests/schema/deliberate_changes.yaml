@@ -695,3 +695,7 @@
   path: [constraints, tenants_status_check]
   reason: "a client can be suspended (findings Item 12, F-03, DECISIONS B-2511, B-2512): status admits 'suspended' beside 'active' and 'archived'; only the platform administrator suspends or unsuspends; a suspended client, like an archived one, is refused at the session pin, on every {org} route but its owner's and the platform administrator's status view, for its API keys, at run start and at approval decisions, and its queued runs are neither claimed nor advanced until it is active again"
   migration: tenancy_0005
+- table: tenants
+  path: [privileges, columns, settings]
+  reason: "Findings Item 13 (J-M2, issue #2, DECISIONS B-2550): shifde_app may UPDATE settings (column grant only), so PUT /orgs/{org}/capture-content can store the client's own capture_content; row-level security confines the write to the client in context, and the tenancy service allows it only with tenant:admin (the client's owner, or a platform administrator through the audited self-add) and audits each change in that client (tenancy.org.capture_content.updated with old, new and the actor)"
+  migration: tenancy_0006

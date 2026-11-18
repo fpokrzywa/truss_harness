@@ -28,6 +28,8 @@ from shifde.tenancy.dependencies import (
     ScopeDep,
 )
 from shifde.tenancy.schemas import (
+    CaptureContentOut,
+    CaptureContentPut,
     DashboardOut,
     OrgCreate,
     OrgOut,
@@ -77,6 +79,11 @@ def get_org(scope: OrgStatusScopeDep) -> OrgOut:
 @router.patch("/orgs/{org}", tags=["orgs"])
 def update_org(scope: OrgStatusScopeDep, body: OrgPatch) -> OrgOut:
     return service.update_org(scope, body)
+
+
+@router.put("/orgs/{org}/capture-content", tags=["orgs"])
+def set_capture_content(scope: ScopeDep, body: CaptureContentPut) -> CaptureContentOut:
+    return service.set_capture_content(scope, body)
 
 
 @router.get("/orgs/{org}/members", tags=["orgs"])

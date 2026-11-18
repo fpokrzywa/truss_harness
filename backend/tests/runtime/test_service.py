@@ -38,12 +38,14 @@ from shifde.runtime import schemas as rs
 from shifde.runtime.action import start_action_run
 from shifde.runtime.governance import PolicyBudgetHooks
 from shifde.runtime.service import ApprovalService, RunService
+from shifde.tenancy import service as tenancy
+from shifde.tenancy.schemas import CaptureContentPut
 from tests._support.runs import add_run
 from tests._support.tenants import add_project, add_tenants, add_workspace
 from tests.build.env_support import add_published
 from tests.build.routes import agent_spec, prompt_spec
 from tests.build.service_support import REGISTRY, add_person, service_for
-from tests.runtime.conftest import insert
+from tests.runtime.conftest import app_session, insert
 from tests.runtime.execution import _write_in_flight, client_state
 from tests.runtime.test_execution import MODES, opened
 
@@ -535,3 +537,30 @@ def test_bs_ontology_or_version_answers_like_an_unknown_one_in_start_action_run(
                 )
         assert got[0] == got[1] and got[0][0] is NotFound, got
     assert _state(owner_db, b.tenant) == before
+
+
+# ------------------------------------------------------------------ capture_content (J-M2)
+def test_the_supported_setter_turns_a_clients_result_content_on_and_off(
+    pair: tuple[Client, Client], app_db: Database, owner_db: Database, settings: Settings
+) -> None:
+    """J-M2 (B-2550): outside development a client's run result is redacted until its owner sets
+    `capture_content` to `full` through `tenancy.service.set_capture_content`; `metadata` and
+    `null` (the production default) redact it again."""
+    a, _ = pair
+    production = settings.model_copy(update={"env": "production"})
+    for value, redacted in (("metadata", True), ("full", False), (None, True)):
+        with owner_db.session() as o:
+            version = o.execute(
+                text("SELECT row_version FROM shifde.tenants WHERE id = :t"), {"t": a.tenant}
+            ).scalar_one()
+        with app_session(app_db, a.tenant) as s:
+            sc = service_for(s, a.tenant, a.admin, production).sc
+            body = CaptureContentPut(capture_content=value, row_version=version)
+            assert tenancy.set_capture_content(sc, body).capture_content == value
+        with app_session(app_db, a.tenant) as s:
+            runs, _ = _services(s, a, production)
+            out = runs.result(a.done)
+        if redacted:
+            assert out.redacted is True and out.output is None, value
+        else:
+            assert out.redacted is False and out.output == f"answer of {a.tenant}", value

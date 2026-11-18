@@ -1,8 +1,8 @@
 {
-  "session_id": "d83f48e6-7778-4a88-abd1-8b52947156ca",
-  "head_sha": "d9754898eebb312b619adceae1b711b6d5e239b4",
+  "session_id": "0f98da4a-69f0-49f9-baea-5e71f5d712fb",
+  "head_sha": "a5afd3cbb11920f0b253314f172a88a5e8e599c4",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "/factory run: resume job 005 (#20) build round 4 (feedback-3.md, head-pin test), then lead full gates and merge PR #35; then merge PR #29 (job 001) per HANDOFF.md steps 2-4",
-  "written_at": "2026-11-18T01:35:43Z"
+  "next_step": "/factory run: job 007 (#4, PR #38) at review round 3: spawn reviewer-code (sonnet) and reviewer-security (opus), then isolation-reviewer on PR #38, approver, job merge; then queue #5 onward per HANDOFF.md",
+  "written_at": "2026-11-18T05:16:52Z"
 }
