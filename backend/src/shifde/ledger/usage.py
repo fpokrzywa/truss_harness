@@ -209,7 +209,8 @@ def record(session: Session, values: Mapping[str, Any]) -> EventResult:  # Any: 
     params["snapshot"] = j(costed.snapshot) if costed.snapshot is not None else None
     row = session.execute(
         text(
-            f"INSERT INTO shifde.usage_events (id, {', '.join(EVENT_COLUMNS)}, "
+            # column names are the EVENT_COLUMNS constant; values bound
+            f"INSERT INTO shifde.usage_events (id, {', '.join(EVENT_COLUMNS)}, "  # nosec B608
             "provider_reported_usage, rate_snapshot) "
             f"VALUES (:id, {', '.join(':' + c for c in EVENT_COLUMNS)}, "
             "CAST(:reported AS jsonb), CAST(:snapshot AS jsonb)) "
@@ -462,7 +463,9 @@ def _rollup_groups(
     rows = (
         session.execute(
             text(
-                "SELECT day, dim_key, input_tokens, output_tokens, cached_tokens, calls, "
+                # vis.clause is a fixed fragment; values are bound
+                "SELECT day, dim_key, input_tokens, output_tokens, cached_tokens, "  # nosec B608
+                "calls, "
                 "duration_ms, cost_amount, event_count AS events FROM shifde.usage_rollups_daily "
                 f"WHERE tenant_id = :t AND day >= :a AND day <= :b AND {vis.clause(params)}"
             ),
@@ -483,7 +486,9 @@ def _day_totals(
     p1: dict[str, Any] = {"t": tenant_id, "a": start, "b": end}  # Any: SQL parameters
     events = session.execute(
         text(
-            "SELECT (occurred_at AT TIME ZONE 'UTC')::date AS day, cost_kind AS dim_key, "
+            # vis.clause is a fixed fragment; values are bound
+            "SELECT (occurred_at AT TIME ZONE 'UTC')::date AS day, cost_kind AS "  # nosec B608
+            "dim_key, "
             "sum(input_tokens) AS input_tokens, sum(output_tokens) AS output_tokens, "
             "sum(cached_read_tokens + cached_write_tokens) AS cached_tokens, "
             "sum(call_count) AS calls, COALESCE(sum(duration_ms), 0) AS duration_ms, "
@@ -496,7 +501,8 @@ def _day_totals(
     p2: dict[str, Any] = {"t": tenant_id, "a": from_day, "b": to_day}  # Any: SQL parameters
     rolls = session.execute(
         text(
-            "SELECT day, cost_kind AS dim_key, sum(input_tokens) AS input_tokens, "
+            # vis.clause is a fixed fragment; values are bound
+            "SELECT day, cost_kind AS dim_key, sum(input_tokens) AS input_tokens, "  # nosec B608
             "sum(output_tokens) AS output_tokens, sum(cached_tokens) AS cached_tokens, "
             "sum(calls) AS calls, sum(duration_ms) AS duration_ms, sum(cost_amount) AS "
             "cost_amount, sum(event_count) AS events FROM shifde.usage_rollups_daily "

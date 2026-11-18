@@ -287,10 +287,20 @@ class Database:
 
 def read_db_revisions(session: Session) -> frozenset[str]:
     """Every revision stamped in the database (one per migration branch head, DECISIONS B-004)."""
-    rows = session.execute(text(f"SELECT version_num FROM {SCHEMA}.alembic_version")).scalars()
+    rows = session.execute(
+        text(
+            # SCHEMA is a module constant
+            f"SELECT version_num FROM {SCHEMA}.alembic_version"  # nosec B608
+        )
+    ).scalars()
     return frozenset(str(r) for r in rows)
 
 
 def read_db_revision(session: Session) -> str | None:
-    row = session.execute(text(f"SELECT version_num FROM {SCHEMA}.alembic_version")).first()
+    row = session.execute(
+        text(
+            # SCHEMA is a module constant
+            f"SELECT version_num FROM {SCHEMA}.alembic_version"  # nosec B608
+        )
+    ).first()
     return str(row[0]) if row else None

@@ -350,7 +350,8 @@ def validate_against_schema(
 
     walk(config, "")
     if not errors:
-        errors.extend(extra(config))
+        # a local validator named extra, not Django's QuerySet.extra
+        errors.extend(extra(config))  # nosec B610
     return errors
 
 

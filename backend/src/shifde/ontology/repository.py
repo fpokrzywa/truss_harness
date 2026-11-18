@@ -34,7 +34,8 @@ def list_policies(session: Session, tenant_id: UUID, ontology_id: UUID) -> list[
     return list(
         session.execute(
             text(
-                f"SELECT {POLICY_COLUMNS} FROM shifde.ontology_access_policies "
+                # columns are module constants; values are bound
+                f"SELECT {POLICY_COLUMNS} FROM shifde.ontology_access_policies "  # nosec B608
                 "WHERE tenant_id = :t AND ontology_id = :o ORDER BY object_type_key, id"
             ),
             {"t": tenant_id, "o": ontology_id},
@@ -48,7 +49,8 @@ def get_policy(session: Session, tenant_id: UUID, ontology_id: UUID, policy_id: 
     return (
         session.execute(
             text(
-                f"SELECT {POLICY_COLUMNS} FROM shifde.ontology_access_policies "
+                # columns are module constants; values are bound
+                f"SELECT {POLICY_COLUMNS} FROM shifde.ontology_access_policies "  # nosec B608
                 "WHERE tenant_id = :t AND ontology_id = :o AND id = :p"
             ),
             {"t": tenant_id, "o": ontology_id, "p": policy_id},
@@ -66,7 +68,9 @@ def insert_policy(
     return (
         session.execute(
             text(
-                "INSERT INTO shifde.ontology_access_policies (id, tenant_id, ontology_id, "
+                # columns are module constants; values are bound
+                "INSERT INTO shifde.ontology_access_policies (id, tenant_id, "  # nosec B608
+                "ontology_id, "
                 "object_type_key, property_keys, subject_type, subject_id, effect, row_filter, "
                 "created_by) VALUES (:id, :tenant_id, :ontology_id, :object_type_key, "
                 "CAST(:property_keys AS text[]), :subject_type, :subject_id, 'allow', "
@@ -108,7 +112,8 @@ def update_policy(
     return (
         session.execute(
             text(
-                "UPDATE shifde.ontology_access_policies "
+                # columns are module constants; values are bound
+                "UPDATE shifde.ontology_access_policies "  # nosec B608
                 "SET property_keys = CAST(:k AS text[]) WHERE tenant_id = :t AND ontology_id = :o "
                 "AND id = :id "
                 f"RETURNING {POLICY_COLUMNS}"
@@ -247,7 +252,8 @@ def list_lineage(
     return list(
         session.execute(
             text(
-                f"SELECT {LINEAGE_COLUMNS} FROM shifde.ontology_query_lineage "
+                # columns are module constants; values are bound
+                f"SELECT {LINEAGE_COLUMNS} FROM shifde.ontology_query_lineage "  # nosec B608
                 "WHERE tenant_id = :t AND ontology_id = :o "
                 "AND (CAST(:r AS uuid) IS NULL OR run_id = :r) "
                 "AND (CAST(:after AS uuid) IS NULL OR id < :after) ORDER BY id DESC LIMIT :n"
@@ -263,7 +269,8 @@ def get_lineage(session: Session, tenant_id: UUID, lineage_id: UUID) -> Row | No
     return (
         session.execute(
             text(
-                f"SELECT {LINEAGE_COLUMNS} FROM shifde.ontology_query_lineage "
+                # columns are module constants; values are bound
+                f"SELECT {LINEAGE_COLUMNS} FROM shifde.ontology_query_lineage "  # nosec B608
                 "WHERE tenant_id = :t AND id = :i"
             ),
             {"t": tenant_id, "i": lineage_id},

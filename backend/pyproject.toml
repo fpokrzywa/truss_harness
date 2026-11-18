@@ -50,6 +50,8 @@ dev = [
   "types-pyyaml>=6.0",
   "pytest-xdist>=3.6",
   "filelock>=3.16",
+  "bandit==1.9.4",
+  "pytest-cov>=7.1.0",
 ]
 
 [build-system]
@@ -84,6 +86,15 @@ testpaths = ["tests"]
 # build, which silently dropped tests/build from full runs (B-1914).
 norecursedirs = ["*.egg", ".*", "_darcs", "CVS", "dist", "node_modules", "venv", "{arch}"]
 addopts = "-ra"
+
+# Line coverage of the shifde package; CI runs the full suite with `--cov` (F-17).
+[tool.coverage.run]
+source = ["shifde"]
+
+[tool.coverage.report]
+# measured 2026-11-18 on factory/013-f-17-sast-coverage: TOTAL 92.65% (24223/26144 lines), with
+# `cd backend; uv run pytest -n 8 --cov --cov-report=term`, rounded down (DECISIONS B-2623)
+fail_under = 92
 
 # ---------------------------------------------------------------------------
 # Module boundaries (NFR-MAINT-001). Dependency direction per SYSTEM_ARCHITECTURE §5:

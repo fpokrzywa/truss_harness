@@ -26,7 +26,11 @@ Row = Mapping[Any, Any]  # Any: SQLAlchemy RowMapping keys / column values
 def get_vendor(session: Session, vendor_id: UUID) -> Row | None:
     return (
         session.execute(
-            text(f"SELECT {COLUMNS} FROM shifde.vendors WHERE id = :id"), {"id": vendor_id}
+            text(
+                # columns are module constants; values are bound
+                f"SELECT {COLUMNS} FROM shifde.vendors WHERE id = :id"  # nosec B608
+            ),
+            {"id": vendor_id},
         )
         .mappings()
         .first()
@@ -47,7 +51,11 @@ def list_vendors(
     clauses.append("(CAST(:after AS uuid) IS NULL OR id > :after)")
     if only_global:
         clauses.append("tenant_id IS NULL")
-    sql = f"SELECT {COLUMNS} FROM shifde.vendors WHERE {' AND '.join(clauses)} ORDER BY id LIMIT :n"
+    sql = (
+        # fixed clauses and constant columns; values are bound
+        f"SELECT {COLUMNS} FROM shifde.vendors WHERE {' AND '.join(clauses)} "  # nosec B608
+        "ORDER BY id LIMIT :n"
+    )
     return list(
         session.execute(
             text(sql), {"category": category, "status": status, "after": after, "n": limit}
@@ -90,7 +98,8 @@ def update_vendor(
             sets.append(f"{column} = :{column}")
             params[column] = value
     sql = (
-        f"UPDATE shifde.vendors SET {', '.join(sets)} WHERE id = :id "
+        # SET names checked against the code allowlist; values are bound
+        f"UPDATE shifde.vendors SET {', '.join(sets)} WHERE id = :id "  # nosec B608
         f"AND (CAST(:expected AS int) IS NULL OR row_version = :expected) RETURNING {COLUMNS}"
     )
     return session.execute(text(sql), params).mappings().first()

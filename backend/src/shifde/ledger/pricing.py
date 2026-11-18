@@ -121,7 +121,8 @@ def resolve(
     row = (
         session.execute(
             text(
-                f"SELECT {VERSION_COLUMNS}, c.provider_key, c.model_key, "
+                # columns are module constants; values are bound
+                f"SELECT {VERSION_COLUMNS}, c.provider_key, c.model_key, "  # nosec B608
                 "c.tenant_id AS card_tenant_id "
                 "FROM shifde.rate_card_versions v "
                 "JOIN shifde.rate_cards c ON c.id = v.rate_card_id "

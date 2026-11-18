@@ -59,7 +59,9 @@ def get_artifact(session: Session, tenant_id: UUID, artifact_id: UUID) -> Row | 
     return (
         session.execute(
             text(
-                f"SELECT {ARTIFACT_COLUMNS} FROM shifde.artifacts WHERE id = :id AND tenant_id = :t"
+                # columns are module constants; values are bound
+                f"SELECT {ARTIFACT_COLUMNS} FROM shifde.artifacts WHERE id = :id AND "  # nosec B608
+                "tenant_id = :t"
             ),
             {"id": artifact_id, "t": tenant_id},
         )
@@ -83,7 +85,8 @@ def list_artifacts(
     return list(
         session.execute(
             text(
-                f"SELECT {ARTIFACT_COLUMNS} FROM shifde.artifacts "
+                # columns are module constants; values are bound
+                f"SELECT {ARTIFACT_COLUMNS} FROM shifde.artifacts "  # nosec B608
                 "WHERE tenant_id = :t AND kind = :kind "
                 "AND (CAST(:after AS uuid) IS NULL OR id > :after) "
                 "AND (CAST(:status AS text) IS NULL OR status = :status) "
@@ -171,7 +174,8 @@ def lock_artifact(session: Session, tenant_id: UUID, artifact_id: UUID) -> Row |
     return (
         session.execute(
             text(
-                f"SELECT {ARTIFACT_COLUMNS} FROM shifde.artifacts "
+                # columns are module constants; values are bound
+                f"SELECT {ARTIFACT_COLUMNS} FROM shifde.artifacts "  # nosec B608
                 "WHERE id = :id AND tenant_id = :t FOR NO KEY UPDATE"
             ),
             {"id": artifact_id, "t": tenant_id},
@@ -208,7 +212,8 @@ def get_version(
     return (
         session.execute(
             text(
-                f"SELECT {VERSION_COLUMNS} FROM shifde.artifact_versions "
+                # columns are module constants; values are bound
+                f"SELECT {VERSION_COLUMNS} FROM shifde.artifact_versions "  # nosec B608
                 "WHERE id = :id AND tenant_id = :t" + (" FOR UPDATE" if lock else "")
             ),
             {"id": version_id, "t": tenant_id},
@@ -224,7 +229,8 @@ def get_draft(
     return (
         session.execute(
             text(
-                f"SELECT {VERSION_COLUMNS} FROM shifde.artifact_versions "
+                # columns are module constants; values are bound
+                f"SELECT {VERSION_COLUMNS} FROM shifde.artifact_versions "  # nosec B608
                 "WHERE tenant_id = :t AND artifact_id = :a AND state = 'draft'"
                 + (" FOR UPDATE" if lock else "")
             ),
@@ -239,7 +245,8 @@ def list_versions(session: Session, tenant_id: UUID, artifact_id: UUID) -> list[
     return list(
         session.execute(
             text(
-                f"SELECT {VERSION_COLUMNS} FROM shifde.artifact_versions "
+                # columns are module constants; values are bound
+                f"SELECT {VERSION_COLUMNS} FROM shifde.artifact_versions "  # nosec B608
                 "WHERE tenant_id = :t AND artifact_id = :a ORDER BY version_no DESC"
             ),
             {"t": tenant_id, "a": artifact_id},
@@ -296,7 +303,9 @@ def set_state(session: Session, tenant_id: UUID, version_id: UUID, state: str) -
     return (
         session.execute(
             text(
-                "UPDATE shifde.artifact_versions SET state = :s, row_version = row_version + 1 "
+                # columns are module constants; values are bound
+                "UPDATE shifde.artifact_versions SET state = :s, row_version = "  # nosec B608
+                "row_version + 1 "
                 f"WHERE id = :id AND tenant_id = :t RETURNING {VERSION_COLUMNS}"
             ),
             {"s": state, "id": version_id, "t": tenant_id},
@@ -433,7 +442,8 @@ def get_request(session: Session, tenant_id: UUID, request_id: UUID) -> Row | No
     return (
         session.execute(
             text(
-                f"SELECT {REQUEST_COLUMNS} FROM shifde.publish_requests "
+                # columns are module constants; values are bound
+                f"SELECT {REQUEST_COLUMNS} FROM shifde.publish_requests "  # nosec B608
                 "WHERE id = :id AND tenant_id = :t"
             ),
             {"id": request_id, "t": tenant_id},
@@ -447,7 +457,8 @@ def pending_request_for(session: Session, tenant_id: UUID, version_id: UUID) -> 
     return (
         session.execute(
             text(
-                f"SELECT {REQUEST_COLUMNS} FROM shifde.publish_requests "
+                # columns are module constants; values are bound
+                f"SELECT {REQUEST_COLUMNS} FROM shifde.publish_requests "  # nosec B608
                 "WHERE tenant_id = :t AND version_id = :v AND status = 'pending'"
             ),
             {"t": tenant_id, "v": version_id},
@@ -463,7 +474,8 @@ def list_requests(
     return list(
         session.execute(
             text(
-                f"SELECT {REQUEST_COLUMNS} FROM shifde.publish_requests "
+                # columns are module constants; values are bound
+                f"SELECT {REQUEST_COLUMNS} FROM shifde.publish_requests "  # nosec B608
                 "WHERE tenant_id = :t AND (CAST(:status AS text) IS NULL OR status = :status) "
                 "AND (CAST(:after AS uuid) IS NULL OR id < :after) ORDER BY id DESC LIMIT :n"
             ),
@@ -486,7 +498,8 @@ def decide_request(
     return (
         session.execute(
             text(
-                "UPDATE shifde.publish_requests SET status = :s, decided_by = :b, "
+                # columns are module constants; values are bound
+                "UPDATE shifde.publish_requests SET status = :s, decided_by = :b, "  # nosec B608
                 "decided_at = :at, comment = :c WHERE id = :id AND tenant_id = :t "
                 "AND status = 'pending' "
                 f"RETURNING {REQUEST_COLUMNS}"
@@ -510,7 +523,9 @@ def insert_run(session: Session, values: Mapping[str, Any]) -> Row:
     row = (
         session.execute(
             text(
-                "INSERT INTO shifde.prompt_test_runs (id, tenant_id, artifact_id, version_id, "
+                # columns are module constants; values are bound
+                "INSERT INTO shifde.prompt_test_runs (id, tenant_id, artifact_id, "  # nosec B608
+                "version_id, "
                 "model_id, inputs, output, usage, latency_ms, evaluation, verdict, created_by) "
                 "VALUES (:id, :tenant_id, :artifact_id, :version_id, :model_id, "
                 "CAST(:inputs AS jsonb), :output, CAST(:usage AS jsonb), :latency_ms, "
@@ -535,7 +550,9 @@ def list_runs(
     return list(
         session.execute(
             text(
-                f"SELECT {RUN_COLUMNS} FROM shifde.prompt_test_runs WHERE tenant_id = :t "
+                # columns are module constants; values are bound
+                f"SELECT {RUN_COLUMNS} FROM shifde.prompt_test_runs WHERE tenant_id "  # nosec B608
+                "= :t "
                 "AND artifact_id = :a "
                 "AND (CAST(:after AS uuid) IS NULL OR id < :after) ORDER BY id DESC LIMIT :n"
             ),
@@ -566,7 +583,8 @@ def insert_pipeline_refs(
         col = column[ref_type]  # constant names only (never user input)
         session.execute(
             text(
-                "INSERT INTO shifde.pipeline_version_refs "
+                # col comes from the code-owned column map; values are bound
+                "INSERT INTO shifde.pipeline_version_refs "  # nosec B608
                 f"(tenant_id, pipeline_version_id, node_id, ref_type, ref_id, {col}) "
                 "VALUES (:t, :v, :n, :rt, :rid, :rid) ON CONFLICT DO NOTHING"
             ),
@@ -637,7 +655,8 @@ def list_mappings(session: Session, tenant_id: UUID, version_id: UUID) -> list[R
     return list(
         session.execute(
             text(
-                f"SELECT {MAPPING_COLUMNS} FROM shifde.ontology_source_mappings "
+                # columns are module constants; values are bound
+                f"SELECT {MAPPING_COLUMNS} FROM shifde.ontology_source_mappings "  # nosec B608
                 "WHERE tenant_id = :t AND ontology_version_id = :v ORDER BY target_kind, target_key"
             ),
             {"t": tenant_id, "v": version_id},
@@ -653,7 +672,8 @@ def get_mapping(
     return (
         session.execute(
             text(
-                f"SELECT {MAPPING_COLUMNS} FROM shifde.ontology_source_mappings "
+                # columns are module constants; values are bound
+                f"SELECT {MAPPING_COLUMNS} FROM shifde.ontology_source_mappings "  # nosec B608
                 "WHERE tenant_id = :tn AND ontology_version_id = :v AND target_kind = :k "
                 "AND target_key = :t"
             ),
@@ -674,7 +694,9 @@ def upsert_mapping(
     return (
         session.execute(
             text(
-                "INSERT INTO shifde.ontology_source_mappings (id, tenant_id, ontology_version_id, "
+                # columns are module constants; values are bound
+                "INSERT INTO shifde.ontology_source_mappings (id, tenant_id, "  # nosec B608
+                "ontology_version_id, "
                 "target_kind, target_key, connection_id, relation_schema, relation_name, "
                 "column_map, key_map, filters, status, created_by) SELECT :id, :tenant_id, "
                 ":ontology_version_id, :target_kind, :target_key, :connection_id, "

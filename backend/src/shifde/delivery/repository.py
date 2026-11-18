@@ -84,7 +84,8 @@ def get_target(session: Session, target_id: UUID, *, tenant_id: UUID) -> Row | N
     return (
         session.execute(
             text(
-                f"SELECT {TARGET_COLUMNS} FROM shifde.delivery_targets "
+                # columns are module constants; values are bound
+                f"SELECT {TARGET_COLUMNS} FROM shifde.delivery_targets "  # nosec B608
                 "WHERE id = :id AND tenant_id = :t"
             ),
             {"id": target_id, "t": tenant_id},
@@ -108,7 +109,8 @@ def list_targets(
     limit: int,
 ) -> list[Row]:
     sql = (
-        f"SELECT {TARGET_COLUMNS} FROM shifde.delivery_targets WHERE tenant_id = :t "
+        # columns are module constants; values are bound
+        f"SELECT {TARGET_COLUMNS} FROM shifde.delivery_targets WHERE tenant_id = :t "  # nosec B608
         "AND (CAST(:status AS text) IS NULL OR status = :status) "
         "AND (CAST(:workspace AS uuid) IS NULL OR workspace_id = :workspace) "
         "AND (CAST(:project AS uuid) IS NULL OR project_id = :project) "
@@ -144,7 +146,9 @@ def archive_target(
     return (
         session.execute(
             text(
-                "UPDATE shifde.delivery_targets SET status = 'archived', claim_id = NULL, "
+                # columns are module constants; values are bound
+                "UPDATE shifde.delivery_targets SET status = 'archived', claim_id = "  # nosec B608
+                "NULL, "
                 "revision = revision + 1 WHERE id = :id AND tenant_id = :t "
                 f"AND status = 'active' AND claim_id = :c RETURNING {TARGET_COLUMNS}"
             ),

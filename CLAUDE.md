@@ -41,6 +41,9 @@ One application (SETH) merging SETH, the FDE SDK and Agent Factory into one code
 ## Validation (the gate set)
 - `python -I scripts/validate/scan-secrets.py`
 - `cd backend; uv run ruff format --check .; uv run ruff check .; uv run mypy src; uv run lint-imports; uv run pytest -n auto`
+- SAST: `cd backend; uv run bandit -q -r src --severity-level medium` (bandit pinned in `pyproject.toml`; a reviewed finding gets `# nosec <id>` with its reason, never a blanket skip).
+- Coverage: `cd backend; uv run pytest -n 8 --cov --cov-report=term` runs the full suite; the floor is `fail_under` in `[tool.coverage.report]` of `backend/pyproject.toml` (CI runs it with `-n auto`).
+- OpenAPI diff: `cd backend; uv run python -m tests._support.openapi_snapshot --check`. Refresh `backend/openapi.json` with `cd backend; uv run python -m tests._support.openapi_snapshot` after any route or schema change, or a version bump. These three run in CI; `gates.py` and `factory/checks.sh` do not run them.
 - `cd frontend; pnpm lint; pnpm typecheck; pnpm test; pnpm build`
 - `python -m unittest discover -s scripts/tests`
 - All of the above from a clean checkout of a ref, one line per gate: `python scripts/gates.py --ref <branch|commit> [--tests tests/<module> ...] [--no-frontend]` (worktree `.worktrees/verify`, logs in `.worktrees/_gate-logs/`; cluster must be running). `pytest -n 8` is faster than `-n auto` on this 96-core machine.

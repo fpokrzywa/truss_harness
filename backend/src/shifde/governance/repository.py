@@ -54,7 +54,11 @@ CARD_VISIBLE = "(tenant_id = :t OR tenant_id IS NULL)"
 def get_card(session: Session, tenant_id: UUID | None, card_id: UUID) -> Row | None:
     return (
         session.execute(
-            text(f"SELECT {CARD_COLUMNS} FROM shifde.rate_cards WHERE id = :id AND {CARD_VISIBLE}"),
+            text(
+                # columns are module constants; values are bound
+                f"SELECT {CARD_COLUMNS} FROM shifde.rate_cards WHERE id = :id AND "  # nosec B608
+                f"{CARD_VISIBLE}"
+            ),
             {"id": card_id, "t": tenant_id},
         )
         .mappings()
@@ -66,7 +70,8 @@ def list_cards(session: Session, tenant_id: UUID | None) -> list[Row]:
     return list(
         session.execute(
             text(
-                f"SELECT {CARD_COLUMNS} FROM shifde.rate_cards WHERE {CARD_VISIBLE} "
+                # columns are module constants; values are bound
+                f"SELECT {CARD_COLUMNS} FROM shifde.rate_cards WHERE {CARD_VISIBLE} "  # nosec B608
                 "ORDER BY provider_key, model_key, (tenant_id IS NULL), id"
             ),
             {"t": tenant_id},
@@ -80,7 +85,8 @@ def list_versions(session: Session, tenant_id: UUID | None, card_id: UUID) -> li
     return list(
         session.execute(
             text(
-                f"SELECT {VERSION_COLUMNS} FROM shifde.rate_card_versions "
+                # columns are module constants; values are bound
+                f"SELECT {VERSION_COLUMNS} FROM shifde.rate_card_versions "  # nosec B608
                 f"WHERE rate_card_id = :c AND {CARD_VISIBLE} ORDER BY version_no DESC"
             ),
             {"c": card_id, "t": tenant_id},
@@ -98,7 +104,9 @@ def next_version_no(session: Session, tenant_id: UUID | None, card_id: UUID) -> 
     return int(
         session.execute(
             text(
-                "SELECT COALESCE(max(version_no), 0) + 1 FROM shifde.rate_card_versions "
+                # columns are module constants; values are bound
+                "SELECT COALESCE(max(version_no), 0) + 1 FROM "  # nosec B608
+                "shifde.rate_card_versions "
                 f"WHERE rate_card_id = :c AND {CARD_VISIBLE}"
             ),
             {"c": card_id, "t": tenant_id},
@@ -112,7 +120,9 @@ def insert_version(session: Session, v: Mapping[str, Any]) -> Row:  # Any: colum
     return (
         session.execute(
             text(
-                "INSERT INTO shifde.rate_card_versions (id, rate_card_id, tenant_id, version_no, "
+                # columns are module constants; values are bound
+                "INSERT INTO shifde.rate_card_versions (id, rate_card_id, tenant_id, "  # nosec B608
+                "version_no, "
                 "effective_from, effective_to, currency, unit, input_rate, output_rate, "
                 "cached_read_rate, cached_write_rate, other_rates, source, revision, created_by) "
                 "VALUES (:id, :rate_card_id, :tenant_id, :version_no, :effective_from, "
@@ -299,7 +309,8 @@ def summary_rows(
         )
         win = "tenant_id = :t AND occurred_at >= :start AND occurred_at < :end"
         sql = (
-            "WITH recent AS (SELECT root_run_id FROM shifde.usage_events "
+            # fragments built in code; limit is an int; values are bound
+            "WITH recent AS (SELECT root_run_id FROM shifde.usage_events "  # nosec B608
             f"WHERE {win} AND root_run_id IS NOT NULL AND {extra} "
             "ORDER BY occurred_at DESC LIMIT 50000), "
             f"ids AS (SELECT DISTINCT root_run_id FROM recent LIMIT {int(limit)}) "
@@ -311,7 +322,9 @@ def summary_rows(
     else:
         col = DIM_COLUMNS[group_by]
         sql = (
-            f"SELECT {col}::text AS key, currency, cost_kind, rate_card_version_id, {_MEASURES} "
+            # col comes from DIM_COLUMNS; fragments built in code; values bound
+            f"SELECT {col}::text AS key, currency, cost_kind, rate_card_version_id, "  # nosec B608
+            f"{_MEASURES} "
             "FROM shifde.usage_rollups_daily WHERE tenant_id = :t AND day >= :a AND day <= :b "
             f"AND {col} IS NOT NULL AND {extra} GROUP BY 1, 2, 3, 4"
         )
@@ -344,7 +357,9 @@ def totals_rows(
     return list(
         session.execute(
             text(
-                f"SELECT 'all' AS key, currency, cost_kind, rate_card_version_id, {_MEASURES} "
+                # filters are fixed fragments; values are bound
+                "SELECT 'all' AS key, currency, cost_kind, rate_card_version_id, "  # nosec B608
+                f"{_MEASURES} "
                 "FROM shifde.usage_rollups_daily WHERE tenant_id = :t AND day >= :a AND day <= :b "
                 f"AND {' AND '.join(filters)} GROUP BY 1, 2, 3, 4"
             ),
@@ -431,7 +446,9 @@ def insert_budget(session: Session, v: Mapping[str, Any]) -> Row:  # Any: column
     return (
         session.execute(
             text(
-                "INSERT INTO shifde.budgets (id, tenant_id, name, scope_type, scope_id, period, "
+                # columns are module constants; values are bound
+                "INSERT INTO shifde.budgets (id, tenant_id, name, scope_type, "  # nosec B608
+                "scope_id, period, "
                 "metric, limit_tokens, amount, currency, enforcement, on_exceed, "
                 "alert_thresholds, status, created_by) VALUES (:id, :tenant_id, :name, "
                 ":scope_type, :scope_id, :period, :metric, :limit_tokens, :amount, :currency, "
@@ -448,7 +465,11 @@ def insert_budget(session: Session, v: Mapping[str, Any]) -> Row:  # Any: column
 def get_budget(session: Session, tenant_id: UUID, budget_id: UUID) -> Row | None:
     return (
         session.execute(
-            text(f"SELECT {BUDGET_COLUMNS} FROM shifde.budgets WHERE id = :id AND tenant_id = :t"),
+            text(
+                # columns are module constants; values are bound
+                f"SELECT {BUDGET_COLUMNS} FROM shifde.budgets WHERE id = :id AND "  # nosec B608
+                "tenant_id = :t"
+            ),
             {"id": budget_id, "t": tenant_id},
         )
         .mappings()
@@ -459,7 +480,11 @@ def get_budget(session: Session, tenant_id: UUID, budget_id: UUID) -> Row | None
 def list_budgets(session: Session, tenant_id: UUID) -> list[Row]:
     return list(
         session.execute(
-            text(f"SELECT {BUDGET_COLUMNS} FROM shifde.budgets WHERE tenant_id = :t ORDER BY id"),
+            text(
+                # columns are module constants; values are bound
+                f"SELECT {BUDGET_COLUMNS} FROM shifde.budgets WHERE tenant_id = :t "  # nosec B608
+                "ORDER BY id"
+            ),
             {"t": tenant_id},
         )
         .mappings()
@@ -511,7 +536,8 @@ def update_row(
     return (
         session.execute(
             text(
-                f"UPDATE shifde.{table} SET {', '.join(sets)} WHERE id = :id "
+                # SET names checked against the code allowlist; values are bound
+                f"UPDATE shifde.{table} SET {', '.join(sets)} WHERE id = :id "  # nosec B608
                 "AND tenant_id = :t "
                 "AND (CAST(:expected AS int) IS NULL OR row_version = :expected) "
                 f"RETURNING {columns}"
@@ -553,7 +579,9 @@ def insert_quota(session: Session, v: Mapping[str, Any]) -> Row:  # Any: column 
     return (
         session.execute(
             text(
-                "INSERT INTO shifde.quotas (id, tenant_id, scope_type, scope_id, metric, "
+                # columns are module constants; values are bound
+                "INSERT INTO shifde.quotas (id, tenant_id, scope_type, scope_id, "  # nosec B608
+                "metric, "
                 "limit_value, created_by) VALUES (:id, :tenant_id, :scope_type, :scope_id, "
                 f":metric, :limit_value, :created_by) RETURNING {QUOTA_COLUMNS}"
             ),
@@ -567,7 +595,11 @@ def insert_quota(session: Session, v: Mapping[str, Any]) -> Row:  # Any: column 
 def get_quota(session: Session, tenant_id: UUID, quota_id: UUID) -> Row | None:
     return (
         session.execute(
-            text(f"SELECT {QUOTA_COLUMNS} FROM shifde.quotas WHERE id = :id AND tenant_id = :t"),
+            text(
+                # columns are module constants; values are bound
+                f"SELECT {QUOTA_COLUMNS} FROM shifde.quotas WHERE id = :id AND "  # nosec B608
+                "tenant_id = :t"
+            ),
             {"id": quota_id, "t": tenant_id},
         )
         .mappings()
@@ -578,7 +610,11 @@ def get_quota(session: Session, tenant_id: UUID, quota_id: UUID) -> Row | None:
 def list_quotas(session: Session, tenant_id: UUID) -> list[Row]:
     return list(
         session.execute(
-            text(f"SELECT {QUOTA_COLUMNS} FROM shifde.quotas WHERE tenant_id = :t ORDER BY id"),
+            text(
+                # columns are module constants; values are bound
+                f"SELECT {QUOTA_COLUMNS} FROM shifde.quotas WHERE tenant_id = :t "  # nosec B608
+                "ORDER BY id"
+            ),
             {"t": tenant_id},
         )
         .mappings()
@@ -641,7 +677,9 @@ def insert_policy(session: Session, v: Mapping[str, Any]) -> Row:  # Any: column
     return (
         session.execute(
             text(
-                "INSERT INTO shifde.governance_policies (id, tenant_id, kind, name, scope_type, "
+                # columns are module constants; values are bound
+                "INSERT INTO shifde.governance_policies (id, tenant_id, kind, name, "  # nosec B608
+                "scope_type, "
                 "scope_id, definition, status, created_by) VALUES (:id, :tenant_id, :kind, :name, "
                 ":scope_type, :scope_id, CAST(:definition AS jsonb), :status, :created_by) "
                 f"RETURNING {POLICY_COLUMNS}"
@@ -657,7 +695,8 @@ def get_policy(session: Session, tenant_id: UUID, policy_id: UUID) -> Row | None
     return (
         session.execute(
             text(
-                f"SELECT {POLICY_COLUMNS} FROM shifde.governance_policies "
+                # columns are module constants; values are bound
+                f"SELECT {POLICY_COLUMNS} FROM shifde.governance_policies "  # nosec B608
                 "WHERE id = :id AND tenant_id = :t"
             ),
             {"id": policy_id, "t": tenant_id},
@@ -671,7 +710,8 @@ def list_policies(session: Session, tenant_id: UUID, kind: str | None) -> list[R
     return list(
         session.execute(
             text(
-                f"SELECT {POLICY_COLUMNS} FROM shifde.governance_policies "
+                # columns are module constants; values are bound
+                f"SELECT {POLICY_COLUMNS} FROM shifde.governance_policies "  # nosec B608
                 "WHERE tenant_id = :t AND (CAST(:kind AS text) IS NULL OR kind = :kind) ORDER BY id"
             ),
             {"kind": kind, "t": tenant_id},
@@ -799,7 +839,8 @@ def count_older_than(session: Session, tenant_id: UUID, data_class: str, cutoff:
     return int(
         session.execute(
             text(
-                f"SELECT count(*) FROM shifde.{table} WHERE tenant_id = :t "
+                # table, column, extra come from RETENTION_TABLES; values bound
+                f"SELECT count(*) FROM shifde.{table} WHERE tenant_id = :t "  # nosec B608
                 f"AND {column} < :cutoff AND {extra}"
             ),
             {"t": tenant_id, "cutoff": cutoff},
@@ -824,7 +865,9 @@ def performance(
     )
     if group_by == "model":
         sql = (
-            f"SELECT key, count(*) AS n, count(*) FILTER (WHERE failed) AS errors, {quant} FROM ("
+            # fixed fragments built in code; values are bound
+            "SELECT key, count(*) AS n, count(*) FILTER (WHERE failed) AS errors, "  # nosec B608
+            f"{quant} FROM ("
             "SELECT s.model_id::text AS key, s.status = 'failed' AS failed, "
             "EXTRACT(EPOCH FROM (s.finished_at - s.started_at)) * 1000 AS dur "
             "FROM shifde.run_steps s "
@@ -836,7 +879,9 @@ def performance(
     else:
         col = "agent_id" if group_by == "agent" else "pipeline_id"
         sql = (
-            f"SELECT key, count(*) AS n, count(*) FILTER (WHERE failed) AS errors, {quant} FROM ("
+            # col is one of two constants; fixed fragments; values bound
+            "SELECT key, count(*) AS n, count(*) FILTER (WHERE failed) AS errors, "  # nosec B608
+            f"{quant} FROM ("
             f"SELECT r.{col}::text AS key, r.status IN ('failed', 'timed_out') AS failed, "
             "EXTRACT(EPOCH FROM (r.finished_at - r.started_at)) * 1000 AS dur "
             f"FROM shifde.runs r WHERE r.tenant_id = :t AND r.{col} IS NOT NULL "

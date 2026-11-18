@@ -49,7 +49,8 @@ def _policies(ctx: RunContext, kind: str) -> list[dict[str, Any]]:  # Any: polic
     scope = gate.budget_scope(ctx)
     rows = ctx.session.execute(
         text(
-            "SELECT p.id, p.kind, p.scope_type, p.scope_id, p.definition "
+            # scope_match takes a constant alias; values are bound
+            "SELECT p.id, p.kind, p.scope_type, p.scope_id, p.definition "  # nosec B608
             "FROM shifde.governance_policies p WHERE p.tenant_id = :tenant "
             "AND p.status = 'active' AND p.kind = :kind "
             f"AND (p.scope_type IS NULL OR {scope_match('p')}) ORDER BY p.id"
