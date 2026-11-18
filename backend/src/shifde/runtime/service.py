@@ -53,7 +53,7 @@ from shifde.runtime import repository as repo
 from shifde.runtime import schemas as s
 from shifde.runtime import state
 from shifde.runtime.governance import BudgetDenied, BudgetScope, GovernanceHooks
-from shifde.runtime.settle import cancel_open_children, settle_terminal
+from shifde.runtime.settle import cancel_open_children, scrub_ended, settle_terminal
 from shifde.tenancy import service as tenancy
 from shifde.tenancy.scope import TenantScope
 
@@ -462,6 +462,7 @@ class RunService:
             error_message=exc.message,
         )
         assert row is not None
+        scrub_ended(self.session, row, self.runtime.settings)  # capture off: the input (B-2514)
         authz.insert_decisions(  # the refusal is a recorded policy decision (FR-GOV-005)
             self.session,
             [
@@ -762,7 +763,7 @@ class RunService:
                 error_message="cancelled",
             )
             if row is not None:
-                settle_terminal(self.session, row, state.CANCELLED)
+                settle_terminal(self.session, row, state.CANCELLED, self.runtime.settings)
                 self._audit("run.cancelled", row, {"by": "api"})
                 self.session.commit()
                 repo.finish_run_jobs(self.session, self.sc.tenant_id, run["id"])
@@ -953,7 +954,7 @@ class ApprovalService:
                 error_message="the run deadline passed",
             )
             if ended is not None:
-                settle_terminal(self.session, ended, state.TIMED_OUT)
+                settle_terminal(self.session, ended, state.TIMED_OUT, self.runtime.settings)
                 audit.record(  # the same event the worker writes for a deadline
                     self.session,
                     self.sc.ctx,
@@ -1033,7 +1034,7 @@ class ApprovalService:
                     else "an operator declared the side effect failed",
                 )
                 if failed is not None:
-                    settle_terminal(self.session, failed, state.FAILED)
+                    settle_terminal(self.session, failed, state.FAILED, self.runtime.settings)
                     fail_children = run["kind"] == "pipeline"
             elif repo.pending_approvals(self.session, tenant, run["id"]) == 0:
                 back = repo.transition(
@@ -1049,7 +1050,13 @@ class ApprovalService:
         self.session.commit()
         if fail_children:  # the pipeline failed: its agent children must not keep running
             # the caller's client and the stored run's id (carry_forward RT-10/RT-11)
-            cancel_open_children(self.session, tenant, run["id"], self.sc.principal.principal_id)
+            cancel_open_children(
+                self.session,
+                tenant,
+                run["id"],
+                self.sc.principal.principal_id,
+                self.runtime.settings,
+            )
         return self._out(row)
 
     @staticmethod

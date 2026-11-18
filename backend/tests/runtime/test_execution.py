@@ -82,13 +82,13 @@ def _q(o: Session, sql: str, **params: Any) -> list[Any]:  # Any: row values
 
 # ------------------------------------------------------------------ settle.py (C1, B-2151)
 def test_a_cancel_during_a_write_is_settled_as_an_unknown_outcome_not_a_plain_cancel(
-    seeds: tuple[Seed, Seed], opened: Any, owner_db: Database
+    seeds: tuple[Seed, Seed], opened: Any, settings: Settings, owner_db: Database
 ) -> None:
     a, b = seeds
     with owner_db.session() as o:
         b_before = client_state(o, b.tenant)
     with opened(a.tenant) as s:
-        settle.settle_terminal(s, run_row(s, a.tenant, a.ended), state.CANCELLED)
+        settle.settle_terminal(s, run_row(s, a.tenant, a.ended), state.CANCELLED, settings)
         s.commit()
     with owner_db.session() as o:
         [(status, error_class)] = _q(
@@ -127,13 +127,13 @@ def test_a_cancel_during_a_write_is_settled_as_an_unknown_outcome_not_a_plain_ca
 
 
 def test_cancelling_open_children_reports_a_child_mid_write_as_an_unknown_outcome(
-    seeds: tuple[Seed, Seed], opened: Any, owner_db: Database
+    seeds: tuple[Seed, Seed], opened: Any, settings: Settings, owner_db: Database
 ) -> None:
     a, b = seeds
     with owner_db.session() as o:
         b_before = client_state(o, b.tenant)
     with opened(a.tenant) as s:
-        settle.cancel_open_children(s, a.tenant, a.running, a.user)
+        settle.cancel_open_children(s, a.tenant, a.running, a.user, settings)
     with owner_db.session() as o:
         [row] = _q(
             o,
@@ -436,13 +436,18 @@ def _forged(s: Session, settings: Settings, a: Seed, t: Target) -> RunContext:
 Case = Callable[[Session, Settings, Seed, Target], object]
 CASES: dict[str, Case] = {
     "settle.settle_terminal": lambda s, st, a, t: settle.settle_terminal(
-        s, {**run_row(s, a.tenant, a.ended), "id": t.ended}, state.CANCELLED
+        s, {**run_row(s, a.tenant, a.ended), "id": t.ended}, state.CANCELLED, st
     ),
+    # answers with the arguments of A's ended run: scrubbed only for A's own id
+    "settle.scrub_ended": lambda s, st, a, t: (
+        settle.scrub_ended(s, {**run_row(s, a.tenant, a.ended), "id": t.ended}, st),
+        _arguments(s, a.tenant, a.ended),
+    )[1],
     "settle.wake_parent": lambda s, st, a, t: settle.wake_parent(
         s, {**run_row(s, a.tenant, a.finished_child), "parent_run_id": t.waiting}
     ),
     "settle.cancel_open_children": lambda s, st, a, t: settle.cancel_open_children(
-        s, a.tenant, t.running, a.user
+        s, a.tenant, t.running, a.user, st
     ),
     "context.checkpoint (run)": lambda s, st, a, t: _forged(s, st, a, t).checkpoint(),
     "context.control": lambda s, st, a, t: _forged(s, st, a, t).control(),
@@ -473,6 +478,15 @@ CASES: dict[str, Case] = {
         _forged(s, st, a, t), "model:invoke", ResourceRef(a.tenant)
     ),
 }
+
+
+def _arguments(s: Session, tenant: UUID, run: UUID) -> list[Any]:  # Any: JSON documents
+    return list(
+        s.execute(
+            text("SELECT arguments FROM shifde.tool_invocations WHERE tenant_id = :t "
+                 "AND run_id = :r ORDER BY id"), {"t": tenant, "r": run},
+        ).scalars()
+    )  # fmt: skip
 
 
 def _reloaded(ctx: RunContext) -> object:

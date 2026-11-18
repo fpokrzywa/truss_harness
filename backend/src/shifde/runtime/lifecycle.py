@@ -135,7 +135,7 @@ def finalize(
             raise state.LeaseLost()
         ctx.run = row
         if terminal:
-            settle_terminal(ctx.session, row, to_status)
+            settle_terminal(ctx.session, row, to_status, ctx.settings)
         if (
             to_status == state.WAITING
             and waiting_reason in ("approval", "indeterminate_side_effect")
@@ -216,7 +216,9 @@ def _came_back_from_a_lease(session: Session, tenant_id: UUID, run_id: UUID) -> 
     )
 
 
-def _fail_before_start(session: Session, run: Any, error_class: str, message: str) -> None:
+def _fail_before_start(
+    session: Session, settings: Settings, run: Any, error_class: str, message: str
+) -> None:
     """Terminal failure of a run this worker holds (no RunContext could be built)."""
     row = repo.transition(
         session,
@@ -231,7 +233,7 @@ def _fail_before_start(session: Session, run: Any, error_class: str, message: st
         error_message=message,
     )
     if row is not None:
-        settle_terminal(session, row, state.FAILED)
+        settle_terminal(session, row, state.FAILED, settings)
         audit.record(
             session,
             RequestContext(request_id=run["trace_id"]),
@@ -406,7 +408,7 @@ def _advance(
             error_message="its pipeline ended",
         )
         if row is not None:
-            settle_terminal(session, row, state.CANCELLED)
+            settle_terminal(session, row, state.CANCELLED, settings)
             audit.record(
                 session,
                 RequestContext(request_id=f"advance-{run_id}"),
@@ -441,7 +443,7 @@ def _advance(
             error_message="the run deadline passed before it started",
         )
         if row is not None:
-            settle_terminal(session, row, state.TIMED_OUT)
+            settle_terminal(session, row, state.TIMED_OUT, settings)
             # audited in the same transaction as the transition (no unaudited terminal state)
             audit.record(
                 session,
@@ -486,11 +488,11 @@ def _advance(
         principal = authz.execution_principal(session, identity)
         header = tenant_header(session, tenant_id)
     except ExecutionDenied as exc:
-        _fail_before_start(session, held, state.AUTHZ_DENIED, str(exc))
+        _fail_before_start(session, settings, held, state.AUTHZ_DENIED, str(exc))
         return "done"
     except state.RunFailed as exc:  # the client is not available: fail it, never leave it held
         session.rollback()
-        _fail_before_start(session, held, exc.error_class, exc.message)
+        _fail_before_start(session, settings, held, exc.error_class, exc.message)
         return "done"
     ctx = RunContext(
         session=session,

@@ -211,6 +211,10 @@ def test_an_advance_completes_its_own_run_and_leaves_the_other_client_alone(
 
     fake.behave = staticmethod(behave)
     with owner_db.session() as o:
+        # content capture on, so the stored output stays readable (capture off scrubs it, B-2514)
+        o.execute(text("UPDATE shifde.tenants SET settings = CAST(:s AS jsonb) WHERE id = :t"),
+                  {"s": '{"capture_content": "full"}', "t": a.tenant})  # fmt: skip
+        o.commit()
         b_before = _state(o, b.tenant)
     assert advance(a.tenant, a.run, a.job) == "done"
     # the claimed row re-read with the client id, the lease bound to the claim's own job
