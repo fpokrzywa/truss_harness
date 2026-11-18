@@ -241,6 +241,38 @@ def _step_event(
     )
 
 
+def _tool_audit(ctx: RunContext, call: ToolCall, step: Mapping[str, Any]) -> None:
+    """`run.tool_invoked` for one finished `tool_call` step, inside the caller's `ctx.txn()`.
+
+    Names the tool and the attempt's outcome only: never the arguments, their hash or the output.
+    """
+    status = str(step["status"])
+    error_class = step["error_class"] if status != "succeeded" else None
+    if status == "succeeded":
+        outcome = "success"
+    elif status == "failed" and error_class == state.AUTHZ_DENIED:
+        outcome = "denied"
+    else:  # the audit outcome CHECK has no "indeterminate": `details.status` keeps it apart
+        outcome = "failure"
+    invocation = step["tool_invocation_id"]
+    ctx.audit(
+        "run.tool_invoked",
+        {
+            "tool_key": call.tool.artifact_key,
+            "tool_version_id": str(call.tool.version_id),
+            "tool_version_no": call.tool.version_no,
+            "side_effect_class": str(call.tool.spec["side_effect_class"]),
+            "step_seq": step["seq"],
+            "attempt": step["attempt"],
+            "status": status,
+            "error_class": error_class,
+            "tool_invocation_id": str(invocation) if invocation is not None else None,
+        },
+        outcome=outcome,
+        commit=False,
+    )
+
+
 def _cost_limit(value: object) -> Decimal | None:
     """`limits.max_cost` of the executing spec (validated non-negative by the build module)."""
     if value is None or isinstance(value, bool):
@@ -873,6 +905,7 @@ def run_tool(ctx: RunContext, call: ToolCall, policy: ToolPolicy) -> Any:  # Any
                     ctx.session, ctx.tenant_id, inv["id"], "failed", error_class=state.INTERNAL
                 )
             _step_event(ctx, "step_finished", row, {"status": "failed", "recovered": True})
+            _tool_audit(ctx, call, row)
         last = row
     if last is not None and last["status"] == "indeterminate" and inv is not None:
         decision = _resolve_indeterminate(ctx, call, last, inv, epoch)  # may raise Waiting/Failed
@@ -949,6 +982,7 @@ def _make_indeterminate(
             finished_at=utcnow(),
         )
         _step_event(ctx, "step_finished", row, {"status": "indeterminate"})
+        _tool_audit(ctx, call, row)
         # in the same transaction: a death in between must not leave the state without a decision
         _insert_approval(ctx, call, "indeterminate_side_effect", epoch, side)
     raise state.Waiting("indeterminate_side_effect")
@@ -1205,6 +1239,7 @@ def _execute_attempts(
                         finished_at=utcnow(),
                     )
                     _step_event(ctx, "step_finished", row, {"status": "indeterminate"})
+                    _tool_audit(ctx, call, row)
                     _insert_approval(ctx, call, "indeterminate_side_effect", epoch, side)
                 raise state.Waiting("indeterminate_side_effect") from exc
             with ctx.txn():
@@ -1229,6 +1264,7 @@ def _execute_attempts(
                 repo.add_usage(ctx.session, ctx.tenant_id, ctx.run_id, tool_calls=1)
                 _usage_event(ctx, "tool_call", row, status="failed")
                 _step_event(ctx, "step_finished", row, {"status": "failed", "error_class": cls})
+                _tool_audit(ctx, call, row)
             if will_retry:
                 delay = backoff_seconds(base, ctx.settings.runtime_retry_cap_seconds, tries)
                 with ctx.txn():
@@ -1279,6 +1315,7 @@ def _execute_attempts(
                         finished_at=utcnow(),
                     )
                     _step_event(ctx, "step_finished", row, {"status": "indeterminate"})
+                    _tool_audit(ctx, call, row)
                     _insert_approval(ctx, call, "indeterminate_side_effect", epoch, side)
                 raise state.Waiting("indeterminate_side_effect")
             # a fresh epoch after an operator's `retry`: a definite failure of THIS attempt; the
@@ -1307,6 +1344,7 @@ def _execute_attempts(
                 _step_event(
                     ctx, "step_finished", row, {"status": "failed", "error_class": state.TOOL_ERROR}
                 )
+                _tool_audit(ctx, call, row)
             raise state.RunFailed(state.TOOL_ERROR, msg)
         safe = json_safe(output)
         raw = json.dumps(safe, default=str)
@@ -1348,6 +1386,7 @@ def _execute_attempts(
             _step_event(
                 ctx, "step_finished", row, {"status": "failed" if violation else "succeeded"}
             )
+            _tool_audit(ctx, call, row)
         if violation:
             raise state.RunFailed(
                 state.SCHEMA_VIOLATION, f"the tool output violates its schema: {violation[0][1]}"
