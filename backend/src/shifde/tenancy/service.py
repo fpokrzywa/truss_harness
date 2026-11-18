@@ -10,7 +10,8 @@ only the database flag; a platform administrator adding themselves to a client a
 binding are audited in that client; group bindings for the platform administrator or the
 client's owner only; `platform_status` for the platform administrator only (B-2401);
 `suspend_org` / `unsuspend_org` for the platform administrator only, audited in that client, and
-no owner edit of a suspended client (F-03, B-2511).
+no owner edit of a suspended client (F-03, B-2511); `set_capture_content` writes the client's own
+`capture_content` setting, audited (J-M2, B-2550).
 """
 
 from __future__ import annotations

@@ -42,6 +42,7 @@ UNIFIED_ONLY = {
     ("PUT", "/api/v1/platform/groups/{group_id}/members"),
     ("PUT", "/api/v1/platform/orgs/{org}/shi-provider-access"),
     ("PUT", "/api/v1/platform/shi-provider"),
+    ("PUT", "/api/v1/orgs/{org}/capture-content"),  # J-M2, B-2550
 }
 # native delivery (design 2026-11-17 section 9 item 2, B-2501): not a SETH module
 DELIVERY = {

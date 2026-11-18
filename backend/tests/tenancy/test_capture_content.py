@@ -1,4 +1,4 @@
-"""`PUT /api/v1/orgs/{org}/capture-content` (J-M2, issue #2, DECISIONS B-2512).
+"""`PUT /api/v1/orgs/{org}/capture-content` (J-M2, issue #2, DECISIONS B-2550).
 
 The client's owner, or a platform administrator who added themselves to the client, sets the
 client's own `capture_content` (`full`, `metadata`, or `null` to unset) in `tenants.settings`,
@@ -69,6 +69,7 @@ def _tenant(owner: Session, tenant: UUID) -> tuple[dict[str, Any], int]:
 
 
 def _events(owner: Session, tenant: UUID) -> list[tuple[UUID | None, dict[str, Any]]]:
+    """(actor, {setting, old, new}) of each capture_content event in `tenant`, oldest first."""
     owner.rollback()
     rows = owner.execute(
         text(
@@ -77,7 +78,8 @@ def _events(owner: Session, tenant: UUID) -> list[tuple[UUID | None, dict[str, A
         ),
         {"t": tenant, "a": ACTION},
     )
-    return [(r[0], dict(r[1] or {})) for r in rows]
+    keys = ("setting", "old", "new")
+    return [(r[0], {k: (r[1] or {}).get(k) for k in keys}) for r in rows]
 
 
 def _seed(owner: Session, tenant: UUID, settings: dict[str, Any]) -> None:
@@ -203,12 +205,13 @@ def test_a_stale_row_version_is_409_and_changes_nothing(
     assert _events(owner_session, a.tenant) == []
 
 
-def test_an_archived_client_is_refused_and_nothing_changes(
-    client: TestClient, world: World, people: People, owner_session: Session
+@pytest.mark.parametrize("status", ["archived", "suspended"])
+def test_an_archived_or_suspended_client_is_refused_and_nothing_changes(
+    status: str, client: TestClient, world: World, people: People, owner_session: Session
 ) -> None:
     a = world.a
     owner_session.execute(
-        text("UPDATE shifde.tenants SET status = 'archived' WHERE id = :t"), {"t": a.tenant}
+        text("UPDATE shifde.tenants SET status = :s WHERE id = :t"), {"s": status, "t": a.tenant}
     )
     owner_session.commit()
     before = _tenant(owner_session, a.tenant)
