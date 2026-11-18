@@ -4,7 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import { useState } from 'react';
 import { endpoints } from '@/lib/api/endpoints';
-import type { Org } from '@/lib/api/types';
+import type { Org, OrgStatus } from '@/lib/api/types';
 import { keys, useOrgs, useSession } from '@/lib/hooks';
 import { orgHref } from '@/lib/scope';
 import { CreateScopeForm } from './CreateScopeForm';
@@ -70,35 +70,7 @@ export function OrganizationsView() {
             No organizations are visible to you yet. Create one below.
           </p>
         ) : (
-          <table className="w-full">
-            <caption className="sr-only">Organizations</caption>
-            <thead className="border-b border-slate-200">
-              <tr>
-                <th scope="col" className="th">
-                  Name
-                </th>
-                <th scope="col" className="th">
-                  Slug
-                </th>
-                <th scope="col" className="th">
-                  Status
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {list.data.items.map((o) => (
-                <tr key={o.id}>
-                  <td className="td">
-                    <Link href={orgHref(o.slug)} className="font-medium text-blue-800 underline">
-                      {o.name}
-                    </Link>
-                  </td>
-                  <td className="td font-mono text-xs">{o.slug}</td>
-                  <td className="td">{o.status === 'active' ? 'Active' : 'Archived'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <OrganizationsTable orgs={list.data.items} />
         )}
       </section>
 
@@ -109,5 +81,50 @@ export function OrganizationsView() {
         onSubmit={(v) => create.mutateAsync(v)}
       />
     </div>
+  );
+}
+
+const STATUS_LABEL: Record<OrgStatus, string> = {
+  active: 'Active',
+  suspended: 'Suspended',
+  archived: 'Archived',
+};
+
+/** The organizations table, without hooks so it can be rendered in tests. */
+export function OrganizationsTable({
+  orgs,
+}: {
+  orgs: Pick<Org, 'id' | 'slug' | 'name' | 'status'>[];
+}) {
+  return (
+    <table className="w-full">
+      <caption className="sr-only">Organizations</caption>
+      <thead className="border-b border-slate-200">
+        <tr>
+          <th scope="col" className="th">
+            Name
+          </th>
+          <th scope="col" className="th">
+            Slug
+          </th>
+          <th scope="col" className="th">
+            Status
+          </th>
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-slate-100">
+        {orgs.map((o) => (
+          <tr key={o.id}>
+            <td className="td">
+              <Link href={orgHref(o.slug)} className="font-medium text-blue-800 underline">
+                {o.name}
+              </Link>
+            </td>
+            <td className="td font-mono text-xs">{o.slug}</td>
+            <td className="td">{STATUS_LABEL[o.status]}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }

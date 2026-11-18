@@ -1,8 +1,9 @@
 """Seeded permission catalog and system role templates.
 
 `test_seeded_catalog_and_templates` is SETH 3ba0e06 `tests/test_rls.py`'s, unchanged. The others
-pin that authz_0001 seeds SETH's final catalog (counts replayed from SETH's migrations) and that
-`permissions` is read-only for the application role.
+pin that authz_0001 seeds SETH's final catalog (counts replayed from SETH's migrations, over the
+keys outside `delivery:%`), that delivery_0001 adds exactly its nine `delivery:*` keys and fifteen
+template grants (B-2501), and that `permissions` is read-only for the application role.
 """
 
 from __future__ import annotations
@@ -50,12 +51,21 @@ def test_seeded_catalog_and_templates(owner_session: Session) -> None:
 def test_catalog_is_seths_final_catalog(owner_session: Session) -> None:
     counts = owner_session.execute(
         text(
-            "SELECT (SELECT count(*) FROM shifde.permissions), "
+            "SELECT (SELECT count(*) FROM shifde.permissions WHERE key NOT LIKE 'delivery:%'), "
             "(SELECT count(*) FROM shifde.roles WHERE is_system), "
-            "(SELECT count(*) FROM shifde.role_permissions WHERE tenant_id IS NULL)"
+            "(SELECT count(*) FROM shifde.role_permissions WHERE tenant_id IS NULL "
+            "AND permission_key NOT LIKE 'delivery:%')"
         )
     ).one()
     assert tuple(counts) == (92, 8, 339)
+    delivery = owner_session.execute(
+        text(
+            "SELECT (SELECT count(*) FROM shifde.permissions WHERE key LIKE 'delivery:%'), "
+            "(SELECT count(*) FROM shifde.role_permissions WHERE tenant_id IS NULL "
+            "AND permission_key LIKE 'delivery:%')"
+        )
+    ).one()
+    assert tuple(delivery) == (9, 15)
     platform = set(
         owner_session.execute(
             text(

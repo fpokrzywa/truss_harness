@@ -70,7 +70,7 @@ else
   if git rev-parse -q --verify "$BASE" >/dev/null; then
     while IFS= read -r f; do
       changed+=("${f#backend/}")
-    done < <(git diff --name-only --diff-filter=d "$BASE"...HEAD -- 'backend/tests/*test_*.py')
+    done < <(git -C "$WT" diff --name-only --diff-filter=d "$BASE"...HEAD -- 'backend/tests/*test_*.py')
   fi
   tests=($(printf '%s\n' "${CORE_TESTS[@]}" "${changed[@]+"${changed[@]}"}" | sort -u))
   step "backend: pytest (core + changed: ${#tests[@]} files)"

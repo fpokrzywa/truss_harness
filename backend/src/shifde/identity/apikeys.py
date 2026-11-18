@@ -13,7 +13,9 @@ Port notes (identity part 2b, DECISIONS B-915..B-919):
   review 1 item 3);
 * a rejected credential is audited (findings Item 5c): a key whose secret did not verify gets an
   installation-level row (no client is proven), a verified key that is revoked, expired or whose
-  principal is inactive gets a row in the key's own client.
+  principal is inactive gets a row in the key's own client;
+* a verified key of a client that is not active (suspended or archived) answers like an invalid
+  key, with the rejection audited in the key's own client (F-03, B-2512).
 """
 
 from __future__ import annotations
@@ -205,6 +207,19 @@ def _reject_in_client(
         db.set_tenant(session, None)
 
 
+def _client_status(session: Session, tenant_id: UUID) -> str | None:
+    """The key's client's status, read in that client's context (the secret verified, so the
+    client is proven); no client context is left set."""
+    db.set_principal(session, None)
+    db.set_tenant(session, tenant_id)
+    try:
+        status = repository.client_status(session, tenant_id)
+        session.commit()
+    finally:
+        db.set_tenant(session, None)
+    return status
+
+
 def authenticate_bearer(
     session: Session,
     settings: Settings,
@@ -215,7 +230,8 @@ def authenticate_bearer(
     """Authenticate `Authorization: Bearer shf_...`.
 
     Errors: Basic or any other scheme -> 401 unsupported_auth_scheme; malformed/unknown/wrong
-    secret -> 401 invalid_credentials; revoked -> 401 credential_revoked; expired -> 401
+    secret, or a client that is not active -> 401 invalid_credentials; revoked -> 401
+    credential_revoked; expired -> 401
     credential_expired (the last two only after the secret verified, so they are no oracle).
     Every rejection after the scheme check writes an audit row (findings Item 5c)."""
     scheme, _, token = authorization.partition(" ")
@@ -234,6 +250,10 @@ def authenticate_bearer(
     ok = hmac.compare_digest(expected, hash_key(pepper or settings.pepper, token))
     if row is None or pepper is None or not ok:
         _reject_unproven(session, ctx)
+        raise InvalidCredentials("invalid credentials")
+    status = _client_status(session, row.tenant_id)
+    if status != "active":
+        _reject_in_client(session, ctx, row, f"client_{status or 'unavailable'}")
         raise InvalidCredentials("invalid credentials")
     now = utcnow()
     if row.revoked_at is not None:

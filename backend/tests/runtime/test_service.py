@@ -328,6 +328,27 @@ def test_approving_resumes_the_run_in_its_own_client(
     assert _state(owner_db, b.tenant) == before
 
 
+@pytest.mark.parametrize("status", ["suspended", "archived"])
+def test_a_client_that_is_not_active_cannot_resume_a_run_by_deciding(
+    pair: tuple[Client, Client], opened: Any, owner_db: Database, settings: Settings, status: str
+) -> None:
+    """Lead isolation review of F-03 (B-2512): deciding an approval of a suspended or archived
+    client is refused before anything is read or queued; the run stays waiting."""
+    a, _ = pair
+    with owner_db.session() as o:
+        o.execute(text("UPDATE shifde.tenants SET status = :s WHERE id = :t"),
+                  {"s": status, "t": a.tenant})  # fmt: skip
+        o.commit()
+    before = _state(owner_db, a.tenant)
+    with opened(a.tenant) as s:
+        app = s.execute(text("SELECT current_user")).scalar_one() == "shifde_app"
+        sc = service_for(s, a.tenant, a.admin, settings, status=status, set_context=app).sc
+        approvals = ApprovalService(sc, IntegrationRuntime(settings=settings, registry=REGISTRY))
+        with pytest.raises(ScopeArchived):
+            approvals.decide(a.approval, rs.DecideIn(decision="approve"))
+    assert _state(owner_db, a.tenant) == before
+
+
 # ------------------------------------------------------------------ cross-client
 Op = Callable[[RunService, ApprovalService, Client, Client], Any]
 OPS: dict[str, Op] = {

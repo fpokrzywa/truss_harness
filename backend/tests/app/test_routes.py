@@ -37,9 +37,18 @@ UNIFIED_ONLY = {
     ("PATCH", "/api/v1/platform/groups/{group_id}"),
     ("POST", "/api/v1/platform/groups"),
     ("POST", "/api/v1/platform/orgs/{org}/group-bindings"),
+    ("POST", "/api/v1/platform/orgs/{org}/suspend"),  # F-03, B-2511
+    ("POST", "/api/v1/platform/orgs/{org}/unsuspend"),
     ("PUT", "/api/v1/platform/groups/{group_id}/members"),
     ("PUT", "/api/v1/platform/orgs/{org}/shi-provider-access"),
     ("PUT", "/api/v1/platform/shi-provider"),
+}
+# native delivery (design 2026-11-17 section 9 item 2, B-2501): not a SETH module
+DELIVERY = {
+    ("GET", "/api/v1/orgs/{org}/delivery/targets"),
+    ("GET", "/api/v1/orgs/{org}/delivery/targets/{target_id}"),
+    ("POST", "/api/v1/orgs/{org}/delivery/targets"),
+    ("POST", "/api/v1/orgs/{org}/delivery/targets/{target_id}/archive"),
 }
 
 
@@ -58,7 +67,7 @@ def test_the_mounted_route_table_is_sethss_minus_branding(
     seth = _pairs(SNAPSHOT["all"])
     runtime, branding = _pairs(SNAPSHOT["runtime"]), _pairs(SNAPSHOT["branding"])
     assert runtime and branding and seth >= OIDC | PLATFORM_STATUS | SETH_GROUP_WRITES
-    expected = (seth - branding - SETH_GROUP_WRITES) | HEALTHZ | UNIFIED_ONLY
+    expected = (seth - branding - SETH_GROUP_WRITES) | HEALTHZ | UNIFIED_ONLY | DELIVERY
     mounted = _mounted(client)
     assert mounted - expected == set(), "mounted but not in SETH"
     assert expected - mounted == set(), "in SETH but not mounted"

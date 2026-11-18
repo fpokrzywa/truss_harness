@@ -99,7 +99,8 @@ def _seed_client(o: Session, c: Client) -> Ids:
                          error_class="indeterminate_side_effect", error_message="m")  # fmt: skip
     insert(o, "tool_invocations", id=uuid7(), tenant_id=t, run_id=child_done, call_ref="c9",
            tool_version_id=c.tool_version, side_effect_class="write_non_idempotent",
-           idempotency_key=f"k9-{child_done}", status="started", request_hash="h")  # fmt: skip
+           idempotency_key=f"k9-{child_done}", status="started", request_hash="h",
+           arguments='{"item": "x"}')  # fmt: skip
     insert(o, "run_steps", id=uuid7(), tenant_id=t, run_id=c.run, seq=2, kind="sub_agent",
            name="child", child_run_id=child_done)  # fmt: skip
     pipeline, pipeline_version = add_published(o, t, "pipelines", f"pl-{uuid7().hex}", {})
@@ -177,6 +178,8 @@ CASES: dict[str, Case] = {
     "lock_run": lambda s, t, x: repo.lock_run(s, t, x.run),
     "active_children": lambda s, t, x: repo.active_children(s, t, x.run),
     "get_artifact": lambda s, t, x: repo.get_artifact(s, t, x.artifact),
+    "scrub_run_content": lambda s, t, x: repo.scrub_run_content(s, t, x.child_done),
+    "ended_runs_of_root": lambda s, t, x: tuple(repo.ended_runs_of_root(s, t, x.run)),
     "next_seq": lambda s, t, x: repo.next_seq(s, t, x.run),
     "update_step": lambda s, t, x: repo.update_step(s, t, x.step, status="failed"),
     "list_steps": lambda s, t, x: repo.list_steps(s, t, x.run),

@@ -49,7 +49,7 @@ from tests._support.runs import add_run
 from tests._support.tenants import add_tenants
 from tests.build.env_support import add_published
 from tests.build.service_support import REGISTRY, add_person
-from tests.runtime.conftest import insert
+from tests.runtime.conftest import app_session, insert
 from tests.runtime.execution import client_state
 
 MODES = ["app-role", "schema-owner"]
@@ -211,6 +211,10 @@ def test_an_advance_completes_its_own_run_and_leaves_the_other_client_alone(
 
     fake.behave = staticmethod(behave)
     with owner_db.session() as o:
+        # content capture on, so the stored output stays readable (capture off scrubs it, B-2514)
+        o.execute(text("UPDATE shifde.tenants SET settings = CAST(:s AS jsonb) WHERE id = :t"),
+                  {"s": '{"capture_content": "full"}', "t": a.tenant})  # fmt: skip
+        o.commit()
         b_before = _state(o, b.tenant)
     assert advance(a.tenant, a.run, a.job) == "done"
     # the claimed row re-read with the client id, the lease bound to the claim's own job
@@ -545,3 +549,62 @@ def test_a_run_whose_client_is_not_available_fails_before_it_starts(
         assert (row["status"], row["error_class"]) == ("failed", state.AUTHZ_DENIED)
         assert (row["lease_token"], row["lease_job_id"]) == (None, None)
         assert _state(o, b.tenant) == b_before
+
+
+# ------------------------------------------------------------------ client not active (F-03)
+def _claimed(app_db: Database, worker: str) -> set[UUID]:
+    """The jobs `shifde_claim_jobs` leases to `worker` now (no client context, as the worker)."""
+    with app_session(app_db, None) as s:
+        rows = s.execute(
+            text("SELECT job_id FROM shifde.shifde_claim_jobs(:w, 10, 30, 0)"), {"w": worker}
+        ).all()
+        s.commit()
+    return {r.job_id for r in rows}
+
+
+@pytest.mark.parametrize("status", ["suspended", "archived"])
+def test_a_run_of_a_client_that_is_not_active_is_neither_advanced_nor_claimed_until_it_is(
+    two: tuple[C, C],
+    advance: Advance,
+    fake: type[Fake],
+    owner_db: Database,
+    app_db: Database,
+    status: str,
+) -> None:
+    """Lead isolation review of F-03 (B-2512): a run queued (its job leased) before its client
+    was suspended or archived is not advanced and not failed; its job is handed back and stays
+    queued, and the claim skips it while B's job is claimed. Once the client is active again the
+    job is claimed and the run completes."""
+    a, b = two
+    with owner_db.session() as o:
+        o.execute(text("UPDATE shifde.tenants SET status = :s WHERE id = :t"),
+                  {"s": status, "t": a.tenant})  # fmt: skip
+        o.commit()
+        run_before = _q(o, "SELECT status, error_class, attempt_count FROM shifde.runs "
+                           "WHERE id = :r", r=a.run)  # fmt: skip
+    assert advance(a.tenant, a.run, a.job) == "released"
+    assert fake.seen == []
+    with owner_db.session() as o:
+        assert _q(o, "SELECT status, error_class, attempt_count FROM shifde.runs WHERE id = :r",
+                  r=a.run) == run_before == [("pending", None, 0)]  # fmt: skip
+        assert _events(o, a.run) == []
+    with app_session(app_db, a.tenant) as s:  # the worker settles `released`: the job goes back
+        repo.release_job(s, a.tenant, a.job, WORKER)
+        s.commit()
+    with owner_db.session() as o:  # B's job queued too: the claim is not vacuous
+        o.execute(text("UPDATE shifde.jobs SET status = 'queued', lease_owner = NULL, "
+                       "lease_expires_at = NULL WHERE id IN (:a, :b)"),
+                  {"a": a.job, "b": b.job})  # fmt: skip
+        o.commit()
+    assert _claimed(app_db, "w-other") == {b.job}
+    assert _claimed(app_db, "w-other") == set()  # A's job stays queued
+    with owner_db.session() as o:
+        assert _q(o, "SELECT status FROM shifde.jobs WHERE id = :j", j=a.job) == [("queued",)]
+        o.execute(text("UPDATE shifde.tenants SET status = 'active' WHERE id = :t"),
+                  {"t": a.tenant})  # fmt: skip
+        o.commit()
+    assert _claimed(app_db, WORKER) == {a.job}
+    assert advance(a.tenant, a.run, a.job) == "done"
+    assert len(fake.seen) == 1
+    with owner_db.session() as o:
+        assert _run(o, a.run)["status"] == state.COMPLETED
