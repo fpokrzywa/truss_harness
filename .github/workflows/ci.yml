@@ -94,8 +94,12 @@ jobs:
         run: uv run mypy src
       - name: import-linter
         run: uv run lint-imports
+      - name: bandit (SAST)
+        run: uv run bandit -q -r src --severity-level medium
       - name: pytest
-        run: uv run pytest -n auto
+        run: uv run pytest -n auto --cov --cov-report=term
+      - name: OpenAPI diff
+        run: uv run python -m tests._support.openapi_snapshot --check
 
   frontend:
     runs-on: ubuntu-latest
