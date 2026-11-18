@@ -690,3 +690,8 @@
   path: [triggers, trg_tool_invocations_arguments_guard]
   reason: "Findings Item 14 (REQ F-12, B-2514): BEFORE UPDATE OF arguments, shifde.tool_invocations_arguments_guard() (invoker rights, fixed search_path) refuses every update naming arguments except setting it to NULL with every other column unchanged, on an invocation whose run (matched on the row's own tenant_id, run_id) is terminal (SETH: no such trigger, arguments not updatable)."
   migration: runtime_0002
+
+- table: tenants
+  path: [constraints, tenants_status_check]
+  reason: "a client can be suspended (findings Item 12, F-03, DECISIONS B-2511, B-2512): status admits 'suspended' beside 'active' and 'archived'; only the platform administrator suspends or unsuspends; a suspended client, like an archived one, is refused at the session pin, on every {org} route but its owner's and the platform administrator's status view, for its API keys, at run start and at approval decisions, and its queued runs are neither claimed nor advanced until it is active again"
+  migration: tenancy_0005
