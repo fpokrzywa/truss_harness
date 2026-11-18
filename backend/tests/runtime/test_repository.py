@@ -179,6 +179,7 @@ CASES: dict[str, Case] = {
     "active_children": lambda s, t, x: repo.active_children(s, t, x.run),
     "get_artifact": lambda s, t, x: repo.get_artifact(s, t, x.artifact),
     "scrub_run_content": lambda s, t, x: repo.scrub_run_content(s, t, x.child_done),
+    "unscrubbed_counts": lambda s, t, x: repo.unscrubbed_counts(s, t, x.child_done),
     "ended_runs_of_root": lambda s, t, x: tuple(repo.ended_runs_of_root(s, t, x.run)),
     "next_seq": lambda s, t, x: repo.next_seq(s, t, x.run),
     "update_step": lambda s, t, x: repo.update_step(s, t, x.step, status="failed"),
