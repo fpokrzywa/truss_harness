@@ -8,7 +8,9 @@ organization lists come from `shifde_my_memberships` alone (visibility by bindin
 context switching) in the summary shape; the installation-wide list checks the principal, not
 only the database flag; a platform administrator adding themselves to a client and every group
 binding are audited in that client; group bindings for the platform administrator or the
-client's owner only; `platform_status` for the platform administrator only (B-2401).
+client's owner only; `platform_status` for the platform administrator only (B-2401);
+`suspend_org` / `unsuspend_org` for the platform administrator only, audited in that client, and
+no owner edit of a suspended client (F-03, B-2511).
 """
 
 from __future__ import annotations
@@ -145,6 +147,10 @@ def _is_platform_admin(session: Session, principal: Principal) -> bool:
         and principal.tenant_id is None
         and authz.new_pdp(session, principal, None).authorize("platform:admin").allowed
     )
+
+
+def is_platform_admin(session: Session, principal: Principal) -> bool:
+    return _is_platform_admin(session, principal)
 
 
 def _require_platform_admin(session: Session, principal: Principal) -> None:
@@ -297,6 +303,8 @@ def update_org(scope: TenantScope, body: OrgPatch) -> OrgOut:
     tenant = repository.get_tenant(scope.session, scope.tenant_id)
     if tenant is None:  # pragma: no cover
         raise NotFound("organization not found")
+    if tenant.status == "suspended":  # only the platform administrator lifts it (B-2511)
+        raise ScopeArchived("organization is suspended")
     values = _patch_values(body, tenant.status)
     old_status = tenant.status  # the ORM row is refreshed by the UPDATE below
     updated = repository.update_tenant(scope.session, scope.tenant_id, body.row_version, values)
@@ -314,6 +322,65 @@ def update_org(scope: TenantScope, body: OrgPatch) -> OrgOut:
     )
     out = _org_out(updated)
     _commit(scope.session, "organization")
+    return out
+
+
+def suspend_org(
+    session: Session, ctx: RequestContext, principal: Principal, org: str
+) -> OrgSummaryOut:
+    """The platform administrator suspends an active client (F-03, B-2511)."""
+    return _set_org_suspension(session, ctx, principal, org, suspend=True)
+
+
+def unsuspend_org(
+    session: Session, ctx: RequestContext, principal: Principal, org: str
+) -> OrgSummaryOut:
+    """The platform administrator makes a suspended client active again (F-03, B-2511)."""
+    return _set_org_suspension(session, ctx, principal, org, suspend=False)
+
+
+def _set_org_suspension(
+    session: Session, ctx: RequestContext, principal: Principal, org: str, *, suspend: bool
+) -> OrgSummaryOut:
+    """The administrator check comes first (one 403 for everyone else whatever the slug); the
+    client is then looked up by slug under the flag, its status re-checked in the writing
+    transaction and the change audited in that client only. No client context is left set."""
+    _require_platform_admin(session, principal)
+    current, new = ("active", "suspended") if suspend else ("suspended", "active")
+    try:
+        with db.platform_admin_context(session):
+            tenant_id = tenant_id_by_slug(session, org)
+            if tenant_id is None:
+                raise NotFound("organization not found")
+            db.set_tenant(session, tenant_id)
+            tenant = repository.get_tenant(session, tenant_id)
+            if tenant is None:  # pragma: no cover - found by slug moments ago
+                raise NotFound("organization not found")
+            if tenant.status != current:
+                raise Conflict(f"organization is {tenant.status}, not {current}")
+            updated = repository.update_tenant(
+                session, tenant_id, tenant.row_version, {"status": new}
+            )
+            if updated is None:  # pragma: no cover - changed concurrently since the read
+                raise Conflict("the organization was modified; reload and retry")
+            audit.record(
+                session,
+                ctx,
+                action="tenancy.org.suspended" if suspend else "tenancy.org.unsuspended",
+                tenant_id=tenant_id,
+                target_type="org",
+                target_id=tenant_id,
+                target_label=f"org:{updated.slug}",
+                details={"by_platform_administrator": True},
+            )
+            out = _summary(updated.id, updated.slug, updated.name, updated.status)
+            session.flush()
+        _commit(session, "organization")
+    except BaseException:
+        session.rollback()
+        db.set_tenant(session, None)
+        raise
+    db.set_tenant(session, None)
     return out
 
 
