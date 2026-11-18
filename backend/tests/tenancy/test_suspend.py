@@ -104,6 +104,19 @@ def _same(r: httpx.Response, reference: httpx.Response, status: int) -> None:
     }
 
 
+def _listed_status(c: httpx.Client, slug: str) -> str:
+    """`slug`'s status in `GET /orgs?scope=all`, paged (a worker's database keeps the clients of
+    earlier tests, so the client may be past the first page)."""
+    cursor = ""
+    while True:
+        page = c.get(f"/api/v1/orgs?scope=all&limit=200{cursor}").json()
+        found = [o["status"] for o in page["items"] if o["slug"] == slug]
+        if found or page["next_cursor"] is None:
+            assert len(found) == 1, (slug, found)
+            return str(found[0])
+        cursor = f"&cursor={page['next_cursor']}"
+
+
 # ------------------------------------------------------------------ (a) suspend and unsuspend
 def test_the_platform_administrator_suspends_and_unsuspends_a_client(
     settings: Settings, world: World, people: People, owner_session: Session
@@ -119,10 +132,7 @@ def test_the_platform_administrator_suspends_and_unsuspends_a_client(
         assert _row(owner_session, a.tenant) == ("suspended", version + 1)
         [(action, details)] = _audit(owner_session, a.tenant)
         assert action == SUSPENDED and details["by_platform_administrator"] is True
-        listed = c.get("/api/v1/orgs?scope=all&limit=200")
-        assert {"slug": a.slug, "status": "suspended"}.items() <= next(
-            o for o in listed.json()["items"] if o["slug"] == a.slug
-        ).items()
+        assert _listed_status(c, a.slug) == "suspended"
         r = c.post(_url(a.slug, "unsuspend"), headers=headers)
         assert r.status_code == 200, r.text
         assert r.json()["status"] == "active"
