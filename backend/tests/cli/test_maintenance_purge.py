@@ -253,7 +253,7 @@ def test_a_client_on_legal_hold_is_skipped(cli: CliRunner, owner_db: Database) -
     (event,) = _events(owner_db, c.tenant)
     assert event.action == ACTION
     # `audit_events.outcome` allows only success / denied / failure (audit_0001): the skip is
-    # recorded as `legal_hold: true` with zero counts (build.md, Blocked)
+    # recorded as `legal_hold: true` with zero counts (lead decision B-2566)
     assert event.details["legal_hold"] is True
     assert (event.details["runs"], event.details["artifacts"]) == (0, 0)
 
