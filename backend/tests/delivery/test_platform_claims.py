@@ -1,4 +1,4 @@
-"""One platform per organization (design 3, B-2501; lead ruling B-2523).
+"""One platform per organization (design 3, B-2501; lead ruling B-2524).
 
 Claims are written only by the `shifde.delivery_claim_platform` definer, which reads the client
 from the session context and serializes claims on one address with an advisory lock. Another
@@ -88,6 +88,28 @@ def test_another_organization_gets_the_fixed_409(
     h = as_user(client, people.owner_b)
     r = client.post(targets(world.b.slug), headers=h, json=target_body(ws_slug(world.b), sent))
     _assert_fixed_409(r, world, url)
+    assert counts(owner_db, world.b.tenant) == (0, 0)
+    assert counts(owner_db, world.a.tenant) == (1, 1)
+
+
+def test_another_port_on_the_same_host_is_refused(
+    client: TestClient, world: World, people: People, owner_db: Database
+) -> None:
+    """Only `:443` is accepted, so the claim key is host-only: B cannot claim A's workspace again
+    under another port (B-2524)."""
+    url = address()
+    register(
+        client, as_user(client, people.owner_a), world.a.slug, target_body(ws_slug(world.a), url)
+    )
+    hb = as_user(client, people.owner_b)
+    ported = client.post(
+        targets(world.b.slug), headers=hb, json=target_body(ws_slug(world.b), f"{url}:8443")
+    )
+    assert ported.status_code == 422, ported.text
+    assert ported.json()["code"] == "validation_error"
+    assert world.a.slug not in ported.text and str(world.a.tenant) not in ported.text
+    plain = client.post(targets(world.b.slug), headers=hb, json=target_body(ws_slug(world.b), url))
+    _assert_fixed_409(plain, world, url)
     assert counts(owner_db, world.b.tenant) == (0, 0)
     assert counts(owner_db, world.a.tenant) == (1, 1)
 
@@ -235,7 +257,7 @@ def test_rls_and_grants_on_the_claim_and_target_tables(
         assert [r.tenant_id for r in rows] == [world.a.tenant]
         own_claim = s.execute(text("SELECT id FROM shifde.delivery_platform_claims")).scalar_one()
         for sql, params in (
-            # no INSERT on claims at all: the definer is the only writer (B-2523)
+            # no INSERT on claims at all: the definer is the only writer (B-2524)
             (
                 "INSERT INTO shifde.delivery_platform_claims (id, tenant_id, platform_kind, "
                 "address_key, created_by) VALUES (:i, :t, 'databricks', :k, :i)",
@@ -278,3 +300,72 @@ def test_rls_and_grants_on_the_claim_and_target_tables(
         )
         assert own_claim is not None
         s.rollback()
+
+
+def _claim_state(owner_db: Database, tenant: UUID, url: str) -> tuple[int, int]:
+    """(claims on `url`, active targets on `url`) of `tenant`, read as the schema owner."""
+    with owner_db.session() as o:
+        row = o.execute(
+            text(
+                "SELECT (SELECT count(*) FROM shifde.delivery_platform_claims "
+                "WHERE tenant_id = :t AND address_key = :k), "
+                "(SELECT count(*) FROM shifde.delivery_targets t "
+                "JOIN shifde.delivery_platform_claims c "
+                "ON c.tenant_id = t.tenant_id AND c.id = t.claim_id "
+                "WHERE t.tenant_id = :t AND t.status = 'active' AND c.address_key = :k), "
+                "(SELECT count(*) FROM shifde.delivery_targets "
+                "WHERE tenant_id = :t AND status = 'active' AND address = :u)"
+            ),
+            {"t": tenant, "k": address_key(url), "u": url},
+        ).one()
+    claims, held, active = int(row[0]), int(row[1]), int(row[2])
+    assert held == active  # every active target on the address holds its claim
+    return claims, active
+
+
+def test_archive_racing_register_in_one_organization(
+    settings: Settings, world: World, people: People, owner_db: Database
+) -> None:
+    """A archives its only target on an address while registering another on it, at once, five
+    times: the end state is either a claim with an active target, or no claim and no active
+    target; never a claim without a target or a target without its claim."""
+
+    def archive(start: threading.Barrier, c: TestClient, h: dict[str, str], tid: str) -> Any:
+        start.wait()
+        return c.post(f"{targets(world.a.slug)}/{tid}/archive", headers=h)
+
+    def post(start: threading.Barrier, c: TestClient, h: dict[str, str], body: Any) -> Any:
+        start.wait()
+        return c.post(targets(world.a.slug), headers=h, json=body)
+
+    with delivery_client(settings) as c1, delivery_client(settings) as c2:
+        h1, h2 = as_user(c1, people.owner_a), as_user(c2, people.owner_a)
+        for _ in range(5):
+            url = address()
+            first = register(c1, h1, world.a.slug, target_body(ws_slug(world.a), url))
+            start = threading.Barrier(2)
+            with ThreadPoolExecutor(2) as pool:
+                archived = pool.submit(archive, start, c1, h1, first["id"])
+                posted = pool.submit(post, start, c2, h2, target_body(ws2_slug(world.a), url))
+                assert archived.result().status_code == 200, archived.result().text
+                assert posted.result().status_code == 201, posted.result().text
+            claims, active = _claim_state(owner_db, world.a.tenant, url)
+            assert (claims, active) in ((1, 1), (0, 0))
+            assert (claims, active) == (1, 1)  # the registration always ends holding a claim
+
+
+def test_the_app_role_cannot_delete_a_claim_an_active_target_holds(
+    client: TestClient, app_db: Database, owner_db: Database, world: World, people: People
+) -> None:
+    url = address()
+    register(
+        client, as_user(client, people.owner_a), world.a.slug, target_body(ws_slug(world.a), url)
+    )
+    with app_session(app_db, world.a.tenant, uuid7()) as s:
+        own_claim = s.execute(text("SELECT id FROM shifde.delivery_platform_claims")).scalar_one()
+        with pytest.raises(DBAPIError):
+            s.execute(
+                text("DELETE FROM shifde.delivery_platform_claims WHERE id = :c"), {"c": own_claim}
+            )
+        s.rollback()
+    assert _claim_state(owner_db, world.a.tenant, url) == (1, 1)
