@@ -1146,11 +1146,14 @@ def run_test_job(
                 pdp=authz.new_pdp(session, principal, tenant_id),
             )
             ConnectionService(scope, runtime).execute_test(UUID(payload["connection_id"]), test_id)
-        except AppError as exc:
+        except (AppError, IntegrityError) as exc:
             session.rollback()
             # a unique violation on the pre-allocated id: another run of this job recorded it
+            # (and its audit event and health update); nothing more is written
             if repository.get_test(session, test_id, tenant_id=tenant_id) is not None:
                 return None
+            if isinstance(exc, IntegrityError):
+                raise
             return exc.code
         return None
     finally:
