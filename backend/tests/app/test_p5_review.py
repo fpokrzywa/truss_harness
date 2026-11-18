@@ -616,7 +616,7 @@ def test_a_job_claimed_twice_is_not_run_twice_and_its_claim_is_handed_back(
         wait_for(lambda: jid not in worker._inflight, 10)
     finally:
         release.set()
-        worker._executor.shutdown(wait=True)
+        wait_for(lambda: jid not in worker._inflight, 10)
         worker.db.dispose()
 
 

@@ -345,7 +345,6 @@ def test_a_reaped_run_is_scrubbed_in_the_follow_up_transaction(
     try:
         w._reap()
     finally:
-        w._executor.shutdown()
         w.db.dispose()
     with owner_db.session() as o:
         assert o.execute(text("SELECT status FROM shifde.runs WHERE id = :r"),

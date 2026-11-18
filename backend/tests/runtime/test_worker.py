@@ -17,6 +17,14 @@ unknown-outcome approval reachable through the approvals route, and the
 `run.indeterminate_side_effect` audit event; the late return of the stale executor changes
 nothing and the write is never repeated.
 
+ARCH M3 remainder (B-2590): one worker loop with a single slot runs that approved write and its
+`invoke_once` blocks; once the run is past its deadline by `wedged_after` the heartbeat abandons
+the job, and the same worker's reaper settles the run `timed_out` with
+`indeterminate_side_effect` (an indeterminate invocation and a pending unknown-outcome approval,
+not `cancelled`). The abandoned thread no longer takes the slot: the worker claims and completes
+a second run, and stops, while the thread is still blocked; its late return changes none of the
+run's rows and the write was delivered once.
+
 Isolation: the claimed client is the only client a job touches; a job naming another client's id
 (heartbeat, release, finish, reap audit) changes nothing of that client; B's owner sees nothing
 of A's run or decision through the routes.
@@ -204,7 +212,6 @@ def test_the_worker_refuses_a_privileged_database_role_at_startup(
         with w.db.session() as s:
             assert s.execute(text("SELECT current_user")).scalar_one() == "shifde_app"
     finally:
-        w._executor.shutdown()
         w.db.dispose()
 
 
@@ -294,7 +301,6 @@ def test_a_job_naming_another_clients_id_touches_nothing_of_that_client(
         w._settle_job(own, "done")
         assert _q(owner_db, "SELECT status FROM shifde.jobs WHERE id = :j", j=b.job) == [("done",)]
     finally:
-        w._executor.shutdown()
         w.db.dispose()
 
 
@@ -324,7 +330,6 @@ def test_a_job_wedged_past_its_runs_deadline_is_no_longer_heartbeated(
         assert job.lease_lost.is_set()
         assert _q(owner_db, expires, j=a.job)[0][0] == renewed  # no longer renewed
     finally:
-        w._executor.shutdown()
         w.db.dispose()
 
 
@@ -353,7 +358,6 @@ def test_a_reaped_run_is_audited_in_its_own_client_only(
         w._reap()
         w._audit_reaped(a.tenant, b.run, "worker_lost")  # B's run named with A's client: nothing
     finally:
-        w._executor.shutdown()
         w.db.dispose()
     assert _status(owner_db, a.run) == "pending"  # requeued for another worker
     rows = _q(owner_db, about, r=str(a.run))
@@ -366,7 +370,6 @@ def test_a_reaped_run_is_audited_in_its_own_client_only(
         owner._audit_reaped(a.tenant, a.run, "timed_out")  # not vacuous: A's own run is audited
         assert (a.tenant, "run.timed_out") in _q(owner_db, about, r=str(a.run))
     finally:
-        owner._executor.shutdown()
         owner.db.dispose()
     assert _q(owner_db, about, r=str(b.run)) == []
     assert _q(owner_db, count, t=b.tenant) == b_audit and _state(owner_db, b.tenant) == before
@@ -436,7 +439,6 @@ def test_c1_a_worker_that_loses_its_lease_mid_write_leaves_an_unknown_outcome_no
         try:
             reaper._reap()
         finally:
-            reaper._executor.shutdown()
             reaper.db.dispose()
         release.set()  # the stale executor returns late: its finalize is fenced
         w1.request_stop()
@@ -478,3 +480,122 @@ def test_c1_a_worker_that_loses_its_lease_mid_write_leaves_an_unknown_outcome_no
               r=a.run) == [("resolved_succeeded",)]  # fmt: skip
     assert _status(owner_db, a.run) == status
     assert len(deliveries) == 1, "the write was resent"
+
+
+# ------------------------------------------------------------------ ARCH M3: a wedged run thread
+def _run_rows(owner_db: Database, run: UUID) -> tuple[Any, ...]:  # Any: row values
+    """Every row of `run`: the run, its steps, tool invocations, approvals and jobs."""
+    return (
+        _q(owner_db, "SELECT * FROM shifde.runs WHERE id = :r", r=run),
+        *(_q(owner_db, f"SELECT * FROM shifde.{t} WHERE run_id = :r ORDER BY id", r=run)
+          for t in ("run_steps", "tool_invocations", "approvals", "jobs")),
+    )  # fmt: skip
+
+
+def _thread(name: str) -> threading.Thread:
+    [t] = [t for t in threading.enumerate() if t.name == name]
+    return t
+
+
+def test_a_wedged_run_thread_gives_up_its_slot_and_the_worker_claims_new_work(
+    two: tuple[C, C],
+    people: People,
+    owner_db: Database,
+    settings: Settings,
+    script: type[Script],
+    running: Callable[..., Worker],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ARCH M3 (B-2590): with one slot, a run thread wedged in an approved write is abandoned;
+    the same worker's reaper settles its run as an unknown outcome (not cancelled), the worker
+    claims and completes new work and stops while that thread is still blocked, and the thread's
+    late return changes nothing."""
+    a, b = two
+    with owner_db.session() as o:  # A's second run, claimable only once the slot should be free
+        user = add_person(o, a.tenant, "runner2", "tenant_administrator")
+        second = add_run(o, a.tenant, initiated_by_principal_id=user)
+        second_job = uuid7()
+        insert(o, "jobs", id=second_job, tenant_id=a.tenant, kind="run.advance", run_id=second,
+               dedupe_key=f"run:{second}:{second_job}",
+               run_after=utcnow() + timedelta(hours=1))  # fmt: skip
+        o.commit()
+    writing, release = threading.Event(), threading.Event()
+    deliveries: list[str] = []
+
+    def invoke_once(conns: object, spec: object, args: object, **kw: Any) -> object:
+        deliveries.append(kw["idempotency_key"])
+        writing.set()
+        release.wait(300)  # wedged until the test lets it return
+        return {"written": True}
+
+    monkeypatch.setattr(tool_runtime, "invoke_once", invoke_once)
+    call = steps.ToolCall(a.tool, {"item": "x"}, "w1", node_id="w1")
+    policy = steps.ToolPolicy(frozenset({"write_non_idempotent"}), None,
+                              frozenset({a.tool.version_id}))  # fmt: skip
+    script.behave = staticmethod(
+        lambda ctx: steps.run_tool(ctx, call, policy) if ctx.run["id"] == a.run else {"ok": 1}
+    )
+    b_before = _state(owner_db, b.tenant)
+    w = running("w-m3-slot", concurrency=1, lease_seconds=2, reap_seconds=1.0)
+    w.wedged_after = timedelta(seconds=1)
+    loop = _thread("test-w-m3-slot")
+    try:
+        _until(lambda: _status(owner_db, a.run) == "waiting_for_approval")
+        with runtime_client(settings) as client:
+            h = as_user(client, people.owner_a)
+            base = org(a.slug)
+            asked = client.get(f"{base}/approvals", params={"status": "pending"}, headers=h).json()
+            [first] = [x for x in asked["items"] if x["run_id"] == str(a.run)]
+            ok = client.post(f"{base}/approvals/{first['id']}/decide", headers=h,
+                             json={"decision": "approve"})  # fmt: skip
+            assert ok.status_code == 200, ok.text
+        assert writing.wait(60), "the approved write never started"
+        with w._lock:
+            [job] = list(w._inflight.values())
+        wedged = _thread(f"shifde-run-{job.id}")
+        assert job.run_id == a.run and not job.abandoned.is_set()
+        with owner_db.session() as o:  # the run is now well past its deadline + `wedged_after`
+            o.execute(text("UPDATE shifde.runs SET deadline_at = now() - interval '5 seconds' "
+                           "WHERE id = :r"), {"r": a.run})  # fmt: skip
+            o.commit()
+        # 1. the heartbeat abandons the job: it no longer takes the only slot
+        assert job.abandoned.wait(60), "the wedged job was never abandoned"
+        assert job.lease_lost.is_set()
+        with w._lock:
+            assert w._inflight.get(job.id) is job and w._active() == []
+        with owner_db.session() as o:  # A's second run becomes claimable
+            o.execute(text("UPDATE shifde.jobs SET run_after = now() WHERE id = :j"),
+                      {"j": second_job})  # fmt: skip
+            o.commit()
+        # 2. this worker's own reaper settles the wedged run as an unknown outcome
+        _until(lambda: _status(owner_db, a.run) == "timed_out", 60)
+        row = _q(owner_db, "SELECT status, error_class FROM shifde.runs WHERE id = :r",
+                 r=a.run)[0]  # fmt: skip
+        assert row == ("timed_out", UNKNOWN) and row[0] != "cancelled"
+        assert _q(owner_db, "SELECT status FROM shifde.tool_invocations WHERE run_id = :r",
+                  r=a.run) == [("indeterminate",)]  # fmt: skip
+        assert ("pending", UNKNOWN) in _q(owner_db, "SELECT status, reason FROM shifde.approvals "
+                                          "WHERE run_id = :r", r=a.run)  # fmt: skip
+        # 3. the same worker claims and completes the second run while the thread is blocked
+        _until(lambda: _status(owner_db, second) == "completed", 60)
+        assert [ctx.run["id"] for ctx in Script.seen].count(second) == 1
+        done = "SELECT status, lease_owner FROM shifde.jobs WHERE id = :j"
+        _until(lambda: _q(owner_db, done, j=second_job) == [("done", "w-m3-slot")])
+        assert wedged.is_alive() and not release.is_set()
+        # 4. the worker stops without waiting for the blocked thread
+        w.request_stop()
+        loop.join(60)
+        assert not loop.is_alive(), "the worker waited for the wedged thread"
+        assert wedged.is_alive() and not release.is_set()
+        before = _run_rows(owner_db, a.run)
+        # the stuck call returns late: fenced, nothing it touches changes, nothing is resent
+        release.set()
+        wedged.join(60)
+        assert not wedged.is_alive()
+        _until(lambda: job.id not in w._inflight)
+        assert _run_rows(owner_db, a.run) == before
+        assert len(deliveries) == 1, "the write was resent"
+        assert _status(owner_db, a.run) == "timed_out"
+        assert _state(owner_db, b.tenant) == b_before  # the worker and its reaper left B alone
+    finally:
+        release.set()
