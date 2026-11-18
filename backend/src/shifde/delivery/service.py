@@ -1,5 +1,5 @@
 """Deployment targets and the one-platform-per-organization rule (design sections 3 and 9,
-DECISIONS B-2501, lead ruling B-2523).
+DECISIONS B-2501, lead ruling B-2524).
 
 A target's address is normalized and allow-listed by `adapters.native.addresses` before anything
 is written (this module makes no outbound request). The organization's claim on the address comes
@@ -188,7 +188,7 @@ class TargetService:
                 errors=[{"loc": ["body", "address"], "msg": str(exc), "type": "address"}],
             ) from exc
         session = self.sc.session
-        # B-2523: the definer answers None, naming nobody, when another organization holds it
+        # B-2524: the definer answers None, naming nobody, when another organization holds it
         claim_id = repository.claim_platform(session, body.platform_kind, address_key(address))
         if claim_id is None:
             session.rollback()

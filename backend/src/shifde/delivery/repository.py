@@ -1,7 +1,7 @@
 """SQL for deployment targets and platform claims (RLS tenant context; design 3, B-2501).
 
 Every read and write is keyed by `tenant_id` as well as by row-level security. Claims are created
-only by the `shifde.delivery_claim_platform` definer (lead ruling B-2523): it reads the client from
+only by the `shifde.delivery_claim_platform` definer (lead ruling B-2524): it reads the client from
 the session context and answers NULL, naming nobody, when another organization holds the address.
 Everything that creates or releases a claim takes the same transaction-scoped advisory lock on
 (platform kind, address key), so a register and an archive on one address never interleave.

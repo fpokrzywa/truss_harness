@@ -8,7 +8,7 @@ Depends on: tenancy_0004 (`tenants`, `workspaces`, `projects`) and identity_0006
 it as well makes this revision an alembic merge of three heads, and `alembic upgrade heads` from
 an empty database then fails in identity_0001 for most hash seeds (KeyError 'base_0001').
 
-Design 2026-11-17 sections 3 and 9 (DECISIONS B-2500, B-2501), lead ruling B-2523.
+Design 2026-11-17 sections 3 and 9 (DECISIONS B-2500, B-2501), lead ruling B-2524.
 
 * `delivery_platform_claims`: one row per (organization, platform kind, address key). The address
   key is the sha256 of the normalized platform address (`adapters.native.addresses`), so no
@@ -17,7 +17,7 @@ Design 2026-11-17 sections 3 and 9 (DECISIONS B-2500, B-2501), lead ruling B-252
 * `delivery_targets`: a Databricks deployment target of a workspace (optionally a project). An
   active target names its organization's claim (`ck_delivery_targets__claim`); an archived one
   names none. Several active targets of one organization may share a claim.
-* `shifde.delivery_claim_platform(text, text)` (B-2523): the only path that writes a claim. A
+* `shifde.delivery_claim_platform(text, text)` (B-2524): the only path that writes a claim. A
   SECURITY DEFINER owned by `shifde_owner` (BYPASSRLS), `SET search_path = pg_catalog, pg_temp`,
   every `shifde` object schema-qualified, EXECUTE revoked from PUBLIC and granted to `shifde_app`
   only, no write of the `app.*` context. The organization and principal come from the session
