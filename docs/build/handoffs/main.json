@@ -1,8 +1,8 @@
 {
-  "session_id": "17267497-cc7e-4306-95ae-a86ef121a91a",
-  "head_sha": "140b106c43a76402f568c4ad77920f3e0bbd24a2",
+  "session_id": "02494822-83f1-48b6-ade8-d7084bfcc1c9",
+  "head_sha": "1bda5df0920ba263de98901260f1e8847532bcb7",
   "branch": "main",
-  "unit_in_progress": "009-f-09-rest-adapter (#6, PR #42)",
-  "next_step": "/factory run: job 009 (#6, PR #42) at review round 2: spawn reviewer-code (sonnet), reviewer-security (opus) and isolation-reviewer on PR #42; then approver / lead merge per HANDOFF.md; then queue #8 onward",
-  "written_at": "2026-11-18T07:44:54Z"
+  "unit_in_progress": "none",
+  "next_step": "/factory run: job create 9 (ARCH M4 / F-11 retention purge), then the queue at concurrency 1 (#10-#18, #21-#28, #33, #34, #36, #39, #41, #44) per HANDOFF.md",
+  "written_at": "2026-11-18T09:37:24Z"
 }
