@@ -13,10 +13,12 @@ from __future__ import annotations
 from typing import Any  # Any: JSON bodies, row values
 from uuid import UUID
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from shifde.adapters.testservers import RestTestServer
+from shifde.connections import repository as connections_repo
 from shifde.connections import service as connections
 from shifde.core.db import Database
 from shifde.core.settings import Settings
@@ -319,3 +321,86 @@ def test_a_job_closed_without_a_result_reads_as_worker_lost(
     assert [(r[4], r[7]) for r in _jobs(owner_db, cid)] == [("done", "stale lease")]
     out = job_status(client, h, A, cid, job["id"])
     assert (out["status"], out["error"], out["result"]) == ("failed", "worker_lost", None)
+
+
+def test_a_job_that_cannot_be_read_back_answers_409_busy_after_three_attempts(
+    client: TestClient,
+    world: World,
+    people: People,
+    app_db: Database,
+    owner_db: Database,
+    settings: Settings,
+    rest_server: RestTestServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The enqueue loop is bounded: when no active job is read back after three attempts, the
+    POST answers 409 `connection_test_busy` and leaves no job behind."""
+    A, h = org(world.a.slug), as_user(client, people.owner_a)
+    cid = _rest(client, h, A, app_db, settings, world.a.tenant, rest_server)
+    reads: list[str] = []
+
+    def miss(session: Any, *, tenant_id: UUID, kind: str, dedupe_key: str) -> None:
+        reads.append(dedupe_key)
+
+    monkeypatch.setattr(connections_repo, "_active_test_job", miss)
+    r = client.post(f"{A}/connections/{cid}/test", headers=h)
+    assert r.status_code == 409, r.text
+    assert r.json()["code"] == "connection_test_busy"
+    assert connections_repo.TEST_JOB_ATTEMPTS == 3
+    assert reads == [f"connection-test:{cid}"] * 3
+    assert _jobs(owner_db, cid) == []  # rolled back: nothing queued, let alone twice
+    assert _tests(owner_db, cid) == []
+    monkeypatch.undo()
+    job = _post(client, h, A, cid)  # a retry queues normally
+    assert [r[4] for r in _jobs(owner_db, cid)] == ["queued"] and job["status"] == "queued"
+
+
+def test_a_unique_violation_on_the_test_id_counts_as_recorded(
+    client: TestClient,
+    world: World,
+    people: People,
+    app_db: Database,
+    owner_db: Database,
+    settings: Settings,
+    rest_server: RestTestServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Another attempt of the same job recorded the test after this one's idempotency check: the
+    insert hits the primary key, the job ends `done`, and no second audit event or health/status
+    update is written."""
+    A, h = org(world.a.slug), as_user(client, people.owner_a)
+    cid = _rest(client, h, A, app_db, settings, world.a.tenant, rest_server)
+    out = run_test(client, h, A, cid)
+    assert out["status"] == "done"
+
+    def state() -> list[tuple[Any, ...]]:
+        return _q(
+            owner_db,
+            "SELECT row_version, last_tested_at, health_status, status, "
+            "(SELECT count(*) FROM shifde.audit_events WHERE action = 'connection.tested' "
+            "AND target_id = :c) FROM shifde.connections WHERE id = CAST(:c AS uuid)",
+            c=cid,
+        )
+
+    before = state()
+    with owner_db.session() as o:  # the job is attempted again
+        o.execute(
+            text("UPDATE shifde.jobs SET status = 'queued', finished_at = NULL WHERE id = :j"),
+            {"j": out["id"]},
+        )
+        o.commit()
+    real = connections_repo.get_test
+    checks: list[UUID] = []
+
+    def first_misses(session: Any, test_id: UUID, *, tenant_id: UUID) -> Any:
+        checks.append(test_id)
+        return None if len(checks) == 1 else real(session, test_id, tenant_id=tenant_id)
+
+    monkeypatch.setattr(connections_repo, "get_test", first_misses)
+    assert _execute(client, world.a.tenant, out["id"])
+    monkeypatch.undo()
+    assert len(checks) == 2  # the idempotency check missed; the read after the violation found it
+    assert [(r[4], r[7]) for r in _jobs(owner_db, cid)] == [("done", None)]
+    assert [str(r[0]) for r in _tests(owner_db, cid)] == [out["result"]["id"]]
+    assert state() == before
+    assert job_status(client, h, A, cid, out["id"]) == out
