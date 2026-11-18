@@ -598,6 +598,13 @@ def cmd_queue():
     jobs = {j["issue"]: j for j in all_jobs()}
     # A job is done once its PR is merged on GitHub, which also closes the issue.
     for j in jobs.values():
+        if j["stage"] not in TERMINAL and not j["pr"]:
+            # A PR the job never recorded (opened mid-round, merged by hand) is
+            # found by the job's branch.
+            prs = gh_json("pr", "list", "--head", j["branch"], "--state", "merged",
+                          "--json", "number,url")
+            if len(prs) == 1:
+                j["pr"], j["pr_url"] = prs[0]["number"], prs[0]["url"]
         if j["stage"] not in TERMINAL and j["pr"] and pr_state(j) == "MERGED":
             save(advance(sync(j), "merged"))
     issues = gh_json("issue", "list", "--label", LABELS["queue"], "--state", "open",
