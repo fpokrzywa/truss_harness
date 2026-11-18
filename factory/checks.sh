@@ -87,7 +87,24 @@ pnpm typecheck
 step "frontend: test"
 pnpm test
 step "frontend: build"
-pnpm build
+# B-2564: on this Windows machine `next build` sometimes fails to take its
+# native `.next/lock` with no other build running ("Another next build process
+# is already running"). Retry only on that exact message; any other failure,
+# or the same message three times, fails the gate.
+for attempt in 1 2 3; do
+  set +e
+  build_out=$(pnpm build 2>&1)
+  build_rc=$?
+  set -e
+  printf '%s\n' "$build_out"
+  [ "$build_rc" -eq 0 ] && break
+  if [ "$attempt" -lt 3 ] && grep -q "Another next build process is already running" <<<"$build_out"; then
+    echo "frontend: build lock not acquired (attempt $attempt); retrying in 15 s"
+    sleep 15
+    continue
+  fi
+  exit "$build_rc"
+done
 
 echo
 echo "checks.sh: all checks passed"
