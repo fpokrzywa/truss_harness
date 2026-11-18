@@ -33,6 +33,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from shifde.build import repository as build_repo
+from shifde.build import tool_runtime
 from shifde.build.service import ArtifactService
 from shifde.connections import repository as conn_repo
 from shifde.connections.service import ConnectionService
@@ -250,6 +251,101 @@ def test_a_tool_node_runs_only_the_runs_pinned_tool(
     [(call, policy)] = seen
     assert call.tool.version_id == a.tool and call.tool.kind == "tools"
     assert policy.pinned_version_ids == frozenset({a.tool}) and policy.agent_id is None
+
+
+def _tool_of(owner_db: Database, c: Client, spec: dict[str, Any]) -> UUID:  # Any: tool spec
+    with owner_db.session() as o:
+        _, tool = add_published(o, c.tenant, "tools", _key("tool"), spec)
+        o.commit()
+    return tool
+
+
+def _invocations(mp: pytest.MonkeyPatch) -> list[object]:
+    """The real `run_tool` with the tool itself replaced: the arguments of each call it made."""
+    given: list[object] = []
+
+    def invoke_once(conns: object, spec: object, args: object, **kw: Any) -> object:
+        given.append(args)
+        return {"done": True}
+
+    mp.setattr(tool_runtime, "invoke_once", invoke_once)
+    return given
+
+
+def _approve(owner_db: Database, c: Client, run: UUID, reason: str) -> None:
+    with owner_db.session() as o:
+        o.execute(
+            text("UPDATE shifde.approvals SET status = 'approved', decided_by = :u, "
+                 "decided_at = now() WHERE run_id = :r AND reason = :why"),
+            {"u": c.user, "r": run, "why": reason},
+        )  # fmt: skip
+        o.commit()
+
+
+@pytest.mark.parametrize("guarded", [False, True])
+def test_a_tool_requiring_approval_pauses_its_node_even_behind_a_granted_approval_node(
+    guarded: bool,
+    pair: tuple[Client, Client],
+    opened: Any,
+    owner_db: Database,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F-13 (B-2570): `invocation_policy.require_approval` asks for every call of a tool node; a
+    granted upstream approval node waives only the default write approval, never this one."""
+    a, _ = pair
+    tool = _tool_of(owner_db, a, {**NONE_TOOL, "invocation_policy": {"require_approval": True}})
+    nodes = [_tool("t", tool)]
+    edges: list[dict[str, str]] = []
+    if guarded:
+        nodes.append({"id": "ap", "type": "approval", "config": {"message": "go"}})
+        edges.append({"from": "ap", "to": "t"})
+    run = _pipe(owner_db, a, nodes, edges, pins=[(tool, "tool")], params={"doc": {"item": "x"}})
+    given = _invocations(monkeypatch)
+    if guarded:
+        with opened(a.tenant) as s, pytest.raises(state.Waiting):
+            PipelineRunner(_ctx(s, settings, a, run)).run()
+        _approve(owner_db, a, run, "pipeline_node")
+    with opened(a.tenant) as s, pytest.raises(state.Waiting) as waiting:
+        PipelineRunner(_ctx(s, settings, a, run)).run()
+    assert waiting.value.reason == "approval"
+    assert given == []
+    pending = _rows(owner_db, "SELECT reason, call_ref, status FROM shifde.approvals "
+                    "WHERE run_id = :r AND reason <> 'pipeline_node'", r=run)  # fmt: skip
+    assert pending == [{"reason": "approval_rule", "call_ref": "node:t", "status": "pending"}]
+    _approve(owner_db, a, run, "approval_rule")
+    with opened(a.tenant) as s:
+        PipelineRunner(_ctx(s, settings, a, run)).run()
+    assert given == [{"item": "x"}]
+
+
+@pytest.mark.parametrize("listed", [True, False])
+def test_a_tool_node_is_refused_by_a_tool_that_lists_its_allowed_agents(
+    listed: bool,
+    pair: tuple[Client, Client],
+    opened: Any,
+    owner_db: Database,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F-13 (B-2570): a pipeline tool node has no calling agent, so a tool with an
+    `allowed_agent_ids` list refuses it (`agent_not_allowed`) without being invoked; the same tool
+    without the list runs."""
+    a, _ = pair
+    policy = {"allowed_agent_ids": [str(a.agent_art)]} if listed else {}
+    tool = _tool_of(owner_db, a, {**NONE_TOOL, "invocation_policy": policy})
+    run = _pipe(owner_db, a, [_tool("t", tool)], pins=[(tool, "tool")],
+                params={"doc": {"item": "x"}})  # fmt: skip
+    given = _invocations(monkeypatch)
+    if not listed:
+        with opened(a.tenant) as s:
+            PipelineRunner(_ctx(s, settings, a, run)).run()
+        assert given == [{"item": "x"}]
+        return
+    with opened(a.tenant) as s, pytest.raises(state.GateDenied) as denied:
+        PipelineRunner(_ctx(s, settings, a, run)).run()
+    assert denied.value.reason == "agent_not_allowed"
+    assert given == []
 
 
 CASES = ["unknown id", "own unpinned tool", "other client's tool", "own pinned agent as a tool",

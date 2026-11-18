@@ -164,6 +164,10 @@ def _validate_policy(spec: dict[str, Any], side: Any, report: Report) -> None:
                 "invalid_value",
                 "must be a list of agent ids",
             )
+        if "require_approval" in policy and not isinstance(policy["require_approval"], bool):
+            report.error(
+                "invocation_policy.require_approval", "invalid_value", "must be true or false"
+            )
 
     timeout = spec.get("timeout_s")
     if (
