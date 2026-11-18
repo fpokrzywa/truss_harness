@@ -612,7 +612,7 @@ def test_a_global_card_writes_one_installation_audit_row_and_a_client_card_one_c
     assert _audit_count(owner_session, card, None) == counts[(card, None)] + 1  # still only g-2
 
 
-def test_pricing_manage_on_an_archived_client_is_refused_while_reads_work(
+def test_pricing_on_an_archived_client_is_refused_reads_included(
     client: TestClient, world: World, two: Two, owner_db: Database
 ) -> None:
     h = as_user(client, two.a.email)
@@ -636,9 +636,12 @@ def test_pricing_manage_on_an_archived_client_is_refused_while_reads_work(
         }  # fmt: skip
         v = client.post(f"{two.a.base}/rate-cards/{two.a.card}/versions", json=version, headers=h)
         assert v.status_code == 409 and v.json()["code"] == "scope_archived", v.text
-        assert client.get(f"{two.a.base}/rate-cards", headers=h).status_code == 200
+        # since B-2512 every route of a client that is not active is refused, reads included
+        g = client.get(f"{two.a.base}/rate-cards", headers=h)
+        assert g.status_code == 409 and g.json()["code"] == "scope_archived", g.text
     finally:
         set_status("active")
+    assert client.get(f"{two.a.base}/rate-cards", headers=h).status_code == 200
 
 
 # ------------------------------------------------------------------ policies (part 3)

@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 SLUG_PATTERN = r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
 Status = Literal["active", "archived"]
+OrgStatus = Literal["active", "suspended", "archived"]  # suspended: F-03, B-2511
 
 
 class _Resource(BaseModel):
@@ -30,7 +31,7 @@ class _Resource(BaseModel):
 
 
 class OrgOut(_Resource):
-    pass
+    status: OrgStatus  # type: ignore[assignment]  # widens _Resource.status: clients only
 
 
 class OrgSummaryOut(BaseModel):
@@ -42,7 +43,7 @@ class OrgSummaryOut(BaseModel):
     id: UUID
     slug: str
     name: str
-    status: Status
+    status: OrgStatus
 
 
 class WorkspaceOut(_Resource):

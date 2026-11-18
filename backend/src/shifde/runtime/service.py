@@ -799,6 +799,10 @@ class ApprovalService:
     def session(self) -> Session:
         return self.sc.session
 
+    def _active_tenant(self) -> None:
+        if self.sc.tenant_status != "active":
+            raise ScopeArchived("organization is archived")
+
     def _ref(self, row: Mapping[str, Any]) -> ResourceRef:  # Any: approval row
         return ResourceRef(self.sc.tenant_id, row["workspace_id"], row["project_id"])
 
@@ -894,6 +898,7 @@ class ApprovalService:
         return self._out(self._readable(approval_id))
 
     def decide(self, approval_id: UUID, body: s.DecideIn) -> s.ApprovalOut:
+        self._active_tenant()  # no run of a suspended or archived client resumes (F-03, B-2512)
         probe = self._readable(approval_id)
         ref = self._ref(probe)
         self.sc.pdp.require("approval:decide", ref)

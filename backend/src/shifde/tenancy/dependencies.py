@@ -11,6 +11,10 @@ Ported from SETH 3ba0e06 `tenancy/dependencies.py`. Changes (tenancy part 2b, DE
 * An unknown slug, another client's slug and a client the caller cannot see give the same 404.
 * The PDP is built only for the resolved client, so the denial audit (`register_denial_audit`)
   files a denial only in a client the caller was authorized to address.
+* A client that is not active (suspended or archived) is refused on every route with 409
+  `scope_archived` (F-03, B-2512). Only `GET` / `PATCH /orgs/{org}` (`OrgStatusScopeDep`) still
+  admit its owner and the platform administrator: the status view, and an archived client's
+  restore (`update_org` refuses every owner edit of a suspended client).
 """
 
 from __future__ import annotations
@@ -25,7 +29,7 @@ from shifde.authz import service as authz
 from shifde.core import db
 from shifde.core.context import Principal, bind_log_context
 from shifde.core.deps import RequestCtxDep, SessionDep
-from shifde.core.errors import NotFound
+from shifde.core.errors import NotFound, ScopeArchived
 from shifde.core.pagination import DEFAULT_LIMIT, MAX_LIMIT
 from shifde.identity import service as identity
 from shifde.identity.dependencies import AuthDep
@@ -55,7 +59,7 @@ def _visible_client(
     return principal.tenant_id, *header
 
 
-def resolve_org(org: str, auth: AuthDep, session: SessionDep, ctx: RequestCtxDep) -> TenantScope:
+def _resolve(org: str, auth: AuthDep, session: SessionDep, ctx: RequestCtxDep) -> TenantScope:
     """404 unless the caller may address `org` (no oracle for another client)."""
     principal = auth.principal
     found = _visible_client(session, principal, org)
@@ -77,7 +81,34 @@ def resolve_org(org: str, auth: AuthDep, session: SessionDep, ctx: RequestCtxDep
     )
 
 
+def _refuse_inactive(scope: TenantScope) -> None:
+    raise ScopeArchived(f"organization is {scope.tenant_status}")
+
+
+def resolve_org(org: str, auth: AuthDep, session: SessionDep, ctx: RequestCtxDep) -> TenantScope:
+    """`_resolve`, then 409 `scope_archived` for a client that is not active."""
+    scope = _resolve(org, auth, session, ctx)
+    if scope.tenant_status != "active":
+        _refuse_inactive(scope)
+    return scope
+
+
+def resolve_org_status(
+    org: str, auth: AuthDep, session: SessionDep, ctx: RequestCtxDep
+) -> TenantScope:
+    """`resolve_org` for `GET` / `PATCH /orgs/{org}`: a client that is not active is admitted
+    for its owner (`tenant:admin`) and the platform administrator only."""
+    scope = _resolve(org, auth, session, ctx)
+    if scope.tenant_status != "active" and not (
+        scope.pdp.authorize("tenant:admin", scope.tenant_ref).allowed
+        or service.is_platform_admin(session, scope.principal)
+    ):
+        _refuse_inactive(scope)
+    return scope
+
+
 ScopeDep = Annotated[TenantScope, Depends(resolve_org)]
+OrgStatusScopeDep = Annotated[TenantScope, Depends(resolve_org_status)]
 LimitQuery = Annotated[int, Query(ge=1, le=MAX_LIMIT)]
 CursorQuery = Annotated[str | None, Query()]
 IncludeArchivedQuery = Annotated[bool, Query()]
@@ -88,6 +119,8 @@ __all__ = [
     "CursorQuery",
     "IncludeArchivedQuery",
     "LimitQuery",
+    "OrgStatusScopeDep",
     "ScopeDep",
     "resolve_org",
+    "resolve_org_status",
 ]
