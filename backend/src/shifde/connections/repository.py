@@ -262,6 +262,89 @@ def latest_test(session: Session, connection_id: UUID, *, tenant_id: UUID) -> Ro
     )
 
 
+def get_test(session: Session, test_id: UUID, *, tenant_id: UUID) -> Row | None:
+    return (
+        session.execute(
+            text(
+                f"SELECT {TEST_COLUMNS} FROM shifde.connection_tests WHERE id = :id "
+                "AND tenant_id = :t"
+            ),
+            {"id": test_id, "t": tenant_id},
+        )
+        .mappings()
+        .first()
+    )
+
+
+# ------------------------------------------------------------------ test jobs (ARCH M2)
+JOB_COLUMNS = "id, kind, status, payload, last_error, created_at"
+
+
+def enqueue_test_job(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    kind: str,
+    job_id: UUID,
+    connection_id: UUID,
+    payload: Mapping[str, Any],
+) -> Row:
+    """Queue the connection's test job in `tenant_id`, or return the one already active (queued or
+    leased): the conflict target is the client's own dedupe key (`uq_jobs__dedupe`)."""
+    dedupe_key = f"connection-test:{connection_id}"
+    while True:
+        session.execute(
+            text(
+                "INSERT INTO shifde.jobs (id, tenant_id, kind, payload, dedupe_key, run_after) "
+                "VALUES (:id, :t, :k, CAST(:p AS jsonb), :dk, now()) "
+                "ON CONFLICT (tenant_id, kind, dedupe_key) WHERE status IN ('queued', 'leased') "
+                "DO NOTHING"
+            ),
+            {"id": job_id, "t": tenant_id, "k": kind, "p": json.dumps(payload), "dk": dedupe_key},
+        )
+        row = (
+            session.execute(
+                text(
+                    f"SELECT {JOB_COLUMNS} FROM shifde.jobs WHERE tenant_id = :t AND kind = :k "
+                    "AND dedupe_key = :dk AND status IN ('queued', 'leased')"
+                ),
+                {"t": tenant_id, "k": kind, "dk": dedupe_key},
+            )
+            .mappings()
+            .first()
+        )
+        if row is not None:  # else the active job ended between the two statements: queue again
+            session.execute(text("SELECT pg_notify('shifde_jobs', '')"))
+            return row
+
+
+def get_test_job(
+    session: Session,
+    job_id: UUID,
+    *,
+    tenant_id: UUID,
+    kind: str,
+    connection_id: UUID | None = None,
+) -> Row | None:
+    """The `kind` job `job_id` of `tenant_id` (and of `connection_id`, when given)."""
+    return (
+        session.execute(
+            text(
+                f"SELECT {JOB_COLUMNS} FROM shifde.jobs WHERE id = :id AND tenant_id = :t "
+                "AND kind = :k AND (CAST(:c AS text) IS NULL OR payload->>'connection_id' = :c)"
+            ),
+            {
+                "id": job_id,
+                "t": tenant_id,
+                "k": kind,
+                "c": str(connection_id) if connection_id else None,
+            },
+        )
+        .mappings()
+        .first()
+    )
+
+
 def insert_discovery(session: Session, values: Mapping[str, Any]) -> None:
     session.execute(
         text(

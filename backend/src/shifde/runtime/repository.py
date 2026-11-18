@@ -1106,14 +1106,21 @@ def heartbeat_job(
 
 
 def finish_job(
-    session: Session, tenant_id: UUID, job_id: UUID, worker_id: str, status: str = "done"
+    session: Session,
+    tenant_id: UUID,
+    job_id: UUID,
+    worker_id: str,
+    status: str = "done",
+    *,
+    last_error: str | None = None,
 ) -> None:
     session.execute(
         text(
-            "UPDATE shifde.jobs SET status = :st, finished_at = now() "
+            "UPDATE shifde.jobs SET status = :st, finished_at = now(), "
+            "last_error = COALESCE(:e, last_error) "
             "WHERE id = :id AND tenant_id = :t AND lease_owner = :w AND status = 'leased'"
         ),
-        {"id": job_id, "t": tenant_id, "w": worker_id, "st": status},
+        {"id": job_id, "t": tenant_id, "w": worker_id, "st": status, "e": last_error},
     )
 
 

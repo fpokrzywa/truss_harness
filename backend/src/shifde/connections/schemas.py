@@ -104,6 +104,18 @@ class TestResultOut(BaseModel):
     created_at: datetime
 
 
+class TestJobOut(BaseModel):
+    """A queued connection test (ARCH M2): `result` once the worker has recorded it."""
+
+    __test__ = False  # not a pytest class
+    id: UUID
+    connection_id: UUID
+    status: Literal["queued", "running", "done", "failed"]
+    result: TestResultOut | None
+    error: str | None
+    created_at: datetime
+
+
 class DiscoveryOut(BaseModel):
     id: UUID
     kind: Literal["openapi", "mcp_tools", "schema"]
