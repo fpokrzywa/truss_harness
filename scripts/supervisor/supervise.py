@@ -47,7 +47,10 @@ import alerts  # noqa: E402
 import handoff  # noqa: E402  (scripts/handoff.py)
 
 PROJECTS = os.path.expanduser("~/.claude/projects")
-CLAUDE = "C:/Users/FreddiePokrzywa/AppData/Roaming/npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe"
+CLAUDE = os.path.join(
+    os.environ.get("APPDATA", os.path.expanduser("~/AppData/Roaming")),
+    "npm", "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe",
+)
 SUPDIR = os.path.join(REPO, ".devdata", "supervisor")  # gitignored
 LOGS = os.path.join(SUPDIR, "logs")
 STATE = os.path.join(SUPDIR, "state.json")

@@ -11,7 +11,7 @@ One application (SETH) merging SETH, the FDE SDK and Agent Factory into one code
 
 ## Source repositories (read-only, never modify)
 - SETH: `S:\Development_2026\shi_work\shi_enterprise_truss_harness`, commit `3ba0e06`. Read with `git -C <path> show 3ba0e06:<file>`.
-- FDE SDK: `C:\Users\FreddiePokrzywa\OneDrive - 3C Publish LLC\Documents\ChatGPT\SHIFDE SDK`, commit `1fd902b`.
+- FDE SDK: `%USERPROFILE%\OneDrive - 3C Publish LLC\Documents\ChatGPT\SHIFDE SDK`, commit `1fd902b`.
 - Agent Factory: `S:\Development_2026\the_agent_factory`, commit `0fdd09c` (never open its `.env` or `azure_key.txt`).
 
 ## Stack

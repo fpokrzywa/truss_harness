@@ -10,7 +10,7 @@ SHI's forward deployed engineers (FDEs), project managers and senior staff build
 | Source (stays in place, read-only) | What it contributes |
 |---|---|
 | SETH, `S:\Development_2026\shi_work\shi_enterprise_truss_harness`, `main` at `3ba0e06` | The base. Sign-in, groups and roles, client isolation, agent/tool/prompt/orchestration builder, run engine, cost ledger, governance, the web front end. About 51k lines of backend source, 35.5k of tests, 48k of front end. |
-| FDE SDK, `C:\Users\FreddiePokrzywa\OneDrive - 3C Publish LLC\Documents\ChatGPT\SHIFDE SDK`, commit `1fd902b` | Deployment to client platforms: adapters for Databricks, Snowflake, Fabric and Palantir, sealed deployment plans, second-person approval, an executor process, verification. About 10.4k lines. |
+| FDE SDK, `%USERPROFILE%\OneDrive - 3C Publish LLC\Documents\ChatGPT\SHIFDE SDK`, commit `1fd902b` | Deployment to client platforms: adapters for Databricks, Snowflake, Fabric and Palantir, sealed deployment plans, second-person approval, an executor process, verification. About 10.4k lines. |
 | Agent Factory, `S:\Development_2026\the_agent_factory`, commit `0fdd09c` | Sealed, digest-bound releases; a compatibility check that refuses unsupported features by name; evaluation gates; cost reservation before each model call; Entra sign-in; standalone Docker deployment. About 5.4k lines of application code. |
 
 The goal is one application, SETH, in one codebase with modules, on one PostgreSQL database. An FDE signs in, works inside one client's space, builds and tests a solution against that client's platform, and deploys the finished solution onto the client's own infrastructure.
