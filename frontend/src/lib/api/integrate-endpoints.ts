@@ -8,6 +8,7 @@ import type {
   ConnectionInput,
   ConnectionInvokeResult,
   ConnectionStatus,
+  ConnectionTestJob,
   ConnectionTestResult,
   DiscoveredModel,
   Discovery,
@@ -27,11 +28,20 @@ import type {
   VendorInput,
   VendorStatus,
 } from './integrate-types';
+import { ApiError } from './errors';
 import type { ListResponse } from './types';
 
 const enc = encodeURIComponent;
 const org$ = (org: string) => `/api/v1/orgs/${enc(org)}`;
 type Query = Record<string, string | number | undefined>;
+
+/**
+ * Status poll of a queued connection test: the interval of `POLL_MS` (operate-hooks imports these
+ * endpoints, so it is not imported here), capped at 60 s.
+ */
+const TEST_POLL_MS = 1000;
+const TEST_TIMEOUT_MS = 60_000;
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Accept either a list envelope or a bare array (the contract shows bare arrays for some GETs). */
 function items<T>(res: ListResponse<T> | T[]): T[] {
@@ -145,8 +155,40 @@ export function createIntegrateEndpoints(client: ApiClient) {
         status,
         row_version: c.row_version,
       }),
-    testConnection: (org: string, id: string) =>
-      send<ConnectionTestResult>('POST', `${org$(org)}/connections/${enc(id)}/test`, {}),
+    getConnectionTestJob: (org: string, id: string, jobId: string) =>
+      client.request<ConnectionTestJob>(
+        `${org$(org)}/connections/${enc(id)}/test-jobs/${enc(jobId)}`,
+      ),
+    /** Queue the test (202), then poll its job until the worker has recorded the result. */
+    testConnection: async (org: string, id: string): Promise<ConnectionTestResult> => {
+      let job = await send<ConnectionTestJob>(
+        'POST',
+        `${org$(org)}/connections/${enc(id)}/test`,
+        {},
+      );
+      const deadline = Date.now() + TEST_TIMEOUT_MS;
+      while (job.status === 'queued' || job.status === 'running') {
+        if (Date.now() >= deadline) {
+          throw new ApiError({
+            status: 504,
+            code: 'test_timeout',
+            title: 'Test did not finish',
+            detail: 'The connection test did not finish within 60 seconds. Try again later.',
+          });
+        }
+        await pause(TEST_POLL_MS);
+        job = await client.request<ConnectionTestJob>(
+          `${org$(org)}/connections/${enc(id)}/test-jobs/${enc(job.id)}`,
+        );
+      }
+      if (job.status === 'done' && job.result) return job.result;
+      throw new ApiError({
+        status: 409,
+        code: job.error ?? 'test_failed',
+        title: 'Test did not run',
+        detail: `The connection test did not run (${job.error ?? 'unknown error'}).`,
+      });
+    },
     listConnectionTests: (org: string, id: string) =>
       list<ConnectionTestResult>(`${org$(org)}/connections/${enc(id)}/tests`),
     discoverConnection: (org: string, id: string) =>

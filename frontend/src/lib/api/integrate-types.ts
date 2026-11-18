@@ -258,6 +258,17 @@ export interface ConnectionTestResult {
   created_at?: string;
 }
 
+/** A queued connection test (ARCH M2): the worker runs it; `result` once it is recorded. */
+export interface ConnectionTestJob {
+  id: string;
+  connection_id: string;
+  status: 'queued' | 'running' | 'done' | 'failed';
+  result: ConnectionTestResult | null;
+  /** Error code of a failed job (e.g. `forbidden`, `worker_lost`). */
+  error: string | null;
+  created_at: string;
+}
+
 /** Stored discovery. The contract gives no field names beyond the three kinds, so every one is tolerated. */
 export interface Discovery {
   id?: string;
