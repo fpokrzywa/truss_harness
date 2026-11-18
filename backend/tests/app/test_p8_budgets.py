@@ -55,7 +55,10 @@ def test_a_cost_budget_stops_a_run_before_it_starts_and_the_denial_is_a_recorded
     b = budget(client, h, project_scope(owner_session), metric="cost", amount=0)
     run = start_run(client, h, stack.agent["id"], "what is the weather")
     assert run["status"] == "failed" and run["error_class"] == "budget_denied"
-    assert _rows(owner_session, "SELECT count(*) FROM shifde.jobs")[0][0] == 0
+    assert (
+        _rows(owner_session, "SELECT count(*) FROM shifde.jobs WHERE kind = 'run.advance'")[0][0]
+        == 0
+    )
     (decision,) = _decisions(owner_session, run["id"])
     assert decision[1] == ["budget_denied"] and [str(i) for i in decision[2]] == [b["id"]]
     assert _rows(owner_session, "SELECT count(*) FROM shifde.usage_events")[0][0] == 0

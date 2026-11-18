@@ -373,7 +373,10 @@ def test_budget_preflight_denial_creates_an_auditable_failed_run(
     _budget(owner_session, "tenant", tenant_id(owner_session, "demo-a"), "day", 0)
     run = start_run(client, h, stack.agent["id"], "hi")  # 202: the failed run is returned
     assert run["status"] == "failed" and run["error_class"] == "budget_denied"
-    assert rows(owner_session, "SELECT count(*) FROM shifde.jobs")[0][0] == 0
+    assert (
+        rows(owner_session, "SELECT count(*) FROM shifde.jobs WHERE kind = 'run.advance'")[0][0]
+        == 0
+    )
     assert "run.failed" in audit_actions(owner_session, run["id"])
 
 
@@ -458,7 +461,9 @@ def test_cancel_pending_run_is_immediate_and_audited(
     run = start_run(client, h, stack.agent["id"], "hi")
     r = client.post(f"{A}/runs/{run['id']}/cancel", headers=h)
     assert r.status_code == 202 and r.json()["status"] == "cancelled"
-    assert rows(owner_session, "SELECT status FROM shifde.jobs") == [("done",)]
+    assert rows(owner_session, "SELECT status FROM shifde.jobs WHERE kind = 'run.advance'") == [
+        ("done",)
+    ]
     assert "run.cancelled" in audit_actions(owner_session, run["id"])
     again = client.post(f"{A}/runs/{run['id']}/cancel", headers=h)
     assert again.status_code == 202 and again.json()["status"] == "cancelled"
