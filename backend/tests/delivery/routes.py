@@ -1,16 +1,17 @@
 """Delivery route tests: `delivery.api.router` behind `require_auth` on the identity harness app
 (login routes, error handlers), and `delivery.gateway_api.router` without it (executor tokens
-only); the `app` port mounts both routers. Every route runs as
+only, with the job lease helpers); the `app` port mounts both routers. Every route runs as
 `shifde_app` under row-level security.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from typing import Any  # Any: JSON bodies, TestClient options
+from typing import Any  # Any: JSON bodies, TestClient options, rows
 from uuid import UUID
 
+import httpx
 from fastapi import Depends
 from fastapi.testclient import TestClient
 from sqlalchemy import text
@@ -19,9 +20,10 @@ from shifde.core.db import Database
 from shifde.core.deps import check_origin, reject_basic_auth
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
-from shifde.delivery import api, gateway_api
+from shifde.delivery import api, gateway, gateway_api
 from shifde.identity.dependencies import require_auth
 from tests.identity import harness
+from tests.tenancy.conftest import app_session
 
 
 @contextmanager
@@ -108,3 +110,71 @@ def issue(
 
 def bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+# ------------------------------------------------------------------ executor gateway jobs
+LEASE = "/api/executor/v1/lease"
+
+
+def job_url(job_id: object, action: str) -> str:
+    return f"/api/executor/v1/jobs/{job_id}/{action}"
+
+
+def enqueue(app_db: Database, tenant: UUID, kind: str, **values: Any) -> UUID:
+    """A queued job of `tenant`, written as `shifde_app` through `gateway.enqueue_job`."""
+    with app_session(app_db, tenant) as s:
+        job_id = gateway.enqueue_job(s, tenant_id=tenant, kind=kind, **values)
+        s.commit()
+    return job_id
+
+
+def lease(
+    client: TestClient,
+    token: str,
+    kinds: Sequence[str] = ("plan", "apply", "observe", "verify", "reconcile"),
+    request_id: UUID | None = None,
+) -> httpx.Response:
+    body = {"request_id": str(request_id or uuid7()), "kinds": list(kinds)}
+    return client.post(LEASE, json=body, headers=bearer(token))
+
+
+def proof(leased: Mapping[str, Any]) -> dict[str, Any]:  # Any: a JobLease body
+    return {"lease_id": leased["lease_id"], "fence": leased["fence"]}
+
+
+def owner_sql(owner_db: Database, sql: str, **params: Any) -> None:
+    with owner_db.session() as o:
+        o.execute(text(sql), params)
+        o.commit()
+
+
+def expire(owner_db: Database, job_id: object) -> None:
+    """End the job's lease, as the schema owner."""
+    owner_sql(
+        owner_db,
+        "UPDATE shifde.delivery_jobs SET lease_until = now() - interval '1 second' WHERE id = :j",
+        j=job_id,
+    )
+
+
+def job_row(owner_db: Database, job_id: object) -> Any:  # Any: a RowMapping
+    with owner_db.session() as o:
+        return (
+            o.execute(text("SELECT * FROM shifde.delivery_jobs WHERE id = :j"), {"j": job_id})
+            .mappings()
+            .one()
+        )
+
+
+def journal_rows(owner_db: Database, tenant: UUID) -> list[tuple[Any, ...]]:
+    with owner_db.session() as o:
+        return [
+            tuple(r)
+            for r in o.execute(
+                text(
+                    "SELECT * FROM shifde.delivery_journal WHERE tenant_id = :t "
+                    "ORDER BY deployment_id, step_key"
+                ),
+                {"t": tenant},
+            ).all()
+        ]
