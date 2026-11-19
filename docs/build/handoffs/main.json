@@ -1,8 +1,8 @@
 {
-  "session_id": "ac967e5f-3f8d-4732-b0e3-b439d1c08cea",
-  "head_sha": "ea23fc858a9a207acf0248598f92f80ea808460e",
+  "session_id": "f29ba637-f415-4ac1-ac79-60813a706863",
+  "head_sha": "a8694fec56afc2fcc16dcd70b806599ccdcb7a75",
   "branch": "main",
-  "unit_in_progress": "none",
-  "next_step": "/factory run: queue resumes at #13 (F-16 API latency, concurrency 1); then #14..#18, SP2-3..10 (#21-#28), #33, #34, #36, #39, #41, #44, #46, #47, #51",
-  "written_at": "2026-11-18T21:42:55Z"
+  "unit_in_progress": "charter7: job 017 (#15) round 2 READY",
+  "next_step": "factory/bin/job advance 017-arch-m11-classification-x gate, gate, review, approve, lead gates.py merge of PR #54; then /factory run from #16",
+  "written_at": "2026-11-19T02:16:33Z"
 }
