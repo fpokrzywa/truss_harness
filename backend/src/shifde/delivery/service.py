@@ -8,14 +8,26 @@ caller gets the fixed `409 platform_already_registered`, which names no organiza
 constraint or key. Archiving the last active target on a claim deletes the claim, so another
 organization may register the address afterwards.
 
+Executors (design 5, section 9 items 4, 12, 13 and 15; B-2664, B-2665): one active executor
+identity per organization, at most two live `shx_` credentials each, stored as
+`apikeys.hash_key(pepper, token)`. `authenticate_executor` resolves a token through the
+`shifde.delivery_resolve_executor` definer before any client context exists.
+
 Every row is read and written for the caller's resolved client only (`TenantScope.tenant_id`).
 """
 
 from __future__ import annotations
 
+import re
+import secrets
 from collections.abc import Iterable, Mapping
-from typing import Any  # Any: target rows
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Any, Literal  # Any: target, executor and credential rows
 from uuid import UUID
+
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from shifde.adapters.native.addresses import (
     AddressRefused,
@@ -24,11 +36,22 @@ from shifde.adapters.native.addresses import (
 )
 from shifde.audit import service as audit
 from shifde.authz.service import ResourceRef
-from shifde.core.errors import AppError, Conflict, NotFound, ScopeArchived, ValidationFailed
+from shifde.core import db
+from shifde.core.clock import utcnow
+from shifde.core.errors import (
+    AppError,
+    Conflict,
+    InvalidCredentials,
+    NotFound,
+    ScopeArchived,
+    ValidationFailed,
+)
 from shifde.core.ids import uuid7
 from shifde.core.pagination import Page, decode_cursor, encode_cursor, paginate
+from shifde.core.redaction import register_secret
 from shifde.delivery import repository
 from shifde.delivery import schemas as s
+from shifde.identity import apikeys
 from shifde.tenancy import service as tenancy
 from shifde.tenancy.scope import TenantScope
 
@@ -236,3 +259,350 @@ class TargetService:
         self._audit("delivery.target.archived", archived)
         session.commit()
         return self._out(archived)
+
+
+# ====================================================================== executors (B-2664)
+EXECUTOR_TOKEN = re.compile(r"^shx_([0-9A-Za-z]{8})_([0-9A-Za-z]{43})$")
+EXECUTOR_VERSION = re.compile(r"^[A-Za-z0-9._+-]{1,64}$")
+CREDENTIAL_LIFETIME = timedelta(days=90)
+MAX_LIVE_CREDENTIALS = 2
+PREFIX_CONSTRAINT = "uq_delivery_executor_credentials__tenant_prefix"
+ONE_ACTIVE_CONSTRAINT = "uq_delivery_executors__one_active"
+ONE_ACTIVE = "the organization already has an active executor"
+ISSUE_REFUSED = "the credential could not be issued"
+
+
+def _constraint(exc: IntegrityError) -> str | None:
+    diag = getattr(exc.orig, "diag", None)
+    name = getattr(diag, "constraint_name", None)
+    return name if isinstance(name, str) else None
+
+
+def _credential_status(row: Mapping[str, Any]) -> Literal["live", "revoked", "expired"]:
+    if row["revoked_at"] is not None:
+        return "revoked"
+    return "live" if row["expires_at"] > utcnow() else "expired"
+
+
+def _executor_out(row: Mapping[str, Any]) -> s.DeliveryExecutorOut:
+    return s.DeliveryExecutorOut(
+        id=row["id"],
+        name=row["name"],
+        status=row["status"],
+        last_seen_at=row["last_seen_at"],
+        version=row["version"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _credential_out(row: Mapping[str, Any]) -> s.CredentialOut:
+    return s.CredentialOut(
+        id=row["id"],
+        executor_id=row["executor_id"],
+        prefix=row["prefix"],
+        status=_credential_status(row),
+        created_by=row["created_by"],
+        created_at=row["created_at"],
+        expires_at=row["expires_at"],
+        revoked_at=row["revoked_at"],
+    )
+
+
+class ExecutorService:
+    """The organization's executor identity and its credentials (design 5, section 9 items 4, 12
+    and 15). The secret of a credential exists only in the issue/rotate response."""
+
+    def __init__(self, scope: TenantScope, pepper: bytes) -> None:
+        self.sc = scope
+        self.pepper = pepper
+
+    # ================================================================== helpers
+    def _ref(self, executor_id: UUID) -> ResourceRef:
+        return ResourceRef(
+            self.sc.tenant_id, resource_type="delivery_executor", resource_id=executor_id
+        )
+
+    def _get_row(self, executor_id: UUID, *, for_update: bool = False) -> Mapping[str, Any]:
+        row = repository.get_executor(
+            self.sc.session, executor_id, tenant_id=self.sc.tenant_id, for_update=for_update
+        )
+        if row is None or row["tenant_id"] != self.sc.tenant_id:
+            raise NotFound("executor not found")
+        return row
+
+    def _require(self, action: str, executor_id: UUID) -> None:
+        try:
+            self.sc.pdp.require(
+                action, self._ref(executor_id), hide_unless="delivery:executor:read"
+            )
+        except NotFound as exc:
+            # an executor the caller cannot read gets the answer an unknown id gets
+            raise NotFound("executor not found") from exc
+
+    def _readable(self, executor_id: UUID) -> Mapping[str, Any]:
+        row = self._get_row(executor_id)
+        self._require("delivery:executor:read", executor_id)
+        return row
+
+    def _manageable(self, executor_id: UUID) -> Mapping[str, Any]:
+        row = self._get_row(executor_id)
+        self._require("delivery:executor:manage", executor_id)
+        self._active_org()
+        return row
+
+    def _credential(self, executor_id: UUID, credential_id: UUID) -> Mapping[str, Any]:
+        row = repository.get_credential(
+            self.sc.session, credential_id, executor_id, tenant_id=self.sc.tenant_id
+        )
+        if row is None or row["tenant_id"] != self.sc.tenant_id:
+            raise NotFound("credential not found")
+        return row
+
+    def _active_org(self) -> None:
+        if self.sc.tenant_status != "active":
+            raise ScopeArchived("organization is archived")
+
+    def _audit(
+        self,
+        action: str,
+        executor: Mapping[str, Any],
+        details: Mapping[str, Any],
+        credential_id: UUID | None = None,
+    ) -> None:
+        audit.record(
+            self.sc.session,
+            self.sc.ctx,
+            action=action,
+            tenant_id=self.sc.tenant_id,
+            target_type="delivery_executor_credential" if credential_id else "delivery_executor",
+            target_id=credential_id or executor["id"],
+            target_label=f"delivery_executor:{executor['name']}",
+            details={"executor_id": str(executor["id"]), "name": executor["name"], **details},
+        )
+
+    def _issue(self, executor_id: UUID) -> tuple[Mapping[str, Any], Mapping[str, Any], str]:
+        """Lock the executor, check it may take a credential, insert one: (executor, credential
+        row, full token). Only a prefix collision is retried; any other refusal is `Conflict`."""
+        session = self.sc.session
+        executor = self._get_row(executor_id, for_update=True)
+        if executor["status"] != "active":
+            raise Conflict("the executor is disabled")
+        live = repository.count_live_credentials(session, executor_id, tenant_id=self.sc.tenant_id)
+        if live >= MAX_LIVE_CREDENTIALS:
+            raise Conflict("the executor already has two live credentials")
+        for _ in range(apikeys.MINT_ATTEMPTS):
+            prefix = "".join(secrets.choice(apikeys.ALPHABET) for _ in range(apikeys.PREFIX_LEN))
+            secret = "".join(secrets.choice(apikeys.ALPHABET) for _ in range(apikeys.SECRET_LEN))
+            full = f"shx_{prefix}_{secret}"
+            credential_id = uuid7()
+            try:
+                with session.begin_nested():
+                    repository.insert_credential(
+                        session,
+                        {
+                            "id": credential_id,
+                            "tenant_id": self.sc.tenant_id,
+                            "executor_id": executor_id,
+                            "prefix": prefix,
+                            "secret_hash": apikeys.hash_key(self.pepper, full),
+                            "created_by": self.sc.principal.principal_id,
+                            "expires_at": utcnow() + CREDENTIAL_LIFETIME,
+                        },
+                    )
+            except IntegrityError as exc:
+                if _constraint(exc) == PREFIX_CONSTRAINT:
+                    continue  # astronomically rare: draw another prefix
+                raise Conflict(ISSUE_REFUSED) from None
+            register_secret(full)
+            return executor, self._credential(executor_id, credential_id), full
+        raise Conflict(ISSUE_REFUSED)
+
+    # ================================================================== routes
+    def list_executors(
+        self, *, status: str | None, limit: int, cursor: str | None
+    ) -> Page[s.DeliveryExecutorOut]:
+        self.sc.pdp.require("delivery:executor:read", self.sc.tenant_ref)
+        rows = repository.list_executors(
+            self.sc.session,
+            tenant_id=self.sc.tenant_id,
+            status=status,
+            after=decode_cursor(cursor),
+            limit=limit + 1,
+        )
+        page, more = paginate(rows, limit)
+        return Page(
+            items=[_executor_out(r) for r in page],
+            next_cursor=encode_cursor(page[-1]["id"]) if more and page else None,
+        )
+
+    def get(self, executor_id: UUID) -> s.DeliveryExecutorOut:
+        return _executor_out(self._readable(executor_id))
+
+    def create(self, body: s.ExecutorCreate) -> s.DeliveryExecutorOut:
+        self.sc.pdp.require("delivery:executor:manage", self.sc.tenant_ref)
+        self._active_org()
+        session = self.sc.session
+        executor_id = uuid7()
+        try:
+            with session.begin_nested():
+                repository.insert_executor(
+                    session,
+                    {
+                        "id": executor_id,
+                        "tenant_id": self.sc.tenant_id,
+                        "name": body.name,
+                        "created_by": self.sc.principal.principal_id,
+                    },
+                )
+        except IntegrityError as exc:
+            if _constraint(exc) == ONE_ACTIVE_CONSTRAINT:
+                raise Conflict(ONE_ACTIVE) from None
+            raise
+        row = self._get_row(executor_id)
+        self._audit("delivery.executor.created", row, {})
+        session.commit()
+        return _executor_out(row)
+
+    def set_status(self, executor_id: UUID, body: s.ExecutorPatch) -> s.DeliveryExecutorOut:
+        row = self._manageable(executor_id)
+        if row["status"] == body.status:
+            return _executor_out(row)  # no change, no audit row
+        session = self.sc.session
+        try:
+            with session.begin_nested():
+                updated = repository.set_executor_status(
+                    session, executor_id, body.status, tenant_id=self.sc.tenant_id
+                )
+        except IntegrityError as exc:
+            if _constraint(exc) == ONE_ACTIVE_CONSTRAINT:
+                raise Conflict(ONE_ACTIVE) from None
+            raise
+        if updated is None:  # pragma: no cover - the row was read in this transaction
+            raise NotFound("executor not found")
+        if body.status == "disabled":
+            revoked = repository.revoke_executor_credentials(
+                session, executor_id, tenant_id=self.sc.tenant_id
+            )
+            self._audit(
+                "delivery.executor.disabled",
+                updated,
+                {"revoked_credential_ids": [str(r["id"]) for r in revoked]},
+            )
+        else:
+            self._audit("delivery.executor.enabled", updated, {})
+        session.commit()
+        return _executor_out(updated)
+
+    def list_credentials(self, executor_id: UUID) -> list[s.CredentialOut]:
+        self._readable(executor_id)
+        rows = repository.list_credentials(
+            self.sc.session, executor_id, tenant_id=self.sc.tenant_id
+        )
+        return [_credential_out(r) for r in rows]
+
+    def issue_credential(self, executor_id: UUID) -> s.CredentialIssued:
+        self._manageable(executor_id)
+        executor, row, full = self._issue(executor_id)
+        self._audit(
+            "delivery.executor.credential.issued",
+            executor,
+            {"credential_id": str(row["id"]), "prefix": row["prefix"]},
+            credential_id=row["id"],
+        )
+        self.sc.session.commit()
+        return s.CredentialIssued(credential=_credential_out(row), secret=full)
+
+    def rotate_credential(self, executor_id: UUID, credential_id: UUID) -> s.CredentialIssued:
+        self._manageable(executor_id)
+        old = self._credential(executor_id, credential_id)
+        if _credential_status(old) != "live":
+            raise Conflict("only a live credential can be rotated")
+        executor, row, full = self._issue(executor_id)
+        self._audit(
+            "delivery.executor.credential.rotated",
+            executor,
+            {
+                "old_credential_id": str(old["id"]),
+                "old_prefix": old["prefix"],
+                "new_credential_id": str(row["id"]),
+                "new_prefix": row["prefix"],
+            },
+            credential_id=row["id"],
+        )
+        self.sc.session.commit()
+        return s.CredentialIssued(credential=_credential_out(row), secret=full)
+
+    def revoke_credential(self, executor_id: UUID, credential_id: UUID) -> s.CredentialOut:
+        executor = self._manageable(executor_id)
+        self._credential(executor_id, credential_id)
+        session = self.sc.session
+        row = repository.revoke_credential(session, credential_id, tenant_id=self.sc.tenant_id)
+        if row is None:
+            raise Conflict("the credential is already revoked")
+        self._audit(
+            "delivery.executor.credential.revoked",
+            executor,
+            {"credential_id": str(row["id"]), "prefix": row["prefix"]},
+            credential_id=row["id"],
+        )
+        session.commit()
+        return _credential_out(row)
+
+
+@dataclass(frozen=True)
+class AuthenticatedExecutor:
+    tenant_id: UUID
+    executor_id: UUID
+    name: str
+    status: str
+    version: str | None
+    last_seen_at: datetime | None
+
+
+def authenticate_executor(
+    session: Session, peppers: Iterable[bytes], token: str | None, version: str | None
+) -> AuthenticatedExecutor:
+    """Authenticate an `shx_` executor token (design 5; section 9 items 12, 13).
+
+    Every refusal (no or malformed token, unknown prefix, wrong secret, a revoked or expired
+    credential, a disabled executor, an organization that is not active) is the same 401
+    `invalid_credentials`. On success the session runs in the executor's organization (no
+    principal), and `last_seen_at` (and `version`, when reported) are updated under RLS."""
+    match = EXECUTOR_TOKEN.match(token or "")
+    resolved = None
+    if match is not None:
+        for pepper in peppers:  # current pepper first, then the retired ones
+            resolved = repository.resolve_executor(
+                session, match.group(1), apikeys.hash_key(pepper, match.group(0))
+            )
+            if resolved is not None:
+                break
+    if resolved is None:
+        raise InvalidCredentials("invalid credentials")
+    if version is not None and not EXECUTOR_VERSION.fullmatch(version):
+        raise ValidationFailed(
+            "invalid X-Executor-Version",
+            errors=[
+                {
+                    "loc": ["header", "x-executor-version"],
+                    "msg": "must match ^[A-Za-z0-9._+-]{1,64}$",
+                    "type": "pattern",
+                }
+            ],
+        )
+    tenant_id, executor_id = resolved["tenant_id"], resolved["executor_id"]
+    db.set_principal(session, None)
+    db.set_tenant(session, tenant_id)
+    row = repository.touch_executor(session, executor_id, version, tenant_id=tenant_id)
+    if row is None:  # pragma: no cover - the resolver just found it active
+        raise InvalidCredentials("invalid credentials")
+    session.commit()
+    return AuthenticatedExecutor(
+        tenant_id=tenant_id,
+        executor_id=executor_id,
+        name=row["name"],
+        status=row["status"],
+        version=row["version"],
+        last_seen_at=row["last_seen_at"],
+    )

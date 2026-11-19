@@ -1,5 +1,6 @@
 """Delivery route tests: `delivery.api.router` behind `require_auth` on the identity harness app
-(login routes, error handlers); the `app` port mounts the router. Every route runs as
+(login routes, error handlers), and `delivery.gateway_api.router` without it (executor tokens
+only); the `app` port mounts both routers. Every route runs as
 `shifde_app` under row-level security.
 """
 
@@ -18,7 +19,7 @@ from shifde.core.db import Database
 from shifde.core.deps import check_origin, reject_basic_auth
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
-from shifde.delivery import api
+from shifde.delivery import api, gateway_api
 from shifde.identity.dependencies import require_auth
 from tests.identity import harness
 
@@ -28,6 +29,7 @@ def delivery_client(settings: Settings, **kwargs: Any) -> Iterator[TestClient]:
     app = harness.make_app(settings)
     guards = [Depends(reject_basic_auth), Depends(check_origin), Depends(require_auth)]
     app.include_router(api.router, dependencies=guards)
+    app.include_router(gateway_api.router, dependencies=guards[:2])
     try:
         with TestClient(
             app, base_url="https://testserver", headers={"Origin": harness.ORIGIN}, **kwargs
@@ -78,3 +80,31 @@ def counts(owner_db: Database, tenant: UUID) -> tuple[int, int]:
             {"t": tenant},
         ).one()
     return int(row[0]), int(row[1])
+
+
+# ------------------------------------------------------------------ executors
+WHOAMI = "/api/executor/v1/whoami"
+
+
+def executors(slug: str) -> str:
+    return f"/api/v1/orgs/{slug}/delivery/executors"
+
+
+def create_executor(
+    client: TestClient, h: dict[str, str], slug: str, status: int = 201
+) -> Any:  # Any: a JSON body
+    r = client.post(executors(slug), json={"name": f"executor-{uuid7().hex[-8:]}"}, headers=h)
+    assert r.status_code == status, r.text
+    return r.json()
+
+
+def issue(
+    client: TestClient, h: dict[str, str], slug: str, executor_id: str, status: int = 201
+) -> Any:  # Any: a JSON body ({credential, secret})
+    r = client.post(f"{executors(slug)}/{executor_id}/credentials", headers=h)
+    assert r.status_code == status, r.text
+    return r.json()
+
+
+def bearer(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}

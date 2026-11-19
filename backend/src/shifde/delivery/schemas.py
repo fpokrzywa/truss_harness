@@ -1,4 +1,5 @@
-"""Deployment target DTOs (design sections 3 and 9 items 2, 3 and 17; DECISIONS B-2501).
+"""Deployment target and executor DTOs (design sections 3, 5 and 9 items 2, 3, 12 and 17;
+DECISIONS B-2501, B-2664).
 
 `TargetOut` never carries the claim id or the address key: the claim is the organization's
 private bookkeeping of the one-platform rule.
@@ -49,3 +50,51 @@ class TargetOut(BaseModel):
     created_by: UUID
     created_at: datetime
     updated_at: datetime | None
+
+
+class ExecutorCreate(BaseModel):
+    model_config = Strict
+    name: str = Field(min_length=1, max_length=200)
+
+
+class ExecutorPatch(BaseModel):
+    model_config = Strict
+    status: Literal["active", "disabled"]
+
+
+class DeliveryExecutorOut(BaseModel):
+    id: UUID
+    name: str
+    status: str
+    last_seen_at: datetime | None
+    version: str | None
+    created_at: datetime
+    updated_at: datetime | None
+
+
+class CredentialOut(BaseModel):
+    """Never the secret or its hash: the secret exists only in `CredentialIssued`."""
+
+    id: UUID
+    executor_id: UUID
+    prefix: str
+    status: Literal["live", "revoked", "expired"]
+    created_by: UUID
+    created_at: datetime
+    expires_at: datetime
+    revoked_at: datetime | None
+
+
+class CredentialIssued(BaseModel):
+    """Issue and rotate: the full `shx_` token, shown once."""
+
+    credential: CredentialOut
+    secret: str
+
+
+class ExecutorWhoami(BaseModel):
+    executor_id: UUID
+    name: str
+    status: str
+    version: str | None
+    last_seen_at: datetime | None

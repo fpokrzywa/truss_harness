@@ -1,4 +1,5 @@
-"""Deployment target routes (design sections 3 and 9 item 2, DECISIONS B-2501)."""
+"""Deployment target and executor routes (design sections 3, 5 and 9 items 2 and 12; DECISIONS
+B-2501, B-2664)."""
 
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ from fastapi import APIRouter, Depends, Query
 from shifde.core.deps import SettingsDep
 from shifde.core.pagination import DEFAULT_LIMIT, Page
 from shifde.delivery import schemas as s
-from shifde.delivery.service import TargetService
+from shifde.delivery.service import ExecutorService, TargetService
 from shifde.tenancy.dependencies import CursorQuery, LimitQuery, ScopeDep
 
 router = APIRouter(prefix="/api/v1")
@@ -21,6 +22,13 @@ def _targets(scope: ScopeDep, settings: SettingsDep) -> TargetService:
 
 
 Targets = Annotated[TargetService, Depends(_targets)]
+
+
+def _executors(scope: ScopeDep, settings: SettingsDep) -> ExecutorService:
+    return ExecutorService(scope, settings.pepper)
+
+
+Executors = Annotated[ExecutorService, Depends(_executors)]
 
 
 @router.post("/orgs/{org}/delivery/targets", status_code=201, tags=["delivery"])
@@ -48,3 +56,63 @@ def get_target(svc: Targets, target_id: UUID) -> s.TargetOut:
 @router.post("/orgs/{org}/delivery/targets/{target_id}/archive", tags=["delivery"])
 def archive_target(svc: Targets, target_id: UUID) -> s.TargetOut:
     return svc.archive_target(target_id)
+
+
+@router.post("/orgs/{org}/delivery/executors", status_code=201, tags=["delivery"])
+def create_executor(svc: Executors, body: s.ExecutorCreate) -> s.DeliveryExecutorOut:
+    return svc.create(body)
+
+
+@router.get("/orgs/{org}/delivery/executors", tags=["delivery"])
+def list_executors(
+    svc: Executors,
+    status: Annotated[Literal["active", "disabled"] | None, Query()] = None,
+    limit: LimitQuery = DEFAULT_LIMIT,
+    cursor: CursorQuery = None,
+) -> Page[s.DeliveryExecutorOut]:
+    return svc.list_executors(status=status, limit=limit, cursor=cursor)
+
+
+@router.get("/orgs/{org}/delivery/executors/{executor_id}", tags=["delivery"])
+def get_executor(svc: Executors, executor_id: UUID) -> s.DeliveryExecutorOut:
+    return svc.get(executor_id)
+
+
+@router.patch("/orgs/{org}/delivery/executors/{executor_id}", tags=["delivery"])
+def update_executor(
+    svc: Executors, executor_id: UUID, body: s.ExecutorPatch
+) -> s.DeliveryExecutorOut:
+    return svc.set_status(executor_id, body)
+
+
+@router.get("/orgs/{org}/delivery/executors/{executor_id}/credentials", tags=["delivery"])
+def list_executor_credentials(svc: Executors, executor_id: UUID) -> list[s.CredentialOut]:
+    return svc.list_credentials(executor_id)
+
+
+@router.post(
+    "/orgs/{org}/delivery/executors/{executor_id}/credentials", status_code=201, tags=["delivery"]
+)
+def issue_executor_credential(svc: Executors, executor_id: UUID) -> s.CredentialIssued:
+    return svc.issue_credential(executor_id)
+
+
+@router.post(
+    "/orgs/{org}/delivery/executors/{executor_id}/credentials/{credential_id}/rotate",
+    status_code=201,
+    tags=["delivery"],
+)
+def rotate_executor_credential(
+    svc: Executors, executor_id: UUID, credential_id: UUID
+) -> s.CredentialIssued:
+    return svc.rotate_credential(executor_id, credential_id)
+
+
+@router.post(
+    "/orgs/{org}/delivery/executors/{executor_id}/credentials/{credential_id}/revoke",
+    tags=["delivery"],
+)
+def revoke_executor_credential(
+    svc: Executors, executor_id: UUID, credential_id: UUID
+) -> s.CredentialOut:
+    return svc.revoke_credential(executor_id, credential_id)

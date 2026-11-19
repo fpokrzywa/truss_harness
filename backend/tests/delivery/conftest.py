@@ -1,9 +1,10 @@
-"""Delivery tests: the deployment target routes over a minimal FastAPI app (B-1020 pattern), with
-the tenancy route-test world (two clients, fresh slugs and ids per test) and its people.
+"""Delivery tests: the deployment target and executor routes over a minimal FastAPI app (B-1020
+pattern), with the tenancy route-test world (two clients, fresh slugs and ids per test) and its
+people.
 
-Targets, claims, sign-ins and audit rows are removed before each test (`tests/conftest.py:
-clean_data`). Every address is unique per test (`address()`), so no test depends on another's
-claim.
+Targets, claims, executors and their credentials, sign-ins and audit rows are removed before each
+test (`tests/conftest.py: clean_data`). Every address is unique per test (`address()`), so no
+test depends on another's claim.
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ from tests.tenancy.routes import People, make_people
 __all__ = ["world"]
 
 for _table in (
+    "delivery_executor_credentials",
+    "delivery_executors",
     "delivery_targets",
     "delivery_platform_claims",
     "login_lockouts",
