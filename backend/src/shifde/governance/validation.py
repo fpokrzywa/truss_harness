@@ -37,11 +37,19 @@ RETENTION_DEFAULTS: dict[str, int] = {
 # What the platform actually does with each kind (`PolicyOut.enforcement`).
 _ENFORCEMENT = {
     "model_policy": "enforced",  # written through to the P3 allowlist the model gate reads
-    "approval_rule": "enforced",  # tool calls of agent / orchestration / ontology-action runs
+    # tool calls of agent / orchestration / ontology-action runs, and pipeline write nodes
+    # (api_request with a write method, connection sink)
+    "approval_rule": "enforced",
     "cost_threshold": "enforced",  # alert, or approval before the next tool call
     "data_export": "enforced",  # usage and audit exports
     "lifecycle": "not_enforced",  # stored and reported; no maintenance job evaluates it yet
 }
+
+MAX_TARGET_ENVIRONMENTS = 50
+_WHEN_NEEDS = (
+    "when must name at least one of side_effect_classes, estimated_cost_gt, data_export, "
+    "target_environments"
+)
 
 
 def enforcement_of(kind: str) -> str:
@@ -108,8 +116,18 @@ def validate_definition(
         _only(definition, {"when", "approver_permission"}, kind)
         when = definition.get("when")
         if not isinstance(when, dict) or not when:
-            raise _fail("when must name side_effect_classes and / or estimated_cost_gt")
-        _only(when, {"side_effect_classes", "estimated_cost_gt", "currency"}, "approval_rule.when")
+            raise _fail(_WHEN_NEEDS)
+        _only(
+            when,
+            {
+                "side_effect_classes",
+                "estimated_cost_gt",
+                "currency",
+                "data_export",
+                "target_environments",
+            },
+            "approval_rule.when",
+        )
         out_when: dict[str, Any] = {}  # Any: JSON
         if "side_effect_classes" in when:
             classes = when["side_effect_classes"]
@@ -130,8 +148,24 @@ def validate_definition(
             out_when["currency"] = _currency(when.get("currency"), "currency")
         elif "currency" in when:
             raise _fail("currency only applies with estimated_cost_gt")
+        if "data_export" in when:
+            if not isinstance(when["data_export"], bool):
+                raise _fail("data_export must be true or false")
+            out_when["data_export"] = when["data_export"]
+        if "target_environments" in when:
+            envs = when["target_environments"]
+            if (
+                not isinstance(envs, list)
+                or not 1 <= len(envs) <= MAX_TARGET_ENVIRONMENTS
+                or not all(isinstance(e, str) and 1 <= len(e) <= 64 for e in envs)
+            ):
+                raise _fail(
+                    f"target_environments must be a list of 1 to {MAX_TARGET_ENVIRONMENTS} "
+                    "names of 1 to 64 characters"
+                )
+            out_when["target_environments"] = sorted(set(envs))
         if not out_when:
-            raise _fail("when must name side_effect_classes and / or estimated_cost_gt")
+            raise _fail(_WHEN_NEEDS)
         out: dict[str, Any] = {"when": out_when}  # Any: JSON
         permission = definition.get("approver_permission")
         if permission is not None:

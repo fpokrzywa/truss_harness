@@ -1,14 +1,21 @@
 """Configurable governance policies evaluated inside a run (FR-GOV-004/005).
 
 * `approval_rule` (`when.side_effect_classes`, `when.estimated_cost_gt` + `when.currency`,
-  `approver_permission`): a tool call needs a human approval. A rule can only ADD an approval - it
-  never waives the `destructive` / write-class / rule-8 approvals the platform already requires -
-  and the approval then needs the rule's `approver_permission` on top of `approval:decide`;
-  separation of duties and the indeterminate-side-effect flow are unchanged.
+  `when.data_export`, `when.target_environments`, `approver_permission`): a tool call or a pipeline
+  write node (api_request with a write method, connection sink) needs a human approval. Every
+  condition the rule names must hold. `data_export` is true for a pipeline write node (it sends
+  run data to an external connection) and false for a tool call; `target_environments` matches the
+  write node's optional `target_environment` config exactly, and a call without one (every tool
+  call) never matches it. Pipeline writes have the class `write_non_idempotent` (F-10). A rule can
+  only ADD an approval - it never waives the `destructive` / write-class / rule-8 / pipeline
+  approval-node approvals the platform already requires - and the approval then needs the rule's
+  `approver_permission` on top of `approval:decide`; separation of duties and the
+  indeterminate-side-effect flow are unchanged.
 * `cost_threshold` (`threshold_amount`, `currency`, `action`): when the known cost of the run tree
   exceeds the threshold the run raises an alert (`governance.cost_threshold` audit event and a
   policy decision, once per run and policy); with action `require_approval` every following tool
-  call needs approval. Model calls are not interrupted by this policy (budgets do that).
+  call needs approval (pipeline write nodes are not covered). Model calls are not interrupted by
+  this policy (budgets do that).
 
 A policy applies to a run when its scope is empty (the whole tenant) or names one of the run's
 tenant / workspace / project / agent / pipeline / principal. "Estimated cost" means the cost
@@ -80,12 +87,24 @@ def _decimal(value: object) -> Decimal | None:
         return None
 
 
-def _rule_matches(ctx: RunContext, when: Mapping[str, Any], side: str) -> bool:  # Any: JSON
+def _rule_matches(
+    ctx: RunContext,
+    when: Mapping[str, Any],  # Any: JSON
+    side: str,
+    *,
+    data_export: bool,
+    target_environment: str | None,
+) -> bool:
     classes = when.get("side_effect_classes")
     has_cost = "estimated_cost_gt" in when
-    if classes is None and not has_cost:
+    envs = when.get("target_environments")
+    if classes is None and not has_cost and "data_export" not in when and envs is None:
         return False  # validation refuses such a rule; ignore a hand-edited one
     if classes is not None and side not in classes:
+        return False
+    if "data_export" in when and when["data_export"] is not data_export:
+        return False
+    if envs is not None and (target_environment is None or target_environment not in envs):
         return False
     if has_cost:
         threshold = _decimal(when.get("estimated_cost_gt"))
@@ -94,15 +113,29 @@ def _rule_matches(ctx: RunContext, when: Mapping[str, Any], side: str) -> bool: 
     return True
 
 
-def tool_approval(ctx: RunContext, call: ToolCall, side: str) -> ApprovalRule | None:
-    """The governance approval a tool call needs, if any (None = no rule applies)."""
+def _approval_rules(
+    ctx: RunContext, side: str, *, data_export: bool, target_environment: str | None
+) -> tuple[list[UUID], str | None]:
+    """The matching `approval_rule` policy ids and the first one's approver permission."""
     matched: list[UUID] = []
     permission: str | None = None
     for pol in _policies(ctx, "approval_rule"):
         d: Mapping[str, Any] = pol["definition"] or {}
-        if _rule_matches(ctx, d.get("when") or {}, side):
+        if _rule_matches(
+            ctx,
+            d.get("when") or {},
+            side,
+            data_export=data_export,
+            target_environment=target_environment,
+        ):
             matched.append(pol["id"])
             permission = permission or d.get("approver_permission")
+    return matched, permission
+
+
+def tool_approval(ctx: RunContext, call: ToolCall, side: str) -> ApprovalRule | None:
+    """The governance approval a tool call needs, if any (None = no rule applies)."""
+    matched, permission = _approval_rules(ctx, side, data_export=False, target_environment=None)
     for pol in _policies(ctx, "cost_threshold"):
         d = pol["definition"] or {}
         limit = _decimal(d.get("threshold_amount"))
@@ -112,6 +145,17 @@ def tool_approval(ctx: RunContext, call: ToolCall, side: str) -> ApprovalRule | 
             and run_cost(ctx.session, ctx, str(d.get("currency"))) > limit
         ):
             matched.append(pol["id"])
+    if not matched:
+        return None
+    return ApprovalRule(tuple(matched), permission)
+
+
+def write_node_approval(ctx: RunContext, target_environment: str | None) -> ApprovalRule | None:
+    """The governance approval a pipeline write node needs, if any (None = no rule applies). A
+    write node is a `write_non_idempotent` data export; `cost_threshold` is not evaluated."""
+    matched, permission = _approval_rules(
+        ctx, "write_non_idempotent", data_export=True, target_environment=target_environment
+    )
     if not matched:
         return None
     return ApprovalRule(tuple(matched), permission)
