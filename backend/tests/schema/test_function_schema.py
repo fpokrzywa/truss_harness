@@ -247,6 +247,16 @@ SECURITY_DEFINER_ALLOWLIST: dict[str, str] = {
         "only as an EXISTS test; trusts app.tenant_id/app.principal_id as set after authorization; "
         "archive releases under the same lock."
     ),
+    "shifde.delivery_resolve_executor(text, bytea)": (
+        "delivery_0002 (B-2664, B-2665): owned by shifde_owner, search_path pg_catalog, pg_temp, "
+        "every object schema-qualified, EXECUTE for shifde_app only, writes no app.* setting. "
+        "Pre-tenant executor token lookup: delivery_executor_credentials is client-keyed under "
+        "row-level security and shifde_app cannot read secret_hash. Returns only (tenant_id, "
+        "executor_id), and only when exactly one credential matches both the prefix and the HMAC "
+        "hash, is unrevoked and unexpired, and belongs to an active executor of an active "
+        "organization; otherwise no row, never a name, status or reason. The caller then sets "
+        "app.tenant_id to the returned organization with no principal."
+    ),
 }
 
 _CONTEXT = {"provolatile": "s", "lang": "sql", "rettype": None}
