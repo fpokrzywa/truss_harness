@@ -167,6 +167,11 @@ def drive(app_url: str, owner_url: str, workdir: Path) -> None:
         print(f"ok   {name}")
         return result
 
+    def need(ok: bool) -> None:
+        """An explicit check inside a step (kept under `python -O`, unlike `assert`)."""
+        if not ok:
+            raise ValueError("check failed")
+
     def check(name: str, ok: bool) -> None:
         if not ok:
             print(f"FAIL {name}")
@@ -195,18 +200,20 @@ def drive(app_url: str, owner_url: str, workdir: Path) -> None:
         org, requester, approver = step(
             "a fresh organization with a requester and a second tenant administrator", people
         )
-        fake = fake_platform()
         with contextlib.ExitStack() as stack:
-            client = step(
-                "start the API and the fake platform in-process",
-                lambda: stack.enter_context(
+
+            def start() -> tuple[Any, Any]:
+                fake = fake_platform()
+                client = stack.enter_context(
                     TestClient(
                         create_app(settings),
                         base_url="https://testserver",
                         headers={"Origin": ORIGIN},
                     )
-                ),
-            )
+                )
+                return fake, client
+
+            fake, client = step("start the API and the fake platform in-process", start)
 
             def register_target() -> Any:
                 h = as_user(client, requester)
@@ -222,16 +229,19 @@ def drive(app_url: str, owner_url: str, workdir: Path) -> None:
             flow = Flow(
                 client, org.slug, ws_slug(org), org.tenant, requester, approver, executor.token
             )
-            runner = make_runner(
-                client, executor.token, credentials_file(workdir, target["address"]), fake
+            runner = step(
+                "start the executor's runner against the fake platform",
+                lambda: make_runner(
+                    client, executor.token, credentials_file(workdir, target["address"]), fake
+                ),
             )
 
             plan = step("request a plan", lambda: ask_plan(flow, target["id"]))
 
             def seal() -> Any:
-                assert runner.run_once()
+                need(runner.run_once())
                 sealed = flow.get_plan(plan["id"])
-                assert sealed["status"] == "sealed"
+                need(sealed["status"] == "sealed")
                 return sealed
 
             sealed = step("the runner seals the plan", seal)
@@ -244,7 +254,7 @@ def drive(app_url: str, owner_url: str, workdir: Path) -> None:
                     headers=h,
                 )
                 client.cookies.clear()
-                assert r.status_code == 403 and r.json()["code"] == "self_approval_forbidden"
+                need(r.status_code == 403 and r.json()["code"] == "self_approval_forbidden")
 
             step(
                 "the requester's self-approval is refused (403 self_approval_forbidden)",
@@ -257,8 +267,8 @@ def drive(app_url: str, owner_url: str, workdir: Path) -> None:
             def run_to(status: str, due: bool) -> None:
                 if due:
                     make_due(owner_db, deployment_id)
-                assert runner.run_once()
-                assert flow.get(deployment_id)["status"] == status
+                need(runner.run_once())
+                need(flow.get(deployment_id)["status"] == status)
 
             step("apply", lambda: run_to("observing", due=False))
             step("observe", lambda: run_to("verifying", due=True))
