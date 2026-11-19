@@ -87,6 +87,9 @@ testpaths = ["tests"]
 # build, which silently dropped tests/build from full runs (B-1914).
 norecursedirs = ["*.egg", ".*", "_darcs", "CVS", "dist", "node_modules", "venv", "{arch}"]
 addopts = "-ra"
+markers = [
+    "live: runs against a real Databricks development workspace (opt-in, see docs/runbooks/databricks-live-validation.md)",
+]
 
 # Line coverage of the shifde package; CI runs the full suite with `--cov` (F-17).
 [tool.coverage.run]
