@@ -26,6 +26,7 @@ dependencies = [
 shifde-api = "shifde.main:run"
 shifde-worker = "shifde.runtime.worker:run"
 shifde-admin = "shifde.cli.main:app"
+shifde-executor = "shifde.executor.main:run"
 # the "shifde.adapters" entry points below came back with the adapters port.
 
 [project.entry-points."shifde.adapters"]
@@ -109,7 +110,7 @@ include_external_packages = true
 name = "Modules are layered (higher may import lower, never the reverse)"
 type = "layers"
 layers = [
-  "shifde.main",
+  "shifde.main | shifde.executor",
   "shifde.app | shifde.cli",
   "shifde.delivery",
   "shifde.runtime",
@@ -161,13 +162,25 @@ forbidden_modules = [
 ]
 
 [[tool.importlinter.contracts]]
-name = "The executor never reaches the database (adapters.native, later shifde.executor)"
+name = "The executor never reaches the database (adapters.native)"
 type = "forbidden"
-# shifde.executor joins source_modules in the issue that creates it (import-linter refuses a
-# source module that does not exist yet).
+# shifde.executor has its own contract below with the same list (minus itself); import-linter
+# refuses a module that is both a source and a forbidden module of one contract.
 source_modules = ["shifde.adapters.native"]
 forbidden_modules = [
   "sqlalchemy", "psycopg", "alembic", "shifde.core.db", "shifde.delivery", "shifde.executor",
+  "shifde.main", "shifde.app", "shifde.cli", "shifde.runtime", "shifde.ontology", "shifde.build",
+  "shifde.governance", "shifde.admin", "shifde.models_admin", "shifde.connections",
+  "shifde.vendors", "shifde.installation", "shifde.tenancy", "shifde.identity", "shifde.secrets",
+  "shifde.audit", "shifde.authz", "shifde.observability", "shifde.ledger",
+]
+
+[[tool.importlinter.contracts]]
+name = "The executor never reaches the database (shifde.executor)"
+type = "forbidden"
+source_modules = ["shifde.executor"]
+forbidden_modules = [
+  "sqlalchemy", "psycopg", "alembic", "shifde.core.db", "shifde.delivery",
   "shifde.main", "shifde.app", "shifde.cli", "shifde.runtime", "shifde.ontology", "shifde.build",
   "shifde.governance", "shifde.admin", "shifde.models_admin", "shifde.connections",
   "shifde.vendors", "shifde.installation", "shifde.tenancy", "shifde.identity", "shifde.secrets",
