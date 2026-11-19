@@ -1,8 +1,8 @@
 {
-  "session_id": "ea2ee4c8-4316-4d79-b76f-8a8c58dd1390",
-  "head_sha": "598f99dfb800b9b81540462003d6783c010d1ec7",
+  "session_id": "8bb68b18-a595-4b7a-bbf1-ba9fe2fd4591",
+  "head_sha": "a45334e1c83f276cf632ccc5ec3e3f266a69053f",
   "branch": "main",
-  "unit_in_progress": "none",
-  "next_step": "/factory run: job queue shows new #23 (SP2-5, isolation-critical; bound by B-2673), then held #24-#28 and follow-ups; see docs/build/HANDOFF.md",
-  "written_at": "2026-11-19T13:25:36Z"
+  "unit_in_progress": "026-sp2-8-front-end (at build round 1, no builder spawned)",
+  "next_step": "/factory run: resume job 026 at build (spawn builder-026-sp2-8-front-end, port 5360), then gate, 4 reviewers, approver; then #27 SP2-9",
+  "written_at": "2026-11-19T19:32:02Z"
 }
