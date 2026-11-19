@@ -519,6 +519,10 @@ ROUTES: dict[Op, tuple[str, str]] = {
         PUBLIC,
         "executor credential, no user session; its own organization only",
     ),
+    ("GET", "/api/executor/v1/jobs/{job_id}/context"): (
+        PUBLIC,
+        "executor credential, no user session; its own organization only",
+    ),
     ("POST", "/api/executor/v1/jobs/{job_id}/credential-grant"): (
         PUBLIC,
         "executor credential, no user session; its own organization only",

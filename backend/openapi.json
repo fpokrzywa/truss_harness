@@ -521,6 +521,61 @@
         "title": "ApiKeyRotate",
         "type": "object"
       },
+      "ApplyReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "application_id": {
+            "format": "uuid",
+            "title": "Application Id",
+            "type": "string"
+          },
+          "artifact_digest": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Artifact Digest",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "operation_handles": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Operation Handles",
+            "type": "object"
+          },
+          "resources": {
+            "items": {
+              "$ref": "#/components/schemas/ResourceBinding"
+            },
+            "title": "Resources",
+            "type": "array"
+          },
+          "target_id": {
+            "format": "uuid",
+            "title": "Target Id",
+            "type": "string"
+          },
+          "tenant_id": {
+            "format": "uuid",
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "application_id",
+          "target_id",
+          "artifact_digest",
+          "resources",
+          "operation_handles"
+        ],
+        "title": "ApplyReceipt",
+        "type": "object"
+      },
       "ApprovalOut": {
         "properties": {
           "arguments": {
@@ -2404,6 +2459,162 @@
           "status"
         ],
         "title": "ConnectionStatusChange",
+        "type": "object"
+      },
+      "ContextDeployment": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "receipt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApplyReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "receipt"
+        ],
+        "title": "ContextDeployment",
+        "type": "object"
+      },
+      "ContextPlan": {
+        "additionalProperties": false,
+        "description": "The job's plan as the executor needs it; the sealed fields are `None` before sealing.",
+        "properties": {
+          "adapter_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adapter Version"
+          },
+          "application_key": {
+            "title": "Application Key",
+            "type": "string"
+          },
+          "artifact_digest": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Artifact Digest",
+            "type": "string"
+          },
+          "artifact_id": {
+            "format": "uuid",
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "digest": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Digest"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EnvironmentSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "steps": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PlanStep"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Steps"
+          },
+          "target_revision": {
+            "title": "Target Revision",
+            "type": "integer"
+          },
+          "toolchain_digest": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Toolchain Digest"
+          }
+        },
+        "required": [
+          "id",
+          "application_key",
+          "display_name",
+          "artifact_id",
+          "artifact_digest",
+          "target_revision",
+          "status",
+          "steps",
+          "snapshot",
+          "adapter_version",
+          "toolchain_digest",
+          "digest",
+          "expires_at"
+        ],
+        "title": "ContextPlan",
         "type": "object"
       },
       "CostBreakdownOut": {
@@ -5286,6 +5497,54 @@
         "title": "IssueOut",
         "type": "object"
       },
+      "JobContext": {
+        "additionalProperties": false,
+        "description": "What a leased job runs against (never a credential, the claim or the artifact bytes).",
+        "properties": {
+          "deployment": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ContextDeployment"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "job": {
+            "$ref": "#/components/schemas/LeasedJob"
+          },
+          "owned_resources": {
+            "items": {
+              "$ref": "#/components/schemas/OwnedResource"
+            },
+            "title": "Owned Resources",
+            "type": "array"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ContextPlan"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "target": {
+            "$ref": "#/components/schemas/Target"
+          }
+        },
+        "required": [
+          "job",
+          "target",
+          "plan",
+          "deployment",
+          "owned_resources"
+        ],
+        "title": "JobContext",
+        "type": "object"
+      },
       "JobLease": {
         "additionalProperties": false,
         "properties": {
@@ -7106,6 +7365,26 @@
           "tokens"
         ],
         "title": "OverviewSpender",
+        "type": "object"
+      },
+      "OwnedResource": {
+        "additionalProperties": false,
+        "description": "A native resource the job's target and application key already own.",
+        "properties": {
+          "native_id": {
+            "title": "Native Id",
+            "type": "string"
+          },
+          "resource_type": {
+            "title": "Resource Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "resource_type",
+          "native_id"
+        ],
+        "title": "OwnedResource",
         "type": "object"
       },
       "Page_AdapterOut_": {
@@ -12860,6 +13139,58 @@
         "title": "StepOut",
         "type": "object"
       },
+      "Target": {
+        "additionalProperties": false,
+        "properties": {
+          "bindings": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Bindings",
+            "type": "object"
+          },
+          "environment": {
+            "default": "dev",
+            "enum": [
+              "dev",
+              "test",
+              "prod"
+            ],
+            "title": "Environment",
+            "type": "string"
+          },
+          "host": {
+            "title": "Host",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "revision": {
+            "default": 1,
+            "minimum": 1.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "tenant_id": {
+            "format": "uuid",
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "revision",
+          "environment",
+          "host",
+          "bindings"
+        ],
+        "title": "Target",
+        "type": "object"
+      },
       "TargetBindings": {
         "additionalProperties": false,
         "properties": {
@@ -16574,6 +16905,125 @@
           }
         },
         "summary": "Checkpoint",
+        "tags": [
+          "executor"
+        ]
+      }
+    },
+    "/api/executor/v1/jobs/{job_id}/context": {
+      "get": {
+        "operationId": "job_context_api_executor_v1_jobs__job_id__context_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "lease_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Lease Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fence",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "title": "Fence",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobContext"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "unauthenticated / invalid_credentials"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "forbidden / csrf_failed / auth_disabled"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "not_found (also for resources in other tenants)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "conflict / scope_archived"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "validation_error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "rate_limited"
+          }
+        },
+        "summary": "Job Context",
         "tags": [
           "executor"
         ]

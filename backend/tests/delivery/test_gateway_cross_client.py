@@ -55,6 +55,7 @@ GATEWAY_ROUTE_TESTS = {
     ("POST", "/api/executor/v1/lease"): "test_bs_lease_never_returns_as_job",
     ("POST", JOB + "/heartbeat"): "test_b_cannot_reach_as_job",
     ("GET", JOB + "/artifact"): "test_b_cannot_reach_as_job",
+    ("GET", JOB + "/context"): "test_b_cannot_reach_as_job",
     ("POST", JOB + "/credential-grant"): "test_b_cannot_reach_as_job",
     ("POST", JOB + "/checkpoint"): "test_b_cannot_reach_as_job",
     ("POST", JOB + "/result"): "test_b_cannot_reach_as_job",
@@ -68,7 +69,7 @@ def test_every_gateway_route_has_a_cross_client_test() -> None:
         for method in getattr(route, "methods", set())
     }
     assert routes == set(GATEWAY_ROUTE_TESTS)
-    assert len(routes) == 7
+    assert len(routes) == 8
     assert all(name in globals() for name in GATEWAY_ROUTE_TESTS.values())
 
 
@@ -123,6 +124,7 @@ def _calls(leased: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
     return [
         ("POST", "heartbeat", {"json": p}),
         ("GET", "artifact", {"params": p}),
+        ("GET", "context", {"params": p}),
         ("POST", "credential-grant", {"json": p}),
         (
             "POST",

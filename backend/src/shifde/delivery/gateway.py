@@ -21,6 +21,8 @@ transaction (settled call 5): `plan` (`service.on_plan_result` seals or fails th
 (`ApplyReceipt`), `observe` (`NativeObservation`), `verify` (`VerificationReport`) and `reconcile`
 (`ReconciliationResult`), each with its `service.on_*_result` deployment hook; a result for a
 kind without an entry is refused. A leased `plan` job serves its plan's artifact (`artifact`).
+`job_context` answers what a leased job runs against (target, plan, deployment, owned resources;
+B-2688), so the executor can drive the adapter from ids alone.
 """
 
 from __future__ import annotations
@@ -38,8 +40,11 @@ from sqlalchemy.orm import Session
 from shifde.adapters.native.contracts import (
     ApplyReceipt,
     CheckpointSubmission,
+    ContextDeployment,
+    ContextPlan,
     CredentialGrant,
     HeartbeatAck,
+    JobContext,
     JobLease,
     JobResultAck,
     JobResultSubmission,
@@ -48,8 +53,10 @@ from shifde.adapters.native.contracts import (
     LeaseProof,
     LeaseRequest,
     NativeObservation,
+    OwnedResource,
     PlanJobResult,
     ReconciliationResult,
+    Target,
     VerificationReport,
 )
 from shifde.core.errors import AppError, NotFound, ValidationFailed
@@ -167,6 +174,19 @@ def _leased(
     return row
 
 
+def _leased_job(row: Row) -> LeasedJob:
+    return LeasedJob(
+        id=row["id"],
+        kind=row["kind"],
+        plan_id=row["plan_id"],
+        deployment_id=row["deployment_id"],
+        target_id=row["target_id"],
+        deadline=row["deadline"],
+        attempts=row["attempts"],
+        max_attempts=row["max_attempts"],
+    )
+
+
 def lease(session: Session, executor: AuthenticatedExecutor, body: LeaseRequest) -> JobLease | None:
     """Sweep the organization's expired leases and settle its plans and deployments, then lease
     (or replay) one due job; a leased `plan` job moves its plan to `planning`, a leased `apply`
@@ -185,16 +205,7 @@ def lease(session: Session, executor: AuthenticatedExecutor, body: LeaseRequest)
     service.start_deployment(session, row)
     session.commit()
     return JobLease(
-        job=LeasedJob(
-            id=row["id"],
-            kind=row["kind"],
-            plan_id=row["plan_id"],
-            deployment_id=row["deployment_id"],
-            target_id=row["target_id"],
-            deadline=row["deadline"],
-            attempts=row["attempts"],
-            max_attempts=row["max_attempts"],
-        ),
+        job=_leased_job(row),
         lease_id=granted["lease_id"],
         fence=granted["fence"],
         lease_until=granted["lease_until"],
@@ -225,6 +236,77 @@ def artifact(
         raise ArtifactNotFound("the job has no artifact")
     session.commit()
     return Artifact(content=bytes(found["content"]), digest=found["digest"])
+
+
+def job_context(
+    session: Session, executor: AuthenticatedExecutor, job_id: UUID, proof: LeaseProof
+) -> JobContext:
+    """What the job runs against: its target, its plan (sealed fields once sealed), its
+    deployment (receipt once applied) and the native resources the plan's application owns on the
+    target. Never a credential, the claim or address key, or the artifact bytes."""
+    tenant_id = executor.tenant_id
+    row = _leased(session, executor, job_id, proof)
+    target = (
+        repository.get_target(session, row["target_id"], tenant_id=tenant_id)
+        if row["target_id"] is not None
+        else None
+    )
+    if target is None or target["status"] != "active":
+        raise TargetUnavailable("the job's target is not available")
+    plan = (
+        repository.get_plan(session, row["plan_id"], tenant_id=tenant_id)
+        if row["plan_id"] is not None
+        else None
+    )
+    deployment = (
+        repository.get_deployment(session, row["deployment_id"], tenant_id=tenant_id)
+        if row["deployment_id"] is not None
+        else None
+    )
+    owned = (
+        repository.list_native_resources(
+            session, target["id"], plan["application_key"], tenant_id=tenant_id
+        )
+        if plan is not None
+        else []
+    )
+    session.commit()
+    return JobContext(
+        job=_leased_job(row),
+        target=Target(
+            tenant_id=tenant_id,
+            id=target["id"],
+            revision=target["revision"],
+            environment=target["environment"],
+            host=target["address"],
+            bindings=target["bindings"],
+        ),
+        plan=None
+        if plan is None
+        else ContextPlan(
+            id=plan["id"],
+            application_key=plan["application_key"],
+            display_name=plan["display_name"],
+            artifact_id=plan["artifact_id"],
+            artifact_digest=plan["artifact_digest"],
+            target_revision=plan["target_revision"],
+            status=plan["status"],
+            steps=plan["steps"],
+            snapshot=plan["snapshot"],
+            adapter_version=plan["adapter_version"],
+            toolchain_digest=plan["toolchain_digest"],
+            digest=plan["digest"],
+            expires_at=plan["expires_at"],
+        ),
+        deployment=None
+        if deployment is None
+        else ContextDeployment(
+            id=deployment["id"], status=deployment["status"], receipt=deployment["receipt"]
+        ),
+        owned_resources=[
+            OwnedResource(resource_type=r["resource_type"], native_id=r["native_id"]) for r in owned
+        ],
+    )
 
 
 def credential_grant(

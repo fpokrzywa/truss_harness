@@ -83,6 +83,7 @@ Routes under `/api/executor/v1` (separate router, not behind `require_auth`; use
 | `POST /lease` `{request_id, kinds}` | Leases at most one due job of the caller's organization (`FOR UPDATE SKIP LOCKED`, `run_after <= now()`); returns job, `lease_id`, `fence`, `lease_until` (45 s); same `request_id` returns the same lease; 204 if none |
 | `POST /jobs/{id}/heartbeat` `{lease_id, fence}` | Extends the lease; 409 if lost |
 | `GET /jobs/{id}/artifact` | Artifact bytes for that job, digest in a header; executor verifies |
+| `GET /jobs/{id}/context?lease_id=&fence=` | What the leased job runs against: the job, its target (`host` = normalized address, bindings), its plan (sealed fields once sealed), its deployment (receipt once applied) and the native resources the plan's application owns on the target; never a credential, claim or artifact bytes (B-2688) |
 | `POST /jobs/{id}/credential-grant` | Grant `{job_id, executor_id, target_id, credential_ref, audience = target address, expires_at = min(lease_until, now+30 s)}`; no secret |
 | `POST /jobs/{id}/checkpoint` `{lease_id, fence, sequence, step_key, state, input_digest, receipt?}` | Journal write; refused on stale lease/fence, changed input digest, conflicting receipt or cancel requested |
 | `POST /jobs/{id}/result` `{lease_id, fence, status, value or error_code}` | Terminal; validated against the result model for the kind |

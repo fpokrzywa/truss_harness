@@ -15,7 +15,7 @@ One application (SETH) merging SETH, the FDE SDK and Agent Factory into one code
 - Agent Factory: `S:\Development_2026\the_agent_factory`, commit `0fdd09c` (never open its `.env` or `azure_key.txt`).
 
 ## Stack
-- Backend `backend/`: Python 3.13 (uv), FastAPI, SQLAlchemy 2 sync + psycopg 3, Alembic, Pydantic v2, pytest + pytest-xdist. Package `shifde`, env prefix `SHIFDE_*`, commands `shifde-api`, `shifde-worker`, `shifde-admin`.
+- Backend `backend/`: Python 3.13 (uv), FastAPI, SQLAlchemy 2 sync + psycopg 3, Alembic, Pydantic v2, pytest + pytest-xdist. Package `shifde`, env prefix `SHIFDE_*`, commands `shifde-api`, `shifde-worker`, `shifde-admin`, `shifde-executor`.
 - Database: PostgreSQL 17, forced row-level security on every client-owned table. App role `shifde_app` (NOSUPERUSER NOBYPASSRLS, owns nothing); schema owner `shifde_owner`. The app refuses to start under a privileged role.
 - Frontend `frontend/`: Next.js App Router, React 19, TypeScript, Tailwind, pnpm, Vitest.
 
@@ -32,6 +32,7 @@ One application (SETH) merging SETH, the FDE SDK and Agent Factory into one code
 - Frontend: `cd frontend; pnpm install; pnpm dev`.
 - Browser end-to-end suite (Playwright, Chromium): cluster running, `cd frontend; pnpm install --frozen-lockfile`, once `pnpm exec playwright install chromium`; then `cd frontend; pnpm e2e`. It prepares this checkout's database (`dev_db.py env`, `db upgrade`, `dev-seed`, keeping existing passwords), then starts the API on 8780 and Next on 3780 and signs in as `admin@demo-a.local`. Local only: not part of `factory/checks.sh` or CI.
 - API latency (F-16, cluster running): `cd backend; $env:SHIFDE_PERF_ITERATIONS='200'; uv run pytest tests/perf/test_api_latency.py -q -s` prints p50/p95 per main route and appends them to `.devdata/f16-latency.txt`; method, budgets and measured numbers in `docs/build/perf.md`.
+- Executor against the fake platform (API running): set `SHIFDE_EXECUTOR_API_URL` (the API origin), `SHIFDE_EXECUTOR_TOKEN` (an `shx_` credential from the Executors screen), `SHIFDE_EXECUTOR_CREDENTIALS_FILE` (JSON `credential_ref -> {host, token, service_principal}`) and `SHIFDE_ENV=development`, then `cd backend; uv run shifde-executor --fake-platform`.
 - Token usage: `python scripts/usage_report.py`.
 - Traceability matrix (design 5.3 -> tests): `python scripts/traceability.py` writes `docs/requirements/TRACEABILITY.md`; `python scripts/traceability.py --check` fails on a missing test file or a stale matrix.
 - Retention purge (content scrub of old, ended runs, as the app role): `cd backend; uv run shifde-admin maintenance purge --older-than <days> [--dry-run]`.
