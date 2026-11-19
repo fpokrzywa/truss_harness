@@ -177,6 +177,21 @@ def test_b_cannot_reach_as_job(client: TestClient, two: Two, owner_db: Database)
     assert r.status_code == 200, r.text
 
 
+def test_b_cannot_replay_as_request_id(client: TestClient, two: Two, owner_db: Database) -> None:
+    """Isolation review 1 of SP2-4, finding 3: a request id names a lease only in its own
+    organization."""
+    request_id = uuid7()
+    r = lease(client, two.a.token, request_id=request_id)
+    assert r.status_code == 200 and r.json()["job"]["id"] == str(two.job_a), r.text
+    before = dict(job_row(owner_db, two.job_a))
+    assert lease(client, two.b.token, request_id=request_id).status_code == 204
+    assert dict(job_row(owner_db, two.job_a)) == before
+    assert job_row(owner_db, two.job_b)["status"] == "queued"
+    # A's own replay still answers its lease
+    again = lease(client, two.a.token, request_id=request_id)
+    assert again.status_code == 200 and again.json() == r.json(), again.text
+
+
 def test_bs_lease_does_not_sweep_as_expired_job(
     client: TestClient, two: Two, owner_db: Database
 ) -> None:
