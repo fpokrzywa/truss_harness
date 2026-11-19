@@ -4,7 +4,8 @@ section 9 items 4, 5, 7, 8, 9 and 16).
 A job is leased only through the `shifde.delivery_lease_job` definer (the app holds no grant on
 the lease columns), after `shifde.delivery_sweep_lost_jobs` has settled the organization's
 expired leases: an `apply` job is never re-queued (it becomes `lost`, with an unknown outcome when
-its deployment journal holds an intent); other kinds are re-queued up to `max_attempts`.
+its deployment journal holds any step); other kinds are re-queued up to `max_attempts`. A
+`BEFORE UPDATE` trigger refuses reviving a lease without a new fence.
 
 Every per-job call proves the current lease (`lease_id` and `fence`). A job of another
 organization, or one that does not exist, answers the same 404; a lease that is not the caller's

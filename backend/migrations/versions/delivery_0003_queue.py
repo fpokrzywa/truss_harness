@@ -4,7 +4,7 @@ Revision ID: delivery_0003
 Revises: delivery_0002
 
 Design 2026-11-17 sections 3, 4 and 5, section 9 items 4, 5, 7, 8, 9, 13 and 16 (DECISIONS
-B-2500, B-2501, B-2520, B-2530, B-2669..B-2671).
+B-2500, B-2501, B-2520, B-2530, B-2669..B-2673).
 
 * `delivery_jobs`: the executor's work queue (`plan`, `apply`, `observe`, `verify`, `reconcile`).
   A leased job carries its executor, `lease_id`, `fence` (raised on every lease) and
@@ -24,8 +24,14 @@ B-2500, B-2501, B-2520, B-2530, B-2669..B-2671).
   `lease_request_id`, `fence`, `attempts`), so the application cannot forge a lease or a fence.
 * `shifde.delivery_sweep_lost_jobs()`: SECURITY INVOKER (runs as `shifde_app` under row-level
   security), touches only the session organization's expired leases: an `apply` job becomes
-  `lost` (outcome `unknown_outcome` when its deployment journal holds an intent, else `failed`),
-  another kind is re-queued while `attempts < max_attempts`, else `lost`. Returns the count.
+  `lost` (outcome `unknown_outcome` when its deployment journal holds any step, intent or
+  complete, since a platform write may have happened; `failed` only when it holds none), another
+  kind is re-queued while `attempts < max_attempts`, else `lost`. Returns the count.
+* `shifde.delivery_jobs_lease_guard()`: a SECURITY INVOKER `BEFORE UPDATE` trigger on
+  `delivery_jobs` (isolation review 1 of SP2-4, B-2672). `shifde_app` may update `status` and
+  `lease_until`, and a re-queued or lost job keeps its old executor, `lease_id` and `fence`; the
+  trigger refuses (42501) making a job `leased` or extending an expired lease unless `fence`
+  changes in the same update, which only the lease definer does. An old lease is never revived.
 
 Isolation: both tables are client-owned with forced row-level security and one
 `tenant_isolation` policy (USING and WITH CHECK on `tenant_id = current_tenant_id()`); keys to
@@ -34,8 +40,9 @@ INSERT (tenant_id, id, kind, plan_id, deployment_id, target_id, run_after, deadl
 and UPDATE (status, run_after, lease_until, heartbeat_at, checkpoint_seq, result); journal SELECT,
 INSERT and UPDATE (state, receipt, recorded_at). No DELETE on either.
 
-Rollback: drops both functions, then the journal, then the jobs (data-destructive: every
-organization's queued jobs and journal rows are lost).
+Rollback: drops the lease and sweep functions, then the journal, then the jobs (with the guard
+trigger), then the guard function (data-destructive: every organization's queued jobs and journal
+rows are lost).
 """
 
 from __future__ import annotations
@@ -50,6 +57,7 @@ depends_on = None
 TENANT = "tenant_id = shifde.current_tenant_id()"
 LEASE_SIGNATURE = "delivery_lease_job(uuid, uuid, text[])"
 SWEEP_SIGNATURE = "delivery_sweep_lost_jobs()"
+GUARD_SIGNATURE = "delivery_jobs_lease_guard()"
 JOB_INSERT_COLUMNS = (
     "tenant_id, id, kind, plan_id, deployment_id, target_id, run_after, deadline, max_attempts"
 )
@@ -112,8 +120,7 @@ SWEEP_LOST_JOBS = """CREATE FUNCTION shifde.delivery_sweep_lost_jobs()
                result = CASE
                  WHEN j.kind = 'apply' AND EXISTS (
                      SELECT 1 FROM shifde.delivery_journal r
-                      WHERE r.tenant_id = j.tenant_id AND r.deployment_id = j.deployment_id
-                        AND r.state = 'intent')
+                      WHERE r.tenant_id = j.tenant_id AND r.deployment_id = j.deployment_id)
                    THEN CAST('{"outcome": "unknown_outcome"}' AS jsonb)
                  WHEN j.kind = 'apply'
                    THEN CAST('{"outcome": "failed", "reason": "no platform write was attempted"}'
@@ -124,6 +131,19 @@ SWEEP_LOST_JOBS = """CREATE FUNCTION shifde.delivery_sweep_lost_jobs()
            AND j.lease_until <= pg_catalog.now()
         RETURNING 1)
       SELECT CAST(pg_catalog.count(*) AS integer) FROM swept $$"""
+
+LEASE_GUARD = """CREATE FUNCTION shifde.delivery_jobs_lease_guard()
+   RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, pg_temp AS
+   $$ BEGIN
+        IF NEW.status = 'leased' AND NEW.fence = OLD.fence
+           AND (OLD.status <> 'leased'
+                OR (OLD.lease_until <= pg_catalog.now() AND NEW.lease_until > OLD.lease_until))
+        THEN
+          RAISE EXCEPTION 'a lease is granted only by shifde.delivery_lease_job'
+            USING ERRCODE = 'insufficient_privilege';
+        END IF;
+        RETURN NEW;
+      END $$"""
 
 
 def _run(*statements: str) -> None:
@@ -184,6 +204,10 @@ def upgrade() -> None:
         "CREATE INDEX ix_delivery_jobs__lease_request ON shifde.delivery_jobs "
         "(tenant_id, lease_request_id)",
         *_tenant_table("delivery_jobs"),
+        LEASE_GUARD,
+        f"REVOKE ALL ON FUNCTION shifde.{GUARD_SIGNATURE} FROM PUBLIC",
+        "CREATE TRIGGER trg_delivery_jobs_lease_guard BEFORE UPDATE ON shifde.delivery_jobs "
+        "FOR EACH ROW EXECUTE FUNCTION shifde.delivery_jobs_lease_guard()",
         "GRANT SELECT ON shifde.delivery_jobs TO shifde_app",
         f"GRANT INSERT ({JOB_INSERT_COLUMNS}) ON shifde.delivery_jobs TO shifde_app",
         f"GRANT UPDATE ({JOB_UPDATE_COLUMNS}) ON shifde.delivery_jobs TO shifde_app",
@@ -227,4 +251,5 @@ def downgrade() -> None:
         f"DROP FUNCTION shifde.{LEASE_SIGNATURE}",
         "DROP TABLE shifde.delivery_journal",
         "DROP TABLE shifde.delivery_jobs",
+        f"DROP FUNCTION shifde.{GUARD_SIGNATURE}",
     )

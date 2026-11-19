@@ -417,6 +417,24 @@ def test_an_expired_apply_job_with_an_intent_has_an_unknown_outcome(
     _code(_post(client, executor_a, job, "heartbeat", proof(leased)), 409, "lease_lost")
 
 
+def test_an_expired_apply_job_with_only_complete_steps_has_an_unknown_outcome(
+    client: TestClient, executor_a: ExecutorSide, app_db: Database, owner_db: Database
+) -> None:
+    """A finished step is a platform write: losing the lease before the next intent is still an
+    unknown outcome, never `failed` (isolation review 1 of SP2-4, finding 1)."""
+    job = enqueue(app_db, executor_a.tenant, "apply", deployment_id=uuid7())
+    leased = _leased(lease(client, executor_a.token, kinds=["apply"]))
+    step = {**proof(leased), "step_key": "bundle_deploy", "input_digest": DIGEST}
+    r = _post(client, executor_a, job, "checkpoint", {**step, "sequence": 1, "state": "intent"})
+    assert r.status_code == 200, r.text
+    complete = {**step, "sequence": 2, "state": "complete", "receipt": {"deployed": True}}
+    assert _post(client, executor_a, job, "checkpoint", complete).status_code == 200
+    expire(owner_db, job)
+    assert lease(client, executor_a.token).status_code == 204
+    row = job_row(owner_db, job)
+    assert row["status"] == "lost" and row["result"] == {"outcome": "unknown_outcome"}
+
+
 def test_an_expired_observe_job_is_requeued_until_max_attempts(
     client: TestClient, executor_a: ExecutorSide, app_db: Database, owner_db: Database
 ) -> None:
@@ -524,3 +542,39 @@ def test_shifde_app_cannot_forge_a_lease_or_delete_queue_rows(
     )
     row = job_row(owner_db, job)
     assert row["status"] == "leased" and row["fence"] == 1
+
+
+def test_shifde_app_cannot_revive_a_lease(
+    client: TestClient, executor_a: ExecutorSide, app_db: Database, owner_db: Database
+) -> None:
+    """Isolation review 1 of SP2-4, finding 2: a re-queued, lost or expired job keeps its old
+    executor, `lease_id` and `fence`; only a new fence (the lease definer) makes a job leased."""
+    observe = enqueue(app_db, executor_a.tenant, "observe")
+    apply = enqueue(app_db, executor_a.tenant, "apply", deployment_id=uuid7())
+    old = {
+        job: _leased(lease(client, executor_a.token, kinds=[kind]))
+        for job, kind in ((observe, "observe"), (apply, "apply"))
+    }
+    revive = (
+        "UPDATE shifde.delivery_jobs SET status = 'leased', "
+        "lease_until = now() + interval '1 hour' WHERE id = :j"
+    )
+    for job in (observe, apply):
+        expire(owner_db, job)
+        # expired but not yet swept: the lease cannot be extended
+        _refused(
+            app_db,
+            executor_a.tenant,
+            "UPDATE shifde.delivery_jobs SET lease_until = now() + interval '1 hour' WHERE id = :j",
+            j=job,
+        )
+    assert lease(client, executor_a.token, kinds=["verify"]).status_code == 204  # the sweep
+    assert job_row(owner_db, observe)["status"] == "queued"
+    assert job_row(owner_db, apply)["status"] == "lost"
+    for job in (observe, apply):
+        _refused(app_db, executor_a.tenant, revive, j=job)
+        row = job_row(owner_db, job)
+        assert row["status"] in ("queued", "lost") and row["fence"] == 1
+        _code(_post(client, executor_a, job, "heartbeat", proof(old[job])), 409, "lease_lost")
+    # the definer still leases the re-queued job, under a new fence
+    assert _leased(lease(client, executor_a.token, kinds=["observe"]))["fence"] == 2
