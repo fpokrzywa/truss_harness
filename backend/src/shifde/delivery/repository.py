@@ -5,6 +5,10 @@ only by the `shifde.delivery_claim_platform` definer (lead ruling B-2524): it re
 the session context and answers NULL, naming nobody, when another organization holds the address.
 Everything that creates or releases a claim takes the same transaction-scoped advisory lock on
 (platform kind, address key), so a register and an archive on one address never interleave.
+
+Executors and their credentials (B-2664): `shifde_app` cannot read `secret_hash`; a token is
+resolved only through the `shifde.delivery_resolve_executor` definer, which answers
+(tenant_id, executor_id) or nothing.
 """
 
 from __future__ import annotations
@@ -156,4 +160,198 @@ def archive_target(
         )
         .mappings()
         .first()
+    )
+
+
+# ====================================================================== executors (B-2664)
+EXECUTOR_COLUMNS = (
+    "id, tenant_id, name, status, last_seen_at, version, created_by, created_at, updated_at"
+)
+# every column but `secret_hash`, which `shifde_app` cannot read (only the resolver definer does)
+CREDENTIAL_COLUMNS = (
+    "id, tenant_id, executor_id, prefix, created_by, expires_at, revoked_at, created_at, updated_at"
+)
+
+
+def insert_executor(session: Session, values: Mapping[str, Any]) -> None:
+    session.execute(
+        text(
+            "INSERT INTO shifde.delivery_executors (id, tenant_id, name, status, created_by) "
+            "VALUES (:id, :tenant_id, :name, 'active', :created_by)"
+        ),
+        dict(values),
+    )
+
+
+def get_executor(
+    session: Session, executor_id: UUID, *, tenant_id: UUID, for_update: bool = False
+) -> Row | None:
+    lock = " FOR UPDATE" if for_update else ""
+    return (
+        session.execute(
+            text(
+                # columns and the lock clause are module constants; values are bound
+                f"SELECT {EXECUTOR_COLUMNS} FROM shifde.delivery_executors "  # nosec B608
+                f"WHERE id = :id AND tenant_id = :t{lock}"
+            ),
+            {"id": executor_id, "t": tenant_id},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def list_executors(
+    session: Session, *, tenant_id: UUID, status: str | None, after: UUID | None, limit: int
+) -> list[Row]:
+    sql = (
+        # columns are module constants; values are bound
+        f"SELECT {EXECUTOR_COLUMNS} FROM shifde.delivery_executors "  # nosec B608
+        "WHERE tenant_id = :t AND (CAST(:status AS text) IS NULL OR status = :status) "
+        "AND (CAST(:after AS uuid) IS NULL OR id > :after) ORDER BY id LIMIT :n"
+    )
+    return list(
+        session.execute(text(sql), {"t": tenant_id, "status": status, "after": after, "n": limit})
+        .mappings()
+        .all()
+    )
+
+
+def set_executor_status(
+    session: Session, executor_id: UUID, status: str, *, tenant_id: UUID
+) -> Row | None:
+    return (
+        session.execute(
+            text(
+                # columns are module constants; values are bound
+                "UPDATE shifde.delivery_executors SET status = :s "  # nosec B608
+                f"WHERE id = :id AND tenant_id = :t RETURNING {EXECUTOR_COLUMNS}"
+            ),
+            {"id": executor_id, "t": tenant_id, "s": status},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def touch_executor(
+    session: Session, executor_id: UUID, version: str | None, *, tenant_id: UUID
+) -> Row | None:
+    """`last_seen_at = now()` and, when given, the executor's reported version."""
+    return (
+        session.execute(
+            text(
+                # columns are module constants; values are bound
+                "UPDATE shifde.delivery_executors SET last_seen_at = now(), "  # nosec B608
+                "version = COALESCE(CAST(:v AS text), version) WHERE id = :id AND tenant_id = :t "
+                f"RETURNING {EXECUTOR_COLUMNS}"
+            ),
+            {"id": executor_id, "t": tenant_id, "v": version},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def resolve_executor(session: Session, prefix: str, secret_hash: bytes) -> Row | None:
+    """(tenant_id, executor_id) of a usable credential, or None (the definer names no reason)."""
+    return (
+        session.execute(
+            text("SELECT tenant_id, executor_id FROM shifde.delivery_resolve_executor(:p, :h)"),
+            {"p": prefix, "h": secret_hash},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def insert_credential(session: Session, values: Mapping[str, Any]) -> None:
+    session.execute(
+        text(
+            "INSERT INTO shifde.delivery_executor_credentials (id, tenant_id, executor_id, prefix, "
+            "secret_hash, created_by, expires_at) VALUES (:id, :tenant_id, :executor_id, :prefix, "
+            ":secret_hash, :created_by, :expires_at)"
+        ),
+        dict(values),
+    )
+
+
+def get_credential(
+    session: Session, credential_id: UUID, executor_id: UUID, *, tenant_id: UUID
+) -> Row | None:
+    return (
+        session.execute(
+            text(
+                # columns are module constants; values are bound
+                f"SELECT {CREDENTIAL_COLUMNS} FROM "  # nosec B608
+                "shifde.delivery_executor_credentials "
+                "WHERE id = :id AND executor_id = :e AND tenant_id = :t"
+            ),
+            {"id": credential_id, "e": executor_id, "t": tenant_id},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def list_credentials(session: Session, executor_id: UUID, *, tenant_id: UUID) -> list[Row]:
+    return list(
+        session.execute(
+            text(
+                # columns are module constants; values are bound
+                f"SELECT {CREDENTIAL_COLUMNS} FROM "  # nosec B608
+                "shifde.delivery_executor_credentials "
+                "WHERE executor_id = :e AND tenant_id = :t ORDER BY id"
+            ),
+            {"e": executor_id, "t": tenant_id},
+        )
+        .mappings()
+        .all()
+    )
+
+
+def count_live_credentials(session: Session, executor_id: UUID, *, tenant_id: UUID) -> int:
+    return int(
+        session.execute(
+            text(
+                "SELECT count(*) FROM shifde.delivery_executor_credentials WHERE executor_id = :e "
+                "AND tenant_id = :t AND revoked_at IS NULL AND expires_at > now()"
+            ),
+            {"e": executor_id, "t": tenant_id},
+        ).scalar_one()
+    )
+
+
+def revoke_credential(session: Session, credential_id: UUID, *, tenant_id: UUID) -> Row | None:
+    """Revoke an unrevoked credential; None if it was already revoked."""
+    return (
+        session.execute(
+            text(
+                # columns are module constants; values are bound
+                "UPDATE shifde.delivery_executor_credentials "  # nosec B608
+                "SET revoked_at = now() WHERE id = :id AND tenant_id = :t "
+                f"AND revoked_at IS NULL RETURNING {CREDENTIAL_COLUMNS}"
+            ),
+            {"id": credential_id, "t": tenant_id},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def revoke_executor_credentials(
+    session: Session, executor_id: UUID, *, tenant_id: UUID
+) -> list[Row]:
+    """Revoke every unrevoked credential of the executor; the revoked rows."""
+    return list(
+        session.execute(
+            text(
+                "UPDATE shifde.delivery_executor_credentials SET revoked_at = now() "
+                "WHERE executor_id = :e AND tenant_id = :t AND revoked_at IS NULL "
+                "RETURNING id, prefix"
+            ),
+            {"e": executor_id, "t": tenant_id},
+        )
+        .mappings()
+        .all()
     )
