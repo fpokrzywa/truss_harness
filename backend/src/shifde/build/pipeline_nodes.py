@@ -86,6 +86,8 @@ TABLE = {
     "pattern": r"^[A-Za-z_][A-Za-z0-9_]{0,62}(\.[A-Za-z_][A-Za-z0-9_]{0,62})?$",
     "title": "Table (schema.table)",
 }
+# matched by `approval_rule.when.target_environments` (F-10)
+TARGET_ENVIRONMENT = {"type": "string", "minLength": 1, "maxLength": 64}
 
 _REGISTRY: dict[str, NodeType] = {}
 
@@ -192,6 +194,7 @@ register(
                 "path_template": {"type": "string", "minLength": 1, "maxLength": 2000},
                 "query": {"type": "object"},
                 "body": {},
+                "target_environment": TARGET_ENVIRONMENT,
             },
             ["connection_id", "path_template"],
         ),
@@ -343,6 +346,7 @@ register(
                 "connection_id": CONNECTION,
                 "method": {"enum": ["POST", "PUT"], "default": "POST"},
                 "path_template": {"type": "string", "minLength": 1, "maxLength": 2000},
+                "target_environment": TARGET_ENVIRONMENT,
             },
             ["target"],
         ),
