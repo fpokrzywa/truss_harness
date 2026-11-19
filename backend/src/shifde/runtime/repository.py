@@ -444,6 +444,23 @@ def list_events(session: Session, tenant_id: UUID, run_id: UUID) -> list[Row]:
     )
 
 
+def tree_classifications(session: Session, tenant_id: UUID, root_run_id: UUID) -> list[str]:
+    """The levels of every `data_classification_raised` event of the runs of `tenant_id` whose
+    root run is `root_run_id` (the root included)."""
+    return [
+        str(level)
+        for level in session.execute(
+            text(
+                "SELECT e.details->>'classification' FROM shifde.run_events e "
+                "JOIN shifde.runs r ON r.id = e.run_id AND r.tenant_id = e.tenant_id "
+                "WHERE e.tenant_id = :t AND r.root_run_id = :root "
+                "AND e.type = 'data_classification_raised'"
+            ),
+            {"t": tenant_id, "root": root_run_id},
+        ).scalars()
+    ]
+
+
 def children_of(session: Session, tenant_id: UUID, parent_id: UUID) -> list[Row]:
     return list(
         session.execute(

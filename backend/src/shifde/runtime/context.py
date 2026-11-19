@@ -25,6 +25,7 @@ from shifde.authz import service as authz
 from shifde.authz.service import ResourceRef
 from shifde.build.env import Env
 from shifde.build.service import ArtifactService
+from shifde.core import classification
 from shifde.core.clock import utcnow
 from shifde.core.context import Principal, RequestContext
 from shifde.core.db import Database
@@ -89,6 +90,9 @@ class RunContext:
             pdp=authz.new_pdp(session, principal, self.tenant_id),
         )
         self.artifacts = ArtifactService(self.scope, runtime)
+        # the highest classification of ontology data this context has read (ARCH M11); the
+        # durable record is the run's `data_classification_raised` events
+        self.classification = classification.LOWEST
 
     # ------------------------------------------------------------------ identity
     @property
@@ -128,6 +132,32 @@ class RunContext:
         if fresh is not None:
             self.run = fresh
         return self.run
+
+    # ------------------------------------------------------------------ data classification
+    def record_classification(self, level: str | None) -> None:
+        """Raise the run's data classification to `level` (an ontology read's highest property
+        classification). A raise appends a `data_classification_raised` event that names only
+        the level; the level never goes down."""
+        if level is None or classification.rank(level) <= classification.rank(
+            self.effective_classification()
+        ):
+            return
+        with self.txn():
+            repo.add_event(
+                self.session,
+                self.run,
+                "data_classification_raised",
+                details={"classification": classification.level(level)},
+            )
+        self.classification = classification.level(level)
+
+    def effective_classification(self) -> str:
+        """The highest data classification of this run's whole run tree (same root, this client):
+        its own level and every `data_classification_raised` event of its ancestors, descendants
+        and itself, re-read on every call."""
+        levels = repo.tree_classifications(self.session, self.tenant_id, self.run["root_run_id"])
+        self.session.commit()  # never hold a snapshot across the model call
+        return classification.highest(self.classification, *levels)
 
     # ------------------------------------------------------------------ time
     @property

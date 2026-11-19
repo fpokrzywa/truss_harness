@@ -202,7 +202,13 @@ def _script(mp: pytest.MonkeyPatch, ctx: RunContext, answers: list[str]) -> list
     called: list[UUID] = []
 
     def invoke_for_run(
-        ref: object, model_id: UUID, body: ms.InvokeIn, *, run_id: UUID, max_deadline: float
+        ref: object,
+        model_id: UUID,
+        body: ms.InvokeIn,
+        *,
+        run_id: UUID,
+        max_deadline: float,
+        classification: str | None = None,
     ) -> RunInvoke:
         called.append(model_id)
         out = ms.InvokeOut(

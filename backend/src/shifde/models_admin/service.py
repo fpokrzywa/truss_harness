@@ -49,6 +49,7 @@ from shifde.authz import service as authz
 from shifde.authz.service import ResourceRef
 from shifde.connections import egress
 from shifde.connections.service import ConnectionService, failure_to_error
+from shifde.core import classification as data_class
 from shifde.core import db
 from shifde.core.clock import utcnow
 from shifde.core.context import Principal, RequestContext
@@ -967,6 +968,36 @@ class ModelService:
             outcome=outcome,
         )
 
+    def _trust_gate(
+        self,
+        model: Mapping[str, Any],
+        provider: Mapping[str, Any],
+        ref: ResourceRef,
+        run_id: UUID | None,
+        classification: str,
+    ) -> None:
+        """Classification x provider trust (ARCH M11, design 5.3): a run whose data classification
+        ranks above the provider's `settings.trust_level` (missing or invalid = `public`, so the
+        shared SHI provider is `public`) is refused before any network call, audited with the two
+        level names only, never what raised the level."""
+        settings = provider["settings"]
+        trust = data_class.level(
+            settings.get("trust_level") if isinstance(settings, dict) else None
+        )
+        level = data_class.level(classification)
+        if data_class.rank(level) <= data_class.rank(trust):
+            return
+        details: dict[str, object] = {
+            "reason": "classification_above_provider_trust",
+            "classification": level,
+            "provider_trust_level": trust,
+        }
+        self._invoked(model, ref, run_id, details, outcome="denied")
+        self._session.commit()
+        raise ModelNotAllowed(
+            "the run's data classification is above the model provider's trust level"
+        )
+
     def _shi_gate(self, model: Mapping[str, Any], ref: ResourceRef, run_id: UUID | None) -> None:
         """The SHI call-time gate (design 5.3, plan Review Focus 5): a shared SHI model is called
         only while this client's switch is on. A refusal is audited in this client (labelled with
@@ -1074,11 +1105,13 @@ class ModelService:
         *,
         run_id: UUID,
         max_deadline: float | None = None,
+        classification: str | None = None,
     ) -> RunInvoke:
         """The runtime's governed call (one per attempt): `invoke_at` with `record_usage=False`
         (the run journals its own per-attempt usage event) and `run_id` on `model.invoked`
         (Item 15). `body.max_tokens` is required (the run's budget hold covers it, Item 9) and is
-        only ever lowered, to the model's `max_output_tokens`."""
+        only ever lowered, to the model's `max_output_tokens`. `classification` is the run's data
+        classification: a provider whose trust level is below it is refused (ARCH M11)."""
         if body.max_tokens is None:
             raise ValueError("a run's model call needs an output ceiling (max_tokens)")
         return self._invoke_at(
@@ -1089,6 +1122,7 @@ class ModelService:
             record_usage=False,
             run_id=run_id,
             cap_to_model=True,
+            classification=classification,
         )
 
     def _invoke_at(
@@ -1104,6 +1138,7 @@ class ModelService:
         agent_id: UUID | None = None,
         run_id: UUID | None = None,
         cap_to_model: bool = False,
+        classification: str | None = None,
     ) -> RunInvoke:
         """Governed invoke at an already-resolved scope (prompt / agent tests, the runtime: one
         call per attempt, a route's primary and every fallback alike, so the SHI gate holds on
@@ -1128,6 +1163,8 @@ class ModelService:
             self._invoked(model, ref, run_id, {"reason": "not_in_allowlist"}, outcome="denied")
             self._session.commit()
             raise ModelNotAllowed("the model is not on the allowlist for this scope")
+        if classification is not None:
+            self._trust_gate(model, provider, ref, run_id, classification)
 
         limits = model["rate_limits"] or {}
         bucket = f"model:{model_id}"
