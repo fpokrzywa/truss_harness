@@ -86,8 +86,10 @@ def fake_model_stack(
     config: dict[str, Any] | None = None,
     conn_name: str = "fake-conn",
     org: str = A,
+    provider_settings: dict[str, Any] | None = None,
 ) -> dict[str, str]:
-    """Active fake connection -> provider -> model; returns their ids."""
+    """Active fake connection -> provider -> model; returns their ids. `provider_settings` (e.g.
+    a `trust_level`, ARCH M11) goes on the provider when given."""
     conn = connection(
         client,
         h,
@@ -104,7 +106,12 @@ def fake_model_stack(
         client,
         f"{org}/model-providers",
         h,
-        {"name": f"prov-{conn_name}", "adapter_key": "fake", "connection_id": conn["id"]},
+        {
+            "name": f"prov-{conn_name}",
+            "adapter_key": "fake",
+            "connection_id": conn["id"],
+            **({"settings": provider_settings} if provider_settings is not None else {}),
+        },
     )
     model = post(
         client,
