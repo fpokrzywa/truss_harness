@@ -120,9 +120,18 @@ def scratch_database() -> Iterator[tuple[str, str]]:
             print(f"ok   scratch database {name} created and migrated")
             yield _with_db(app_url, name), _with_db(owner_url, name)
         finally:
-            with contextlib.suppress(Exception), admin.connect() as c:
-                _drop_database(c, name)
+            try:
+                with admin.connect() as c:
+                    _drop_database(c, name)
+            except Exception:
+                dropped = False
+                print(f"FAIL scratch database {name} not dropped")
+            else:
+                dropped = True
                 print(f"ok   scratch database {name} dropped")
+        # reached only when the demo itself ended without an exception
+        if not dropped:
+            raise StepFailed("drop the scratch database")
     finally:
         admin.dispose()
 
@@ -153,12 +162,14 @@ def drive(app_url: str, owner_url: str, workdir: Path) -> None:
             result = call()
         except Exception:
             # the exception text may carry a response body: name the step only
+            print(f"FAIL {name}")
             raise StepFailed(name) from None
         print(f"ok   {name}")
         return result
 
     def check(name: str, ok: bool) -> None:
         if not ok:
+            print(f"FAIL {name}")
             raise StepFailed(name)
 
     settings = Settings(
@@ -173,15 +184,29 @@ def drive(app_url: str, owner_url: str, workdir: Path) -> None:
     )
     owner_db = Database(owner_url, pool_size=2, verify_role=False)  # the schema owner, for setup
     try:
-        with owner_db.session() as o:
-            org = _client(o, "demo")
-        requester = system_role_user(owner_db, org.tenant, "tenant_administrator")
-        approver = system_role_user(owner_db, org.tenant, "tenant_administrator")
-        print("ok   a fresh organization with a requester and a second tenant administrator")
+
+        def people() -> tuple[Any, str, str]:
+            with owner_db.session() as o:
+                org = _client(o, "demo")
+            requester = system_role_user(owner_db, org.tenant, "tenant_administrator")
+            approver = system_role_user(owner_db, org.tenant, "tenant_administrator")
+            return org, requester, approver
+
+        org, requester, approver = step(
+            "a fresh organization with a requester and a second tenant administrator", people
+        )
         fake = fake_platform()
-        with TestClient(
-            create_app(settings), base_url="https://testserver", headers={"Origin": ORIGIN}
-        ) as client:
+        with contextlib.ExitStack() as stack:
+            client = step(
+                "start the API and the fake platform in-process",
+                lambda: stack.enter_context(
+                    TestClient(
+                        create_app(settings),
+                        base_url="https://testserver",
+                        headers={"Origin": ORIGIN},
+                    )
+                ),
+            )
 
             def register_target() -> Any:
                 h = as_user(client, requester)
@@ -221,7 +246,10 @@ def drive(app_url: str, owner_url: str, workdir: Path) -> None:
                 client.cookies.clear()
                 assert r.status_code == 403 and r.json()["code"] == "self_approval_forbidden"
 
-            step("the requester's self-approval is refused (403 self_approval_forbidden)", self_approval)
+            step(
+                "the requester's self-approval is refused (403 self_approval_forbidden)",
+                self_approval,
+            )
             approved = step("a second tenant administrator approves", lambda: flow.approve(sealed))
             deployment_id = approved["deployment_id"]
             check("a second tenant administrator approves", deployment_id is not None)
@@ -251,20 +279,32 @@ def drive(app_url: str, owner_url: str, workdir: Path) -> None:
                 and body["receipt"]["operation_handles"]["platform"] == "fake"
                 and (deploy_actions(fake, "deploy"), deploy_actions(fake, "run")) == (1, 1),
             )
-            print(f"ok   {len(journal)} journal receipts and the deployment receipt are platform: fake")
+            print(
+                f"ok   {len(journal)} journal receipts and the deployment receipt are "
+                "platform: fake"
+            )
     finally:
         owner_db.dispose()
 
 
 def run_demo() -> int:
     sys.path.insert(0, str(BACKEND))  # the `tests` helpers
-    with scratch_database() as (app_url, owner_url), tempfile.TemporaryDirectory() as workdir:
-        try:
+    try:
+        with (
+            scratch_database() as (app_url, owner_url),
+            tempfile.TemporaryDirectory() as workdir,
+        ):
             drive(app_url, owner_url, Path(workdir))
-        except StepFailed as failed:
-            print(f"FAIL {failed.step}")
-            print(f"DELIVERY DEMO FAILED: {failed.step}")
-            return 1
+    except StepFailed as failed:
+        print(f"DELIVERY DEMO FAILED: {failed.step}")
+        return 1
+    except DemoError:
+        raise
+    except Exception:
+        # outside any named step; its text may carry a URL or a response body
+        print("FAIL an unexpected error outside the named steps (details withheld)")
+        print("DELIVERY DEMO FAILED: unexpected error")
+        return 1
     print("DELIVERY DEMO PASSED")
     return 0
 
