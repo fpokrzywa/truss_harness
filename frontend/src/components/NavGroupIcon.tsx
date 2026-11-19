@@ -19,6 +19,7 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M10 8l6 4-6 4z" />
     </>
   ),
+  Deliver: <path d="M3 7l9-4 9 4-9 4zM3 7v10l9 4 9-4V7M12 11v10" />,
   Govern: <path d="M12 3v18M7 21h10M5 7h14M5 7l-3 7a3 3 0 006 0zM19 7l-3 7a3 3 0 006 0z" />,
 };
 
