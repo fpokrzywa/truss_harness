@@ -178,3 +178,73 @@ def journal_rows(owner_db: Database, tenant: UUID) -> list[tuple[Any, ...]]:
                 {"t": tenant},
             ).all()
         ]
+
+
+# ------------------------------------------------------------------ plans
+DIGEST_T = "c" * 64  # a toolchain digest
+FINGERPRINT = "d" * 64
+
+
+def plans(slug: str) -> str:
+    return f"/api/v1/orgs/{slug}/delivery/plans"
+
+
+def request_plan(
+    client: TestClient,
+    h: dict[str, str],
+    slug: str,
+    target_id: object,
+    status: int = 201,
+    **overrides: Any,
+) -> Any:  # Any: a JSON body
+    body: dict[str, Any] = {
+        "target_id": str(target_id),
+        "application_key": "sales-app",
+        "display_name": "Sales app",
+    }
+    body.update(overrides)
+    r = client.post(plans(slug), json=body, headers=h)
+    assert r.status_code == status, r.text
+    return r.json()
+
+
+def plan_value(steps: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:
+    """A valid `PlanJobResult` value (one `create` step unless `steps` is given)."""
+    return {
+        "steps": list(
+            steps
+            if steps is not None
+            else [{"key": "deploy_app", "action": "create", "resource_key": "app"}]
+        ),
+        "snapshot": {
+            "resources": [],
+            "fingerprint": FINGERPRINT,
+            "captured_at": "2026-11-19T10:00:00+00:00",
+        },
+        "adapter_version": "0.1.0",
+        "toolchain_digest": DIGEST_T,
+    }
+
+
+def lease_plan(client: TestClient, token: str) -> dict[str, Any]:  # Any: a JobLease body
+    r = lease(client, token, kinds=["plan"])
+    assert r.status_code == 200, r.text
+    body: dict[str, Any] = r.json()
+    return body
+
+
+def plan_result(
+    client: TestClient, token: str, leased: Mapping[str, Any], **result: Any
+) -> httpx.Response:
+    """Post a `plan` job result under `leased` (default: succeeded with `plan_value()`)."""
+    body = {**proof(leased), **(result or {"status": "succeeded", "value": plan_value()})}
+    return client.post(job_url(leased["job"]["id"], "result"), json=body, headers=bearer(token))
+
+
+def plan_row(owner_db: Database, plan_id: object) -> Any:  # Any: a RowMapping
+    with owner_db.session() as o:
+        return (
+            o.execute(text("SELECT * FROM shifde.delivery_plans WHERE id = :p"), {"p": plan_id})
+            .mappings()
+            .one()
+        )

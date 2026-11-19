@@ -457,6 +457,12 @@ ROUTES: dict[Op, tuple[str, str]] = {
     ("POST", "/api/v1/orgs/{org}/delivery/targets"): (SCOPED, "delivery"),
     ("GET", "/api/v1/orgs/{org}/delivery/targets/{target_id}"): (SCOPED, "delivery"),
     ("POST", "/api/v1/orgs/{org}/delivery/targets/{target_id}/archive"): (SCOPED, "delivery"),
+    # a plan is scoped by its target's workspace/project (B-2679)
+    ("GET", "/api/v1/orgs/{org}/delivery/plans"): (SCOPED, "delivery"),
+    ("POST", "/api/v1/orgs/{org}/delivery/plans"): (SCOPED, "delivery"),
+    ("GET", "/api/v1/orgs/{org}/delivery/plans/{plan_id}"): (SCOPED, "delivery"),
+    ("POST", "/api/v1/orgs/{org}/delivery/plans/{plan_id}/approve"): (SCOPED, "delivery"),
+    ("POST", "/api/v1/orgs/{org}/delivery/plans/{plan_id}/reject"): (SCOPED, "delivery"),
     ("GET", "/api/v1/orgs/{org}/delivery/executors"): (CLIENT, "executors: organization level"),
     ("POST", "/api/v1/orgs/{org}/delivery/executors"): (CLIENT, "executors: organization level"),
     ("GET", "/api/v1/orgs/{org}/delivery/executors/{executor_id}"): (
@@ -1228,6 +1234,16 @@ _register(
 )
 
 TARGETS = "SELECT * FROM shifde.delivery_targets WHERE workspace_id = :w ORDER BY id"
+PLANS = (
+    "SELECT p.* FROM shifde.delivery_plans p JOIN shifde.delivery_targets t "
+    "ON t.id = p.target_id WHERE t.workspace_id = :w ORDER BY p.id",
+    "SELECT j.* FROM shifde.delivery_jobs j JOIN shifde.delivery_targets t "
+    "ON t.id = j.target_id WHERE t.workspace_id = :w ORDER BY j.id",
+    "SELECT a.* FROM shifde.delivery_approvals a JOIN shifde.delivery_plans p "
+    "ON p.id = a.plan_id JOIN shifde.delivery_targets t ON t.id = p.target_id "
+    "WHERE t.workspace_id = :w ORDER BY a.id",
+    "SELECT count(*) FROM shifde.delivery_artifacts",
+)
 _register(
     "delivery",
     {
@@ -1243,6 +1259,37 @@ _register(
             lambda n: "/delivery/targets",
             body=lambda n: _target_body(n),
             state=w.snap(TARGETS),
+        ),
+        # plans before the archive case, so W1's request finds an active target; a plan the
+        # administrator requested is not sealed: U's decision on W1 is 409 `plan_not_sealed`
+        ("GET", ORG + "/delivery/plans"): lambda w: _case(
+            LIST, "GET", lambda n: "/delivery/plans", ids=lambda n: w("plan", n)
+        ),
+        ("GET", ORG + "/delivery/plans/{plan_id}"): lambda w: _case(
+            READ, "GET", lambda n: f"/delivery/plans/{w('plan', n)}"
+        ),
+        ("POST", ORG + "/delivery/plans"): lambda w: _case(
+            CREATE,
+            "POST",
+            lambda n: "/delivery/plans",
+            body=lambda n: _plan_body(w("target", n)),
+            state=w.snap(*PLANS),
+        ),
+        ("POST", ORG + "/delivery/plans/{plan_id}/approve"): lambda w: _case(
+            WRITE,
+            "POST",
+            lambda n: f"/delivery/plans/{w('plan', n)}/approve",
+            body=lambda n: {"plan_digest": "a" * 64},
+            state=w.snap(*PLANS),
+            also=(409,),
+        ),
+        ("POST", ORG + "/delivery/plans/{plan_id}/reject"): lambda w: _case(
+            WRITE,
+            "POST",
+            lambda n: f"/delivery/plans/{w('plan', n)}/reject",
+            body=lambda n: {},
+            state=w.snap(*PLANS),
+            also=(409,),
         ),
         ("POST", ORG + "/delivery/targets/{target_id}/archive"): lambda w: _case(
             WRITE,
@@ -1276,6 +1323,10 @@ def _target_body(n: int) -> dict[str, Any]:  # Any: JSON body
         "bindings": {"warehouse_id": "abc123def456"},
         "credential_ref": "databricks-dev",
     }
+
+
+def _plan_body(target_id: str) -> dict[str, str]:
+    return {"target_id": target_id, "application_key": "app", "display_name": "App"}
 
 
 # ---------------------------------------------------------------------- models
@@ -1813,6 +1864,7 @@ def test_connections_and_delivery_targets(
         w.set("job", n, tested["id"])
         w.post(f"/connections/{cid}/discover", None, 200)
         w.set("target", n, w.post("/delivery/targets", _target_body(n))["id"])
+        w.set("plan", n, w.post("/delivery/plans", _plan_body(w("target", n)))["id"])
     _check(w, "connections", "delivery")
 
 
