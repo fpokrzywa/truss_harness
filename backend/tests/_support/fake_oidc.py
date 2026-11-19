@@ -52,6 +52,8 @@ class FakeOidcProvider:
     discovery_issuer: str = ISSUER
     require_secret: bool = True
     issuer: str = ISSUER
+    # further keys `/jwks` publishes after `key` (a rotation overlap); none by default
+    extra_keys: list[RSAKey] = field(default_factory=list)
 
     # ------------------------------------------------------------------ keys / tokens
     def rotate_key(self, kid: str) -> None:
@@ -125,6 +127,9 @@ class FakeOidcProvider:
             )
         if path == "/jwks":
             self.jwks_calls += 1
+            if self.extra_keys:
+                keys = [k.as_dict(private=False) for k in (self.key, *self.extra_keys)]
+                return httpx.Response(200, json={"keys": keys})
             return httpx.Response(200, json={"keys": [self.key.as_dict(private=False)]})
         if path == "/token" and request.method == "POST":
             form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
