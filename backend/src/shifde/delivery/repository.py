@@ -1044,6 +1044,24 @@ def native_owner(
     return owner
 
 
+def list_native_resources(
+    session: Session, target_id: UUID, application_key: str, *, tenant_id: UUID
+) -> list[Row]:
+    """(resource_type, native_id) of the native resources the application owns on the target."""
+    return list(
+        session.execute(
+            text(
+                "SELECT resource_type, native_id FROM shifde.delivery_native_resources "
+                "WHERE tenant_id = :t AND target_id = :g AND application_key = :k "
+                "ORDER BY resource_type, native_id"
+            ),
+            {"t": tenant_id, "g": target_id, "k": application_key},
+        )
+        .mappings()
+        .all()
+    )
+
+
 def insert_native_resource(session: Session, values: Mapping[str, Any]) -> None:
     """Record a native resource's owner; a row already there (the same owner) is kept."""
     session.execute(

@@ -395,3 +395,44 @@ class PlanJobResult(Model):
     snapshot: EnvironmentSnapshot
     adapter_version: str = Field(min_length=1, max_length=64)
     toolchain_digest: Digest
+
+
+class ContextPlan(Model):
+    """The job's plan as the executor needs it; the sealed fields are `None` before sealing."""
+
+    id: UUID
+    application_key: str
+    display_name: str
+    artifact_id: UUID
+    artifact_digest: Digest
+    target_revision: int
+    status: str
+    steps: list[PlanStep] | None
+    snapshot: EnvironmentSnapshot | None
+    adapter_version: str | None
+    toolchain_digest: Digest | None
+    digest: Digest | None
+    expires_at: Timestamp | None
+
+
+class ContextDeployment(Model):
+    id: UUID
+    status: str
+    receipt: ApplyReceipt | None
+
+
+class OwnedResource(Model):
+    """A native resource the job's target and application key already own."""
+
+    resource_type: str
+    native_id: str
+
+
+class JobContext(Model):
+    """What a leased job runs against (never a credential, the claim or the artifact bytes)."""
+
+    job: LeasedJob
+    target: Target
+    plan: ContextPlan | None
+    deployment: ContextDeployment | None
+    owned_resources: list[OwnedResource]

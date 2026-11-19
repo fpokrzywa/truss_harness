@@ -81,6 +81,7 @@ DELIVERY = {
     ("POST", "/api/executor/v1/lease"),
     ("POST", "/api/executor/v1/jobs/{job_id}/heartbeat"),
     ("GET", "/api/executor/v1/jobs/{job_id}/artifact"),
+    ("GET", "/api/executor/v1/jobs/{job_id}/context"),
     ("POST", "/api/executor/v1/jobs/{job_id}/credential-grant"),
     ("POST", "/api/executor/v1/jobs/{job_id}/checkpoint"),
     ("POST", "/api/executor/v1/jobs/{job_id}/result"),

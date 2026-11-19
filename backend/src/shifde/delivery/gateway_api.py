@@ -1,7 +1,8 @@
 """Executor gateway routes (design section 5, section 9 items 12, 13 and 16; DECISIONS B-2664,
-B-2669): `whoami`, and the job lease, heartbeat, artifact, credential grant, checkpoint and result
-routes over `delivery.gateway` (wire models in `adapters.native.contracts`). The artifact route
-answers a plan job's archive as `application/zip` with its sha256 in `X-Artifact-Digest` (B-2678).
+B-2669): `whoami`, and the job lease, heartbeat, artifact, context, credential grant, checkpoint and
+result routes over `delivery.gateway` (wire models in `adapters.native.contracts`). The artifact
+route answers a plan job's archive as `application/zip` with its sha256 in `X-Artifact-Digest`
+(B-2678); the context route answers what the job runs against (B-2688).
 
 Mounted without `require_auth`: the only credential read here is `Authorization: Bearer shx_...`
 (an executor token; cookies are never read), and a user API key or session gets the same 401
@@ -96,6 +97,19 @@ def job_artifact(
         content=found.content,
         media_type="application/zip",
         headers={"X-Artifact-Digest": found.digest},
+    )
+
+
+@router.get("/jobs/{job_id}/context", tags=["executor"])
+def job_context(
+    job_id: UUID,
+    lease_id: UUID,
+    fence: Annotated[int, Query(ge=1)],
+    executor: ExecutorDep,
+    session: SessionDep,
+) -> c.JobContext:
+    return gateway.job_context(
+        session, executor, job_id, c.LeaseProof(lease_id=lease_id, fence=fence)
     )
 
 
