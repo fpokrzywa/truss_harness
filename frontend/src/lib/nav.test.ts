@@ -23,7 +23,10 @@ describe('navigation config (FR-UI-003)', () => {
       'build-tools',
       'command-center',
       'dashboard',
+      'deliver-approvals',
+      'deliver-deployments',
       'deliver-executors',
+      'deliver-plans',
       'deliver-targets',
       'govern-audit',
       'govern-budgets',
@@ -325,6 +328,32 @@ describe('permission-aware navigation (FR-UI-004)', () => {
       expect(items(['delivery:target:read', 'delivery:executor:read'])).toEqual([
         'Targets=/o/acme/deliver/targets',
         'Executors=/o/acme/deliver/executors',
+      ]);
+    });
+
+    it('gates Plans, Plan approvals and Deployments on their own permissions', () => {
+      expect(items(['delivery:plan:read'])).toEqual(['Plans=/o/acme/deliver/plans']);
+      expect(items(['delivery:plan:approve'])).toEqual([
+        'Plan approvals=/o/acme/deliver/approvals',
+      ]);
+      expect(items(['delivery:deployment:read'])).toEqual([
+        'Deployments=/o/acme/deliver/deployments',
+      ]);
+      expect(items(['delivery:plan:request', 'delivery:deployment:resolve'])).toEqual([]);
+      expect(
+        items([
+          'delivery:target:read',
+          'delivery:executor:read',
+          'delivery:plan:read',
+          'delivery:plan:approve',
+          'delivery:deployment:read',
+        ]),
+      ).toEqual([
+        'Targets=/o/acme/deliver/targets',
+        'Executors=/o/acme/deliver/executors',
+        'Plans=/o/acme/deliver/plans',
+        'Plan approvals=/o/acme/deliver/approvals',
+        'Deployments=/o/acme/deliver/deployments',
       ]);
     });
 
