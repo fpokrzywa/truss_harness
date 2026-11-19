@@ -10,6 +10,10 @@ Executors and their credentials (B-2664): `shifde_app` cannot read `secret_hash`
 resolved only through the `shifde.delivery_resolve_executor` definer, which answers
 (tenant_id, executor_id) or nothing.
 
+Plans (B-2675): a plan row is read with its target's workspace/project and its decision; sealed
+plans are immutable (`shifde.delivery_plans_seal_guard`), and a decision by the requester is
+refused by `shifde.delivery_approvals_guard`.
+
 Delivery jobs (B-2669): a lease is granted only by the `shifde.delivery_lease_job` definer (the app
 holds no grant on the lease columns), after the `shifde.delivery_sweep_lost_jobs` invoker function
 has settled the organization's expired leases. Lease times use the database clock (`now()`).
@@ -520,4 +524,204 @@ def complete_step(
         )
         .mappings()
         .one()
+    )
+
+
+# ====================================================================== artifacts, plans, approvals
+PLAN_COLUMNS = (
+    "p.id, p.tenant_id, p.target_id, p.target_revision, p.artifact_id, p.artifact_digest, "
+    "p.application_key, p.display_name, p.status, p.status_reason, p.requested_by, p.steps, "
+    "p.snapshot, p.adapter_version, p.toolchain_digest, p.digest, p.sealed_at, p.expires_at, "
+    "p.created_at, p.updated_at, t.workspace_id, t.project_id, "
+    "a.decision AS approval_decision, a.decided_by AS approval_decided_by, "
+    "a.decided_at AS approval_decided_at, a.note AS approval_note, now() AS db_now"
+)
+PLAN_FROM = (
+    "shifde.delivery_plans p JOIN shifde.delivery_targets t "
+    "ON t.tenant_id = p.tenant_id AND t.id = p.target_id "
+    "LEFT JOIN shifde.delivery_approvals a ON a.tenant_id = p.tenant_id AND a.plan_id = p.id"
+)
+
+
+def insert_artifact(session: Session, values: Mapping[str, Any]) -> None:
+    session.execute(
+        text(
+            "INSERT INTO shifde.delivery_artifacts (tenant_id, id, target_kind, digest, size, "
+            "content, created_by) VALUES (:tenant_id, :id, :target_kind, :digest, :size, "
+            ":content, :created_by)"
+        ),
+        dict(values),
+    )
+
+
+def insert_plan(session: Session, values: Mapping[str, Any]) -> None:
+    session.execute(
+        text(
+            "INSERT INTO shifde.delivery_plans (tenant_id, id, target_id, target_revision, "
+            "artifact_id, artifact_digest, application_key, display_name, requested_by) VALUES "
+            "(:tenant_id, :id, :target_id, :target_revision, :artifact_id, :artifact_digest, "
+            ":application_key, :display_name, :requested_by)"
+        ),
+        dict(values),
+    )
+
+
+def get_plan(
+    session: Session, plan_id: UUID, *, tenant_id: UUID, for_update: bool = False
+) -> Row | None:
+    """The plan with its target's workspace/project and its decision, if any."""
+    lock = " FOR UPDATE OF p" if for_update else ""
+    return (
+        session.execute(
+            text(
+                # columns, joins and the lock clause are module constants; values are bound
+                f"SELECT {PLAN_COLUMNS} FROM {PLAN_FROM} "  # nosec B608
+                f"WHERE p.id = :id AND p.tenant_id = :t{lock}"
+            ),
+            {"id": plan_id, "t": tenant_id},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def list_plans(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    status: str | None,
+    target_id: UUID | None,
+    tenant_wide: bool,
+    visible_workspaces: Sequence[UUID],
+    visible_projects: Sequence[UUID],
+    after: UUID | None,
+    limit: int,
+) -> list[Row]:
+    sql = (
+        # columns and joins are module constants; values are bound
+        f"SELECT {PLAN_COLUMNS} FROM {PLAN_FROM} WHERE p.tenant_id = :t "  # nosec B608
+        "AND (CAST(:status AS text) IS NULL OR p.status = :status) "
+        "AND (CAST(:target AS uuid) IS NULL OR p.target_id = :target) "
+        "AND (CAST(:after AS uuid) IS NULL OR p.id > :after) "
+        "AND (:wide OR t.workspace_id = ANY(CAST(:vws AS uuid[])) "
+        "     OR t.project_id = ANY(CAST(:vps AS uuid[]))) "
+        "ORDER BY p.id LIMIT :n"
+    )
+    return list(
+        session.execute(
+            text(sql),
+            {
+                "t": tenant_id,
+                "status": status,
+                "target": target_id,
+                "after": after,
+                "wide": tenant_wide,
+                "vws": list(visible_workspaces),
+                "vps": list(visible_projects),
+                "n": limit,
+            },
+        )
+        .mappings()
+        .all()
+    )
+
+
+def start_planning(session: Session, plan_id: UUID, *, tenant_id: UUID) -> None:
+    session.execute(
+        text(
+            "UPDATE shifde.delivery_plans SET status = 'planning' "
+            "WHERE id = :id AND tenant_id = :t AND status = 'requested'"
+        ),
+        {"id": plan_id, "t": tenant_id},
+    )
+
+
+def fail_plan(session: Session, plan_id: UUID, reason: str, *, tenant_id: UUID) -> None:
+    session.execute(
+        text(
+            "UPDATE shifde.delivery_plans SET status = 'plan_failed', status_reason = :r "
+            "WHERE id = :id AND tenant_id = :t AND status IN ('requested', 'planning')"
+        ),
+        {"id": plan_id, "t": tenant_id, "r": reason},
+    )
+
+
+def seal_plan(
+    session: Session, plan_id: UUID, values: Mapping[str, Any], *, tenant_id: UUID
+) -> None:
+    """Seal a requested or planning plan: `sealed_at` on the database clock, 15-minute expiry."""
+    session.execute(
+        text(
+            "UPDATE shifde.delivery_plans SET status = 'sealed', status_reason = NULL, "
+            "steps = CAST(:steps AS jsonb), snapshot = CAST(:snapshot AS jsonb), "
+            "adapter_version = :adapter_version, toolchain_digest = :toolchain_digest, "
+            "digest = :digest, sealed_at = now(), expires_at = now() + interval '15 minutes' "
+            "WHERE id = :id AND tenant_id = :t AND status IN ('requested', 'planning')"
+        ),
+        {
+            **values,
+            "steps": json.dumps(values["steps"]),
+            "snapshot": json.dumps(values["snapshot"]),
+            "id": plan_id,
+            "t": tenant_id,
+        },
+    )
+
+
+def decide_plan(session: Session, plan_id: UUID, status: str, *, tenant_id: UUID) -> None:
+    """A sealed plan becomes `approved`, `rejected` or `expired`."""
+    session.execute(
+        text(
+            "UPDATE shifde.delivery_plans SET status = :s "
+            "WHERE id = :id AND tenant_id = :t AND status = 'sealed'"
+        ),
+        {"id": plan_id, "t": tenant_id, "s": status},
+    )
+
+
+def settle_plans(session: Session, *, tenant_id: UUID) -> None:
+    """Plans whose plan job was lost fail; sealed plans past `expires_at` expire."""
+    session.execute(
+        text(
+            "UPDATE shifde.delivery_plans p SET status = 'plan_failed', "
+            "status_reason = 'executor lost' WHERE p.tenant_id = :t "
+            "AND p.status IN ('requested', 'planning') AND EXISTS (SELECT 1 FROM "
+            "shifde.delivery_jobs j WHERE j.tenant_id = p.tenant_id AND j.plan_id = p.id "
+            "AND j.kind = 'plan' AND j.status = 'lost')"
+        ),
+        {"t": tenant_id},
+    )
+    session.execute(
+        text(
+            "UPDATE shifde.delivery_plans SET status = 'expired' WHERE tenant_id = :t "
+            "AND status = 'sealed' AND expires_at <= now()"
+        ),
+        {"t": tenant_id},
+    )
+
+
+def insert_approval(session: Session, values: Mapping[str, Any]) -> None:
+    session.execute(
+        text(
+            "INSERT INTO shifde.delivery_approvals (tenant_id, id, plan_id, plan_digest, "
+            "decided_by, decision, note) VALUES (:tenant_id, :id, :plan_id, :plan_digest, "
+            ":decided_by, :decision, :note)"
+        ),
+        dict(values),
+    )
+
+
+def get_plan_artifact(session: Session, plan_id: UUID, *, tenant_id: UUID) -> Row | None:
+    """(content, digest) of the plan's artifact."""
+    return (
+        session.execute(
+            text(
+                "SELECT a.content, a.digest FROM shifde.delivery_plans p "
+                "JOIN shifde.delivery_artifacts a ON a.tenant_id = p.tenant_id "
+                "AND a.id = p.artifact_id WHERE p.id = :id AND p.tenant_id = :t"
+            ),
+            {"id": plan_id, "t": tenant_id},
+        )
+        .mappings()
+        .first()
     )

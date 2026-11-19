@@ -1,5 +1,5 @@
-"""Deployment target and executor routes (design sections 3, 5 and 9 items 2 and 12; DECISIONS
-B-2501, B-2664)."""
+"""Deployment target, executor and plan routes (design sections 3, 4, 5 and 9 items 2, 12 and 17;
+DECISIONS B-2501, B-2664, B-2675..B-2679)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Query
 from shifde.core.deps import SettingsDep
 from shifde.core.pagination import DEFAULT_LIMIT, Page
 from shifde.delivery import schemas as s
+from shifde.delivery.plans import PlanService
 from shifde.delivery.service import ExecutorService, TargetService
 from shifde.tenancy.dependencies import CursorQuery, LimitQuery, ScopeDep
 
@@ -29,6 +30,16 @@ def _executors(scope: ScopeDep, settings: SettingsDep) -> ExecutorService:
 
 
 Executors = Annotated[ExecutorService, Depends(_executors)]
+
+
+def _plans(scope: ScopeDep) -> PlanService:
+    return PlanService(scope)
+
+
+Plans = Annotated[PlanService, Depends(_plans)]
+PlanStatus = Literal[
+    "requested", "planning", "sealed", "approved", "rejected", "expired", "plan_failed"
+]
 
 
 @router.post("/orgs/{org}/delivery/targets", status_code=201, tags=["delivery"])
@@ -116,3 +127,34 @@ def revoke_executor_credential(
     svc: Executors, executor_id: UUID, credential_id: UUID
 ) -> s.CredentialOut:
     return svc.revoke_credential(executor_id, credential_id)
+
+
+@router.post("/orgs/{org}/delivery/plans", status_code=201, tags=["delivery"])
+def request_plan(svc: Plans, body: s.PlanCreate) -> s.PlanOut:
+    return svc.request(body)
+
+
+@router.get("/orgs/{org}/delivery/plans", tags=["delivery"])
+def list_plans(
+    svc: Plans,
+    status: Annotated[PlanStatus | None, Query()] = None,
+    target: Annotated[UUID | None, Query()] = None,
+    limit: LimitQuery = DEFAULT_LIMIT,
+    cursor: CursorQuery = None,
+) -> Page[s.PlanOut]:
+    return svc.list(status=status, target=target, limit=limit, cursor=cursor)
+
+
+@router.get("/orgs/{org}/delivery/plans/{plan_id}", tags=["delivery"])
+def get_plan(svc: Plans, plan_id: UUID) -> s.PlanOut:
+    return svc.get(plan_id)
+
+
+@router.post("/orgs/{org}/delivery/plans/{plan_id}/approve", tags=["delivery"])
+def approve_plan(svc: Plans, plan_id: UUID, body: s.PlanApprove) -> s.PlanOut:
+    return svc.approve(plan_id, body)
+
+
+@router.post("/orgs/{org}/delivery/plans/{plan_id}/reject", tags=["delivery"])
+def reject_plan(svc: Plans, plan_id: UUID, body: s.PlanReject) -> s.PlanOut:
+    return svc.reject(plan_id, body)

@@ -13,6 +13,11 @@ identity per organization, at most two live `shx_` credentials each, stored as
 `apikeys.hash_key(pepper, token)`. `authenticate_executor` resolves a token through the
 `shifde.delivery_resolve_executor` definer before any client context exists.
 
+Plan jobs (design 4, section 9 items 5 and 9; B-2675..B-2679): a leased `plan` job moves its plan
+to `planning`; its result fails the plan or seals it (`plan_digest`, `sealed_at` on the database
+clock, 15-minute expiry) in the result's transaction. `settle_plans` fails plans whose plan job was
+lost and expires sealed plans past `expires_at`. The plan routes are `delivery.plans`.
+
 Every row is read and written for the caller's resolved client only (`TenantScope.tenant_id`).
 """
 
@@ -20,7 +25,7 @@ from __future__ import annotations
 
 import re
 import secrets
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal  # Any: target, executor and credential rows
@@ -29,11 +34,13 @@ from uuid import UUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from shifde.adapters.native import planning
 from shifde.adapters.native.addresses import (
     AddressRefused,
     address_key,
     normalize_databricks_address,
 )
+from shifde.adapters.native.contracts import JobResultSubmission, PlanJobResult, digest
 from shifde.audit import service as audit
 from shifde.authz.service import ResourceRef
 from shifde.core import db
@@ -238,6 +245,24 @@ class TargetService:
         self._audit("delivery.target.registered", row)
         session.commit()
         return self._out(row)
+
+    def plannable(self, target_id: UUID) -> Mapping[str, Any]:
+        """The target, if the caller may request a plan on it and its organization, workspace
+        and project are active (an unreadable target is `target not found`)."""
+        row = self._get_row(target_id)
+        try:
+            self.sc.pdp.require(
+                "delivery:plan:request", self._ref(row), hide_unless="delivery:target:read"
+            )
+        except NotFound as exc:
+            raise NotFound("target not found") from exc
+        ws_map, pr_map = tenancy.scope_slug_map(
+            self.sc, [row["workspace_id"]], [row["project_id"]] if row["project_id"] else []
+        )
+        self._active_scope(
+            ws_map[row["workspace_id"]], pr_map[row["project_id"]] if row["project_id"] else None
+        )
+        return row
 
     def archive_target(self, target_id: UUID) -> s.TargetOut:
         row = self._get_row(target_id)
@@ -605,4 +630,90 @@ def authenticate_executor(
         status=row["status"],
         version=row["version"],
         last_seen_at=row["last_seen_at"],
+    )
+
+
+# ====================================================================== plan jobs (B-2675..B-2679)
+def plan_digest(
+    *,
+    artifact_digest: str,
+    target_revision: int,
+    snapshot_fingerprint: str,
+    steps: Sequence[Mapping[str, Any]],
+    adapter_version: str,
+    toolchain_digest: str,
+) -> str:
+    """The sealed plan's digest (design 4): artifact digest, target revision, snapshot
+    fingerprint, steps, adapter version and toolchain digest."""
+    return digest(
+        {
+            "artifact_digest": artifact_digest,
+            "target_revision": target_revision,
+            "snapshot_fingerprint": snapshot_fingerprint,
+            "steps": steps,
+            "adapter_version": adapter_version,
+            "toolchain_digest": toolchain_digest,
+        }
+    )
+
+
+def start_planning(session: Session, job: Mapping[str, Any]) -> None:
+    """A leased `plan` job moves its `requested` plan to `planning` (same transaction)."""
+    if job["kind"] == "plan" and job["plan_id"] is not None:
+        repository.start_planning(session, job["plan_id"], tenant_id=job["tenant_id"])
+
+
+def settle_plans(session: Session, tenant_id: UUID) -> None:
+    """Plans whose plan job was lost fail; sealed plans at or past `expires_at` expire."""
+    repository.settle_plans(session, tenant_id=tenant_id)
+
+
+def on_plan_result(session: Session, job: Mapping[str, Any], body: JobResultSubmission) -> None:
+    """The `plan` kind's result hook: fail the plan or seal it. A plan no longer `requested` or
+    `planning` is left as it is."""
+    tenant_id, plan_id = job["tenant_id"], job["plan_id"]
+    if plan_id is None:
+        return
+    plan = repository.get_plan(session, plan_id, tenant_id=tenant_id, for_update=True)
+    if plan is None or plan["status"] not in ("requested", "planning"):
+        return
+    if body.status == "failed":
+        repository.fail_plan(
+            session, plan_id, f"plan job failed: {body.error_code}", tenant_id=tenant_id
+        )
+        return
+    value = PlanJobResult.model_validate(body.value)
+    target = repository.get_target(session, plan["target_id"], tenant_id=tenant_id)
+    if target is None or target["status"] != "active":
+        repository.fail_plan(
+            session, plan_id, "the target is no longer active", tenant_id=tenant_id
+        )
+        return
+    if target["revision"] != plan["target_revision"]:
+        repository.fail_plan(session, plan_id, "the target changed", tenant_id=tenant_id)
+        return
+    try:
+        planning.validate_changes(list(value.steps))
+    except (ValueError, PermissionError) as exc:
+        repository.fail_plan(session, plan_id, str(exc), tenant_id=tenant_id)
+        return
+    steps = [step.model_dump(mode="json") for step in value.steps]
+    repository.seal_plan(
+        session,
+        plan_id,
+        {
+            "steps": steps,
+            "snapshot": value.snapshot.model_dump(mode="json"),
+            "adapter_version": value.adapter_version,
+            "toolchain_digest": value.toolchain_digest,
+            "digest": plan_digest(
+                artifact_digest=plan["artifact_digest"],
+                target_revision=plan["target_revision"],
+                snapshot_fingerprint=value.snapshot.fingerprint,
+                steps=steps,
+                adapter_version=value.adapter_version,
+                toolchain_digest=value.toolchain_digest,
+            ),
+        },
+        tenant_id=tenant_id,
     )
