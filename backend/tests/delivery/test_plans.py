@@ -63,6 +63,7 @@ PLAN_FIELDS = {
     "created_at",
     "updated_at",
     "approval",
+    "deployment_id",
 }
 
 

@@ -463,6 +463,20 @@ ROUTES: dict[Op, tuple[str, str]] = {
     ("GET", "/api/v1/orgs/{org}/delivery/plans/{plan_id}"): (SCOPED, "delivery"),
     ("POST", "/api/v1/orgs/{org}/delivery/plans/{plan_id}/approve"): (SCOPED, "delivery"),
     ("POST", "/api/v1/orgs/{org}/delivery/plans/{plan_id}/reject"): (SCOPED, "delivery"),
+    ("GET", "/api/v1/orgs/{org}/delivery/deployments"): (SCOPED, "delivery"),
+    ("GET", "/api/v1/orgs/{org}/delivery/deployments/{deployment_id}"): (SCOPED, "delivery"),
+    ("POST", "/api/v1/orgs/{org}/delivery/deployments/{deployment_id}/cancel"): (
+        SCOPED,
+        "delivery",
+    ),
+    ("POST", "/api/v1/orgs/{org}/delivery/deployments/{deployment_id}/reconcile"): (
+        SCOPED,
+        "delivery",
+    ),
+    ("POST", "/api/v1/orgs/{org}/delivery/deployments/{deployment_id}/mark-failed"): (
+        SCOPED,
+        "delivery",
+    ),
     ("GET", "/api/v1/orgs/{org}/delivery/executors"): (CLIENT, "executors: organization level"),
     ("POST", "/api/v1/orgs/{org}/delivery/executors"): (CLIENT, "executors: organization level"),
     ("GET", "/api/v1/orgs/{org}/delivery/executors/{executor_id}"): (
@@ -1244,6 +1258,12 @@ PLANS = (
     "WHERE t.workspace_id = :w ORDER BY a.id",
     "SELECT count(*) FROM shifde.delivery_artifacts",
 )
+DEPLOYMENTS = (
+    "SELECT d.* FROM shifde.delivery_deployments d JOIN shifde.delivery_targets t "
+    "ON t.id = d.target_id WHERE t.workspace_id = :w ORDER BY d.id",
+    "SELECT j.* FROM shifde.delivery_jobs j JOIN shifde.delivery_targets t "
+    "ON t.id = j.target_id WHERE t.workspace_id = :w ORDER BY j.id",
+)
 _register(
     "delivery",
     {
@@ -1289,6 +1309,36 @@ _register(
             lambda n: f"/delivery/plans/{w('plan', n)}/reject",
             body=lambda n: {},
             state=w.snap(*PLANS),
+            also=(409,),
+        ),
+        # deployments inserted as the owner, `queued` with no apply job: U's cancel on W1 is 409
+        # `deployment_not_cancellable`, reconcile and mark-failed 409 `deployment_not_unknown`
+        ("GET", ORG + "/delivery/deployments"): lambda w: _case(
+            LIST, "GET", lambda n: "/delivery/deployments", ids=lambda n: w("deployment", n)
+        ),
+        ("GET", ORG + "/delivery/deployments/{deployment_id}"): lambda w: _case(
+            READ, "GET", lambda n: f"/delivery/deployments/{w('deployment', n)}"
+        ),
+        ("POST", ORG + "/delivery/deployments/{deployment_id}/cancel"): lambda w: _case(
+            WRITE,
+            "POST",
+            lambda n: f"/delivery/deployments/{w('deployment', n)}/cancel",
+            state=w.snap(*DEPLOYMENTS),
+            also=(409,),
+        ),
+        ("POST", ORG + "/delivery/deployments/{deployment_id}/reconcile"): lambda w: _case(
+            WRITE,
+            "POST",
+            lambda n: f"/delivery/deployments/{w('deployment', n)}/reconcile",
+            state=w.snap(*DEPLOYMENTS),
+            also=(409,),
+        ),
+        ("POST", ORG + "/delivery/deployments/{deployment_id}/mark-failed"): lambda w: _case(
+            WRITE,
+            "POST",
+            lambda n: f"/delivery/deployments/{w('deployment', n)}/mark-failed",
+            body=lambda n: {"note": "resolved by hand"},
+            state=w.snap(*DEPLOYMENTS),
             also=(409,),
         ),
         ("POST", ORG + "/delivery/targets/{target_id}/archive"): lambda w: _case(
@@ -1865,6 +1915,16 @@ def test_connections_and_delivery_targets(
         w.post(f"/connections/{cid}/discover", None, 200)
         w.set("target", n, w.post("/delivery/targets", _target_body(n))["id"])
         w.set("plan", n, w.post("/delivery/plans", _plan_body(w("target", n)))["id"])
+        w.set("deployment", n, uuid7())
+        owner_session.execute(
+            text(
+                "INSERT INTO shifde.delivery_deployments (tenant_id, id, plan_id, target_id, "
+                "application_key) SELECT tenant_id, :d, id, target_id, application_key "
+                "FROM shifde.delivery_plans WHERE id = :p"
+            ),
+            {"d": w("deployment", n), "p": w("plan", n)},
+        )
+        owner_session.commit()
     _check(w, "connections", "delivery")
 
 

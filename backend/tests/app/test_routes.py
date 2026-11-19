@@ -69,6 +69,12 @@ DELIVERY = {
     ("GET", "/api/v1/orgs/{org}/delivery/plans/{plan_id}"),
     ("POST", "/api/v1/orgs/{org}/delivery/plans/{plan_id}/approve"),
     ("POST", "/api/v1/orgs/{org}/delivery/plans/{plan_id}/reject"),
+    # deployments: read, cancel, reconcile and mark-failed (B-2681..B-2687)
+    ("GET", "/api/v1/orgs/{org}/delivery/deployments"),
+    ("GET", "/api/v1/orgs/{org}/delivery/deployments/{deployment_id}"),
+    ("POST", "/api/v1/orgs/{org}/delivery/deployments/{deployment_id}/cancel"),
+    ("POST", "/api/v1/orgs/{org}/delivery/deployments/{deployment_id}/reconcile"),
+    ("POST", "/api/v1/orgs/{org}/delivery/deployments/{deployment_id}/mark-failed"),
     # the executor gateway (design 5, B-2664): executor tokens only, no user session
     ("GET", "/api/executor/v1/whoami"),
     # the job queue (B-2669): lease, then per-job calls under the lease proof

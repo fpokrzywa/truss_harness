@@ -5,8 +5,8 @@ people.
 Targets, claims, executors and their credentials, jobs and journal rows, sign-ins and audit rows
 are removed before each test (`tests/conftest.py: clean_data`). The gateway tests register their
 own `gateway.JOB_KINDS` entries for `apply` (a write) and `observe` (read-only) through the
-`job_kinds` fixture; production code registers only `plan`. Every address is unique per test (`address()`), so no
-test depends on another's claim.
+`job_kinds` fixture, in place of the production `apply` and `observe` entries. Every address is
+unique per test (`address()`), so no test depends on another's claim.
 """
 
 from __future__ import annotations
@@ -26,17 +26,19 @@ from shifde.core.db import Database
 from shifde.core.settings import Settings
 from shifde.delivery import gateway
 from tests.conftest import CLEAN_TABLES
-from tests.connections.routes import as_user
-from tests.delivery.routes import create_executor, delivery_client, issue
+from tests.connections.routes import as_user, system_role_user
+from tests.delivery.routes import Flow, create_executor, delivery_client, issue
 from tests.tenancy.conftest import Client, World, world
-from tests.tenancy.routes import People, make_people
+from tests.tenancy.routes import People, make_people, ws_slug
 
 __all__ = ["world"]
 
 for _table in (
+    "delivery_native_resources",
     "delivery_approvals",
     "delivery_journal",
     "delivery_jobs",
+    "delivery_deployments",
     "delivery_plans",
     "delivery_artifacts",
     "delivery_executor_credentials",
@@ -94,6 +96,26 @@ def make_executor(client: TestClient, c: Client, email: str) -> ExecutorSide:
 @pytest.fixture
 def executor_a(client: TestClient, world: World, people: People) -> ExecutorSide:
     return make_executor(client, world.a, people.owner_a)
+
+
+@pytest.fixture
+def flow(
+    client: TestClient,
+    world: World,
+    people: People,
+    executor_a: ExecutorSide,
+    owner_db: Database,
+) -> Flow:
+    """A's delivery path: A's owner requests, another tenant administrator approves."""
+    return Flow(
+        client,
+        world.a.slug,
+        ws_slug(world.a),
+        world.a.tenant,
+        people.owner_a,
+        system_role_user(owner_db, world.a.tenant, "tenant_administrator"),
+        executor_a.token,
+    )
 
 
 class ProbeResult(BaseModel):
