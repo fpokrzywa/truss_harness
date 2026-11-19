@@ -6,11 +6,15 @@ request), stores it, and queues one `plan` job for the executor. The job's resul
 or fails it (`service.on_plan_result`). A sealed plan is decided once, by a person other than its
 requester who holds `delivery:plan:approve` on the target's scope, before `expires_at`; approve
 quotes the sealed digest. The `delivery_approvals` insert trigger enforces the same rule.
+Approval creates the plan's deployment (`queued`) and its one-attempt `apply` job, due until the
+plan's `expires_at`, in the approval's transaction (B-2684). A target with an unresolved unknown
+outcome takes no new plan (409 `target_unresolved`, settled call 10).
 
 A plan is scoped by its target's workspace/project; a plan or target the caller cannot read gets
 the answer an unknown id gets. Every plan route first settles the organization's plans (the lost
-job sweep, lost plan jobs, passed expiries) and commits that, so a refused decision still leaves
-an expired plan `expired`. The artifact's content is never returned on a user route.
+job sweep, lost plan jobs, passed expiries, then the deployment settle step) and commits that, so
+a refused decision still leaves an expired plan `expired`. The artifact's content is never
+returned on a user route.
 """
 
 from __future__ import annotations
@@ -60,6 +64,10 @@ class PlanDigestMismatch(AppError):
     status, code, title = 409, "plan_digest_mismatch", "Conflict"
 
 
+class TargetUnresolved(AppError):
+    status, code, title = 409, "target_unresolved", "Conflict"
+
+
 def template_artifact() -> tuple[bytes, str]:
     """The SDK template archive (default `databricks.app/v1` spec) and its sha256 digest."""
     content = create_archive(scaffold_files(DatabricksApplicationSpec()))
@@ -80,10 +88,12 @@ class PlanService:
 
     # ================================================================== helpers
     def _settle(self) -> None:
-        """The lost-job sweep and the plan settle step, committed before the route goes on."""
+        """The lost-job sweep and the plan and deployment settle steps, committed before the
+        route goes on."""
         session = self.sc.session
         repository.sweep_lost_jobs(session)
         service.settle_plans(session, self.sc.tenant_id)
+        service.settle_deployments(session, self.sc.tenant_id)
         session.commit()
 
     def _ref(self, row: Mapping[str, Any]) -> ResourceRef:
@@ -162,6 +172,7 @@ class PlanService:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             approval=approval,
+            deployment_id=row["deployment_id"],
         )
 
     # ================================================================== routes
@@ -201,6 +212,8 @@ class PlanService:
         target = TargetService(self.sc).plannable(body.target_id)
         if target["status"] != "active":
             raise gateway.TargetUnavailable("the target is archived")
+        if repository.target_unresolved(self.sc.session, target["id"], tenant_id=self.sc.tenant_id):
+            raise TargetUnresolved("the target has an unresolved unknown outcome")
         content, artifact_digest = template_artifact()
         session = self.sc.session
         principal_id = self.sc.principal.principal_id
@@ -298,12 +311,36 @@ class PlanService:
             raise
         status = "approved" if decision == "approve" else "rejected"
         repository.decide_plan(session, plan_id, status, tenant_id=self.sc.tenant_id)
+        created: dict[str, str] = {}
+        if decision == "approve":
+            deployment_id = uuid7()
+            repository.insert_deployment(
+                session,
+                {
+                    "tenant_id": self.sc.tenant_id,
+                    "id": deployment_id,
+                    "plan_id": plan_id,
+                    "target_id": row["target_id"],
+                    "application_key": row["application_key"],
+                },
+            )
+            job_id = gateway.enqueue_job(
+                session,
+                tenant_id=self.sc.tenant_id,
+                kind="apply",
+                plan_id=plan_id,
+                deployment_id=deployment_id,
+                target_id=row["target_id"],
+                deadline=row["expires_at"],
+            )
+            created = {"deployment_id": str(deployment_id), "apply_job_id": str(job_id)}
         decided = self._get_row(plan_id)
         self._audit(
             f"delivery.plan.{status}",
             decided,
             digest=row["digest"],
             decision=decision,
+            **created,
         )
         session.commit()
         return self._out(decided)

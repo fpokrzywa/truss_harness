@@ -18,6 +18,11 @@ to `planning`; its result fails the plan or seals it (`plan_digest`, `sealed_at`
 clock, 15-minute expiry) in the result's transaction. `settle_plans` fails plans whose plan job was
 lost and expires sealed plans past `expires_at`. The plan routes are `delivery.plans`.
 
+Deployments (design 4, section 9 items 5, 6, 8, 10, 11 and 18; B-2681..B-2687): the `apply`,
+`observe`, `verify` and `reconcile` result hooks drive a deployment from `leased` to `verified`,
+`failed` or `unknown_outcome` in the result's transaction, and `settle_deployments` applies the
+settle rules after the lost-job sweep. The deployment routes are `delivery.deployments`.
+
 Every row is read and written for the caller's resolved client only (`TenantScope.tenant_id`).
 """
 
@@ -40,7 +45,15 @@ from shifde.adapters.native.addresses import (
     address_key,
     normalize_databricks_address,
 )
-from shifde.adapters.native.contracts import JobResultSubmission, PlanJobResult, digest
+from shifde.adapters.native.contracts import (
+    ApplyReceipt,
+    JobResultSubmission,
+    NativeObservation,
+    PlanJobResult,
+    ReconciliationResult,
+    VerificationReport,
+    digest,
+)
 from shifde.audit import service as audit
 from shifde.authz.service import ResourceRef
 from shifde.core import db
@@ -697,6 +710,19 @@ def on_plan_result(session: Session, job: Mapping[str, Any], body: JobResultSubm
     except (ValueError, PermissionError) as exc:
         repository.fail_plan(session, plan_id, str(exc), tenant_id=tenant_id)
         return
+    for resource in value.snapshot.resources:  # settled call 18: no adoption
+        owner = repository.native_owner(
+            session,
+            plan["target_id"],
+            resource.resource_type,
+            resource.native_id,
+            tenant_id=tenant_id,
+        )
+        if owner != plan["application_key"]:
+            repository.fail_plan(
+                session, plan_id, "refusing to adopt an unowned native app", tenant_id=tenant_id
+            )
+            return
     steps = [step.model_dump(mode="json") for step in value.steps]
     repository.seal_plan(
         session,
@@ -717,3 +743,261 @@ def on_plan_result(session: Session, job: Mapping[str, Any], body: JobResultSubm
         },
         tenant_id=tenant_id,
     )
+
+
+# ====================================================================== jobs and deployments
+READ_ONLY_MAX_ATTEMPTS = 4  # one lease plus up to 3 re-queues (settled call 8)
+APPLY_MAX_ATTEMPTS = 1  # a platform write is never retried
+POLL_DELAY = timedelta(seconds=15)  # settled call 5: the next observe/verify job
+REQUIRED_CHECKS = ("native-runtime", "runtime-warehouse")
+
+
+def enqueue_job(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    kind: str,
+    plan_id: UUID | None = None,
+    deployment_id: UUID | None = None,
+    target_id: UUID | None = None,
+    run_after: datetime | None = None,
+    deadline: datetime | None = None,
+) -> UUID:
+    """Queue a job (the caller commits); `apply` gets one attempt, other kinds four."""
+    job_id = uuid7()
+    repository.insert_job(
+        session,
+        {
+            "tenant_id": tenant_id,
+            "id": job_id,
+            "kind": kind,
+            "plan_id": plan_id,
+            "deployment_id": deployment_id,
+            "target_id": target_id,
+            "run_after": run_after,
+            "deadline": deadline,
+            "max_attempts": APPLY_MAX_ATTEMPTS if kind == "apply" else READ_ONLY_MAX_ATTEMPTS,
+        },
+    )
+    return job_id
+
+
+def settle_deployments(session: Session, tenant_id: UUID) -> None:
+    """The deployment settle step (B-2683), run after the lost-job sweep: lost applies become
+    `unknown_outcome` or `failed`, unleased applies past the plan's expiry `expired`, lost or
+    overdue observe/verify work `failed`, and the queued applies of a target with an unresolved
+    unknown outcome are held."""
+    repository.settle_deployments(session, tenant_id=tenant_id)
+
+
+def start_deployment(session: Session, job: Mapping[str, Any]) -> None:
+    """A leased `apply` job moves its `queued` deployment to `leased` (same transaction)."""
+    if job["kind"] == "apply" and job["deployment_id"] is not None:
+        repository.set_deployment_status(
+            session,
+            job["deployment_id"],
+            "leased",
+            None,
+            expected=("queued",),
+            tenant_id=job["tenant_id"],
+        )
+
+
+def start_applying(session: Session, job: Mapping[str, Any]) -> None:
+    """An accepted `intent` of an `apply` job moves a `leased` deployment to `applying`."""
+    if job["kind"] == "apply" and job["deployment_id"] is not None:
+        repository.set_deployment_status(
+            session,
+            job["deployment_id"],
+            "applying",
+            None,
+            expected=("leased",),
+            tenant_id=job["tenant_id"],
+        )
+
+
+def _deployment(
+    session: Session, job: Mapping[str, Any], expected: Sequence[str]
+) -> Mapping[str, Any] | None:
+    """The job's deployment, locked, if it is in one of `expected` (else the hook does nothing)."""
+    if job["deployment_id"] is None:
+        return None
+    row = repository.get_deployment(
+        session, job["deployment_id"], tenant_id=job["tenant_id"], for_update=True
+    )
+    return row if row is not None and row["status"] in expected else None
+
+
+def _fail(session: Session, row: Mapping[str, Any], reason: str, *, status: str = "failed") -> None:
+    repository.set_deployment_status(
+        session, row["id"], status, reason, expected=(row["status"],), tenant_id=row["tenant_id"]
+    )
+
+
+def _poll(
+    session: Session, job: Mapping[str, Any], row: Mapping[str, Any], kind: str, deadline: datetime
+) -> None:
+    """Queue the deployment's next `observe` or `verify` job, due 15 s from now."""
+    enqueue_job(
+        session,
+        tenant_id=row["tenant_id"],
+        kind=kind,
+        plan_id=row["plan_id"],
+        deployment_id=row["id"],
+        target_id=row["target_id"],
+        run_after=job["db_now"] + POLL_DELAY,
+        deadline=deadline,
+    )
+
+
+def _receipt_refused(field: str, message: str) -> ValidationFailed:
+    return ValidationFailed(
+        "result value is invalid",
+        errors=[{"loc": ["body", "value", field], "msg": message, "type": "value_error"}],
+    )
+
+
+def on_apply_result(session: Session, job: Mapping[str, Any], body: JobResultSubmission) -> None:
+    """The `apply` kind's result hook (B-2684). A receipt for another organization, target or
+    artifact is refused (422, nothing changes). A succeeded apply with an unfinished step is an
+    unknown outcome; otherwise ownership is recorded and observing starts. A failed apply after
+    any journal step is an unknown outcome, else `failed`."""
+    tenant_id = job["tenant_id"]
+    receipt = None
+    if body.status == "succeeded":
+        receipt = ApplyReceipt.model_validate(body.value)
+        plan = (
+            repository.get_plan(session, job["plan_id"], tenant_id=tenant_id)
+            if job["plan_id"] is not None
+            else None
+        )
+        if receipt.tenant_id != tenant_id:
+            raise _receipt_refused("tenant_id", "the receipt names another organization")
+        if receipt.target_id != job["target_id"]:
+            raise _receipt_refused("target_id", "the receipt names another target")
+        if plan is None or receipt.artifact_digest != plan["artifact_digest"]:
+            raise _receipt_refused("artifact_digest", "the receipt names another artifact")
+        if any(r.target_id != job["target_id"] for r in receipt.resources):
+            raise _receipt_refused("resources", "a resource names another target")
+    row = _deployment(session, job, ("leased", "applying"))
+    if row is None:
+        return
+    any_step, open_intent = repository.journal_state(session, row["id"], tenant_id=tenant_id)
+    if receipt is None:
+        if any_step:
+            _fail(
+                session,
+                row,
+                f"apply failed after a platform write may have happened: {body.error_code}",
+                status="unknown_outcome",
+            )
+        else:
+            _fail(session, row, "no platform write was attempted")
+        return
+    if open_intent:
+        _fail(session, row, "a platform write did not complete", status="unknown_outcome")
+        return
+    for resource in receipt.resources:
+        owner = repository.native_owner(
+            session,
+            row["target_id"],
+            resource.resource_type,
+            resource.native_id,
+            tenant_id=tenant_id,
+        )
+        if owner is not None and owner != row["application_key"]:
+            _fail(session, row, "resource owned by another application")
+            return
+    for resource in receipt.resources:
+        repository.insert_native_resource(
+            session,
+            {
+                "tenant_id": tenant_id,
+                "target_id": row["target_id"],
+                "application_key": row["application_key"],
+                "resource_type": resource.resource_type,
+                "native_id": resource.native_id,
+                "deployment_id": row["id"],
+            },
+        )
+    deadline = repository.start_observing(
+        session, row["id"], receipt.model_dump(mode="json"), tenant_id=tenant_id
+    )
+    _poll(session, job, row, "observe", deadline)
+
+
+def on_observe_result(session: Session, job: Mapping[str, Any], body: JobResultSubmission) -> None:
+    """The `observe` kind's result hook: `succeeded` starts verifying, `running`/`unknown` polls
+    again until the observe deadline, `failed` (or a failed job) fails the deployment."""
+    row = _deployment(session, job, ("observing",))
+    if row is None:
+        return
+    if body.status == "failed":
+        _fail(session, row, f"observe failed: {body.error_code}")
+        return
+    observation = NativeObservation.model_validate(body.value)
+    if observation.state == "succeeded":
+        repository.set_deployment_status(
+            session,
+            row["id"],
+            "verifying",
+            None,
+            expected=("observing",),
+            tenant_id=row["tenant_id"],
+        )
+        _poll(session, job, row, "verify", row["observe_deadline"])
+    elif observation.state == "failed":
+        _fail(session, row, "the platform reported a failure")
+    elif row["db_now"] < row["observe_deadline"]:
+        _poll(session, job, row, "observe", row["observe_deadline"])
+    else:
+        _fail(session, row, "did not become healthy")
+
+
+def on_verify_result(session: Session, job: Mapping[str, Any], body: JobResultSubmission) -> None:
+    """The `verify` kind's result hook: `verified` only when `native-runtime` and
+    `runtime-warehouse` both passed, otherwise `failed`."""
+    row = _deployment(session, job, ("verifying",))
+    if row is None:
+        return
+    if body.status == "failed":
+        _fail(session, row, "verification failed")
+        return
+    report = VerificationReport.model_validate(body.value)
+    repository.set_verification(
+        session, row["id"], report.model_dump(mode="json"), tenant_id=row["tenant_id"]
+    )
+    passed = {check.name for check in report.checks if check.status == "passed"}
+    if all(name in passed for name in REQUIRED_CHECKS):
+        repository.set_deployment_status(
+            session,
+            row["id"],
+            "verified",
+            None,
+            expected=("verifying",),
+            tenant_id=row["tenant_id"],
+        )
+    else:
+        _fail(session, row, "verification failed")
+
+
+def on_reconcile_result(
+    session: Session, job: Mapping[str, Any], body: JobResultSubmission
+) -> None:
+    """The `reconcile` kind's result hook: store the evidence; the status does not change
+    (settled call 11)."""
+    row = _deployment(session, job, ("unknown_outcome",))
+    if row is None:
+        return
+    evidence: dict[str, Any]
+    if body.status == "failed":
+        evidence = {"status": "failed", "error_code": body.error_code, "job_id": str(job["id"])}
+    else:
+        result = ReconciliationResult.model_validate(body.value).model_dump(mode="json")
+        evidence = {
+            "state": result["state"],
+            "evidence": result["evidence"],
+            "resources": result["resources"],
+            "job_id": str(job["id"]),
+        }
+    repository.set_reconcile_evidence(session, row["id"], evidence, tenant_id=row["tenant_id"])
