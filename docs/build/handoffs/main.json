@@ -1,8 +1,8 @@
 {
-  "session_id": "f29ba637-f415-4ac1-ac79-60813a706863",
-  "head_sha": "a8694fec56afc2fcc16dcd70b806599ccdcb7a75",
+  "session_id": "ea2ee4c8-4316-4d79-b76f-8a8c58dd1390",
+  "head_sha": "598f99dfb800b9b81540462003d6783c010d1ec7",
   "branch": "main",
-  "unit_in_progress": "charter7: job 017 (#15) round 2 READY",
-  "next_step": "factory/bin/job advance 017-arch-m11-classification-x gate, gate, review, approve, lead gates.py merge of PR #54; then /factory run from #16",
-  "written_at": "2026-11-19T02:16:33Z"
+  "unit_in_progress": "none",
+  "next_step": "/factory run: job queue shows new #23 (SP2-5, isolation-critical; bound by B-2673), then held #24-#28 and follow-ups; see docs/build/HANDOFF.md",
+  "written_at": "2026-11-19T13:25:36Z"
 }
