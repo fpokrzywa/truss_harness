@@ -179,14 +179,17 @@ def test_b_cannot_reach_as_job(client: TestClient, two: Two, owner_db: Database)
 
 def test_b_cannot_replay_as_request_id(client: TestClient, two: Two, owner_db: Database) -> None:
     """Isolation review 1 of SP2-4, finding 3: a request id names a lease only in its own
-    organization."""
+    organization. B has a due job, so an organization-unscoped replay lookup would answer B
+    with A's lease (or nothing) instead of leasing B's own job (isolation review 2, finding 1)."""
     request_id = uuid7()
     r = lease(client, two.a.token, request_id=request_id)
     assert r.status_code == 200 and r.json()["job"]["id"] == str(two.job_a), r.text
     before = dict(job_row(owner_db, two.job_a))
-    assert lease(client, two.b.token, request_id=request_id).status_code == 204
+    _due_now(owner_db, two.job_b)
+    b = lease(client, two.b.token, request_id=request_id)
+    assert b.status_code == 200 and b.json()["job"]["id"] == str(two.job_b), b.text
     assert dict(job_row(owner_db, two.job_a)) == before
-    assert job_row(owner_db, two.job_b)["status"] == "queued"
+    assert job_row(owner_db, two.job_b)["status"] == "leased"
     # A's own replay still answers its lease
     again = lease(client, two.a.token, request_id=request_id)
     assert again.status_code == 200 and again.json() == r.json(), again.text
