@@ -20,6 +20,7 @@ export function parseScope(pathname: string): ScopePath {
     seg[2] === 'integrate' ||
     seg[2] === 'build' ||
     seg[2] === 'govern' ||
+    seg[2] === 'deliver' ||
     seg[2] === 'runs' ||
     seg[2] === 'approvals'
   )
@@ -47,6 +48,8 @@ export const buildHref = (org: string, area = '') =>
   `${orgHref(org)}/build${area ? `/${area}` : ''}`;
 export const governHref = (org: string, area = '') =>
   `${orgHref(org)}/govern${area ? `/${area}` : ''}`;
+export const deliverHref = (org: string, area = '') =>
+  `${orgHref(org)}/deliver${area ? `/${area}` : ''}`;
 export const workspacesHref = (org: string) => `${orgHref(org)}/workspaces`;
 export const projectsHref = (org: string, ws: string) => `${wsHref(org, ws)}/projects`;
 

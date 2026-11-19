@@ -1,5 +1,6 @@
 import {
   buildHref,
+  deliverHref,
   governHref,
   integrateHref,
   landingHref,
@@ -76,6 +77,16 @@ const operate = (
   group: 'Operate',
   feature: 'operate',
   href,
+  requiresAny,
+});
+
+/** Deliver (SP2): no `delivery` feature is registered, so the items ride on `tenancy`. */
+const deliver = (id: string, label: string, requiresAny: string[]): NavItem => ({
+  id: `deliver-${id}`,
+  label,
+  group: 'Deliver',
+  feature: 'tenancy',
+  href: (s) => (s.org ? deliverHref(s.org, id) : null),
   requiresAny,
 });
 
@@ -187,6 +198,8 @@ export const NAV_ITEMS: readonly NavItem[] = [
   operate('approvals', 'Approvals', ['approval:read'], (s) =>
     s.org ? `${orgHref(s.org)}/approvals` : null,
   ),
+  deliver('targets', 'Targets', ['delivery:target:read']),
+  deliver('executors', 'Executors', ['delivery:executor:read']),
   govern('overview', 'Governance Overview', ['governance:read']),
   govern('usage', 'Token Usage', ['usage:read']),
   govern('costs', 'Cost Explorer', ['usage:read']),

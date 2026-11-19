@@ -23,6 +23,8 @@ describe('navigation config (FR-UI-003)', () => {
       'build-tools',
       'command-center',
       'dashboard',
+      'deliver-executors',
+      'deliver-targets',
       'govern-audit',
       'govern-budgets',
       'govern-costs',
@@ -298,6 +300,57 @@ describe('permission-aware navigation (FR-UI-004)', () => {
 
     it('is grouped under Build', () => {
       expect(NAV_ITEMS.find((i) => i.id === 'build-ontologies')?.group).toBe('Build');
+    });
+  });
+
+  describe('Deliver group (SP2)', () => {
+    const scope = parseScope('/o/acme');
+    const items = (perms: string[]) =>
+      visibleNav(scope, { isPlatformAdmin: false, permissions: new Set(perms) })
+        .filter((i) => i.group === 'Deliver')
+        .map((i) => `${i.label}=${i.href}`);
+
+    it('hides the group without delivery read permissions', () => {
+      expect(items(['member:read', 'delivery:target:write', 'delivery:executor:manage'])).toEqual(
+        [],
+      );
+      expect(visibleNav(scope, { isPlatformAdmin: false }).some((i) => i.group === 'Deliver')).toBe(
+        false,
+      );
+    });
+
+    it('gates Targets on delivery:target:read and Executors on delivery:executor:read', () => {
+      expect(items(['delivery:target:read'])).toEqual(['Targets=/o/acme/deliver/targets']);
+      expect(items(['delivery:executor:read'])).toEqual(['Executors=/o/acme/deliver/executors']);
+      expect(items(['delivery:target:read', 'delivery:executor:read'])).toEqual([
+        'Targets=/o/acme/deliver/targets',
+        'Executors=/o/acme/deliver/executors',
+      ]);
+    });
+
+    it('rides on the tenancy feature, after Operate, and never links outside an organization', () => {
+      const perms = new Set(['run:read', 'delivery:target:read', 'governance:read']);
+      const groups = [
+        ...new Set(
+          rawVisibleNav(scope, {
+            isPlatformAdmin: false,
+            permissions: perms,
+            features: ['tenancy', 'operate', 'governance'],
+          }).map((i) => i.group),
+        ),
+      ];
+      expect(groups).toEqual(['Home', 'Administer', 'Operate', 'Deliver', 'Govern']);
+      expect(
+        visibleNav(parseScope('/platform/status'), {
+          isPlatformAdmin: true,
+          permissions: perms,
+        }).some((i) => i.group === 'Deliver'),
+      ).toBe(false);
+    });
+
+    it('treats /o/{org}/deliver/... as an organization-level area', () => {
+      expect(parseScope('/o/acme/deliver/targets')).toEqual({ org: 'acme', area: 'other' });
+      expect(parseScope('/o/acme/deliver/executors')).toEqual({ org: 'acme', area: 'other' });
     });
   });
 
