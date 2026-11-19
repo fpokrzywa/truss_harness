@@ -1,4 +1,4 @@
-"""F-08 (issue #16, DECISIONS B-2650): workspace and project scoping is enforced by the PDP and
+"""F-08 (issue #16, DECISIONS B-2653): workspace and project scoping is enforced by the PDP and
 the services, not by row-level security (which is client level only). This module proves it route
 by route.
 

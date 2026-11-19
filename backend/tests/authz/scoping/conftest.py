@@ -1,4 +1,4 @@
-"""Fixtures of the workspace scoping route test (F-08, DECISIONS B-2650): the full-app per-test
+"""Fixtures of the workspace scoping route test (F-08, DECISIONS B-2653): the full-app per-test
 database harness of `tests/app`, imported by name rather than copied (as `tests/perf`, B-2633).
 `tests/authz/conftest.py` defines an `owner_session` of its own; these override it here."""
 
