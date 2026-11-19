@@ -37,6 +37,7 @@ from shifde.adapters.base import (
 )
 from shifde.build import ontology_expr as expr
 from shifde.connections.service import failure_to_error
+from shifde.core import classification
 from shifde.core.errors import AppError, Forbidden, NotFound, ValidationFailed
 from shifde.ontology import policy as pol
 from shifde.ontology import schemas as s
@@ -163,6 +164,9 @@ class Planner:
         self.rels = {r["key"]: r for r in ctx.spec.get("relationships") or []}
         self.hops = 0
         self.denied: list[tuple[str, str]] = []  # (object type, reason) for the audit trail
+        # the highest classification of every property a planned node touches (selected,
+        # filtered, primary key, on every traversed type): what a run read (ARCH M11)
+        self.classification = classification.LOWEST
 
     # ---------------------------------------------------------------- authorization
     def authorize(self, otype: str) -> Authorized:
@@ -230,6 +234,10 @@ class Planner:
         missing_pk = [k for k in pk if k not in auth.operands]
         if missing_pk:
             raise MappingUnavailable("the primary key of the object type is not mapped")
+        levels = {p["key"]: p.get("classification", "internal") for p in auth.spec["properties"]}
+        self.classification = classification.highest(
+            self.classification, *(levels[k] for k in dict.fromkeys([*touched, *pk]))
+        )
         columns = {k: auth.operands[k].column for k in dict.fromkeys([*select, *pk])}
         plan = NodePlan(
             object_type=otype,

@@ -103,6 +103,9 @@ def _seed_client(o: Session, c: Client) -> Ids:
            arguments='{"item": "x"}')  # fmt: skip
     insert(o, "run_steps", id=uuid7(), tenant_id=t, run_id=c.run, seq=2, kind="sub_agent",
            name="child", child_run_id=child_done)  # fmt: skip
+    # a classification raised by the child: its root's tree reads it (`tree_classifications`)
+    repo.add_event(o, {"tenant_id": t, "id": child_done}, "data_classification_raised",
+                   details={"classification": "confidential"})  # fmt: skip
     pipeline, pipeline_version = add_published(o, t, "pipelines", f"pl-{uuid7().hex}", {})
     pipeline_run = add_run(o, t, kind="pipeline", pipeline_id=pipeline,
                            pipeline_version_id=pipeline_version)  # fmt: skip
@@ -215,6 +218,7 @@ CASES: dict[str, Case] = {
     "release_job": lambda s, t, x: repo.release_job(s, t, x.job, WORKER),
     "finish_run_jobs": lambda s, t, x: repo.finish_run_jobs(s, t, x.run),
     "root_pipeline_id": lambda s, t, x: repo.root_pipeline_id(s, t, x.pipeline_run),
+    "tree_classifications": lambda s, t, x: tuple(repo.tree_classifications(s, t, x.run)),
     "run_cost": lambda s, t, x: repo.run_cost(s, t, x.run, "USD"),
     # an unknown principal is displayed as its id: the answer is "fell back to the id"
     "principal_display": lambda s, t, x: (

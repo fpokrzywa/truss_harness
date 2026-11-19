@@ -416,6 +416,9 @@ def call_model(
                         ),
                         run_id=ctx.run_id,  # on `model.invoked` (Item 15)
                         max_deadline=max(ctx.remaining(), 0.001),
+                        # the run tree's data classification, re-read for every attempt: a
+                        # provider trusted below it is refused before the call (ARCH M11)
+                        classification=ctx.effective_classification(),
                     )
             except AppError as exc:
                 ctx.session.rollback()

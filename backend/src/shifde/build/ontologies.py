@@ -25,10 +25,10 @@ from shifde.build import ontology_expr as expr
 from shifde.build.canonical import spec_hash
 from shifde.build.env import ConnectionInfo, Env, VersionRef
 from shifde.build.issues import Report
+from shifde.core.classification import CLASSIFICATIONS
 
 KNOWN_KEYS = frozenset({"namespaces", "object_types", "relationships", "actions", "ui"})
 PROPERTY_TYPES = expr.PROPERTY_TYPES
-CLASSIFICATIONS = ("public", "internal", "confidential", "restricted")
 CARDINALITIES = ("one_to_one", "one_to_many", "many_to_one", "many_to_many")
 KEY = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")
 PROP_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,62}$")

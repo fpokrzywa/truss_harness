@@ -105,7 +105,8 @@ def run_query(
     consts: Mapping[str, Any] | None = None,  # Any: pipeline params
 ) -> ont.QueryOut:
     body = query_in(query, version_id)
-    return OntologyService(ctx.artifacts).query(
+    service = OntologyService(ctx.artifacts)
+    out = service.query(
         ontology_id,
         body,
         channel=channel,
@@ -114,6 +115,8 @@ def run_query(
         consts=consts,
         purpose=purpose,
     )
+    ctx.record_classification(service.read_classification)  # ARCH M11: before any model sees it
+    return out
 
 
 # ---------------------------------------------------------------------------- agent tool

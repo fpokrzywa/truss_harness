@@ -216,12 +216,18 @@ class Stack:
         agent_over: dict[str, Any] | None = None,
         model_key: str = "chat-a",
         conn_name: str = "fake-a",
+        provider_settings: dict[str, Any] | None = None,
     ) -> None:
         self.client, self.h, self.owner = client, h, owner
         self.scope = tenant_scope(owner)
         self.script = script or []
         stack = fake_model_stack(
-            client, h, model_key=model_key, conn_name=conn_name, config={"script": self.script}
+            client,
+            h,
+            model_key=model_key,
+            conn_name=conn_name,
+            config={"script": self.script},
+            provider_settings=provider_settings,
         )
         self.model = stack["model"]
         self.connection = stack["connection"]

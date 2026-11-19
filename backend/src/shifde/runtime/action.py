@@ -130,8 +130,9 @@ class OntologyActionRunner:
             resource_state=resource_state,
             policy=visibility,
         )
+        service = OntologyService(ctx.artifacts)
         try:
-            action, _, obj = OntologyService(ctx.artifacts).action_inputs(
+            action, _, obj = service.action_inputs(
                 ontology_id,
                 run["ontology_version_id"],
                 action_key,
@@ -143,6 +144,7 @@ class OntologyActionRunner:
             raise state.GateDenied(state.AUTHZ_DENIED, exc.detail, "ontology_policy") from exc
         except AppError as exc:
             raise state.RunFailed(state.VALIDATION, steps._short(exc.detail)) from exc
+        ctx.record_classification(service.read_classification)  # ARCH M11
         try:
             tool = _tool(env, action)  # only a version the run's ontology version pins
         except NotFound as exc:

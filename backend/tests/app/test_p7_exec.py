@@ -319,6 +319,8 @@ def _agent_uses_the_ontology(w: World7, onto: dict[str, Any], settings: Settings
         script=script,
         tool=builtin_tool_spec("ontology.query", side_effect_class="read"),
         tool_key="ontology-query",
+        # the run reads `internal` properties: the client's provider is trusted for them (M11)
+        provider_settings={"trust_level": "internal"},
     )
     # the registry lists the function with its schema
     catalog = w.client.get("/api/v1/tool-executors", headers=w.h).json()["items"]

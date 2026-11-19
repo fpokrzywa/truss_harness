@@ -115,7 +115,13 @@ def _fake_model(
     lose_lease: bool = False,
 ) -> None:
     def invoke_for_run(
-        ref: object, model_id: UUID, body: ms.InvokeIn, *, run_id: UUID, max_deadline: float
+        ref: object,
+        model_id: UUID,
+        body: ms.InvokeIn,
+        *,
+        run_id: UUID,
+        max_deadline: float,
+        classification: str | None = None,
     ) -> RunInvoke:
         calls.append({"model_id": model_id, "max_tokens": body.max_tokens, "run_id": run_id})
         if lose_lease:  # the heartbeat lost the lease while the provider answered
