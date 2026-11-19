@@ -191,7 +191,7 @@ def test_real_adapter_against_a_development_workspace(request: pytest.FixtureReq
     except Exception as exc:
         pytest.fail(
             f"apply raised {type(exc).__name__}: its outcome is unknown. Do not run apply again; "
-            f"follow the unknown-outcome section of {RUNBOOK}",
+            f'follow "Writes, retries and unknown outcomes" in {RUNBOOK}',
             pytrace=False,
         )
     handles = receipt.operation_handles

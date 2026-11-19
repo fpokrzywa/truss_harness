@@ -85,8 +85,10 @@ executor (API running):
 2. Create an executor and issue its credential (Executors screen); the credential starts `shx_`.
 3. Write the executor's credentials file, JSON `credential_ref -> {host, token,
    service_principal}`, outside the repository or under `.devdata/`.
-4. Set `SHIFDE_EXECUTOR_API_URL`, `SHIFDE_EXECUTOR_TOKEN` and `SHIFDE_EXECUTOR_CREDENTIALS_FILE`,
-   then start the executor **without** `--fake-platform`:
+4. Set `SHIFDE_EXECUTOR_API_URL`, `SHIFDE_EXECUTOR_TOKEN` and `SHIFDE_EXECUTOR_CREDENTIALS_FILE`.
+   The executor refuses an `http` API URL unless `SHIFDE_ENV` is `development` (or `test`): for
+   a local API such as `http://127.0.0.1:8710`, also set `SHIFDE_ENV=development`; otherwise the
+   API URL must be https. Then start the executor **without** `--fake-platform`:
    `cd backend; uv run shifde-executor`.
 5. Request a plan, approve it as a second person, and follow the deployment through apply,
    observe and verify on the Deployments screen.
@@ -106,8 +108,11 @@ Never record the token, the host's credentials or the env file's contents.
 ## Writes, retries and unknown outcomes
 
 Every platform write (`bundle-deploy`, `bundle-run`) is attempted once, with no retry. If `apply`
-raises in the live test, its outcome is unknown: do not run the test again to "fix" it. Check the
-workspace for the app by hand and remove it as above before any new run.
+raises in the live test, its outcome is unknown: do not run the test again to "fix" it. The test
+prints the app name only after a successful `apply`, so find the app by hand: in the workspace's
+Apps list (Compute, Apps), look for an app named `shifde-<12 hex>-<8 hex>` created by the service
+principal, and look under `/Workspace/Users/<service principal>/.shifde/` for its bundle folder.
+Delete both as in "Remove the deployed app afterwards" before any new run.
 
 In the screen flow, a lost lease (or an executor error) during apply, after a write was started,
 makes the deployment `unknown_outcome`. It is never retried and never treated as healthy. It is
