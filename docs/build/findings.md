@@ -45,7 +45,7 @@ Counts: critical 2, major 36, minor 30. Critical/major by sub-project-1 scope: C
 | Item 23 (REQ F-23) | major | R5 | Traceability matrix unreliable | docs | docs/requirements/TRACEABILITY.md | narrowed, not closed (issue #14, B-2639..B-2644): design 5.3 matrix generated and checked by `scripts/traceability.py --check` (`scripts/tests/test_traceability.py`); SETH PRD ids remain open |
 | ARCH M5; REQ F-18 | major | R3 decision | Half the install profile stored, not enforced | installation | installation/profile.py; installation/service.py | dropped: code not ported (security/limits settings to be revisited at go-live) |
 | ARCH M11 | major | R3 decision | Classification × provider-trust egress control and data:export not implemented | runtime, ontology, models_admin, governance | runtime/gate.py; ontology/policy.py; governance/service.py:806, 892 | narrowed, not closed (issue #15, B-2645..B-2652): classification x provider-trust egress control done (`tests/runtime/test_egress_classification.py`, `tests/ontology/test_classification.py`); `data:export` and the client-data export route remain open (follow-up issue) |
-| REQ F-08 | major | none | RLS is tenant-only; PRD requires workspace and project | authz, tenancy | authz/pdp.py; tenancy/scope.py | known defect |
+| REQ F-08 | major | none | RLS is tenant-only; PRD requires workspace and project | authz, tenancy | authz/pdp.py; tenancy/scope.py | open, risk recorded (B-2653..B-2656): workspace/project RLS not added; `backend/tests/authz/scoping/test_workspace_routes.py` classifies every mounted route and proves a user bound at one workspace is refused on another's resources on all 180 scoped routes; the residual risk awaits the owner's written acceptance |
 | REQ F-10 | major | R3 decision | Approval rules skip pipeline runs; no data-export or target-env rule | runtime, governance | runtime/pipeline.py; governance/validation.py | known defect |
 | REQ F-22 | major | R4 | No real IdP sign-in tested | identity | identity/oidc.py | known defect (Entra arrives in sub-project 3) |
 
@@ -87,6 +87,6 @@ Counts: critical 2, major 36, minor 30. Critical/major by sub-project-1 scope: C
 ## Unsure owners (lead's resolution)
 
 - Item 3: doctor/proxy defaults in install tooling are dropped; the rate-limit and audit-IP code in `core`/`app` is fixed (R2).
-- REQ F-08: known defect owned by `authz`.
+- REQ F-08: owned by `authz`; the PDP route enumeration test is in place (B-2653), workspace/project RLS was not added, and the residual risk (B-2655) awaits the owner's written acceptance.
 - Retention (item 20): known defect owned by `cli`.
 - J m5: `ledger`.
