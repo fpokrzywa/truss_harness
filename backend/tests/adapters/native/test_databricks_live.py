@@ -80,7 +80,8 @@ class LiveConfig:
 
 def read_live_config(path: Path) -> LiveConfig:
     """The development workspace of the env file at `path`, else `LiveConfigRefused`."""
-    values = dotenv_values(path, encoding="utf-8-sig")
+    # no interpolation: a `${VAR}` in a value is never read from the process environment
+    values = dotenv_values(path, encoding="utf-8-sig", interpolate=False)
     for key in KEYS:
         if not values.get(key):
             raise LiveConfigRefused(f"{key} is missing or empty in the live env file")
@@ -194,6 +195,8 @@ def test_real_adapter_against_a_development_workspace(request: pytest.FixtureReq
             pytrace=False,
         )
     handles = receipt.operation_handles
+    # a fresh read context: its one-hour deadline starts after apply, not before the build
+    read = ReadContext(tenant_id=tenant, target=target)
     print(f"deployed app {handles['app_name']} (deployment {handles.get('deployment_id')})")
 
     # 5. observe every 15 s until succeeded, failing on failed or after 20 minutes
@@ -236,7 +239,9 @@ def _env_file(directory: Path, **overrides: str | None) -> Path:
 
 
 def test_a_complete_development_file_parses(tmp_path: Path) -> None:
-    config = read_live_config(_env_file(tmp_path, DATABRICKS_HOST=HOST.upper()[:8] + HOST[8:]))
+    config = read_live_config(
+        _env_file(tmp_path, DATABRICKS_HOST=HOST.replace("https://", "HTTPS://"))
+    )
     assert config.host == HOST
     assert config.token.get_secret_value() == TOKEN
     assert (config.warehouse_id, config.service_principal) == (WAREHOUSE, PRINCIPAL)
@@ -293,3 +298,12 @@ def test_no_refusal_shows_the_token(tmp_path: Path, overrides: dict[str, str | N
 )
 def test_only_an_expression_that_names_live_selects_it(markexpr: str, selected: bool) -> None:
     assert live_selected(markexpr) is selected
+
+
+def test_values_are_not_read_from_the_process_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SHIFDE_LIVE_TEST_HOST", HOST)
+    path = _env_file(tmp_path, DATABRICKS_HOST="${SHIFDE_LIVE_TEST_HOST}")
+    with pytest.raises(LiveConfigRefused, match="DATABRICKS_HOST is not an allowed"):
+        read_live_config(path)
