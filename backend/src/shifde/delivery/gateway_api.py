@@ -1,4 +1,6 @@
-"""Executor gateway routes (design section 5, section 9 items 12 and 13; DECISIONS B-2664).
+"""Executor gateway routes (design section 5, section 9 items 12, 13 and 16; DECISIONS B-2664,
+B-2669): `whoami`, and the job lease, heartbeat, artifact, credential grant, checkpoint and result
+routes over `delivery.gateway` (wire models in `adapters.native.contracts`).
 
 Mounted without `require_auth`: the only credential read here is `Authorization: Bearer shx_...`
 (an executor token; cookies are never read), and a user API key or session gets the same 401
@@ -8,11 +10,14 @@ Mounted without `require_auth`: the only credential read here is `Authorization:
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any  # Any: a lease or an empty 204
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 
+from shifde.adapters.native import contracts as c
 from shifde.core.deps import SessionDep, SettingsDep
+from shifde.delivery import gateway
 from shifde.delivery import schemas as s
 from shifde.delivery.service import AuthenticatedExecutor, authenticate_executor
 
@@ -45,3 +50,53 @@ def whoami(executor: ExecutorDep) -> s.ExecutorWhoami:
         version=executor.version,
         last_seen_at=executor.last_seen_at,
     )
+
+
+@router.post(
+    "/lease",
+    tags=["executor"],
+    response_model=c.JobLease,
+    responses={204: {"description": "No due job"}},
+)
+def lease_job(body: c.LeaseRequest, executor: ExecutorDep, session: SessionDep) -> Any:
+    leased = gateway.lease(session, executor, body)
+    return Response(status_code=204) if leased is None else leased
+
+
+@router.post("/jobs/{job_id}/heartbeat", tags=["executor"])
+def heartbeat(
+    job_id: UUID, body: c.LeaseProof, executor: ExecutorDep, session: SessionDep
+) -> c.HeartbeatAck:
+    return gateway.heartbeat(session, executor, job_id, body)
+
+
+@router.get("/jobs/{job_id}/artifact", tags=["executor"])
+def job_artifact(
+    job_id: UUID,
+    lease_id: UUID,
+    fence: Annotated[int, Query(ge=1)],
+    executor: ExecutorDep,
+    session: SessionDep,
+) -> None:
+    gateway.artifact(session, executor, job_id, c.LeaseProof(lease_id=lease_id, fence=fence))
+
+
+@router.post("/jobs/{job_id}/credential-grant", tags=["executor"])
+def credential_grant(
+    job_id: UUID, body: c.LeaseProof, executor: ExecutorDep, session: SessionDep
+) -> c.CredentialGrant:
+    return gateway.credential_grant(session, executor, job_id, body)
+
+
+@router.post("/jobs/{job_id}/checkpoint", tags=["executor"])
+def checkpoint(
+    job_id: UUID, body: c.CheckpointSubmission, executor: ExecutorDep, session: SessionDep
+) -> c.JournalEntry:
+    return gateway.checkpoint(session, executor, job_id, body)
+
+
+@router.post("/jobs/{job_id}/result", tags=["executor"])
+def job_result(
+    job_id: UUID, body: c.JobResultSubmission, executor: ExecutorDep, session: SessionDep
+) -> c.JobResultAck:
+    return gateway.submit_result(session, executor, job_id, body)

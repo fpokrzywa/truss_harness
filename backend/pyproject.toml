@@ -212,7 +212,7 @@ source_modules = [
   "shifde.ledger.pricing", "shifde.ledger.usage", "shifde.ledger.budgeting",
   "shifde.ledger.enforcement",
   "shifde.runtime.policies", "shifde.observability.tracing", "shifde.observability.metrics",
-  "shifde.delivery.service", "shifde.delivery.repository",
+  "shifde.delivery.service", "shifde.delivery.repository", "shifde.delivery.gateway",
 ]
 forbidden_modules = ["fastapi", "starlette"]
 

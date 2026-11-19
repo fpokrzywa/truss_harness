@@ -4,7 +4,7 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Annotated, Any, Literal  # Any: arbitrary JSON values to hash
+from typing import Annotated, Any, Literal, Self  # Any: arbitrary JSON values to hash
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
@@ -16,6 +16,7 @@ from pydantic import (
     Field,
     JsonValue,
     field_validator,
+    model_validator,
 )
 
 
@@ -295,3 +296,93 @@ class JournalEntry(Model):
     input_digest: Digest
     state: Literal["intent", "complete"]
     receipt: dict[str, JsonValue] | None = None
+
+
+# --------------------------------------------------------------------------- executor gateway
+JobKind = Literal["plan", "apply", "observe", "verify", "reconcile"]
+
+
+class LeaseProof(Model):
+    """The current lease of a job; every per-job gateway call proves it."""
+
+    lease_id: UUID
+    fence: int = Field(ge=1)
+
+
+class LeaseRequest(Model):
+    request_id: UUID
+    kinds: list[JobKind] = Field(min_length=1, max_length=5)
+
+    @field_validator("kinds")
+    @classmethod
+    def _unique_kinds(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("kinds must be unique")
+        return value
+
+
+class LeasedJob(Model):
+    id: UUID
+    kind: JobKind
+    plan_id: UUID | None
+    deployment_id: UUID | None
+    target_id: UUID | None
+    deadline: Timestamp | None
+    attempts: int
+    max_attempts: int
+
+
+class JobLease(Model):
+    job: LeasedJob
+    lease_id: UUID
+    fence: int
+    lease_until: Timestamp
+    request_id: UUID
+
+
+class HeartbeatAck(Model):
+    lease_until: Timestamp
+
+
+class CredentialGrant(Model):
+    """What the executor may fetch a credential for; it never holds a secret."""
+
+    job_id: UUID
+    executor_id: UUID
+    target_id: UUID
+    credential_ref: str
+    audience: str
+    expires_at: Timestamp
+
+
+class CheckpointSubmission(LeaseProof):
+    sequence: int = Field(ge=1)
+    step_key: Identifier
+    state: Literal["intent", "complete"]
+    input_digest: Digest
+    receipt: dict[str, JsonValue] | None = None
+
+    @model_validator(mode="after")
+    def _receipt_matches_state(self) -> Self:
+        if (self.state == "complete") != (self.receipt is not None):
+            raise ValueError("a receipt is required for complete and refused for intent")
+        return self
+
+
+class JobResultSubmission(LeaseProof):
+    status: Literal["succeeded", "failed"]
+    value: dict[str, JsonValue] | None = None
+    error_code: Literal["execution_failed", "credential_unavailable"] | None = None
+
+    @model_validator(mode="after")
+    def _value_or_error(self) -> Self:
+        if self.status == "succeeded" and (self.value is None or self.error_code is not None):
+            raise ValueError("succeeded requires a value and no error_code")
+        if self.status == "failed" and (self.error_code is None or self.value is not None):
+            raise ValueError("failed requires an error_code and no value")
+        return self
+
+
+class JobResultAck(Model):
+    job_id: UUID
+    status: Literal["done"]

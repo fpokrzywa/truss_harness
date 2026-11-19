@@ -9,12 +9,17 @@ Everything that creates or releases a claim takes the same transaction-scoped ad
 Executors and their credentials (B-2664): `shifde_app` cannot read `secret_hash`; a token is
 resolved only through the `shifde.delivery_resolve_executor` definer, which answers
 (tenant_id, executor_id) or nothing.
+
+Delivery jobs (B-2669): a lease is granted only by the `shifde.delivery_lease_job` definer (the app
+holds no grant on the lease columns), after the `shifde.delivery_sweep_lost_jobs` invoker function
+has settled the organization's expired leases. Lease times use the database clock (`now()`).
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from typing import Any  # Any: SQL parameter values / JSON documents
 from uuid import UUID
 
@@ -354,4 +359,165 @@ def revoke_executor_credentials(
         )
         .mappings()
         .all()
+    )
+
+
+# ====================================================================== job queue and journal
+JOB_COLUMNS = (
+    "id, tenant_id, kind, plan_id, deployment_id, target_id, status, run_after, deadline, "
+    "attempts, max_attempts, executor_id, lease_id, lease_request_id, fence, lease_until, "
+    "heartbeat_at, checkpoint_seq, result, created_at, updated_at"
+)
+JOURNAL_COLUMNS = (
+    "tenant_id, deployment_id, step_key, input_digest, state, receipt, job_id, fence, recorded_at"
+)
+
+
+def insert_job(session: Session, values: Mapping[str, Any]) -> None:
+    session.execute(
+        text(
+            "INSERT INTO shifde.delivery_jobs (tenant_id, id, kind, plan_id, deployment_id, "
+            "target_id, run_after, deadline, max_attempts) VALUES (:tenant_id, :id, :kind, "
+            ":plan_id, :deployment_id, :target_id, COALESCE(CAST(:run_after AS timestamptz), "
+            "now()), :deadline, :max_attempts)"
+        ),
+        dict(values),
+    )
+
+
+def sweep_lost_jobs(session: Session) -> int:
+    """Settle the session organization's expired leases (the invoker function, under RLS)."""
+    return int(session.execute(text("SELECT shifde.delivery_sweep_lost_jobs()")).scalar_one())
+
+
+def lease_job(
+    session: Session, executor_id: UUID, request_id: UUID, kinds: Sequence[str]
+) -> Row | None:
+    """The lease the definer grants (or replays) for the session organization, or None."""
+    return (
+        session.execute(
+            text(
+                "SELECT job_id, lease_id, fence, lease_until "
+                "FROM shifde.delivery_lease_job(:e, :r, CAST(:k AS text[]))"
+            ),
+            {"e": executor_id, "r": request_id, "k": list(kinds)},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def get_job(
+    session: Session, job_id: UUID, *, tenant_id: UUID, for_update: bool = False
+) -> Row | None:
+    lock = " FOR UPDATE" if for_update else ""
+    return (
+        session.execute(
+            text(
+                # columns and the lock clause are module constants; values are bound
+                f"SELECT {JOB_COLUMNS}, now() AS db_now FROM shifde.delivery_jobs "  # nosec B608
+                f"WHERE id = :id AND tenant_id = :t{lock}"
+            ),
+            {"id": job_id, "t": tenant_id},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def extend_lease(session: Session, job_id: UUID, seconds: int, *, tenant_id: UUID) -> datetime:
+    lease_until: datetime = session.execute(
+        text(
+            "UPDATE shifde.delivery_jobs SET lease_until = now() + make_interval(secs => :s), "
+            "heartbeat_at = now() WHERE id = :id AND tenant_id = :t RETURNING lease_until"
+        ),
+        {"id": job_id, "t": tenant_id, "s": seconds},
+    ).scalar_one()
+    return lease_until
+
+
+def grant_expiry(session: Session, lease_until: datetime, seconds: int) -> datetime:
+    """`least(lease_until, now() + seconds)` on the database clock."""
+    expires: datetime = session.execute(
+        text("SELECT least(CAST(:u AS timestamptz), now() + make_interval(secs => :s))"),
+        {"u": lease_until, "s": seconds},
+    ).scalar_one()
+    return expires
+
+
+def set_checkpoint_seq(session: Session, job_id: UUID, sequence: int, *, tenant_id: UUID) -> None:
+    session.execute(
+        text(
+            "UPDATE shifde.delivery_jobs SET checkpoint_seq = :q WHERE id = :id AND tenant_id = :t"
+        ),
+        {"id": job_id, "t": tenant_id, "q": sequence},
+    )
+
+
+def finish_job(
+    session: Session, job_id: UUID, result: Mapping[str, Any], *, tenant_id: UUID
+) -> None:
+    session.execute(
+        text(
+            "UPDATE shifde.delivery_jobs SET status = 'done', result = CAST(:r AS jsonb) "
+            "WHERE id = :id AND tenant_id = :t"
+        ),
+        {"id": job_id, "t": tenant_id, "r": json.dumps(result)},
+    )
+
+
+def get_journal_entry(
+    session: Session, deployment_id: UUID, step_key: str, *, tenant_id: UUID
+) -> Row | None:
+    return (
+        session.execute(
+            text(
+                # columns are module constants; values are bound
+                f"SELECT {JOURNAL_COLUMNS} FROM shifde.delivery_journal "  # nosec B608
+                "WHERE tenant_id = :t AND deployment_id = :d AND step_key = :k FOR UPDATE"
+            ),
+            {"t": tenant_id, "d": deployment_id, "k": step_key},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def insert_intent(session: Session, values: Mapping[str, Any]) -> Row:
+    return (
+        session.execute(
+            text(
+                # columns are module constants; values are bound
+                "INSERT INTO shifde.delivery_journal (tenant_id, deployment_id, "  # nosec B608
+                "step_key, input_digest, state, job_id, fence) VALUES (:tenant_id, "
+                ":deployment_id, :step_key, :input_digest, 'intent', :job_id, :fence) "
+                f"RETURNING {JOURNAL_COLUMNS}"
+            ),
+            dict(values),
+        )
+        .mappings()
+        .one()
+    )
+
+
+def complete_step(
+    session: Session,
+    deployment_id: UUID,
+    step_key: str,
+    receipt: Mapping[str, Any],
+    *,
+    tenant_id: UUID,
+) -> Row:
+    return (
+        session.execute(
+            text(
+                # columns are module constants; values are bound
+                "UPDATE shifde.delivery_journal SET state = 'complete', "  # nosec B608
+                "receipt = CAST(:r AS jsonb), recorded_at = now() WHERE tenant_id = :t "
+                f"AND deployment_id = :d AND step_key = :k RETURNING {JOURNAL_COLUMNS}"
+            ),
+            {"t": tenant_id, "d": deployment_id, "k": step_key, "r": json.dumps(receipt)},
+        )
+        .mappings()
+        .one()
     )
