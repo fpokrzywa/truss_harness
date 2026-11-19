@@ -110,6 +110,9 @@ class OntologyService:
         # the anchored run's (workspace id, project id) on the unchecked path: its mappings'
         # connections must lie there (B-2193); None for an API caller
         self._run_scope: tuple[UUID | None, UUID | None] | None = None
+        # the highest classification of the properties the last successful `query` /
+        # `get_object` touched (ARCH M11): a run records it, the API schemas never carry it
+        self.read_classification: str | None = None
 
     # ================================================================== loading
     def _artifact(
@@ -494,6 +497,7 @@ class OntologyService:
         )
         rows, executed, lineage_id = result
         more = executed.has_more
+        self.read_classification = planner.classification
         return s.QueryOut(
             rows=rows,
             next_cursor=encode_query_cursor(offset + body.limit, fingerprint) if more else None,
@@ -697,6 +701,7 @@ class OntologyService:
             error_code=None,
             object_types=list(dict.fromkeys([object_type, *(h.target.object_type for h in hops)])),
         )
+        self.read_classification = planner.classification
         return s.ObjectOut(object=shaped, relationships=summaries, lineage_id=lineage_id)
 
     def _summary_hops(
