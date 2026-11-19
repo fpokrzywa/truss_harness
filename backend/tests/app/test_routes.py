@@ -47,11 +47,24 @@ UNIFIED_ONLY = {
     ("GET", "/api/v1/orgs/{org}/connections/{connection_id}/test-jobs/{job_id}"),
 }
 # native delivery (design 2026-11-17 section 9 item 2, B-2501): not a SETH module
+EXECUTOR_CREDENTIAL = (
+    "/api/v1/orgs/{org}/delivery/executors/{executor_id}/credentials/{credential_id}"
+)
 DELIVERY = {
     ("GET", "/api/v1/orgs/{org}/delivery/targets"),
     ("GET", "/api/v1/orgs/{org}/delivery/targets/{target_id}"),
     ("POST", "/api/v1/orgs/{org}/delivery/targets"),
     ("POST", "/api/v1/orgs/{org}/delivery/targets/{target_id}/archive"),
+    ("GET", "/api/v1/orgs/{org}/delivery/executors"),
+    ("POST", "/api/v1/orgs/{org}/delivery/executors"),
+    ("GET", "/api/v1/orgs/{org}/delivery/executors/{executor_id}"),
+    ("PATCH", "/api/v1/orgs/{org}/delivery/executors/{executor_id}"),
+    ("GET", "/api/v1/orgs/{org}/delivery/executors/{executor_id}/credentials"),
+    ("POST", "/api/v1/orgs/{org}/delivery/executors/{executor_id}/credentials"),
+    ("POST", EXECUTOR_CREDENTIAL + "/rotate"),
+    ("POST", EXECUTOR_CREDENTIAL + "/revoke"),
+    # the executor gateway (design 5, B-2664): executor tokens only, no user session
+    ("GET", "/api/executor/v1/whoami"),
 }
 
 

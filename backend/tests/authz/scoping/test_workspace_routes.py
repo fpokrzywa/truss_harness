@@ -457,6 +457,36 @@ ROUTES: dict[Op, tuple[str, str]] = {
     ("POST", "/api/v1/orgs/{org}/delivery/targets"): (SCOPED, "delivery"),
     ("GET", "/api/v1/orgs/{org}/delivery/targets/{target_id}"): (SCOPED, "delivery"),
     ("POST", "/api/v1/orgs/{org}/delivery/targets/{target_id}/archive"): (SCOPED, "delivery"),
+    ("GET", "/api/v1/orgs/{org}/delivery/executors"): (CLIENT, "executors: organization level"),
+    ("POST", "/api/v1/orgs/{org}/delivery/executors"): (CLIENT, "executors: organization level"),
+    ("GET", "/api/v1/orgs/{org}/delivery/executors/{executor_id}"): (
+        CLIENT,
+        "executors: organization level",
+    ),
+    ("PATCH", "/api/v1/orgs/{org}/delivery/executors/{executor_id}"): (
+        CLIENT,
+        "executors: organization level",
+    ),
+    ("GET", "/api/v1/orgs/{org}/delivery/executors/{executor_id}/credentials"): (
+        CLIENT,
+        "executor credentials: organization level",
+    ),
+    ("POST", "/api/v1/orgs/{org}/delivery/executors/{executor_id}/credentials"): (
+        CLIENT,
+        "executor credentials: organization level",
+    ),
+    (
+        "POST",
+        "/api/v1/orgs/{org}/delivery/executors/{executor_id}/credentials/{credential_id}/rotate",
+    ): (CLIENT, "executor credentials: organization level"),
+    (
+        "POST",
+        "/api/v1/orgs/{org}/delivery/executors/{executor_id}/credentials/{credential_id}/revoke",
+    ): (CLIENT, "executor credentials: organization level"),
+    ("GET", "/api/executor/v1/whoami"): (
+        PUBLIC,
+        "executor credential, no user session; its own organization only",
+    ),
     # ------------------------------------------------------------------ models
     ("GET", "/api/v1/orgs/{org}/model-allowlists"): (SCOPED, "models"),
     ("PUT", "/api/v1/orgs/{org}/model-allowlists"): (SCOPED, "models"),
