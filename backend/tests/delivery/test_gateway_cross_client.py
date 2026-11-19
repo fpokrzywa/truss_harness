@@ -39,6 +39,7 @@ from tests.delivery.routes import (
     job_url,
     journal_rows,
     lease,
+    make_deployment,
     proof,
 )
 from tests.tenancy.conftest import World, app_session
@@ -80,11 +81,19 @@ class Two:
 
 
 @pytest.fixture
-def two(client: TestClient, world: World, people: People, app_db: Database) -> Two:
+def two(
+    client: TestClient, world: World, people: People, app_db: Database, owner_db: Database
+) -> Two:
     a = make_executor(client, world.a, people.owner_a)
     b = make_executor(client, world.b, people.owner_b)
-    job_a = enqueue(app_db, a.tenant, "observe", deployment_id=uuid7())
-    job_b = enqueue(app_db, b.tenant, "observe", deployment_id=uuid7(), run_after=_later())
+    job_a = enqueue(app_db, a.tenant, "observe", deployment_id=make_deployment(owner_db, a.tenant))
+    job_b = enqueue(
+        app_db,
+        b.tenant,
+        "observe",
+        deployment_id=make_deployment(owner_db, b.tenant),
+        run_after=_later(),
+    )
     return Two(a, b, job_a, job_b)
 
 

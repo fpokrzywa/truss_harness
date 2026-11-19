@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any  # Any: JSON bodies, TestClient options, rows
 from uuid import UUID
 
@@ -22,6 +23,7 @@ from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.delivery import api, gateway, gateway_api
 from shifde.identity.dependencies import require_auth
+from tests.connections.routes import as_user
 from tests.identity import harness
 from tests.tenancy.conftest import app_session
 
@@ -166,6 +168,48 @@ def job_row(owner_db: Database, job_id: object) -> Any:  # Any: a RowMapping
         )
 
 
+def make_deployment(owner_db: Database, tenant: UUID) -> UUID:
+    """A real `queued` deployment of `tenant` (B-2673 keys), inserted as the schema owner with an
+    archived target of the organization's first workspace, an artifact and a `requested` plan, so
+    a job or a journal step can name it. No apply job is queued for it."""
+    target, artifact, plan, deployment_id = uuid7(), uuid7(), uuid7(), uuid7()
+    with owner_db.session() as o:
+        o.execute(
+            text(
+                "INSERT INTO shifde.delivery_targets (tenant_id, id, workspace_id, name, "
+                "platform_kind, address, environment, bindings, credential_ref, status, "
+                "created_by) SELECT :t, :g, w.id, 'helper target', 'databricks', :a, 'dev', "
+                "'{}'::jsonb, 'databricks-dev', 'archived', :u FROM shifde.workspaces w "
+                "WHERE w.tenant_id = :t ORDER BY w.id LIMIT 1"
+            ),
+            {"t": tenant, "g": target, "a": address(), "u": uuid7()},
+        )
+        o.execute(
+            text(
+                "INSERT INTO shifde.delivery_artifacts (tenant_id, id, target_kind, digest, size, "
+                "content, created_by) VALUES (:t, :i, 'databricks.app/v1', :d, 1, :c, :u)"
+            ),
+            {"t": tenant, "i": artifact, "d": "e" * 64, "c": b"\x00", "u": uuid7()},
+        )
+        o.execute(
+            text(
+                "INSERT INTO shifde.delivery_plans (tenant_id, id, target_id, target_revision, "
+                "artifact_id, artifact_digest, application_key, display_name, requested_by) "
+                "VALUES (:t, :i, :g, 1, :a, :d, 'helper-app', 'Helper app', :u)"
+            ),
+            {"t": tenant, "i": plan, "g": target, "a": artifact, "d": "e" * 64, "u": uuid7()},
+        )
+        o.execute(
+            text(
+                "INSERT INTO shifde.delivery_deployments (tenant_id, id, plan_id, target_id, "
+                "application_key) VALUES (:t, :i, :p, :g, 'helper-app')"
+            ),
+            {"t": tenant, "i": deployment_id, "p": plan, "g": target},
+        )
+        o.commit()
+    return deployment_id
+
+
 def journal_rows(owner_db: Database, tenant: UUID) -> list[tuple[Any, ...]]:
     with owner_db.session() as o:
         return [
@@ -248,3 +292,228 @@ def plan_row(owner_db: Database, plan_id: object) -> Any:  # Any: a RowMapping
             .mappings()
             .one()
         )
+
+
+# ------------------------------------------------------------------ deployments
+APP_RESOURCE = "databricks_app"
+STEP = "bundle_deploy"
+STEP_DIGEST = "f" * 64
+BOTH_CHECKS = [
+    {"name": "native-runtime", "status": "passed"},
+    {"name": "runtime-warehouse", "status": "passed"},
+]
+
+
+def deployments(slug: str) -> str:
+    return f"/api/v1/orgs/{slug}/delivery/deployments"
+
+
+def binding(target_id: object, native_id: str = "sales-app") -> dict[str, Any]:
+    """A `ResourceBinding` of a Databricks app on the target."""
+    return {
+        "key": "app",
+        "native_id": native_id,
+        "resource_type": APP_RESOURCE,
+        "application_id": str(uuid7()),
+        "target_id": str(target_id),
+    }
+
+
+def receipt_value(
+    tenant: object,
+    target_id: object,
+    artifact_digest: str,
+    resources: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """A valid `ApplyReceipt` value (one app on the target unless `resources` is given)."""
+    return {
+        "tenant_id": str(tenant),
+        "application_id": str(uuid7()),
+        "target_id": str(target_id),
+        "artifact_digest": artifact_digest,
+        "resources": list(resources if resources is not None else [binding(target_id)]),
+        "operation_handles": {"deploy": "op-1"},
+    }
+
+
+def job_result(
+    client: TestClient, token: str, leased: Mapping[str, Any], **result: Any
+) -> httpx.Response:
+    """Post a job result under `leased` (`status` and `value` or `error_code`)."""
+    body = {**proof(leased), **result}
+    return client.post(job_url(leased["job"]["id"], "result"), json=body, headers=bearer(token))
+
+
+def checkpoint(
+    client: TestClient,
+    token: str,
+    leased: Mapping[str, Any],
+    sequence: int,
+    state: str,
+    receipt: Mapping[str, Any] | None = None,
+) -> httpx.Response:
+    body = {
+        **proof(leased),
+        "sequence": sequence,
+        "step_key": STEP,
+        "state": state,
+        "input_digest": STEP_DIGEST,
+        **({"receipt": dict(receipt)} if receipt is not None else {}),
+    }
+    return client.post(job_url(leased["job"]["id"], "checkpoint"), json=body, headers=bearer(token))
+
+
+def deployment_row(owner_db: Database, deployment_id: object) -> Any:  # Any: a RowMapping
+    with owner_db.session() as o:
+        return (
+            o.execute(
+                text("SELECT * FROM shifde.delivery_deployments WHERE id = :d"),
+                {"d": deployment_id},
+            )
+            .mappings()
+            .one()
+        )
+
+
+def deployment_jobs(
+    owner_db: Database, deployment_id: object, kind: str | None = None
+) -> list[Any]:  # Any: RowMappings
+    with owner_db.session() as o:
+        return list(
+            o.execute(
+                text(
+                    "SELECT *, now() AS db_now FROM shifde.delivery_jobs WHERE deployment_id = :d "
+                    "AND (CAST(:k AS text) IS NULL OR kind = :k) ORDER BY created_at, id"
+                ),
+                {"d": deployment_id, "k": kind},
+            )
+            .mappings()
+            .all()
+        )
+
+
+def make_due(owner_db: Database, deployment_id: object) -> None:
+    """The deployment's queued jobs are due now (skips the 15 s poll delay), as the owner."""
+    owner_sql(
+        owner_db,
+        "UPDATE shifde.delivery_jobs SET run_after = now() WHERE deployment_id = :d "
+        "AND status = 'queued'",
+        d=deployment_id,
+    )
+
+
+def lease_kind(client: TestClient, token: str, kind: str) -> dict[str, Any]:  # Any: a JobLease
+    r = lease(client, token, kinds=[kind])
+    assert r.status_code == 200, r.text
+    body: dict[str, Any] = r.json()
+    return body
+
+
+@dataclass
+class Flow:
+    """Organization A's delivery path through the routes: the requester registers a target and
+    requests plans, the executor seals them, a second tenant administrator approves them."""
+
+    client: TestClient
+    slug: str
+    workspace: str
+    tenant: UUID
+    requester: str
+    approver: str
+    token: str
+
+    def target(self) -> dict[str, Any]:  # Any: a TargetOut body
+        h = as_user(self.client, self.requester)
+        made: dict[str, Any] = register(
+            self.client, h, self.slug, target_body(self.workspace, address())
+        )
+        self.client.cookies.clear()
+        return made
+
+    def sealed(
+        self,
+        target_id: object,
+        application_key: str = "sales-app",
+        value: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:  # Any: a PlanOut body
+        h = as_user(self.client, self.requester)
+        made = request_plan(self.client, h, self.slug, target_id, application_key=application_key)
+        self.client.cookies.clear()
+        leased = lease_plan(self.client, self.token)
+        assert leased["job"]["plan_id"] == made["id"]
+        r = plan_result(
+            self.client, self.token, leased, status="succeeded", value=value or plan_value()
+        )
+        assert r.status_code == 200, r.text
+        return self.get_plan(made["id"])
+
+    def get_plan(self, plan_id: object) -> dict[str, Any]:  # Any: a PlanOut body
+        h = as_user(self.client, self.requester)
+        r = self.client.get(f"{plans(self.slug)}/{plan_id}", headers=h)
+        self.client.cookies.clear()
+        assert r.status_code == 200, r.text
+        body: dict[str, Any] = r.json()
+        return body
+
+    def approve(self, plan: Mapping[str, Any]) -> dict[str, Any]:  # Any: a PlanOut body
+        h = as_user(self.client, self.approver)
+        r = self.client.post(
+            f"{plans(self.slug)}/{plan['id']}/approve",
+            json={"plan_digest": plan["digest"]},
+            headers=h,
+        )
+        self.client.cookies.clear()
+        assert r.status_code == 200, r.text
+        body: dict[str, Any] = r.json()
+        return body
+
+    def deployment(
+        self, target_id: object | None = None, application_key: str = "sales-app"
+    ) -> tuple[dict[str, Any], str]:  # Any: the approved PlanOut body
+        """An approved plan and its queued deployment's id (a new target unless given)."""
+        target = target_id if target_id is not None else self.target()["id"]
+        approved = self.approve(self.sealed(target, application_key))
+        assert approved["deployment_id"] is not None
+        return approved, approved["deployment_id"]
+
+    def read(self, deployment_id: object, email: str | None = None) -> httpx.Response:
+        h = as_user(self.client, email or self.requester)
+        r = self.client.get(f"{deployments(self.slug)}/{deployment_id}", headers=h)
+        self.client.cookies.clear()
+        return r
+
+    def get(self, deployment_id: object) -> dict[str, Any]:  # Any: a DeploymentDetail body
+        r = self.read(deployment_id)
+        assert r.status_code == 200, r.text
+        body: dict[str, Any] = r.json()
+        return body
+
+    def act(
+        self,
+        deployment_id: object,
+        action: str,
+        body: Mapping[str, Any] | None = None,
+        email: str | None = None,
+    ) -> httpx.Response:
+        """POST `cancel`, `reconcile` or `mark-failed` (as the approver unless `email`)."""
+        h = as_user(self.client, email or self.approver)
+        r = self.client.post(
+            f"{deployments(self.slug)}/{deployment_id}/{action}",
+            json=dict(body) if body is not None else None,
+            headers=h,
+        )
+        self.client.cookies.clear()
+        return r
+
+    def apply(self, plan: Mapping[str, Any], *, complete: bool = True) -> dict[str, Any]:
+        """Lease the apply job, record the step (intent, then complete) and post a succeeded
+        receipt; the lease body."""
+        leased = lease_kind(self.client, self.token, "apply")
+        assert checkpoint(self.client, self.token, leased, 1, "intent").status_code == 200
+        if complete:
+            done = checkpoint(self.client, self.token, leased, 2, "complete", {"ok": True})
+            assert done.status_code == 200, done.text
+        value = receipt_value(self.tenant, plan["target_id"], plan["artifact_digest"])
+        r = job_result(self.client, self.token, leased, status="succeeded", value=value)
+        assert r.status_code == 200, r.text
+        return leased

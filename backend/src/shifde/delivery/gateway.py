@@ -6,7 +6,9 @@ the lease columns), after `shifde.delivery_sweep_lost_jobs` has settled the orga
 expired leases: an `apply` job is never re-queued (it becomes `lost`, with an unknown outcome when
 its deployment journal holds any step); other kinds are re-queued up to `max_attempts`. A
 `BEFORE UPDATE` trigger refuses reviving a lease without a new fence. `service.settle_plans` then
-fails the plans of lost plan jobs and expires sealed plans past `expires_at`.
+fails the plans of lost plan jobs and expires sealed plans past `expires_at`, and
+`service.settle_deployments` applies the deployment settle rules (B-2683). Leasing an `apply` job
+moves its deployment to `leased`; its first accepted `intent` moves it to `applying`.
 
 Every per-job call proves the current lease (`lease_id` and `fence`). A job of another
 organization, or one that does not exist, answers the same 404; a lease that is not the caller's
@@ -15,9 +17,10 @@ the SDK journal: intent before write, no changed input digest, no conflicting re
 changes nothing (the transaction is rolled back). Times are the database clock's.
 
 `JOB_KINDS` maps a job kind to its result model and an `on_result` hook run in the result's
-transaction (settled call 5). Only `plan` is registered (`service.on_plan_result` seals or fails
-the plan); apply, observe and verify arrive later, and a result for a kind without an entry is
-refused. A leased `plan` job serves its plan's artifact (`artifact`).
+transaction (settled call 5): `plan` (`service.on_plan_result` seals or fails the plan), `apply`
+(`ApplyReceipt`), `observe` (`NativeObservation`), `verify` (`VerificationReport`) and `reconcile`
+(`ReconciliationResult`), each with its `service.on_*_result` deployment hook; a result for a
+kind without an entry is refused. A leased `plan` job serves its plan's artifact (`artifact`).
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.orm import Session
 
 from shifde.adapters.native.contracts import (
+    ApplyReceipt,
     CheckpointSubmission,
     CredentialGrant,
     HeartbeatAck,
@@ -43,10 +47,12 @@ from shifde.adapters.native.contracts import (
     LeasedJob,
     LeaseProof,
     LeaseRequest,
+    NativeObservation,
     PlanJobResult,
+    ReconciliationResult,
+    VerificationReport,
 )
 from shifde.core.errors import AppError, NotFound, ValidationFailed
-from shifde.core.ids import uuid7
 from shifde.delivery import repository, service
 from shifde.delivery.service import AuthenticatedExecutor
 
@@ -54,8 +60,8 @@ Row = Mapping[str, Any]  # Any: SQLAlchemy RowMapping column values
 
 LEASE_SECONDS = 45
 GRANT_SECONDS = 30
-READ_ONLY_MAX_ATTEMPTS = 4  # one lease plus up to 3 re-queues (settled call 8)
-APPLY_MAX_ATTEMPTS = 1  # a platform write is never retried
+READ_ONLY_MAX_ATTEMPTS = service.READ_ONLY_MAX_ATTEMPTS  # one lease plus up to 3 re-queues
+APPLY_MAX_ATTEMPTS = service.APPLY_MAX_ATTEMPTS  # a platform write is never retried
 
 
 @dataclass(frozen=True)
@@ -66,6 +72,10 @@ class JobKindDefinition:
 
 JOB_KINDS: dict[str, JobKindDefinition] = {
     "plan": JobKindDefinition(PlanJobResult, service.on_plan_result),
+    "apply": JobKindDefinition(ApplyReceipt, service.on_apply_result),
+    "observe": JobKindDefinition(NativeObservation, service.on_observe_result),
+    "verify": JobKindDefinition(VerificationReport, service.on_verify_result),
+    "reconcile": JobKindDefinition(ReconciliationResult, service.on_reconcile_result),
 }
 
 
@@ -127,22 +137,16 @@ def enqueue_job(
     deadline: datetime | None = None,
 ) -> UUID:
     """Queue a job (the caller commits); `apply` gets one attempt, other kinds four."""
-    job_id = uuid7()
-    repository.insert_job(
+    return service.enqueue_job(
         session,
-        {
-            "tenant_id": tenant_id,
-            "id": job_id,
-            "kind": kind,
-            "plan_id": plan_id,
-            "deployment_id": deployment_id,
-            "target_id": target_id,
-            "run_after": run_after,
-            "deadline": deadline,
-            "max_attempts": APPLY_MAX_ATTEMPTS if kind == "apply" else READ_ONLY_MAX_ATTEMPTS,
-        },
+        tenant_id=tenant_id,
+        kind=kind,
+        plan_id=plan_id,
+        deployment_id=deployment_id,
+        target_id=target_id,
+        run_after=run_after,
+        deadline=deadline,
     )
-    return job_id
 
 
 def _leased(
@@ -164,10 +168,12 @@ def _leased(
 
 
 def lease(session: Session, executor: AuthenticatedExecutor, body: LeaseRequest) -> JobLease | None:
-    """Sweep the organization's expired leases and settle its plans, then lease (or replay) one
-    due job; a leased `plan` job moves its plan to `planning`."""
+    """Sweep the organization's expired leases and settle its plans and deployments, then lease
+    (or replay) one due job; a leased `plan` job moves its plan to `planning`, a leased `apply`
+    job its deployment to `leased`."""
     repository.sweep_lost_jobs(session)
     service.settle_plans(session, executor.tenant_id)
+    service.settle_deployments(session, executor.tenant_id)
     granted = repository.lease_job(session, executor.executor_id, body.request_id, body.kinds)
     if granted is None:
         session.commit()
@@ -176,6 +182,7 @@ def lease(session: Session, executor: AuthenticatedExecutor, body: LeaseRequest)
     if row is None:  # pragma: no cover - the definer just leased it in this organization
         raise NotFound("job not found")
     service.start_planning(session, row)
+    service.start_deployment(session, row)
     session.commit()
     return JobLease(
         job=LeasedJob(
@@ -286,6 +293,7 @@ def checkpoint(
             current["job_id"] != job_id or current["fence"] != body.fence
         ):
             raise StepOutcomeUnknown("an earlier attempt recorded this step's intent")
+        service.start_applying(session, row)
     else:
         if current is None:
             raise NoIntent("no intent was recorded for the step")

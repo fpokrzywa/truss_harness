@@ -7,7 +7,9 @@ under A's organization and gets exactly the answer an id that does not exist get
 and finds B's rows absent from A's lists. B's slug in the path gives A the unknown-organization
 404. An executor token answers for its own organization's executor only, also when two
 organizations' credentials share a prefix. B's job cannot name A's plan (`fk_delivery_jobs__plan`,
-B-2673), and B's executor cannot fetch A's plan artifact.
+B-2673), and B's executor cannot fetch A's plan artifact. B's job and journal step cannot name A's
+deployment (`fk_delivery_jobs__deployment`, `fk_delivery_journal__deployment`), and B's executor
+leases none of A's apply jobs.
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.delivery import api as delivery_api
-from shifde.delivery import gateway
+from shifde.delivery import gateway, repository
 from shifde.identity.apikeys import hash_key
 from tests.connections.routes import as_user, org
 from tests.delivery.conftest import make_executor
@@ -35,10 +37,14 @@ from tests.delivery.routes import (
     address,
     bearer,
     create_executor,
+    deployments,
+    enqueue,
     executors,
     issue,
     job_url,
+    lease,
     lease_plan,
+    make_deployment,
     plans,
     proof,
     register,
@@ -99,6 +105,7 @@ def _b_state(owner_db: Database, two: Two) -> tuple[Any, ...]:
 EXECUTORS = "/api/v1/orgs/{org}/delivery/executors"
 CREDENTIAL = EXECUTORS + "/{executor_id}/credentials/{credential_id}"
 PLANS = "/api/v1/orgs/{org}/delivery/plans"
+DEPLOYMENTS = "/api/v1/orgs/{org}/delivery/deployments"
 ROUTE_TESTS = {
     ("POST", "/api/v1/orgs/{org}/delivery/targets"): "test_bs_organization_is_unknown_to_a",
     ("GET", "/api/v1/orgs/{org}/delivery/targets"): "test_a_lists_only_its_own_rows",
@@ -119,6 +126,11 @@ ROUTE_TESTS = {
     ("GET", PLANS + "/{plan_id}"): "test_a_cannot_reach_bs_plan",
     ("POST", PLANS + "/{plan_id}/approve"): "test_a_cannot_reach_bs_plan",
     ("POST", PLANS + "/{plan_id}/reject"): "test_a_cannot_reach_bs_plan",
+    ("GET", DEPLOYMENTS): "test_a_lists_only_its_own_deployments",
+    ("GET", DEPLOYMENTS + "/{deployment_id}"): "test_a_cannot_reach_bs_deployment",
+    ("POST", DEPLOYMENTS + "/{deployment_id}/cancel"): "test_a_cannot_reach_bs_deployment",
+    ("POST", DEPLOYMENTS + "/{deployment_id}/reconcile"): "test_a_cannot_reach_bs_deployment",
+    ("POST", DEPLOYMENTS + "/{deployment_id}/mark-failed"): "test_a_cannot_reach_bs_deployment",
 }
 
 
@@ -517,3 +529,160 @@ def test_bs_executor_cannot_fetch_as_plan_artifact(
     )
     # B's own lease returns B's plan job, never A's
     assert lease_plan(client, b.token)["job"]["plan_id"] == two.b.plan
+
+
+# ------------------------------------------------------------------ deployments
+@dataclass(frozen=True)
+class DeploymentSide:
+    slug: str
+    email: str
+    tenant: UUID
+    deployment: UUID
+    apply_job: UUID
+
+
+@dataclass(frozen=True)
+class TwoDeployments:
+    a: DeploymentSide
+    b: DeploymentSide
+
+
+@pytest.fixture
+def two_deployments(
+    world: World, people: People, owner_db: Database, app_db: Database
+) -> TwoDeployments:
+    """A queued deployment with a queued apply job in each organization."""
+    sides = []
+    for c, email in ((world.b, people.owner_b), (world.a, people.owner_a)):
+        deployment = make_deployment(owner_db, c.tenant)
+        job = enqueue(app_db, c.tenant, "apply", deployment_id=deployment)
+        sides.append(DeploymentSide(c.slug, email, c.tenant, deployment, job))
+    return TwoDeployments(sides[1], sides[0])
+
+
+def _b_deployment_state(owner_db: Database, two: TwoDeployments) -> tuple[Any, ...]:
+    with owner_db.session() as o:
+        deployment = o.execute(
+            text("SELECT * FROM shifde.delivery_deployments WHERE id = :i"),
+            {"i": two.b.deployment},
+        ).one()
+        jobs = o.execute(
+            text("SELECT * FROM shifde.delivery_jobs WHERE tenant_id = :t ORDER BY id"),
+            {"t": two.b.tenant},
+        ).all()
+        journal = o.execute(
+            text("SELECT * FROM shifde.delivery_journal WHERE tenant_id = :t"),
+            {"t": two.b.tenant},
+        ).all()
+    return tuple(deployment), tuple(tuple(j) for j in jobs), tuple(tuple(j) for j in journal)
+
+
+def _a_deployment_state(owner_db: Database, two: TwoDeployments) -> tuple[Any, ...]:
+    flipped = TwoDeployments(two.b, two.a)
+    return _b_deployment_state(owner_db, flipped)
+
+
+def test_a_cannot_reach_bs_deployment(
+    client: TestClient, owner_db: Database, two_deployments: TwoDeployments
+) -> None:
+    two = two_deployments
+    A, h = deployments(two.a.slug), as_user(client, two.a.email)
+    before = _b_deployment_state(owner_db, two)
+    nobody = str(uuid7())
+    note = {"note": "intruder"}
+    # own deployment first: read it, the state refusals (409), then cancel it (200)
+    for method, suffix, ok, payload in (
+        ("GET", "", 200, None),
+        ("POST", "/reconcile", 409, None),
+        ("POST", "/mark-failed", 409, note),
+        ("POST", "/cancel", 200, None),
+    ):
+        r = client.request(method, f"{A}/{two.a.deployment}{suffix}", headers=h, json=payload)
+        assert r.status_code == ok, (method, suffix, r.text)
+        _same_404(
+            client.request(method, f"{A}/{two.b.deployment}{suffix}", headers=h, json=payload),
+            client.request(method, f"{A}/{nobody}{suffix}", headers=h, json=payload),
+        )
+    # B's slug in the path: the unknown-organization 404
+    unknown = org(f"no-such-{uuid7().hex[-12:]}")
+    for method, path, payload in (
+        ("GET", "/delivery/deployments", None),
+        ("GET", f"/delivery/deployments/{two.b.deployment}", None),
+        ("POST", f"/delivery/deployments/{two.b.deployment}/cancel", None),
+        ("POST", f"/delivery/deployments/{two.b.deployment}/reconcile", None),
+        ("POST", f"/delivery/deployments/{two.b.deployment}/mark-failed", note),
+    ):
+        _same_404(
+            client.request(method, f"{org(two.b.slug)}{path}", headers=h, json=payload),
+            client.request(method, f"{unknown}{path}", headers=h, json=payload),
+        )
+    assert _b_deployment_state(owner_db, two) == before
+
+
+def test_a_lists_only_its_own_deployments(
+    client: TestClient, two_deployments: TwoDeployments
+) -> None:
+    two = two_deployments
+    for me, other in ((two.a, two.b), (two.b, two.a)):
+        h = as_user(client, me.email)
+        listed = client.get(f"{deployments(me.slug)}?limit=200", headers=h)
+        assert listed.status_code == 200, listed.text
+        ids = [d["id"] for d in listed.json()["items"]]
+        assert ids == [str(me.deployment)] and str(other.deployment) not in ids
+
+
+def test_bs_job_and_journal_cannot_name_as_deployment(
+    owner_db: Database, app_db: Database, two_deployments: TwoDeployments
+) -> None:
+    """B-2673: `fk_delivery_jobs__deployment` and `fk_delivery_journal__deployment` refuse B's
+    job and B's journal step naming A's deployment; A's rows stay as they were."""
+    two = two_deployments
+    before = _a_deployment_state(owner_db, two)
+    with app_session(app_db, two.b.tenant) as s, pytest.raises(IntegrityError) as exc:
+        gateway.enqueue_job(
+            s, tenant_id=two.b.tenant, kind="observe", deployment_id=two.a.deployment
+        )
+    assert "fk_delivery_jobs__deployment" in str(exc.value)
+    with app_session(app_db, two.b.tenant) as s, pytest.raises(IntegrityError) as exc:
+        repository.insert_intent(
+            s,
+            {
+                "tenant_id": two.b.tenant,
+                "deployment_id": two.a.deployment,
+                "step_key": "deploy_app",
+                "input_digest": "a" * 64,
+                "job_id": two.b.apply_job,
+                "fence": 1,
+            },
+        )
+    assert "fk_delivery_journal__deployment" in str(exc.value)
+    assert _a_deployment_state(owner_db, two) == before
+    with owner_db.session() as o:
+        rows = o.execute(
+            text(
+                "SELECT (SELECT array_agg(DISTINCT tenant_id) FROM shifde.delivery_jobs "
+                "WHERE deployment_id = :d), (SELECT count(*) FROM shifde.delivery_journal "
+                "WHERE deployment_id = :d)"
+            ),
+            {"d": two.a.deployment},
+        ).one()
+    assert rows[0] == [two.a.tenant] and rows[1] == 0
+
+
+def test_bs_executor_leases_none_of_as_apply_jobs(
+    client: TestClient,
+    world: World,
+    people: People,
+    owner_db: Database,
+    two_deployments: TwoDeployments,
+) -> None:
+    two = two_deployments
+    a = make_executor(client, world.a, people.owner_a)
+    b = make_executor(client, world.b, people.owner_b)
+    before = _a_deployment_state(owner_db, two)
+    r = lease(client, b.token, kinds=["apply"])
+    assert r.status_code == 200 and r.json()["job"]["id"] == str(two.b.apply_job), r.text
+    assert lease(client, b.token, kinds=["apply"]).status_code == 204
+    assert _a_deployment_state(owner_db, two) == before
+    r = lease(client, a.token, kinds=["apply"])
+    assert r.status_code == 200 and r.json()["job"]["id"] == str(two.a.apply_job), r.text

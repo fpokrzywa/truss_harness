@@ -13,7 +13,6 @@ import httpx
 from fastapi.testclient import TestClient
 
 from shifde.core.db import Database
-from shifde.core.ids import uuid7
 from tests.delivery.conftest import ExecutorSide
 from tests.delivery.routes import (
     bearer,
@@ -23,6 +22,7 @@ from tests.delivery.routes import (
     job_url,
     journal_rows,
     lease,
+    make_deployment,
     proof,
 )
 
@@ -76,7 +76,7 @@ def _code(r: httpx.Response, status: int, code: str) -> None:
 def test_intent_then_complete(
     client: TestClient, executor_a: ExecutorSide, app_db: Database, owner_db: Database
 ) -> None:
-    step = _step(client, executor_a, app_db, uuid7())
+    step = _step(client, executor_a, app_db, make_deployment(owner_db, executor_a.tenant))
     assert _ok(step.post("intent")) == {
         "step_key": "deploy_app",
         "input_digest": DIGEST,
@@ -97,7 +97,7 @@ def test_intent_then_complete(
 def test_complete_without_intent(
     client: TestClient, executor_a: ExecutorSide, app_db: Database, owner_db: Database
 ) -> None:
-    step = _step(client, executor_a, app_db, uuid7())
+    step = _step(client, executor_a, app_db, make_deployment(owner_db, executor_a.tenant))
     _code(step.post("complete", receipt=RECEIPT), 409, "no_intent")
     assert journal_rows(owner_db, executor_a.tenant) == []
     assert job_row(owner_db, step.job)["checkpoint_seq"] == 0
@@ -106,7 +106,7 @@ def test_complete_without_intent(
 def test_a_changed_input_digest_is_refused(
     client: TestClient, executor_a: ExecutorSide, app_db: Database, owner_db: Database
 ) -> None:
-    step = _step(client, executor_a, app_db, uuid7())
+    step = _step(client, executor_a, app_db, make_deployment(owner_db, executor_a.tenant))
     _ok(step.post("intent"))
     before = journal_rows(owner_db, executor_a.tenant)
     _code(step.post("intent", OTHER_DIGEST), 409, "input_digest_changed")
@@ -121,7 +121,7 @@ def test_a_changed_input_digest_is_refused(
 def test_a_conflicting_receipt_is_refused_and_identical_reposts_are_accepted(
     client: TestClient, executor_a: ExecutorSide, app_db: Database, owner_db: Database
 ) -> None:
-    step = _step(client, executor_a, app_db, uuid7())
+    step = _step(client, executor_a, app_db, make_deployment(owner_db, executor_a.tenant))
     intent = _ok(step.post("intent"))
     assert _ok(step.post("intent")) == intent  # same job and fence: unchanged
     done = _ok(step.post("complete", receipt=RECEIPT))
@@ -135,7 +135,7 @@ def test_a_conflicting_receipt_is_refused_and_identical_reposts_are_accepted(
 def test_an_intent_of_another_job_or_fence_is_an_unknown_outcome(
     client: TestClient, executor_a: ExecutorSide, app_db: Database, owner_db: Database
 ) -> None:
-    deployment = uuid7()
+    deployment = make_deployment(owner_db, executor_a.tenant)
     first = _step(client, executor_a, app_db, deployment)
     _ok(first.post("intent"))
     # another job of the same deployment
@@ -155,7 +155,7 @@ def test_an_intent_of_another_job_or_fence_is_an_unknown_outcome(
 def test_the_sequence_only_moves_forward(
     client: TestClient, executor_a: ExecutorSide, app_db: Database, owner_db: Database
 ) -> None:
-    step = _step(client, executor_a, app_db, uuid7())
+    step = _step(client, executor_a, app_db, make_deployment(owner_db, executor_a.tenant))
     step.sequence = 4
     _ok(step.post("intent", step="one"))  # sequence 5
     for sequence in (5, 3):
@@ -182,7 +182,7 @@ def test_a_stale_fence_cannot_checkpoint(
     client: TestClient, executor_a: ExecutorSide, app_db: Database, owner_db: Database
 ) -> None:
     """Design section 4, the fourth crash test: a superseded executor writes nothing."""
-    step = _step(client, executor_a, app_db, uuid7())
+    step = _step(client, executor_a, app_db, make_deployment(owner_db, executor_a.tenant))
     expire(owner_db, step.job)
     fresh = Step(client, executor_a, lease(client, executor_a.token).json())
     assert fresh.job == step.job and fresh.leased["fence"] == 2
@@ -196,7 +196,7 @@ def test_a_stale_fence_cannot_checkpoint(
 def test_receipt_is_required_for_complete_and_refused_for_intent(
     client: TestClient, executor_a: ExecutorSide, app_db: Database, owner_db: Database
 ) -> None:
-    step = _step(client, executor_a, app_db, uuid7())
+    step = _step(client, executor_a, app_db, make_deployment(owner_db, executor_a.tenant))
     for state, extra in (("complete", {}), ("intent", {"receipt": RECEIPT})):
         r = step.post(state, **extra)
         assert r.status_code == 422 and r.json()["code"] == "validation_error", (state, r.text)

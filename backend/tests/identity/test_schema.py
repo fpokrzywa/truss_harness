@@ -41,10 +41,11 @@ def test_a_head_named_in_depends_on_is_not_a_version_head() -> None:
     delivery_0001 depends on tenancy_0004 and identity_0006 (B-2526); tenancy_0005 follows
     tenancy_0004, so tenancy_0004 is not a version head either; tenancy_0006 follows tenancy_0005
     (B-2550). delivery_0002 follows delivery_0001 (B-2664), delivery_0003 follows delivery_0002
-    (B-2669) and delivery_0004 follows delivery_0003 (B-2675), so the delivery head is
-    delivery_0004."""
+    (B-2669), delivery_0004 follows delivery_0003 (B-2675) and delivery_0005 follows delivery_0004
+    (B-2681), so the delivery head is delivery_0005."""
     heads = code_heads()
-    assert "delivery_0004" in heads
+    assert "delivery_0005" in heads
+    assert "delivery_0004" not in heads
     assert "delivery_0003" not in heads
     assert "delivery_0002" not in heads
     assert "delivery_0001" not in heads

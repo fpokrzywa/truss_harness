@@ -31,6 +31,7 @@ from tests.delivery.routes import (
     job_row,
     job_url,
     lease,
+    make_deployment,
     owner_sql,
     proof,
     register,
@@ -78,7 +79,7 @@ def test_lease_answers_204_without_a_due_job(
 def test_lease_returns_the_job_with_a_45_second_lease(
     client: TestClient, executor_a: ExecutorSide, app_db: Database, owner_db: Database
 ) -> None:
-    deployment = uuid7()
+    deployment = make_deployment(owner_db, executor_a.tenant)
     job = enqueue(app_db, executor_a.tenant, "observe", deployment_id=deployment)
     request_id = uuid7()
     body = _leased(lease(client, executor_a.token, request_id=request_id))
@@ -320,7 +321,12 @@ def test_a_failed_result(
     owner_db: Database,
     job_kinds: JobKinds,
 ) -> None:
-    job = enqueue(app_db, executor_a.tenant, "apply", deployment_id=uuid7())
+    job = enqueue(
+        app_db,
+        executor_a.tenant,
+        "apply",
+        deployment_id=make_deployment(owner_db, executor_a.tenant),
+    )
     leased = _leased(lease(client, executor_a.token))
     r = _post(
         client,
@@ -336,10 +342,15 @@ def test_a_failed_result(
 
 
 def test_a_result_for_an_unregistered_kind_is_refused(
-    client: TestClient, executor_a: ExecutorSide, app_db: Database, owner_db: Database
+    client: TestClient,
+    executor_a: ExecutorSide,
+    app_db: Database,
+    owner_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert set(gateway.JOB_KINDS) == {"plan"}  # production code registers only `plan`
+    assert set(gateway.JOB_KINDS) == {"plan", "apply", "observe", "verify", "reconcile"}
     assert gateway.JOB_KINDS["plan"].result_model is PlanJobResult
+    monkeypatch.delitem(gateway.JOB_KINDS, "observe")  # a kind without an entry
     job = enqueue(app_db, executor_a.tenant, "observe")
     leased = _leased(lease(client, executor_a.token))
     r = _post(
@@ -384,7 +395,12 @@ def test_a_raising_hook_leaves_the_job_leased(
 def test_an_expired_apply_job_without_an_intent_is_lost_and_failed(
     client: TestClient, executor_a: ExecutorSide, app_db: Database, owner_db: Database
 ) -> None:
-    job = enqueue(app_db, executor_a.tenant, "apply", deployment_id=uuid7())
+    job = enqueue(
+        app_db,
+        executor_a.tenant,
+        "apply",
+        deployment_id=make_deployment(owner_db, executor_a.tenant),
+    )
     assert job_row(owner_db, job)["max_attempts"] == 1
     leased = _leased(lease(client, executor_a.token, kinds=["apply"]))
     assert leased["job"]["max_attempts"] == 1
@@ -400,7 +416,12 @@ def test_an_expired_apply_job_without_an_intent_is_lost_and_failed(
 def test_an_expired_apply_job_with_an_intent_has_an_unknown_outcome(
     client: TestClient, executor_a: ExecutorSide, app_db: Database, owner_db: Database
 ) -> None:
-    job = enqueue(app_db, executor_a.tenant, "apply", deployment_id=uuid7())
+    job = enqueue(
+        app_db,
+        executor_a.tenant,
+        "apply",
+        deployment_id=make_deployment(owner_db, executor_a.tenant),
+    )
     leased = _leased(lease(client, executor_a.token, kinds=["apply"]))
     intent = {
         **proof(leased),
@@ -424,7 +445,12 @@ def test_an_expired_apply_job_with_only_complete_steps_has_an_unknown_outcome(
 ) -> None:
     """A finished step is a platform write: losing the lease before the next intent is still an
     unknown outcome, never `failed` (isolation review 1 of SP2-4, finding 1)."""
-    job = enqueue(app_db, executor_a.tenant, "apply", deployment_id=uuid7())
+    job = enqueue(
+        app_db,
+        executor_a.tenant,
+        "apply",
+        deployment_id=make_deployment(owner_db, executor_a.tenant),
+    )
     leased = _leased(lease(client, executor_a.token, kinds=["apply"]))
     step = {**proof(leased), "step_key": "bundle_deploy", "input_digest": DIGEST}
     r = _post(client, executor_a, job, "checkpoint", {**step, "sequence": 1, "state": "intent"})
@@ -486,7 +512,7 @@ def test_shifde_app_cannot_forge_a_lease_or_delete_queue_rows(
     app_db: Database,
     owner_db: Database,
 ) -> None:
-    deployment = uuid7()
+    deployment = make_deployment(owner_db, executor_a.tenant)
     job = enqueue(app_db, executor_a.tenant, "observe", deployment_id=deployment)
     leased = _leased(lease(client, executor_a.token))
     intent = {
@@ -552,7 +578,12 @@ def test_shifde_app_cannot_revive_a_lease(
     """Isolation review 1 of SP2-4, finding 2: a re-queued, lost or expired job keeps its old
     executor, `lease_id` and `fence`; only a new fence (the lease definer) makes a job leased."""
     observe = enqueue(app_db, executor_a.tenant, "observe")
-    apply = enqueue(app_db, executor_a.tenant, "apply", deployment_id=uuid7())
+    apply = enqueue(
+        app_db,
+        executor_a.tenant,
+        "apply",
+        deployment_id=make_deployment(owner_db, executor_a.tenant),
+    )
     old = {
         job: _leased(lease(client, executor_a.token, kinds=[kind]))
         for job, kind in ((observe, "observe"), (apply, "apply"))

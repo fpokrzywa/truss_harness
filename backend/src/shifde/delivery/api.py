@@ -1,5 +1,5 @@
-"""Deployment target, executor and plan routes (design sections 3, 4, 5 and 9 items 2, 12 and 17;
-DECISIONS B-2501, B-2664, B-2675..B-2679)."""
+"""Deployment target, executor, plan and deployment routes (design sections 3, 4, 5 and 9 items 2,
+7, 10, 11, 12 and 17; DECISIONS B-2501, B-2664, B-2675..B-2679, B-2681..B-2687)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Query
 from shifde.core.deps import SettingsDep
 from shifde.core.pagination import DEFAULT_LIMIT, Page
 from shifde.delivery import schemas as s
+from shifde.delivery.deployments import DeploymentService
 from shifde.delivery.plans import PlanService
 from shifde.delivery.service import ExecutorService, TargetService
 from shifde.tenancy.dependencies import CursorQuery, LimitQuery, ScopeDep
@@ -40,6 +41,13 @@ Plans = Annotated[PlanService, Depends(_plans)]
 PlanStatus = Literal[
     "requested", "planning", "sealed", "approved", "rejected", "expired", "plan_failed"
 ]
+
+
+def _deployments(scope: ScopeDep) -> DeploymentService:
+    return DeploymentService(scope)
+
+
+Deployments = Annotated[DeploymentService, Depends(_deployments)]
 
 
 @router.post("/orgs/{org}/delivery/targets", status_code=201, tags=["delivery"])
@@ -158,3 +166,36 @@ def approve_plan(svc: Plans, plan_id: UUID, body: s.PlanApprove) -> s.PlanOut:
 @router.post("/orgs/{org}/delivery/plans/{plan_id}/reject", tags=["delivery"])
 def reject_plan(svc: Plans, plan_id: UUID, body: s.PlanReject) -> s.PlanOut:
     return svc.reject(plan_id, body)
+
+
+@router.get("/orgs/{org}/delivery/deployments", tags=["delivery"])
+def list_deployments(
+    svc: Deployments,
+    status: Annotated[s.DeploymentStatus | None, Query()] = None,
+    target: Annotated[UUID | None, Query()] = None,
+    limit: LimitQuery = DEFAULT_LIMIT,
+    cursor: CursorQuery = None,
+) -> Page[s.DeploymentOut]:
+    return svc.list(status=status, target=target, limit=limit, cursor=cursor)
+
+
+@router.get("/orgs/{org}/delivery/deployments/{deployment_id}", tags=["delivery"])
+def get_deployment(svc: Deployments, deployment_id: UUID) -> s.DeploymentDetail:
+    return svc.get(deployment_id)
+
+
+@router.post("/orgs/{org}/delivery/deployments/{deployment_id}/cancel", tags=["delivery"])
+def cancel_deployment(svc: Deployments, deployment_id: UUID) -> s.DeploymentOut:
+    return svc.cancel(deployment_id)
+
+
+@router.post("/orgs/{org}/delivery/deployments/{deployment_id}/reconcile", tags=["delivery"])
+def reconcile_deployment(svc: Deployments, deployment_id: UUID) -> s.DeploymentOut:
+    return svc.reconcile(deployment_id)
+
+
+@router.post("/orgs/{org}/delivery/deployments/{deployment_id}/mark-failed", tags=["delivery"])
+def mark_deployment_failed(
+    svc: Deployments, deployment_id: UUID, body: s.DeploymentMarkFailed
+) -> s.DeploymentOut:
+    return svc.mark_failed(deployment_id, body)

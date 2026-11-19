@@ -3,6 +3,7 @@ DECISIONS B-2501, B-2664).
 
 `TargetOut` never carries the claim id or the address key: the claim is the organization's
 private bookkeeping of the one-platform rule. `PlanOut` never carries the artifact's content.
+`DeploymentDetail` (with the step journal) is returned only by the deployment item GET.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from shifde.adapters.native.contracts import EnvironmentSnapshot, PlanStep
 
@@ -158,3 +159,59 @@ class PlanOut(BaseModel):
     created_at: datetime
     updated_at: datetime | None
     approval: PlanApprovalOut | None
+    deployment_id: UUID | None
+
+
+# ====================================================================== deployments (B-2681..)
+DeploymentStatus = Literal[
+    "queued",
+    "leased",
+    "applying",
+    "observing",
+    "verifying",
+    "verified",
+    "expired",
+    "cancelled",
+    "failed",
+    "unknown_outcome",
+    "resolved_failed",
+]
+
+
+class DeploymentOut(BaseModel):
+    id: UUID
+    plan_id: UUID
+    target_id: UUID
+    application_key: str
+    status: DeploymentStatus
+    status_reason: str | None
+    receipt: dict[str, JsonValue] | None
+    verification: dict[str, JsonValue] | None
+    reconcile_evidence: dict[str, JsonValue] | None
+    observe_deadline: datetime | None
+    resolved_by: UUID | None
+    resolved_note: str | None
+    resolved_at: datetime | None
+    created_at: datetime
+    updated_at: datetime | None
+
+
+class DeploymentJournalStep(BaseModel):
+    step_key: str
+    state: Literal["intent", "complete"]
+    input_digest: str
+    receipt: dict[str, JsonValue] | None
+    recorded_at: datetime
+
+
+class DeploymentDetail(DeploymentOut):
+    """The item GET only: the deployment with its journal, ordered by `recorded_at`."""
+
+    journal: list[DeploymentJournalStep]
+
+
+class DeploymentMarkFailed(BaseModel):
+    """Mark an unknown outcome failed: a note (1-2000 characters after stripping) is required."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    note: str = Field(min_length=1, max_length=2000)

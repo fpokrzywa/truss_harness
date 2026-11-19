@@ -14,6 +14,10 @@ Plans (B-2675): a plan row is read with its target's workspace/project and its d
 plans are immutable (`shifde.delivery_plans_seal_guard`), and a decision by the requester is
 refused by `shifde.delivery_approvals_guard`.
 
+Deployments (B-2681..B-2683): a deployment row is read with its target's workspace/project; its
+status changes only along the state machine (`shifde.delivery_deployments_status_guard`), and the
+settle step (`SETTLE_DEPLOYMENTS`, rules a-f) runs after the lost-job sweep under RLS.
+
 Delivery jobs (B-2669): a lease is granted only by the `shifde.delivery_lease_job` definer (the app
 holds no grant on the lease columns), after the `shifde.delivery_sweep_lost_jobs` invoker function
 has settled the organization's expired leases. Lease times use the database clock (`now()`).
@@ -534,12 +538,15 @@ PLAN_COLUMNS = (
     "p.snapshot, p.adapter_version, p.toolchain_digest, p.digest, p.sealed_at, p.expires_at, "
     "p.created_at, p.updated_at, t.workspace_id, t.project_id, "
     "a.decision AS approval_decision, a.decided_by AS approval_decided_by, "
-    "a.decided_at AS approval_decided_at, a.note AS approval_note, now() AS db_now"
+    "a.decided_at AS approval_decided_at, a.note AS approval_note, "
+    "dep.id AS deployment_id, now() AS db_now"
 )
 PLAN_FROM = (
     "shifde.delivery_plans p JOIN shifde.delivery_targets t "
     "ON t.tenant_id = p.tenant_id AND t.id = p.target_id "
-    "LEFT JOIN shifde.delivery_approvals a ON a.tenant_id = p.tenant_id AND a.plan_id = p.id"
+    "LEFT JOIN shifde.delivery_approvals a ON a.tenant_id = p.tenant_id AND a.plan_id = p.id "
+    "LEFT JOIN shifde.delivery_deployments dep ON dep.tenant_id = p.tenant_id "
+    "AND dep.plan_id = p.id"
 )
 
 
@@ -724,4 +731,326 @@ def get_plan_artifact(session: Session, plan_id: UUID, *, tenant_id: UUID) -> Ro
         )
         .mappings()
         .first()
+    )
+
+
+# ====================================================================== deployments (B-2681)
+DEPLOYMENT_COLUMNS = (
+    "d.id, d.tenant_id, d.plan_id, d.target_id, d.application_key, d.status, d.status_reason, "
+    "d.receipt, d.verification, d.observe_deadline, d.reconcile_evidence, d.resolved_by, "
+    "d.resolved_note, d.resolved_at, d.created_at, d.updated_at, t.workspace_id, t.project_id, "
+    "now() AS db_now"
+)
+DEPLOYMENT_FROM = (
+    "shifde.delivery_deployments d JOIN shifde.delivery_targets t "
+    "ON t.tenant_id = d.tenant_id AND t.id = d.target_id"
+)
+BLOCKED = "blocked by unresolved unknown outcome"
+# the settle step (B-2683): rules (a)-(f), in this order, for one organization (`:t`)
+SETTLE_DEPLOYMENTS = (
+    # (a) an apply lost after a journal step: the outcome is unknown
+    "UPDATE shifde.delivery_deployments d SET status = 'unknown_outcome', "
+    "status_reason = 'the executor was lost after a platform write may have happened' "
+    "WHERE d.tenant_id = :t AND d.status IN ('leased', 'applying') AND EXISTS (SELECT 1 "
+    "FROM shifde.delivery_jobs j WHERE j.tenant_id = d.tenant_id AND j.deployment_id = d.id "
+    "AND j.kind = 'apply' AND j.status = 'lost' "
+    "AND j.result ->> 'outcome' = 'unknown_outcome')",
+    # (b) an apply lost before any journal step
+    "UPDATE shifde.delivery_deployments d SET status = 'failed', "
+    "status_reason = 'no platform write was attempted' "
+    "WHERE d.tenant_id = :t AND d.status = 'leased' AND EXISTS (SELECT 1 "
+    "FROM shifde.delivery_jobs j WHERE j.tenant_id = d.tenant_id AND j.deployment_id = d.id "
+    "AND j.kind = 'apply' AND j.status = 'lost' AND j.result ->> 'outcome' = 'failed')",
+    # (c) the plan expired before the apply was leased
+    "WITH expired AS (UPDATE shifde.delivery_deployments d SET status = 'expired', "
+    "status_reason = 'the plan expired before the apply was leased' "
+    "WHERE d.tenant_id = :t AND d.status = 'queued' AND EXISTS (SELECT 1 "
+    "FROM shifde.delivery_jobs j WHERE j.tenant_id = d.tenant_id AND j.deployment_id = d.id "
+    "AND j.kind = 'apply' AND j.status = 'queued' AND j.deadline <= now()) RETURNING d.id) "
+    "UPDATE shifde.delivery_jobs j SET status = 'cancelled' FROM expired "
+    "WHERE j.tenant_id = :t AND j.deployment_id = expired.id AND j.kind = 'apply' "
+    "AND j.status = 'queued'",
+    # (d) an observe or verify job lost after its last attempt
+    "UPDATE shifde.delivery_deployments d SET status = 'failed', status_reason = 'executor lost' "
+    "WHERE d.tenant_id = :t AND d.status IN ('observing', 'verifying') AND EXISTS (SELECT 1 "
+    "FROM shifde.delivery_jobs j WHERE j.tenant_id = d.tenant_id AND j.deployment_id = d.id "
+    "AND j.kind IN ('observe', 'verify') AND j.status = 'lost')",
+    # (e) the observe deadline passed and no job of the deployment holds an unexpired lease
+    "WITH unhealthy AS (UPDATE shifde.delivery_deployments d SET status = 'failed', "
+    "status_reason = 'did not become healthy' "
+    "WHERE d.tenant_id = :t AND d.status IN ('observing', 'verifying') "
+    "AND d.observe_deadline <= now() AND NOT EXISTS (SELECT 1 FROM shifde.delivery_jobs j "
+    "WHERE j.tenant_id = d.tenant_id AND j.deployment_id = d.id AND j.status = 'leased' "
+    "AND j.lease_until > now()) RETURNING d.id) "
+    "UPDATE shifde.delivery_jobs j SET status = 'cancelled' FROM unhealthy "
+    "WHERE j.tenant_id = :t AND j.deployment_id = unhealthy.id "
+    "AND j.kind IN ('observe', 'verify') AND j.status = 'queued'",
+    # (f) hold the queued applies of a target blocked by an unknown outcome (`u`) and say why;
+    # release them once it is resolved
+    "UPDATE shifde.delivery_jobs j SET run_after = now() + interval '15 seconds' "
+    "FROM shifde.delivery_deployments d WHERE j.tenant_id = :t AND d.tenant_id = :t "
+    "AND d.id = j.deployment_id AND j.kind = 'apply' AND j.status = 'queued' "
+    "AND EXISTS (SELECT 1 FROM shifde.delivery_deployments u WHERE u.tenant_id = d.tenant_id "
+    "AND u.target_id = d.target_id AND u.status = 'unknown_outcome')",
+    "UPDATE shifde.delivery_deployments d SET status_reason = :blocked "
+    "WHERE d.tenant_id = :t AND d.status = 'queued' "
+    "AND EXISTS (SELECT 1 FROM shifde.delivery_deployments u WHERE u.tenant_id = d.tenant_id "
+    "AND u.target_id = d.target_id AND u.status = 'unknown_outcome') "
+    "AND d.status_reason IS DISTINCT FROM :blocked",
+    "WITH released AS (UPDATE shifde.delivery_deployments d SET status_reason = NULL "
+    "WHERE d.tenant_id = :t AND d.status = 'queued' AND d.status_reason = :blocked "
+    "AND NOT EXISTS (SELECT 1 FROM shifde.delivery_deployments u "
+    "WHERE u.tenant_id = d.tenant_id AND u.target_id = d.target_id "
+    "AND u.status = 'unknown_outcome') RETURNING d.id) "
+    "UPDATE shifde.delivery_jobs j SET run_after = now() FROM released "
+    "WHERE j.tenant_id = :t AND j.deployment_id = released.id AND j.kind = 'apply' "
+    "AND j.status = 'queued' AND j.run_after > now()",
+)
+
+
+def settle_deployments(session: Session, *, tenant_id: UUID) -> None:
+    """Apply the settle rules (a)-(f) to the organization's deployments (B-2683)."""
+    for sql in SETTLE_DEPLOYMENTS:
+        session.execute(text(sql), {"t": tenant_id, "blocked": BLOCKED})
+
+
+def insert_deployment(session: Session, values: Mapping[str, Any]) -> None:
+    session.execute(
+        text(
+            "INSERT INTO shifde.delivery_deployments (tenant_id, id, plan_id, target_id, "
+            "application_key) VALUES (:tenant_id, :id, :plan_id, :target_id, :application_key)"
+        ),
+        dict(values),
+    )
+
+
+def get_deployment(
+    session: Session, deployment_id: UUID, *, tenant_id: UUID, for_update: bool = False
+) -> Row | None:
+    """The deployment with its target's workspace/project."""
+    lock = " FOR UPDATE OF d" if for_update else ""
+    return (
+        session.execute(
+            text(
+                # columns, joins and the lock clause are module constants; values are bound
+                f"SELECT {DEPLOYMENT_COLUMNS} FROM {DEPLOYMENT_FROM} "  # nosec B608
+                f"WHERE d.id = :id AND d.tenant_id = :t{lock}"
+            ),
+            {"id": deployment_id, "t": tenant_id},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def list_deployments(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    status: str | None,
+    target_id: UUID | None,
+    tenant_wide: bool,
+    visible_workspaces: Sequence[UUID],
+    visible_projects: Sequence[UUID],
+    after: UUID | None,
+    limit: int,
+) -> list[Row]:
+    sql = (
+        # columns and joins are module constants; values are bound
+        f"SELECT {DEPLOYMENT_COLUMNS} FROM {DEPLOYMENT_FROM} "  # nosec B608
+        "WHERE d.tenant_id = :t AND (CAST(:status AS text) IS NULL OR d.status = :status) "
+        "AND (CAST(:target AS uuid) IS NULL OR d.target_id = :target) "
+        "AND (CAST(:after AS uuid) IS NULL OR d.id > :after) "
+        "AND (:wide OR t.workspace_id = ANY(CAST(:vws AS uuid[])) "
+        "     OR t.project_id = ANY(CAST(:vps AS uuid[]))) "
+        "ORDER BY d.id LIMIT :n"
+    )
+    return list(
+        session.execute(
+            text(sql),
+            {
+                "t": tenant_id,
+                "status": status,
+                "target": target_id,
+                "after": after,
+                "wide": tenant_wide,
+                "vws": list(visible_workspaces),
+                "vps": list(visible_projects),
+                "n": limit,
+            },
+        )
+        .mappings()
+        .all()
+    )
+
+
+def deployment_journal(session: Session, deployment_id: UUID, *, tenant_id: UUID) -> list[Row]:
+    return list(
+        session.execute(
+            text(
+                "SELECT step_key, state, input_digest, receipt, recorded_at "
+                "FROM shifde.delivery_journal WHERE tenant_id = :t AND deployment_id = :d "
+                "ORDER BY recorded_at, step_key"
+            ),
+            {"t": tenant_id, "d": deployment_id},
+        )
+        .mappings()
+        .all()
+    )
+
+
+def journal_state(session: Session, deployment_id: UUID, *, tenant_id: UUID) -> tuple[bool, bool]:
+    """(any journal step, any `intent` step without `complete`) of the deployment."""
+    row = session.execute(
+        text(
+            "SELECT count(*) > 0, count(*) FILTER (WHERE state = 'intent') > 0 "
+            "FROM shifde.delivery_journal WHERE tenant_id = :t AND deployment_id = :d"
+        ),
+        {"t": tenant_id, "d": deployment_id},
+    ).one()
+    return bool(row[0]), bool(row[1])
+
+
+def set_deployment_status(
+    session: Session,
+    deployment_id: UUID,
+    status: str,
+    reason: str | None,
+    *,
+    expected: Sequence[str],
+    tenant_id: UUID,
+) -> None:
+    """Move the deployment to `status` (with `status_reason`) if it is in one of `expected`."""
+    session.execute(
+        text(
+            "UPDATE shifde.delivery_deployments SET status = :s, status_reason = :r "
+            "WHERE id = :id AND tenant_id = :t AND status = ANY(CAST(:e AS text[]))"
+        ),
+        {"id": deployment_id, "t": tenant_id, "s": status, "r": reason, "e": list(expected)},
+    )
+
+
+def start_observing(
+    session: Session, deployment_id: UUID, receipt: Mapping[str, Any], *, tenant_id: UUID
+) -> datetime:
+    """`observing`, the receipt, and `observe_deadline = now() + 20 minutes`."""
+    deadline: datetime = session.execute(
+        text(
+            "UPDATE shifde.delivery_deployments SET status = 'observing', status_reason = NULL, "
+            "receipt = CAST(:r AS jsonb), observe_deadline = now() + interval '20 minutes' "
+            "WHERE id = :id AND tenant_id = :t RETURNING observe_deadline"
+        ),
+        {"id": deployment_id, "t": tenant_id, "r": json.dumps(receipt)},
+    ).scalar_one()
+    return deadline
+
+
+def set_verification(
+    session: Session, deployment_id: UUID, report: Mapping[str, Any], *, tenant_id: UUID
+) -> None:
+    session.execute(
+        text(
+            "UPDATE shifde.delivery_deployments SET verification = CAST(:v AS jsonb) "
+            "WHERE id = :id AND tenant_id = :t"
+        ),
+        {"id": deployment_id, "t": tenant_id, "v": json.dumps(report)},
+    )
+
+
+def set_reconcile_evidence(
+    session: Session, deployment_id: UUID, evidence: Mapping[str, Any], *, tenant_id: UUID
+) -> None:
+    session.execute(
+        text(
+            "UPDATE shifde.delivery_deployments SET reconcile_evidence = CAST(:v AS jsonb) "
+            "WHERE id = :id AND tenant_id = :t"
+        ),
+        {"id": deployment_id, "t": tenant_id, "v": json.dumps(evidence)},
+    )
+
+
+def resolve_failed(
+    session: Session, deployment_id: UUID, resolved_by: UUID, note: str, *, tenant_id: UUID
+) -> None:
+    """An `unknown_outcome` deployment becomes `resolved_failed`, by whom, why and when."""
+    session.execute(
+        text(
+            "UPDATE shifde.delivery_deployments SET status = 'resolved_failed', "
+            "resolved_by = :u, resolved_note = :n, resolved_at = now() "
+            "WHERE id = :id AND tenant_id = :t AND status = 'unknown_outcome'"
+        ),
+        {"id": deployment_id, "t": tenant_id, "u": resolved_by, "n": note},
+    )
+
+
+def deployment_jobs(
+    session: Session,
+    deployment_id: UUID,
+    kinds: Sequence[str],
+    *,
+    tenant_id: UUID,
+    for_update: bool = False,
+) -> list[Row]:
+    lock = " FOR UPDATE" if for_update else ""
+    return list(
+        session.execute(
+            text(
+                # columns and the lock clause are module constants; values are bound
+                f"SELECT {JOB_COLUMNS} FROM shifde.delivery_jobs "  # nosec B608
+                "WHERE tenant_id = :t AND deployment_id = :d "
+                f"AND kind = ANY(CAST(:k AS text[])) ORDER BY id{lock}"
+            ),
+            {"t": tenant_id, "d": deployment_id, "k": list(kinds)},
+        )
+        .mappings()
+        .all()
+    )
+
+
+def cancel_job(session: Session, job_id: UUID, *, tenant_id: UUID) -> None:
+    session.execute(
+        text(
+            "UPDATE shifde.delivery_jobs SET status = 'cancelled' "
+            "WHERE id = :id AND tenant_id = :t AND status = 'queued'"
+        ),
+        {"id": job_id, "t": tenant_id},
+    )
+
+
+def target_unresolved(session: Session, target_id: UUID, *, tenant_id: UUID) -> bool:
+    """Whether the target has a deployment with an unresolved unknown outcome."""
+    return bool(
+        session.execute(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM shifde.delivery_deployments WHERE tenant_id = :t "
+                "AND target_id = :g AND status = 'unknown_outcome')"
+            ),
+            {"t": tenant_id, "g": target_id},
+        ).scalar_one()
+    )
+
+
+def native_owner(
+    session: Session, target_id: UUID, resource_type: str, native_id: str, *, tenant_id: UUID
+) -> str | None:
+    """The `application_key` that owns the native resource on the target, if any."""
+    owner: str | None = session.execute(
+        text(
+            "SELECT application_key FROM shifde.delivery_native_resources WHERE tenant_id = :t "
+            "AND target_id = :g AND resource_type = :r AND native_id = :n"
+        ),
+        {"t": tenant_id, "g": target_id, "r": resource_type, "n": native_id},
+    ).scalar_one_or_none()
+    return owner
+
+
+def insert_native_resource(session: Session, values: Mapping[str, Any]) -> None:
+    """Record a native resource's owner; a row already there (the same owner) is kept."""
+    session.execute(
+        text(
+            "INSERT INTO shifde.delivery_native_resources (tenant_id, target_id, application_key, "
+            "resource_type, native_id, deployment_id) VALUES (:tenant_id, :target_id, "
+            ":application_key, :resource_type, :native_id, :deployment_id) ON CONFLICT DO NOTHING"
+        ),
+        dict(values),
     )
