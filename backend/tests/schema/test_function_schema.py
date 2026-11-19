@@ -257,6 +257,17 @@ SECURITY_DEFINER_ALLOWLIST: dict[str, str] = {
         "organization; otherwise no row, never a name, status or reason. The caller then sets "
         "app.tenant_id to the returned organization with no principal."
     ),
+    "shifde.delivery_lease_job(uuid, uuid, text[])": (
+        "delivery_0003 (B-2669, B-2670): owned by shifde_owner, search_path pg_catalog, pg_temp, "
+        "every object schema-qualified, EXECUTE for shifde_app only, writes no app.* setting. "
+        "The only writer of the delivery_jobs lease columns (executor_id, lease_id, "
+        "lease_request_id, fence, attempts), on which shifde_app holds no grant. The organization "
+        "comes only from current_tenant_id() (no argument names one); it raises 42501 without "
+        "one or when p_executor_id is not an active executor of it. Returns only the lease "
+        "(job_id, lease_id, fence, lease_until) of at most one job of that organization: the job "
+        "already leased to that executor under p_request_id while unexpired, or one due queued "
+        "job of p_kinds taken FOR UPDATE SKIP LOCKED; otherwise no row."
+    ),
 }
 
 _CONTEXT = {"provolatile": "s", "lang": "sql", "rettype": None}

@@ -65,6 +65,13 @@ DELIVERY = {
     ("POST", EXECUTOR_CREDENTIAL + "/revoke"),
     # the executor gateway (design 5, B-2664): executor tokens only, no user session
     ("GET", "/api/executor/v1/whoami"),
+    # the job queue (B-2669): lease, then per-job calls under the lease proof
+    ("POST", "/api/executor/v1/lease"),
+    ("POST", "/api/executor/v1/jobs/{job_id}/heartbeat"),
+    ("GET", "/api/executor/v1/jobs/{job_id}/artifact"),
+    ("POST", "/api/executor/v1/jobs/{job_id}/credential-grant"),
+    ("POST", "/api/executor/v1/jobs/{job_id}/checkpoint"),
+    ("POST", "/api/executor/v1/jobs/{job_id}/result"),
 }
 
 
