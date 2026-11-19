@@ -487,6 +487,30 @@ ROUTES: dict[Op, tuple[str, str]] = {
         PUBLIC,
         "executor credential, no user session; its own organization only",
     ),
+    ("POST", "/api/executor/v1/lease"): (
+        PUBLIC,
+        "executor credential, no user session; its own organization only",
+    ),
+    ("POST", "/api/executor/v1/jobs/{job_id}/heartbeat"): (
+        PUBLIC,
+        "executor credential, no user session; its own organization only",
+    ),
+    ("GET", "/api/executor/v1/jobs/{job_id}/artifact"): (
+        PUBLIC,
+        "executor credential, no user session; its own organization only",
+    ),
+    ("POST", "/api/executor/v1/jobs/{job_id}/credential-grant"): (
+        PUBLIC,
+        "executor credential, no user session; its own organization only",
+    ),
+    ("POST", "/api/executor/v1/jobs/{job_id}/checkpoint"): (
+        PUBLIC,
+        "executor credential, no user session; its own organization only",
+    ),
+    ("POST", "/api/executor/v1/jobs/{job_id}/result"): (
+        PUBLIC,
+        "executor credential, no user session; its own organization only",
+    ),
     # ------------------------------------------------------------------ models
     ("GET", "/api/v1/orgs/{org}/model-allowlists"): (SCOPED, "models"),
     ("PUT", "/api/v1/orgs/{org}/model-allowlists"): (SCOPED, "models"),
