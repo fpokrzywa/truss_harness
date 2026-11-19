@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { endpoints } from '@/lib/api/endpoints';
 import type { Approval, ApprovalDecision, ApprovalSummary } from '@/lib/api/operate-types';
@@ -16,6 +16,7 @@ import {
   secondsUntil,
 } from '@/lib/run-utils';
 import { orgHref } from '@/lib/scope';
+import { useNow } from '@/lib/use-now';
 import {
   ActionError,
   Badge,
@@ -166,15 +167,6 @@ function ApprovalRow({
       </button>
     </li>
   );
-}
-
-function useNow(): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
-  return now;
 }
 
 export function ApprovalDetail({ org, id }: { org: string; id: string }) {
