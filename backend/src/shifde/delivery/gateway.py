@@ -5,7 +5,8 @@ A job is leased only through the `shifde.delivery_lease_job` definer (the app ho
 the lease columns), after `shifde.delivery_sweep_lost_jobs` has settled the organization's
 expired leases: an `apply` job is never re-queued (it becomes `lost`, with an unknown outcome when
 its deployment journal holds any step); other kinds are re-queued up to `max_attempts`. A
-`BEFORE UPDATE` trigger refuses reviving a lease without a new fence.
+`BEFORE UPDATE` trigger refuses reviving a lease without a new fence. `service.settle_plans` then
+fails the plans of lost plan jobs and expires sealed plans past `expires_at`.
 
 Every per-job call proves the current lease (`lease_id` and `fence`). A job of another
 organization, or one that does not exist, answers the same 404; a lease that is not the caller's
@@ -14,8 +15,9 @@ the SDK journal: intent before write, no changed input digest, no conflicting re
 changes nothing (the transaction is rolled back). Times are the database clock's.
 
 `JOB_KINDS` maps a job kind to its result model and an `on_result` hook run in the result's
-transaction (settled call 5). It is empty until the plan, apply, observe and verify handling
-arrives; a result for a kind without an entry is refused.
+transaction (settled call 5). Only `plan` is registered (`service.on_plan_result` seals or fails
+the plan); apply, observe and verify arrive later, and a result for a kind without an entry is
+refused. A leased `plan` job serves its plan's artifact (`artifact`).
 """
 
 from __future__ import annotations
@@ -41,10 +43,11 @@ from shifde.adapters.native.contracts import (
     LeasedJob,
     LeaseProof,
     LeaseRequest,
+    PlanJobResult,
 )
 from shifde.core.errors import AppError, NotFound, ValidationFailed
 from shifde.core.ids import uuid7
-from shifde.delivery import repository
+from shifde.delivery import repository, service
 from shifde.delivery.service import AuthenticatedExecutor
 
 Row = Mapping[str, Any]  # Any: SQLAlchemy RowMapping column values
@@ -61,7 +64,15 @@ class JobKindDefinition:
     on_result: Callable[[Session, Row, JobResultSubmission], None] | None = None
 
 
-JOB_KINDS: dict[str, JobKindDefinition] = {}
+JOB_KINDS: dict[str, JobKindDefinition] = {
+    "plan": JobKindDefinition(PlanJobResult, service.on_plan_result),
+}
+
+
+@dataclass(frozen=True)
+class Artifact:
+    content: bytes
+    digest: str
 
 
 class LeaseLost(AppError):
@@ -153,8 +164,10 @@ def _leased(
 
 
 def lease(session: Session, executor: AuthenticatedExecutor, body: LeaseRequest) -> JobLease | None:
-    """Sweep the organization's expired leases, then lease (or replay) one due job."""
+    """Sweep the organization's expired leases and settle its plans, then lease (or replay) one
+    due job; a leased `plan` job moves its plan to `planning`."""
     repository.sweep_lost_jobs(session)
+    service.settle_plans(session, executor.tenant_id)
     granted = repository.lease_job(session, executor.executor_id, body.request_id, body.kinds)
     if granted is None:
         session.commit()
@@ -162,6 +175,7 @@ def lease(session: Session, executor: AuthenticatedExecutor, body: LeaseRequest)
     row = repository.get_job(session, granted["job_id"], tenant_id=executor.tenant_id)
     if row is None:  # pragma: no cover - the definer just leased it in this organization
         raise NotFound("job not found")
+    service.start_planning(session, row)
     session.commit()
     return JobLease(
         job=LeasedJob(
@@ -192,10 +206,18 @@ def heartbeat(
 
 def artifact(
     session: Session, executor: AuthenticatedExecutor, job_id: UUID, proof: LeaseProof
-) -> None:
-    """No job kind has an artifact before `delivery_0004`."""
-    _leased(session, executor, job_id, proof)
-    raise ArtifactNotFound("the job has no artifact")
+) -> Artifact:
+    """The artifact of the job's plan (bytes and sha256 digest); a job without a plan has none."""
+    row = _leased(session, executor, job_id, proof)
+    found = (
+        repository.get_plan_artifact(session, row["plan_id"], tenant_id=executor.tenant_id)
+        if row["plan_id"] is not None
+        else None
+    )
+    if found is None:
+        raise ArtifactNotFound("the job has no artifact")
+    session.commit()
+    return Artifact(content=bytes(found["content"]), digest=found["digest"])
 
 
 def credential_grant(

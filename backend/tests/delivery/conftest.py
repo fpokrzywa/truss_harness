@@ -5,7 +5,7 @@ people.
 Targets, claims, executors and their credentials, jobs and journal rows, sign-ins and audit rows
 are removed before each test (`tests/conftest.py: clean_data`). The gateway tests register their
 own `gateway.JOB_KINDS` entries for `apply` (a write) and `observe` (read-only) through the
-`job_kinds` fixture; production code registers none yet. Every address is unique per test (`address()`), so no
+`job_kinds` fixture; production code registers only `plan`. Every address is unique per test (`address()`), so no
 test depends on another's claim.
 """
 
@@ -34,8 +34,11 @@ from tests.tenancy.routes import People, make_people
 __all__ = ["world"]
 
 for _table in (
+    "delivery_approvals",
     "delivery_journal",
     "delivery_jobs",
+    "delivery_plans",
+    "delivery_artifacts",
     "delivery_executor_credentials",
     "delivery_executors",
     "delivery_targets",

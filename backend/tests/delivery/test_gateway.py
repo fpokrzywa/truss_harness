@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
+from shifde.adapters.native.contracts import PlanJobResult
 from shifde.core.clock import utcnow
 from shifde.core.db import Database
 from shifde.core.errors import Conflict
@@ -252,7 +253,7 @@ def test_credential_grant_without_a_target(
 
 
 # ------------------------------------------------------------------ artifact
-def test_artifact_is_not_found_under_a_valid_lease(
+def test_a_job_without_a_plan_has_no_artifact_under_a_valid_lease(
     client: TestClient, executor_a: ExecutorSide, app_db: Database
 ) -> None:
     job = enqueue(app_db, executor_a.tenant, "plan")
@@ -337,7 +338,8 @@ def test_a_failed_result(
 def test_a_result_for_an_unregistered_kind_is_refused(
     client: TestClient, executor_a: ExecutorSide, app_db: Database, owner_db: Database
 ) -> None:
-    assert gateway.JOB_KINDS == {}  # production code registers no kind yet
+    assert set(gateway.JOB_KINDS) == {"plan"}  # production code registers only `plan`
+    assert gateway.JOB_KINDS["plan"].result_model is PlanJobResult
     job = enqueue(app_db, executor_a.tenant, "observe")
     leased = _leased(lease(client, executor_a.token))
     r = _post(

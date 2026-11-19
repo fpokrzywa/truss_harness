@@ -386,3 +386,12 @@ class JobResultSubmission(LeaseProof):
 class JobResultAck(Model):
     job_id: UUID
     status: Literal["done"]
+
+
+class PlanJobResult(Model):
+    """The value of a succeeded `plan` job: what the executor found and would change."""
+
+    steps: list[PlanStep]
+    snapshot: EnvironmentSnapshot
+    adapter_version: str = Field(min_length=1, max_length=64)
+    toolchain_digest: Digest

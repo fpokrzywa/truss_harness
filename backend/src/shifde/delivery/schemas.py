@@ -2,7 +2,7 @@
 DECISIONS B-2501, B-2664).
 
 `TargetOut` never carries the claim id or the address key: the claim is the organization's
-private bookkeeping of the one-platform rule.
+private bookkeeping of the one-platform rule. `PlanOut` never carries the artifact's content.
 """
 
 from __future__ import annotations
@@ -12,6 +12,8 @@ from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from shifde.adapters.native.contracts import EnvironmentSnapshot, PlanStep
 
 Strict = ConfigDict(extra="forbid")
 Environment = Literal["dev", "test", "prod"]
@@ -98,3 +100,61 @@ class ExecutorWhoami(BaseModel):
     status: str
     version: str | None
     last_seen_at: datetime | None
+
+
+# ====================================================================== plans (B-2675..B-2679)
+DIGEST = r"^[a-f0-9]{64}$"
+
+
+class PlanCreate(BaseModel):
+    """Settled call 17: the target, the application's slug and its display name."""
+
+    model_config = Strict
+    target_id: UUID
+    application_key: str = Field(pattern=r"^[a-z][a-z0-9-]{0,62}$")
+    display_name: str = Field(min_length=1, max_length=200)
+
+
+class PlanApprove(BaseModel):
+    """The approver quotes the sealed digest they reviewed."""
+
+    model_config = Strict
+    plan_digest: str = Field(pattern=DIGEST)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class PlanReject(BaseModel):
+    model_config = Strict
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class PlanApprovalOut(BaseModel):
+    decision: Literal["approve", "reject"]
+    decided_by: UUID
+    decided_at: datetime
+    note: str | None
+
+
+class PlanOut(BaseModel):
+    id: UUID
+    target_id: UUID
+    application_key: str
+    display_name: str
+    status: Literal[
+        "requested", "planning", "sealed", "approved", "rejected", "expired", "plan_failed"
+    ]
+    status_reason: str | None
+    requested_by: UUID
+    artifact_id: UUID
+    artifact_digest: str
+    target_revision: int
+    steps: list[PlanStep] | None
+    snapshot: EnvironmentSnapshot | None
+    adapter_version: str | None
+    toolchain_digest: str | None
+    digest: str | None
+    sealed_at: datetime | None
+    expires_at: datetime | None
+    created_at: datetime
+    updated_at: datetime | None
+    approval: PlanApprovalOut | None

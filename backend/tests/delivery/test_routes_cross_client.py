@@ -1,30 +1,35 @@
-"""Delivery target and executor routes, client A against client B (plan recipe step 5, B-1019,
-B-2664).
+"""Delivery target, executor and plan routes, client A against client B (plan recipe step 5,
+B-1019, B-2664, B-2673, B-2675..B-2679).
 
 Every route of `delivery.api.router` has a test here (`ROUTE_TESTS`, matched against the router):
-the caller first succeeds on their own object, then asks for B's target, executor or credential
+the caller first reaches their own object, then asks for B's target, executor, credential or plan
 under A's organization and gets exactly the answer an id that does not exist gets (404, same body),
 and finds B's rows absent from A's lists. B's slug in the path gives A the unknown-organization
 404. An executor token answers for its own organization's executor only, also when two
-organizations' credentials share a prefix.
+organizations' credentials share a prefix. B's job cannot name A's plan (`fk_delivery_jobs__plan`,
+B-2673), and B's executor cannot fetch A's plan artifact.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any  # Any: target and executor rows, JSON bodies
+from typing import Any  # Any: target, executor and plan rows, JSON bodies
+from uuid import UUID
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.delivery import api as delivery_api
+from shifde.delivery import gateway
 from shifde.identity.apikeys import hash_key
 from tests.connections.routes import as_user, org
+from tests.delivery.conftest import make_executor
 from tests.delivery.routes import (
     WHOAMI,
     address,
@@ -32,11 +37,16 @@ from tests.delivery.routes import (
     create_executor,
     executors,
     issue,
+    job_url,
+    lease_plan,
+    plans,
+    proof,
     register,
+    request_plan,
     target_body,
     targets,
 )
-from tests.tenancy.conftest import World
+from tests.tenancy.conftest import World, app_session
 from tests.tenancy.routes import People, ws_slug
 
 _VARYING = {"instance", "request_id"}
@@ -88,6 +98,7 @@ def _b_state(owner_db: Database, two: Two) -> tuple[Any, ...]:
 # ------------------------------------------------------------------ route table
 EXECUTORS = "/api/v1/orgs/{org}/delivery/executors"
 CREDENTIAL = EXECUTORS + "/{executor_id}/credentials/{credential_id}"
+PLANS = "/api/v1/orgs/{org}/delivery/plans"
 ROUTE_TESTS = {
     ("POST", "/api/v1/orgs/{org}/delivery/targets"): "test_bs_organization_is_unknown_to_a",
     ("GET", "/api/v1/orgs/{org}/delivery/targets"): "test_a_lists_only_its_own_rows",
@@ -103,6 +114,11 @@ ROUTE_TESTS = {
     ("POST", EXECUTORS + "/{executor_id}/credentials"): "test_a_cannot_reach_bs_executor",
     ("POST", CREDENTIAL + "/rotate"): "test_a_cannot_reach_bs_executor",
     ("POST", CREDENTIAL + "/revoke"): "test_a_cannot_reach_bs_executor",
+    ("POST", PLANS): "test_a_cannot_plan_on_bs_target",
+    ("GET", PLANS): "test_a_lists_only_its_own_plans",
+    ("GET", PLANS + "/{plan_id}"): "test_a_cannot_reach_bs_plan",
+    ("POST", PLANS + "/{plan_id}/approve"): "test_a_cannot_reach_bs_plan",
+    ("POST", PLANS + "/{plan_id}/reject"): "test_a_cannot_reach_bs_plan",
 }
 
 
@@ -338,3 +354,166 @@ def test_a_shared_prefix_resolves_per_organization(
     for executor, token in tokens.items():
         r = client.get(WHOAMI, headers=bearer(token))
         assert r.status_code == 200 and r.json()["executor_id"] == executor, r.text
+
+
+# ------------------------------------------------------------------ plans
+@dataclass(frozen=True)
+class PlanSide:
+    slug: str
+    email: str
+    tenant: UUID
+    target: str
+    plan: str
+
+
+@dataclass(frozen=True)
+class TwoPlans:
+    a: PlanSide
+    b: PlanSide
+
+
+@pytest.fixture
+def two_plans(client: TestClient, world: World, two: Two) -> TwoPlans:
+    sides = []
+    for side, c in ((two.b, world.b), (two.a, world.a)):
+        made = request_plan(client, as_user(client, side.email), side.slug, side.target)
+        sides.append(PlanSide(side.slug, side.email, c.tenant, side.target, made["id"]))
+    client.cookies.clear()
+    return TwoPlans(sides[1], sides[0])
+
+
+def _plan_body(target: str) -> dict[str, str]:
+    return {"target_id": target, "application_key": "intruder", "display_name": "Intruder"}
+
+
+def _b_plan_state(owner_db: Database, two: TwoPlans) -> tuple[Any, ...]:
+    with owner_db.session() as o:
+        plan = o.execute(
+            text(
+                "SELECT status, status_reason, digest, sealed_at, updated_at "
+                "FROM shifde.delivery_plans WHERE id = :i"
+            ),
+            {"i": two.b.plan},
+        ).one()
+        counts = o.execute(
+            text(
+                "SELECT (SELECT count(*) FROM shifde.delivery_approvals WHERE tenant_id = :t), "
+                "(SELECT count(*) FROM shifde.delivery_plans WHERE tenant_id = :t), "
+                "(SELECT count(*) FROM shifde.delivery_jobs WHERE tenant_id = :t), "
+                "(SELECT count(*) FROM shifde.delivery_artifacts WHERE tenant_id = :t)"
+            ),
+            {"t": two.b.tenant},
+        ).one()
+    return tuple(plan), tuple(counts)
+
+
+def test_a_cannot_reach_bs_plan(
+    client: TestClient, owner_db: Database, two_plans: TwoPlans
+) -> None:
+    two = two_plans
+    A, h = plans(two.a.slug), as_user(client, two.a.email)
+    before = _b_plan_state(owner_db, two)
+    nobody = str(uuid7())
+    digest = {"plan_digest": "a" * 64}
+    # own plan first: read, and the requester's own decision refused (403, not 404)
+    for method, suffix, ok, payload in (
+        ("GET", "", 200, None),
+        ("POST", "/approve", 403, digest),
+        ("POST", "/reject", 403, {}),
+    ):
+        r = client.request(method, f"{A}/{two.a.plan}{suffix}", headers=h, json=payload)
+        assert r.status_code == ok, (method, suffix, r.text)
+        _same_404(
+            client.request(method, f"{A}/{two.b.plan}{suffix}", headers=h, json=payload),
+            client.request(method, f"{A}/{nobody}{suffix}", headers=h, json=payload),
+        )
+    # B's slug in the path: the unknown-organization 404
+    unknown = org(f"no-such-{uuid7().hex[-12:]}")
+    for method, path, payload in (
+        ("GET", "/delivery/plans", None),
+        ("POST", "/delivery/plans", _plan_body(two.b.target)),
+        ("GET", f"/delivery/plans/{two.b.plan}", None),
+        ("POST", f"/delivery/plans/{two.b.plan}/approve", digest),
+        ("POST", f"/delivery/plans/{two.b.plan}/reject", {}),
+    ):
+        _same_404(
+            client.request(method, f"{org(two.b.slug)}{path}", headers=h, json=payload),
+            client.request(method, f"{unknown}{path}", headers=h, json=payload),
+        )
+    assert _b_plan_state(owner_db, two) == before
+
+
+def test_a_cannot_plan_on_bs_target(
+    client: TestClient, owner_db: Database, two_plans: TwoPlans
+) -> None:
+    two = two_plans
+    h = as_user(client, two.a.email)
+    request_plan(client, h, two.a.slug, two.a.target)  # own target first
+    before = _b_plan_state(owner_db, two)
+    _same_404(
+        client.post(plans(two.a.slug), json=_plan_body(two.b.target), headers=h),
+        client.post(plans(two.a.slug), json=_plan_body(str(uuid7())), headers=h),
+    )
+    assert _b_plan_state(owner_db, two) == before
+    with owner_db.session() as o:
+        n = o.execute(
+            text("SELECT count(*) FROM shifde.delivery_plans WHERE target_id = :t"),
+            {"t": two.b.target},
+        ).scalar_one()
+    assert n == 1  # B's own plan only
+
+
+def test_a_lists_only_its_own_plans(client: TestClient, two_plans: TwoPlans) -> None:
+    two = two_plans
+    for me, other in ((two.a, two.b), (two.b, two.a)):
+        h = as_user(client, me.email)
+        listed = client.get(f"{plans(me.slug)}?limit=200", headers=h)
+        assert listed.status_code == 200, listed.text
+        ids = [p["id"] for p in listed.json()["items"]]
+        assert ids == [me.plan] and other.plan not in ids
+        by_target = client.get(plans(me.slug), params={"target": other.target}, headers=h)
+        assert by_target.status_code == 200 and by_target.json()["items"] == []
+
+
+def test_bs_job_cannot_name_as_plan(
+    owner_db: Database, app_db: Database, two_plans: TwoPlans
+) -> None:
+    """B-2673: the composite key `fk_delivery_jobs__plan` refuses B's job naming A's plan."""
+    two = two_plans
+
+    def a_plan() -> tuple[Any, ...]:
+        with owner_db.session() as o:
+            row = o.execute(
+                text("SELECT * FROM shifde.delivery_plans WHERE id = :i"), {"i": two.a.plan}
+            ).one()
+        return tuple(row)
+
+    before = a_plan()
+    with app_session(app_db, two.b.tenant) as s, pytest.raises(IntegrityError) as exc:
+        gateway.enqueue_job(s, tenant_id=two.b.tenant, kind="plan", plan_id=UUID(two.a.plan))
+    assert "fk_delivery_jobs__plan" in str(exc.value)
+    assert a_plan() == before
+    with owner_db.session() as o:
+        jobs = o.execute(
+            text("SELECT tenant_id FROM shifde.delivery_jobs WHERE plan_id = :i"),
+            {"i": two.a.plan},
+        ).all()
+    assert [j.tenant_id for j in jobs] == [two.a.tenant]  # only A's own plan job
+
+
+def test_bs_executor_cannot_fetch_as_plan_artifact(
+    client: TestClient, world: World, people: People, two_plans: TwoPlans
+) -> None:
+    two = two_plans
+    a = make_executor(client, world.a, people.owner_a)
+    b = make_executor(client, world.b, people.owner_b)
+    leased = lease_plan(client, a.token)
+    assert leased["job"]["plan_id"] == two.a.plan
+    url = job_url(leased["job"]["id"], "artifact")
+    assert client.get(url, params=proof(leased), headers=bearer(a.token)).status_code == 200
+    _same_404(
+        client.get(url, params=proof(leased), headers=bearer(b.token)),
+        client.get(job_url(uuid7(), "artifact"), params=proof(leased), headers=bearer(b.token)),
+    )
+    # B's own lease returns B's plan job, never A's
+    assert lease_plan(client, b.token)["job"]["plan_id"] == two.b.plan

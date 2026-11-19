@@ -63,6 +63,12 @@ DELIVERY = {
     ("POST", "/api/v1/orgs/{org}/delivery/executors/{executor_id}/credentials"),
     ("POST", EXECUTOR_CREDENTIAL + "/rotate"),
     ("POST", EXECUTOR_CREDENTIAL + "/revoke"),
+    # plans and their second-person decision (B-2675..B-2679)
+    ("GET", "/api/v1/orgs/{org}/delivery/plans"),
+    ("POST", "/api/v1/orgs/{org}/delivery/plans"),
+    ("GET", "/api/v1/orgs/{org}/delivery/plans/{plan_id}"),
+    ("POST", "/api/v1/orgs/{org}/delivery/plans/{plan_id}/approve"),
+    ("POST", "/api/v1/orgs/{org}/delivery/plans/{plan_id}/reject"),
     # the executor gateway (design 5, B-2664): executor tokens only, no user session
     ("GET", "/api/executor/v1/whoami"),
     # the job queue (B-2669): lease, then per-job calls under the lease proof
