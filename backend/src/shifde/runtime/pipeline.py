@@ -18,6 +18,11 @@ journal (one `pipeline_node` step per node attempt) and whatever is ready is exe
   step row (with its idempotency key) is committed BEFORE the call, so a worker that died around
   the call leaves a started-without-outcome step that recovery turns into an `indeterminate`
   approval (an operator decides: mark succeeded / retry / fail) - never a blind second send.
+  Before the write-ahead step the node consults the run's active `approval_rule` policies (F-10:
+  a `write_non_idempotent` data export with the node's optional `target_environment`); a matching
+  rule opens an `approval_rule` approval (an `approval` step, never a `pipeline_node` one) and the
+  run waits; a rejection ends the run. A rule only adds an approval: a granted upstream approval
+  node does not waive it, and an operator-authorized retry of an indeterminate write skips it.
 * Recovery: a replacement worker rebuilds everything from the journal; succeeded nodes are never
   executed again.
 * Untrusted data: node outputs (database rows, API bodies, model text) only reach models inside
@@ -61,7 +66,7 @@ from shifde.core import safeexpr
 from shifde.core.clock import utcnow
 from shifde.core.errors import AppError, NotFound
 from shifde.core.redaction import scrub, scrub_text
-from shifde.runtime import gate, ontology_exec, state, steps
+from shifde.runtime import gate, ontology_exec, policies, state, steps
 from shifde.runtime import repository as repo
 from shifde.runtime.context import RunContext
 from shifde.runtime.pipeline_ops import (
@@ -1139,6 +1144,7 @@ class PipelineRunner:
         call_ref = f"node:{nid}"
         rows = self._node_steps(nid)
         last = rows[-1] if rows else None
+        retry_authorized = False
         if last is not None and last["status"] in ("running", "indeterminate"):
             se = int(last["attempt"]) - 1  # the idempotency epoch the step belongs to
             if last["status"] == "running":
@@ -1148,6 +1154,7 @@ class PipelineRunner:
                 )
             if self._resolve_indeterminate(nid, last, se):
                 return
+            retry_authorized = True  # an operator's decision is already attached (as run_tool)
         epoch = self._epoch(call_ref)
         key = repo.sha256_hex(str(ctx.run_id), call_ref, str(epoch))
         connection_id = UUID(str(cfg["connection_id"]))
@@ -1179,6 +1186,9 @@ class PipelineRunner:
             self._finish(step, "failed", error_class=cls, message=msg)
             self._on_failure(nid, cls, msg)
             return
+        if not retry_authorized:
+            # governance approval rules can only ADD an approval (F-10; never waive one)
+            self._rule_approval(nid, epoch, str(request["method"]).upper())
         # write-ahead: committed BEFORE the call
         step = self._open_step(nid, attempt=epoch + 1, idempotency_key=key)
         try:
@@ -1196,6 +1206,120 @@ class PipelineRunner:
             self._on_failure(nid, exc.error_class, exc.message)
             return
         self._finish(step, "succeeded", output)
+
+    def _rule_approval(self, nid: str, epoch: int, method: str) -> None:
+        """The `approval_rule` approval a write node needs: returns when none applies or it was
+        granted; raises Waiting while it is pending and RunFailed when it was not granted. Nothing
+        is sent and no write-ahead step exists until it returns."""
+        ctx = self.ctx
+        appr = repo.find_approval(
+            ctx.session, ctx.tenant_id, ctx.run_id, f"node:{nid}", "approval_rule", epoch
+        )
+        if appr is None:
+            env = self.nodes[nid]["config"].get("target_environment")
+            rule = policies.write_node_approval(ctx, env)
+            if rule is None:
+                return
+            with ctx.txn():  # one transaction: no approval without its step, event and decision
+                self._insert_rule_approval(nid, epoch, method, env, rule)
+            raise state.Waiting("approval")
+        if appr["status"] == "pending":
+            raise state.Waiting("approval")
+        approved = appr["status"] == "approved"
+        with ctx.txn():
+            self._close_rule_approval_steps(nid, approved)
+        if approved:
+            return
+        step = self._open_step(nid, attempt=epoch + 1)
+        self._finish(
+            step,
+            "failed",
+            error_class=state.APPROVAL_REJECTED,
+            message="the approval was not granted",
+        )
+        # a rejection ends the run whatever on_failure says, as for an approval node
+        self._cancel_children()
+        raise state.RunFailed(
+            state.APPROVAL_REJECTED, f"node {nid} failed: the approval was not granted"
+        )
+
+    def _insert_rule_approval(
+        self, nid: str, epoch: int, method: str, env: str | None, rule: policies.ApprovalRule
+    ) -> None:
+        """In the caller's transaction. The step is an `approval` step, never a `pipeline_node`
+        one: write recovery reads a running `pipeline_node` step as a started write."""
+        ctx = self.ctx
+        node = self.nodes[nid]
+        seq = repo.next_seq(ctx.session, ctx.tenant_id, ctx.run_id)
+        step = repo.insert_step(
+            ctx.session,
+            {
+                "tenant_id": ctx.tenant_id,
+                "run_id": ctx.run_id,
+                "seq": seq,
+                "attempt": 1 + epoch,
+                "kind": "approval",
+                "name": f"approval:{node['type']}:{nid}",
+                "node_id": nid,
+                "status": "running",
+            },
+        )
+        approval = repo.insert_approval(
+            ctx.session,
+            {
+                "tenant_id": ctx.tenant_id,
+                "run_id": ctx.run_id,
+                "workspace_id": self.stored["workspace_id"],
+                "project_id": self.stored["project_id"],
+                "step_seq": seq,
+                "call_ref": f"node:{nid}",
+                "epoch": epoch,
+                "reason": "approval_rule",
+                "side_effect_class": "write_non_idempotent",
+                # the node, not the payload: exported data stays out of the approvals list
+                "arguments": scrub(
+                    {"node": nid, "type": node["type"], "method": method, "target_environment": env}
+                ),
+                "context_summary": {"node": nid},
+                "requested_by": self.stored["initiated_by_principal_id"],
+                "expires_at": utcnow() + timedelta(hours=ctx.settings.approval_expiry_hours),
+                "required_permission": rule.approver_permission,
+            },
+        )
+        repo.add_event(
+            ctx.session,
+            self.stored,
+            "approval_requested",
+            step_id=step["id"],
+            details={"approval_id": str(approval["id"]), "reason": "approval_rule"},
+        )
+        ctx.audit(
+            "approval.requested",
+            {
+                "approval_id": str(approval["id"]),
+                "reason": "approval_rule",
+                "node": nid,
+                "side_effect_class": "write_non_idempotent",
+                "policy_ids": [str(p) for p in rule.policy_ids],
+            },
+            commit=False,
+        )
+        policies.record_rule_decision(ctx, "approval_required", rule.policy_ids, "approval_rule")
+
+    def _close_rule_approval_steps(self, nid: str, ok: bool) -> None:
+        """In the caller's transaction."""
+        ctx = self.ctx
+        for s in repo.list_steps(ctx.session, ctx.tenant_id, ctx.run_id):
+            if s["kind"] == "approval" and s["node_id"] == nid and s["status"] == "running":
+                extra: dict[str, Any] = {} if ok else {"error_class": state.APPROVAL_REJECTED}
+                repo.update_step(
+                    ctx.session,
+                    ctx.tenant_id,
+                    s["id"],
+                    status="succeeded" if ok else "failed",
+                    finished_at=utcnow(),
+                    **extra,
+                )
 
     def _park_indeterminate(
         self, nid: str, step: Mapping[str, Any], epoch: int, error_class: str, message: str
