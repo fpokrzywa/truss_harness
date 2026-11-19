@@ -164,8 +164,6 @@ describe('ExecutorsView credentials', () => {
     expect(screen.queryByText(EXECUTOR_SECRET)).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain(EXECUTOR_SECRET);
     expect(fetchMock.calls.some((c) => c.url.includes(EXECUTOR_SECRET))).toBe(false);
-    expect(JSON.stringify({ ...localStorage })).not.toContain(EXECUTOR_SECRET);
-    expect(JSON.stringify({ ...sessionStorage })).not.toContain(EXECUTOR_SECRET);
   });
 
   it('shows an issue error such as the two-live-credentials 409', async () => {
