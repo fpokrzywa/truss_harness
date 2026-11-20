@@ -34,6 +34,7 @@ Every row is read and written for the caller's resolved client only (`TenantScop
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from typing import Any  # Any: rows and JSON documents
@@ -181,7 +182,8 @@ def _score_values(
     session: Session, tenant_id: UUID, row: Mapping[str, Any]
 ) -> dict[str, Any] | None:
     """The result columns of a running evaluation whose case runs have all ended; None while one
-    has not."""
+    has not. Every regex assertion of the evaluation runs in one bounded child
+    (`assertions.evaluate_cases`)."""
     dataset = repository.get_dataset(session, row["dataset_id"], tenant_id=tenant_id)
     assert dataset is not None  # the composite key restricts its deletion
     cases = {c["case_id"]: c for c in dataset["cases"]}
@@ -191,7 +193,6 @@ def _score_values(
         if outcome is None or outcome.status not in state.TERMINAL:
             return None
         outcomes.append((item, outcome))
-    results: list[dict[str, Any]] = []
     for item, outcome in outcomes:
         case_id = item["case_id"]
         reason = None
@@ -203,24 +204,27 @@ def _score_values(
             reason = f"case {case_id}: {COST_UNKNOWN}"
         if reason is not None:
             return {"status": "error", "status_reason": reason, "results": None}
-        checks = assertions.evaluate(cases[case_id]["assertions"], outcome.output)
+    checked = assertions.evaluate_cases(
+        [(cases[item["case_id"]]["assertions"], outcome.output) for item, outcome in outcomes]
+    )
+    results: list[dict[str, Any]] = []
+    for (item, outcome), checks in zip(outcomes, checked, strict=True):
         latency = 0
         if outcome.started_at is not None and outcome.finished_at is not None:
             latency = int((outcome.finished_at - outcome.started_at).total_seconds() * 1000)
         results.append(
             {
-                "case_id": case_id,
+                "case_id": item["case_id"],
                 "run_id": item["run_id"],
                 "passed": all(c["passed"] for c in checks),
                 "assertions": checks,
                 "latency_ms": latency,
                 "cost_usd": scoring.decimal_text(outcome.cost),
-                "cost": outcome.cost,
             }
         )
     accuracy = scoring.accuracy(sum(1 for r in results if r["passed"]), len(results))
     p95 = scoring.p95_nearest_rank([r["latency_ms"] for r in results])
-    total = sum((r.pop("cost") for r in results), Decimal(0))
+    total = sum((outcome.cost for _, outcome in outcomes), Decimal(0))
     return {
         "status": scoring.verdict(accuracy, p95, total, row["thresholds"]),
         "accuracy": accuracy,
@@ -233,16 +237,21 @@ def _score_values(
 def score(
     session: Session, ctx: RequestContext, release: Mapping[str, Any], run_id: UUID
 ) -> Mapping[str, Any] | None:
-    """Score the running evaluation `run_id` of `release` once its case runs have all ended:
-    under the row lock, write its result columns and `finished_at` (no commit). The row as it
-    stands afterwards; None for an unknown id."""
+    """Score the running evaluation `run_id` of `release` once its case runs have all ended
+    (no commit). The scores are computed without the row lock, so concurrent readers do not
+    queue behind the assertions; the row is then locked and written only if it is still running
+    with the same case runs (else a concurrent reader scored it first). The row as it stands
+    afterwards; None for an unknown id."""
     tenant_id = release["tenant_id"]
-    row = repository.get_run(session, run_id, tenant_id=tenant_id, lock=True)
+    row = repository.get_run(session, run_id, tenant_id=tenant_id)
     if row is None or row["status"] != "running":
         return row
     values = _score_values(session, tenant_id, row)
     if values is None:
         return row
+    locked = repository.get_run(session, run_id, tenant_id=tenant_id, lock=True)
+    if locked is None or locked["status"] != "running" or locked["case_runs"] != row["case_runs"]:
+        return locked
     _finish(session, ctx, release, run_id, values)
     return repository.get_run(session, run_id, tenant_id=tenant_id)
 
@@ -472,8 +481,16 @@ class EvaluationService:
             limit=limit + 1,
         )
         page, more = paginate(rows, limit)
+        # one list request scores while its regex budget lasts; a running row past it stays
+        # running here and is scored by a later read
+        deadline = time.monotonic() + assertions.REGEX_BUDGET_S
+        items = []
+        for r in page:
+            if time.monotonic() < deadline:
+                r = self._scored(release, r)
+            items.append(_run_out(r))
         return Page(
-            items=[_run_out(self._scored(release, r)) for r in page],
+            items=items,
             next_cursor=encode_cursor(page[-1]["id"]) if more and page else None,
         )
 

@@ -52,6 +52,28 @@ def test_a_catastrophic_regex_times_out() -> None:
     assert elapsed < 2.5, elapsed
 
 
+def test_a_dataset_of_catastrophic_regexes_is_scored_within_the_budget() -> None:
+    """Security review 034-1 finding 1: 200 cases x 50 catastrophic patterns (the most a dataset
+    holds) run in one bounded pass: every one fails "regex timed out" within the 10 s budget
+    plus the child's start and stop, not 10,000 x 1 s."""
+    catastrophic = [{"id": f"r{i}", "kind": "regex", "value": "(a+)+$"} for i in range(50)]
+    cases = [(catastrophic, "a" * 40 + "b") for _ in range(200)]
+    started = time.monotonic()
+    scored = assertions.evaluate_cases(cases)
+    elapsed = time.monotonic() - started
+    assert elapsed < assertions.REGEX_BUDGET_S + 5, elapsed
+    assert len(scored) == 200 and all(len(c) == 50 for c in scored)
+    assert {r["reason"] for c in scored for r in c} == {"regex timed out"}
+
+
+def test_a_pattern_after_a_timed_out_one_is_still_answered() -> None:
+    """A stuck pattern costs its own second; a fresh child answers the patterns after it."""
+    found = assertions.regex_full_matches(
+        [("a+", "aaa"), ("(a+)+$", "a" * 40 + "b"), ("b+", "bbb"), ("b+", "abc")]
+    )
+    assert found == [True, None, True, False]
+
+
 def test_the_regex_child_gets_text_that_is_not_ascii() -> None:
     assert _one("regex", "café \\d+", "café 42")["passed"] is True
 
