@@ -26,6 +26,7 @@ from __future__ import annotations
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any  # Any: rows / provider JSON
 from uuid import UUID
 
@@ -520,10 +521,12 @@ class ModelService:
         is_test: bool,
         agent_id: UUID | None = None,
         run_id: UUID | None = None,
-    ) -> None:
+    ) -> UUID | None:
         """Budgets and token quotas BEFORE a direct invocation (outside a run): the tenant /
-        workspace / project / principal budgets covering the caller. There is no run to hang a
-        hold on, so this is a check against settled usage + live run holds, not a reservation.
+        workspace / project / agent / principal budgets covering the caller. The call's tokens
+        (and estimated cost) are then held through `ledger.reservations` in the same transaction,
+        while the rule locks are held, keyed by a new invocation; the hold names every budget and
+        token quota it was checked against. Returns the hold's id, None when no rule applies.
         The output side is the `max_tokens` sent to the provider (carry_forward Item 9)."""
         scope = enforcement.BudgetScope(
             self.sc.tenant_id,
@@ -535,7 +538,7 @@ class ModelService:
             self.sc.principal.principal_id,
         )
         try:
-            enforcement.evaluate(
+            ev = enforcement.evaluate(
                 self._session,
                 scope,
                 estimate.call_hold_tokens(est_input, max_tokens),
@@ -578,6 +581,31 @@ class ModelService:
             )
             self._session.commit()
             raise BudgetExceeded(exc.message) from exc
+        budget_ids = [*ev.applicable, *ev.quota_ids]
+        if not budget_ids:
+            return None
+        return ledger.reservations.reserve_invocation(
+            self._session,
+            self.sc.tenant_id,
+            budget_ids,
+            ev.hold_tokens,
+            ev.est_cost if ev.est_cost is not None else Decimal(0),
+            ev.est_currency,
+        )
+
+    def _release_hold(self, hold: UUID | None) -> None:
+        """Drop a direct invocation's hold whose provider call was never sent (committed)."""
+        if hold is None:
+            return
+        if self._session.in_transaction() and not self._session.is_active:
+            self._session.rollback()
+        ledger.reservations.release(self._session, self.sc.tenant_id, hold)
+        self._session.commit()
+
+    def _settle_hold(self, hold: UUID | None, tokens: int, cost: Decimal | None) -> None:
+        """Replace a direct invocation's hold by its recorded usage (the caller commits)."""
+        if hold is not None:
+            ledger.reservations.settle(self._session, self.sc.tenant_id, hold, tokens, cost)
 
     def _usage_values(
         self,
@@ -611,14 +639,14 @@ class ModelService:
         reported: Any,  # Any: adapter usage (input_tokens / output_tokens, None = not reported)
         est_input: int,
         output: str,
-    ) -> None:
+    ) -> ledger.EventResult:
         """One usage event for a model call that answered (FR-COST-001), priced from the rate
         card in force; written in its own committed transaction straight after the provider
         answered when the service has the database (carry_forward Item 11), else in the
         caller's transaction."""
         est_output = estimate.estimate_output_tokens(output)
         if self.db is not None:
-            ledger.record_model_call_durably(
+            return ledger.record_model_call_durably(
                 self.db,
                 self.sc.tenant_id,
                 values,
@@ -626,8 +654,7 @@ class ModelService:
                 estimated_input=est_input,
                 estimated_output=est_output,
             )
-            return
-        ledger.record_model_call(
+        return ledger.record_model_call(
             self._session,
             values,
             reported=reported,
@@ -635,7 +662,7 @@ class ModelService:
             estimated_output=est_output,
         )
 
-    def _record_failure(self, values: Mapping[str, Any]) -> None:
+    def _record_failure(self, values: Mapping[str, Any]) -> ledger.EventResult:
         """A failed attempt: `status="failed"` with 0 counts, as SETH."""
         costed, provider_key, model_key = ledger.price_model_usage(
             self._session,
@@ -645,7 +672,7 @@ class ModelService:
                 input_tokens=0, output_tokens=0, calls=0, duration_ms=values["duration_ms"]
             ),
         )
-        ledger.record(
+        return ledger.record(
             self._session,
             {
                 **values,
@@ -1176,8 +1203,11 @@ class ModelService:
         max_tokens = body.max_tokens or min(reserve, model["max_output_tokens"] or reserve)
         if cap_to_model and model["max_output_tokens"]:
             max_tokens = min(max_tokens, int(model["max_output_tokens"]))
-        if record_usage:  # run calls are reserved by the Execution Gate instead
-            self._enforce_budgets(ref, model, est_input, max_tokens, is_test, agent_id, run_id)
+        hold: UUID | None = None  # run calls are reserved by the Execution Gate instead
+        if record_usage:
+            hold = self._enforce_budgets(
+                ref, model, est_input, max_tokens, is_test, agent_id, run_id
+            )
         lease: UUID | None = None
         deadline = self.runtime.settings.model_call_deadline_seconds
         if max_deadline is not None:
@@ -1197,26 +1227,35 @@ class ModelService:
                 limits.get("max_concurrency"),
                 ttl_seconds=deadline + 30,  # outlives the hard call deadline
             )
-            self._session.commit()  # counters / lease committed BEFORE the provider call
+            if hold is not None:  # the call may reach the provider from here: never freed
+                ledger.reservations.mark_provider_request(self._session, self.sc.tenant_id, hold)
+            # counters / lease (and the marked hold) committed BEFORE the provider call
+            self._session.commit()
         except ModelRateLimited:
             self._session.rollback()
             self._invoked(model, ref, run_id, {"reason": "rate_limited"}, outcome="denied")
             self._session.commit()
             raise
         try:
-            if provider["tenant_id"] is None:
-                adapter, ctx, cfg = self._shi_call(provider, model, ref, run_id, deadline)
-            else:
-                adapter, ctx, cfg = self._provider_call(provider, "model.invoke", deadline=deadline)
-            request = ChatRequest(
-                [ChatMessage(m.role, m.content) for m in body.messages], max_tokens
-            )
+            try:
+                if provider["tenant_id"] is None:
+                    adapter, ctx, cfg = self._shi_call(provider, model, ref, run_id, deadline)
+                else:
+                    adapter, ctx, cfg = self._provider_call(
+                        provider, "model.invoke", deadline=deadline
+                    )
+                request = ChatRequest(
+                    [ChatMessage(m.role, m.content) for m in body.messages], max_tokens
+                )
+            except Exception:
+                self._release_hold(hold)  # refused before anything was sent
+                raise
             try:
                 response = adapter.generate(ctx, cfg, model["model_key"], request)
             except AdapterFailure as exc:
                 latency = int((time.monotonic() - started) * 1000)
                 if record_usage:
-                    self._record_failure(
+                    failed = self._record_failure(
                         self._usage_values(
                             ref,
                             model_id,
@@ -1227,6 +1266,7 @@ class ModelService:
                             succeeded=False,
                         )
                     )
+                    self._settle_hold(hold, 0, failed.costed.amount)
                 self._invoked(
                     model,
                     ref,
@@ -1237,8 +1277,9 @@ class ModelService:
                 self._session.commit()
                 raise failure_to_error(exc) from exc
             latency = int((time.monotonic() - started) * 1000)
+            recorded: ledger.EventResult | None = None
             if record_usage:  # the usage row first, while nothing of this transaction is pending
-                self._record_success(
+                recorded = self._record_success(
                     self._usage_values(
                         ref, model_id, latency, usage_event_type, is_test, agent_id, succeeded=True
                     ),
@@ -1251,6 +1292,10 @@ class ModelService:
                 estimated_input=est_input,
                 estimated_output=estimate.estimate_output_tokens(response.output),
             )
+            if recorded is not None:
+                self._settle_hold(
+                    hold, used.input_tokens + used.output_tokens, recorded.costed.amount
+                )
             limiter.add_tokens(
                 self._session,
                 self.sc.tenant_id,
