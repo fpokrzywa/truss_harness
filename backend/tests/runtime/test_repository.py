@@ -220,6 +220,7 @@ CASES: dict[str, Case] = {
     "root_pipeline_id": lambda s, t, x: repo.root_pipeline_id(s, t, x.pipeline_run),
     "tree_classifications": lambda s, t, x: tuple(repo.tree_classifications(s, t, x.run)),
     "run_cost": lambda s, t, x: repo.run_cost(s, t, x.run, "USD"),
+    "family_cost": lambda s, t, x: repo.family_cost(s, t, x.run, "USD"),
     # an unknown principal is displayed as its id: the answer is "fell back to the id"
     "principal_display": lambda s, t, x: (
         repo.principal_display(s, t, "service_account", x.service_account) == str(x.service_account)
