@@ -7,13 +7,17 @@ A's organization (and project) and gets exactly the answer an id that does not e
 same body), and finds B's rows absent from A's lists. B's slug in the path gives A the
 unknown-organization 404. A version naming B's agent version or B's connection gets the same 422
 as an unknown id; a release binding B's Databricks connection or B's model provider gets the
-diagnostic an unknown id gets. B's rows never change. Within one client, a user bound only at
+diagnostic an unknown id gets. A version naming B's evaluation dataset gets the 422 an unknown
+dataset id gets, and sealing a version whose spec names B's dataset (written as the schema owner)
+gets the `evaluation` diagnostic an unknown id gets (isolation review 029, finding 3; B-2703).
+B's rows never change. Within one client, a user bound only at
 workspace W1 who names a W2 project's agent as a W1 solution's entrypoint gets the unknown-id 422
 too (isolation review 029-1, finding 5).
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any  # Any: database rows
 
@@ -23,8 +27,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from shifde.core.db import set_tenant
 from shifde.core.ids import uuid7
 from shifde.packaging import api as packaging_api
+from shifde.packaging.canonical import digest
 from tests._support.fullapp import World
 from tests._support.p3util import ADMIN, ADMIN_B, A, B
 from tests._support.p4util import agent_spec, art, prompt_spec, publish
@@ -82,7 +88,8 @@ def two(client: TestClient, world: World) -> Two:
         h = user_session(client, world.passwords, email)
         s = stack(h.client, h, org)
         sid = solution(h.client, h, f"solution-{org[-6:]}", org)["id"]
-        vid = new_version(h.client, h, sid, body_for(s.agent_v1, connection=s.connection), org)
+        body = body_for(s.agent_v1, connection=s.connection, dataset=s.dataset)
+        vid = new_version(h.client, h, sid, body, org)
         lake = databricks_connection(h.client, h, org=org)
         side = Side(h, s, sid, vid["id"], lake, "")
         sealed = seal(h.client, h, sid, vid["id"], side.bindings(), org)
@@ -226,7 +233,8 @@ def test_a_lists_only_its_own_rows(two: Two) -> None:
 def test_a_cannot_name_bs_build_or_connection(two: Two, owner_session: Session) -> None:
     h, url = two.a.h, f"{solutions(two.a.stack.org)}/{two.a.solution}/versions"
     a = two.a.stack
-    own = h.client.post(url, headers=h, json=body_for(a.agent_v1, connection=a.connection))
+    own_body = body_for(a.agent_v1, connection=a.connection, dataset=a.dataset)
+    own = h.client.post(url, headers=h, json=own_body)
     assert own.status_code == 201, own.text  # own objects first
     before = _b_state(owner_session, two)
     _same(
@@ -353,3 +361,76 @@ def test_a_w1_only_user_cannot_name_a_w2_agent(
     assert unknown[0] == 422, unknown
     for agent in agents:
         assert answer(agent) == unknown
+
+
+# ------------------------------------------------------------------ evaluation datasets (B-2703)
+def _dataset_row(owner: Session, dataset_id: str) -> tuple[Any, ...]:
+    row = owner.execute(
+        text("SELECT * FROM shifde.evaluation_datasets WHERE id = :d"), {"d": dataset_id}
+    ).one()
+    owner.rollback()
+    return tuple(row)
+
+
+def _version_naming(owner: Session, two: Two, dataset_id: str) -> str:
+    """A version of A's solution whose spec names `dataset_id`, written as the schema owner (the
+    service would refuse it)."""
+    a = two.a
+    spec = a.h.client.get(
+        f"{solutions(a.stack.org)}/{a.solution}/versions/{a.version}", headers=a.h
+    ).json()["spec"]
+    spec["evaluation"]["dataset_id"] = dataset_id
+    tenant = owner.execute(text("SELECT id FROM shifde.tenants WHERE slug = 'demo-a'")).scalar_one()
+    set_tenant(owner, tenant)
+    version_id = uuid7()
+    owner.execute(
+        text(
+            "INSERT INTO shifde.solution_versions (id, tenant_id, solution_id, version_no, "
+            "entrypoint_kind, entrypoint_version_id, spec, spec_hash, created_by) VALUES (:i, :t, "
+            ":s, (SELECT max(version_no) + 1 FROM shifde.solution_versions WHERE solution_id = :s), "
+            "'agent', :e, CAST(:spec AS jsonb), :h, :t)"
+        ),
+        {
+            "i": version_id,
+            "t": tenant,
+            "s": a.solution,
+            "e": a.stack.agent_v1,
+            "spec": json.dumps(spec),
+            "h": digest(spec),
+        },
+    )
+    owner.commit()
+    return str(version_id)
+
+
+def test_a_cannot_name_or_seal_bs_dataset(two: Two, owner_session: Session) -> None:
+    h, a = two.a.h, two.a
+    url = f"{solutions(a.stack.org)}/{a.solution}/versions"
+    b_dataset = _dataset_row(owner_session, two.b.stack.dataset)
+    before = _b_state(owner_session, two)
+    own = h.client.post(url, headers=h, json=body_for(a.stack.agent_v1, dataset=a.stack.dataset))
+    assert own.status_code == 201, own.text  # own dataset first
+    refused = h.client.post(
+        url, headers=h, json=body_for(a.stack.agent_v1, dataset=two.b.stack.dataset)
+    )
+    _same(
+        refused,
+        h.client.post(url, headers=h, json=body_for(a.stack.agent_v1, dataset=str(uuid7()))),
+        422,
+    )
+    assert [e["loc"] for e in refused.json()["errors"]] == [["body", "evaluation", "dataset_id"]]
+
+    def evaluation(version_id: str) -> Any:  # Any: the `evaluation` diagnostic
+        r = seal(h.client, h, a.solution, version_id, a.bindings())
+        assert r.status_code == 422 and r.json()["code"] == "release_incompatible", r.text
+        [found] = [e for e in r.json()["errors"] if e["path"] == "evaluation"]
+        return found
+
+    names_b = evaluation(_version_naming(owner_session, two, two.b.stack.dataset))
+    assert names_b == evaluation(_version_naming(owner_session, two, str(uuid7())))
+    assert names_b["status"] == "unsupported"
+    assert names_b["reason"] == (
+        "the evaluation dataset is not a dataset of this project you can read"
+    )
+    assert _dataset_row(owner_session, two.b.stack.dataset) == b_dataset
+    assert _b_state(owner_session, two) == before

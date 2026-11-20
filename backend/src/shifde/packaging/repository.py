@@ -5,7 +5,9 @@ Every read and write is keyed by `tenant_id` as well as by row-level security, a
 Solution versions are immutable (`shifde.solution_versions_guard`), and the guard also refuses an
 entrypoint that is not a published version of the row's kind; a release changes only from
 `sealed` to `withdrawn` (`shifde.releases_guard`). Build tables are never read here: build data
-comes from `shifde.build.service`.
+comes from `shifde.build.service`. One read touches an evaluation table: `get_dataset_placement`
+selects a dataset's id, workspace, project and digest (tenant-keyed) to check a version's
+evaluation contract, since `packaging` sits below `evaluation` and cannot import it.
 """
 
 from __future__ import annotations
@@ -249,4 +251,21 @@ def withdraw_release(session: Session, release_id: UUID, *, tenant_id: UUID) -> 
             {"t": tenant_id, "id": release_id},
         ).first()
         is not None
+    )
+
+
+# ------------------------------------------------------------------ evaluation datasets
+def get_dataset_placement(session: Session, dataset_id: UUID, *, tenant_id: UUID) -> Row | None:
+    """The evaluation dataset `dataset_id` of `tenant_id`: its id, workspace, project and
+    digest only (never its cases)."""
+    return (
+        session.execute(
+            text(
+                "SELECT id, tenant_id, workspace_id, project_id, digest "
+                "FROM shifde.evaluation_datasets WHERE tenant_id = :t AND id = :id"
+            ),
+            {"t": tenant_id, "id": dataset_id},
+        )
+        .mappings()
+        .first()
     )
