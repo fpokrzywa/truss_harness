@@ -299,16 +299,54 @@ def _cost_limit(value: object) -> Decimal | None:
         return None
 
 
+@dataclass(frozen=True)
+class RunOverrides:
+    """What `RunService.create` stored in the root run's input payload (`overrides`): model id
+    -> the model called instead, and a cost cap of the whole run family (root and children)."""
+
+    models: dict[UUID, UUID]
+    max_cost: Decimal | None
+
+
+NO_OVERRIDES = RunOverrides({}, None)
+
+
+def _run_overrides(ctx: RunContext) -> RunOverrides:
+    """The overrides of the run's family, read from its root run's input payload (a run started
+    without them, or whose payload is gone, has none)."""
+    run = ctx.run
+    root = (
+        run
+        if run["root_run_id"] == run["id"]
+        else repo.get_run(ctx.session, ctx.tenant_id, run["root_run_id"])
+    )
+    if root is None:
+        return NO_OVERRIDES
+    payload = repo.get_artifact(ctx.session, ctx.tenant_id, root["input_ref"])
+    raw = payload.get("overrides") if isinstance(payload, dict) else None
+    if not isinstance(raw, dict):
+        return NO_OVERRIDES
+    models = {UUID(str(k)): UUID(str(v)) for k, v in (raw.get("models") or {}).items()}
+    return RunOverrides(models, _cost_limit(raw.get("max_cost")))
+
+
 def _check_max_cost(
-    ctx: RunContext, model_id: UUID, est_input: int, max_tokens: int, max_cost: Decimal | None
+    ctx: RunContext,
+    model_id: UUID,
+    est_input: int,
+    max_tokens: int,
+    max_cost: Decimal | None,
+    family_cap: Decimal | None = None,
 ) -> None:
     """carry_forward Item 10: before each call, the run's known cost (its own usage events, in
     the call's currency) plus the call's worst case at the rate in force (`estimate.call_cost`:
-    the input estimate and the whole output ceiling) must stay within `limits.max_cost`. A model
-    with no rate follows the client's `unknown_cost_policy`: `deny` refuses the call,
-    `allow_unmeasured` lets it run with its cost unknown. A refusal is a deny decision of the run
-    and ends it as `budget_denied` before anything is held or sent."""
-    if max_cost is None:
+    the input estimate and the whole output ceiling) must stay within `limits.max_cost`, and the
+    run family's known cost (root and children) plus that worst case within the run's
+    `family_cap` (`RunOverrides.max_cost`); the lower limit decides. A model with no rate follows
+    the client's `unknown_cost_policy`: `deny` refuses the call, `allow_unmeasured` lets it run
+    with its cost unknown. A refusal is a deny decision of the run and ends it as
+    `budget_denied` before anything is held or sent."""
+    if max_cost is None and family_cap is None:
         return
     cost = estimate.call_cost(ctx.session, ctx.tenant_id, model_id, est_input, max_tokens)
     if cost is None:
@@ -316,13 +354,23 @@ def _check_max_cost(
             return
         message = "run limit max_cost: the model has no rate and unpriced calls are denied"
     else:
-        spent = repo.run_cost(ctx.session, ctx.tenant_id, ctx.run_id, cost.currency)
-        if spent + cost.amount <= max_cost:
+        message = ""
+        if max_cost is not None:
+            spent = repo.run_cost(ctx.session, ctx.tenant_id, ctx.run_id, cost.currency)
+            if spent + cost.amount > max_cost:
+                message = (
+                    f"run limit max_cost ({max_cost}) would be exceeded: {spent} spent, this "
+                    f"call up to {cost.amount} {cost.currency}"
+                )
+        if not message and family_cap is not None:
+            spent = policies.run_cost(ctx.session, ctx, cost.currency)
+            if spent + cost.amount > family_cap:
+                message = (
+                    f"run limit max_cost ({family_cap}) would be exceeded: {spent} spent, this "
+                    f"call up to {cost.amount} {cost.currency}"
+                )
+        if not message:
             return
-        message = (
-            f"run limit max_cost ({max_cost}) would be exceeded: {spent} spent, this call up to "
-            f"{cost.amount} {cost.currency}"
-        )
     with ctx.txn():
         gate.record_decision(
             ctx, "model:invoke", ctx.run_ref(), False, ["max_cost"], label=f"model:{model_id}"
@@ -349,6 +397,9 @@ def call_model(
     recorded durably and labelled estimated where the provider reported nothing (Item 11)."""
     settings = ctx.settings
     cost_limit = _cost_limit(max_cost)
+    overrides = _run_overrides(ctx)
+    # a release's model bindings (an evaluation's case run): each overridden model is replaced
+    chain = list(dict.fromkeys(overrides.models.get(m, m) for m in chain))
     seq: int | None = prior[-1]["seq"] if prior else None
     attempt_no = prior[-1]["attempt"] if prior else 0
     if prior and prior[-1]["status"] == "running":  # the previous worker died mid-call
@@ -372,7 +423,7 @@ def call_model(
     for model_index, model_id in enumerate(chain):
         for n in range(settings.runtime_model_attempts):
             attempt_no += 1
-            _check_max_cost(ctx, model_id, est_input, max_tokens, cost_limit)
+            _check_max_cost(ctx, model_id, est_input, max_tokens, cost_limit, overrides.max_cost)
             res = gate.check(
                 ctx,
                 "model:invoke",

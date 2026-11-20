@@ -66,6 +66,8 @@ SCOPED, CLIENT, PLATFORM, PUBLIC = "scoped", "client", "platform", "public"
 CLASSES = frozenset({SCOPED, CLIENT, PLATFORM, PUBLIC})
 
 SOLUTIONS = "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/solutions"
+DATASETS = "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/evaluation-datasets"
+EVALUATIONS = "/api/v1/orgs/{org}/releases/{release_id}/evaluations"
 
 ROUTES: dict[Op, tuple[str, str]] = {
     # ------------------------------------------------------------------ no organization
@@ -549,6 +551,13 @@ ROUTES: dict[Op, tuple[str, str]] = {
     ("GET", SOLUTIONS + "/{solution_id}/versions/{version_id}/releases"): (SCOPED, "packaging"),
     ("GET", "/api/v1/orgs/{org}/releases/{release_id}"): (SCOPED, "packaging"),
     ("POST", "/api/v1/orgs/{org}/releases/{release_id}/withdraw"): (SCOPED, "packaging"),
+    # ------------------------------------------------------------------ evaluation
+    ("GET", DATASETS): (SCOPED, "evaluation"),
+    ("POST", DATASETS): (SCOPED, "evaluation"),
+    ("GET", DATASETS + "/{dataset_id}"): (SCOPED, "evaluation"),
+    ("POST", EVALUATIONS): (SCOPED, "evaluation"),
+    ("GET", EVALUATIONS): (SCOPED, "evaluation"),
+    ("GET", "/api/v1/orgs/{org}/evaluation-runs/{run_id}"): (SCOPED, "evaluation"),
     # ------------------------------------------------------------------ models
     ("GET", "/api/v1/orgs/{org}/model-allowlists"): (SCOPED, "models"),
     ("PUT", "/api/v1/orgs/{org}/model-allowlists"): (SCOPED, "models"),
@@ -1389,11 +1398,12 @@ def _solution_version_body(w: W, n: int) -> dict[str, Any]:  # Any: JSON body
 
 
 def _sealable_body(w: W, n: int) -> dict[str, Any]:  # Any: JSON body
-    """A version body with an evaluation contract, so it passes the compatibility check."""
+    """A version body with an evaluation contract naming its project's dataset, so it passes the
+    compatibility check."""
     return {
         **_solution_version_body(w, n),
         "evaluation": {
-            "dataset_id": str(uuid7()),
+            "dataset_id": w("dataset", n),
             "min_accuracy": "0.9",
             "max_p95_latency_ms": 2000,
             "max_total_cost_usd": "1",
@@ -1468,6 +1478,69 @@ _register(
         ),
         ("POST", SOLUTIONS + "/{solution_id}/archive"): lambda w: _case(
             WRITE, "POST", lambda n: _sol(w, n, "/archive"), state=w.snap(*PACKAGING)
+        ),
+    },
+)
+
+
+# ---------------------------------------------------------------------- evaluation
+EVALUATION = (
+    "SELECT * FROM shifde.evaluation_datasets WHERE workspace_id = :w ORDER BY id",
+    "SELECT e.* FROM shifde.evaluation_runs e JOIN shifde.releases r ON r.id = e.release_id "
+    "JOIN shifde.solution_versions v ON v.id = r.solution_version_id "
+    "JOIN shifde.solutions s ON s.id = v.solution_id WHERE s.workspace_id = :w ORDER BY e.id",
+    "SELECT count(*) FROM shifde.runs WHERE workspace_id = :w",
+)
+
+
+def _datasets(n: int, tail: str = "") -> str:
+    return f"/workspaces/w{n}/projects/p{n}/evaluation-datasets{tail}"
+
+
+def _dataset_body(name: str) -> dict[str, Any]:  # Any: JSON body
+    return {
+        "name": name,
+        "cases": [
+            {
+                "case_id": "c1",
+                "input": {"message": "hello"},
+                "assertions": [{"id": "a1", "kind": "contains", "value": "hello"}],
+            }
+        ],
+    }
+
+
+_register(
+    "evaluation",
+    {
+        ("GET", DATASETS): lambda w: _case(
+            LIST, "GET", lambda n: _datasets(n), ids=lambda n: w("dataset", n)
+        ),
+        ("GET", DATASETS + "/{dataset_id}"): lambda w: _case(
+            READ, "GET", lambda n: _datasets(n, f"/{w('dataset', n)}")
+        ),
+        ("GET", EVALUATIONS): lambda w: _case(
+            LIST,
+            "GET",
+            lambda n: f"/releases/{w('release', n)}/evaluations",
+            ids=lambda n: w("evaluation_run", n),
+        ),
+        ("GET", "/api/v1/orgs/{org}/evaluation-runs/{run_id}"): lambda w: _case(
+            READ, "GET", lambda n: f"/evaluation-runs/{w('evaluation_run', n)}"
+        ),
+        ("POST", DATASETS): lambda w: _case(
+            CREATE,
+            "POST",
+            lambda n: _datasets(n),
+            body=lambda n: _dataset_body("extra"),
+            state=w.snap(*EVALUATION),
+        ),
+        ("POST", EVALUATIONS): lambda w: _case(
+            WRITE,
+            "POST",
+            lambda n: f"/releases/{w('release', n)}/evaluations",
+            body=lambda n: {},
+            state=w.snap(*EVALUATION),
         ),
     },
 )
@@ -2050,10 +2123,9 @@ def test_connections_and_delivery_targets(
     _check(w, "connections", "delivery")
 
 
-def test_solutions_and_solution_versions(
-    client: TestClient, world: World, owner_session: Session
-) -> None:
-    w = _world(client, owner_session, world.passwords)
+def _solutions_world(w: W) -> None:
+    """Per side: a published agent, a dataset, a solution with a version and a sealable version,
+    and its release."""
     models = fake_model_stack(w.admin.client, w.admin)
     model = models["model"]
     w.set("model", 0, model)
@@ -2065,6 +2137,7 @@ def test_solutions_and_solution_versions(
         spec = agent_spec(f"latest:{prompt['id']}", model)
         agent = art(w.admin.client, w.admin, "agents", f"sol-agent-{n}", spec, scope)
         w.set("agents.v1", n, publish(w.admin.client, w.admin, "agents", agent["id"])["id"])
+        w.set("dataset", n, w.post(_datasets(n), _dataset_body(f"golden-{n}"))["id"])
         base = f"/workspaces/w{n}/projects/p{n}/solutions"
         made = w.post(base, {"name": f"solution-{n}", "target_kind": "databricks.app/v1"})
         w.set("solution", n, made["id"])
@@ -2075,6 +2148,13 @@ def test_solutions_and_solution_versions(
         w.set("sealable", n, sealable["id"])
         release = w.post(f"{base}/{made['id']}/versions/{sealable['id']}/releases", _seal_body(w))
         w.set("release", n, release["id"])
+
+
+def test_solutions_and_solution_versions(
+    client: TestClient, world: World, owner_session: Session
+) -> None:
+    w = _world(client, owner_session, world.passwords)
+    _solutions_world(w)
     # U's version on W1's solution naming W2's agent version: the 422 an unknown id gets
     url = _url(_sol(w, 1, "/versions"))
     answers = []
@@ -2083,7 +2163,32 @@ def test_solutions_and_solution_versions(
         r = w.user.client.post(url, json=body, headers=dict(w.user))
         answers.append((r.status_code, {k: v for k, v in r.json().items() if k != "request_id"}))
     assert answers[0][0] == 422 and answers[0] == answers[1], answers
+    # U's version on W1's solution naming W2's dataset: the 422 an unknown dataset id gets
+    answers = []
+    for dataset_id in (w("dataset", 2), str(uuid7())):
+        body = {**_sealable_body(w, 1)}
+        body["evaluation"] = {**body["evaluation"], "dataset_id": dataset_id}
+        r = w.user.client.post(url, json=body, headers=dict(w.user))
+        answers.append((r.status_code, {k: v for k, v in r.json().items() if k != "request_id"}))
+    assert answers[0][0] == 422 and answers[0] == answers[1], answers
     _check(w, "packaging")
+
+
+def test_evaluation_datasets_and_runs(
+    client: TestClient, world: World, owner_session: Session
+) -> None:
+    w = _world(client, owner_session, world.passwords)
+    _solutions_world(w)
+    owner_session.execute(
+        text(
+            "UPDATE shifde.tenants SET settings = coalesce(settings, '{}'::jsonb) || "
+            "'{\"capture_content\": \"full\"}'::jsonb WHERE slug = 'demo-a'"
+        )
+    )
+    owner_session.commit()
+    for n in (1, 2):
+        w.set("evaluation_run", n, w.post(f"/releases/{w('release', n)}/evaluations", {})["id"])
+    _check(w, "evaluation")
 
 
 def test_models(client: TestClient, world: World, owner_session: Session) -> None:

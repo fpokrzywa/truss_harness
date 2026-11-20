@@ -568,7 +568,8 @@ def test_every_public_step_entry_point_is_a_case() -> None:
     }
     # pure: JSON, backoff, error classification, the dataclasses; `tool_resource` builds a ref
     pure = {"json_safe", "latest_attempts", "backoff_seconds", "classify_model_error",
-            "classify_tool_failure", "tool_resource", "ModelResult", "ToolCall", "ToolPolicy"}  # fmt: skip
+            "classify_tool_failure", "tool_resource", "ModelResult", "ToolCall", "ToolPolicy",
+            "RunOverrides"}  # fmt: skip
     assert public - pure == {n.split(".")[1] for n in CASES}
 
 

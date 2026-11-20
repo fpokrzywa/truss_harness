@@ -18,6 +18,15 @@ an incompatible one is refused with the whole report (`release_incompatible`). A
 is its solution's; it is reached under the organization (`/orgs/{org}/releases/{id}`) and gets
 the answer an unknown id gets when the caller cannot read its solution.
 
+A version's evaluation contract names an evaluation dataset: it must be a dataset of this client,
+in the solution's workspace and project, that the caller may read (`evaluation:dataset:read`),
+when the version is created (else 422) and when it is sealed (else the `evaluation` diagnostic is
+unsupported); an unknown id, another client's, another project's and an unreadable dataset get
+one answer (isolation review 029, finding 3; B-2703). The manifest records the dataset's digest.
+`packaging` sits below `evaluation`, so the dataset is read by one tenant-keyed SELECT of
+`evaluation_datasets` in `packaging.repository` (`get_dataset_placement`), not through
+`evaluation`'s service.
+
 Every row is read and written for the caller's resolved client only (`TenantScope.tenant_id`).
 """
 
@@ -30,6 +39,7 @@ from typing import Any  # Any: solution and version rows, JSON specs
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from shifde.adapters.runtime import IntegrationRuntime
 from shifde.audit import service as audit
@@ -78,6 +88,8 @@ NOT_DATABRICKS = (
     "scope"
 )
 NO_EVALUATION = "a release needs an evaluation dataset"
+DATASET_REFUSED = "the evaluation dataset is not a dataset of this project you can read"
+DATASET_READ = "evaluation:dataset:read"
 HIDDEN_TOOL = "tools.hidden"
 Report = list[dict[str, Any]]  # Any: diagnostics (JSON)
 
@@ -144,6 +156,16 @@ def _uuid(value: Any) -> UUID | None:  # Any: a JSON value
         return UUID(value) if isinstance(value, str) else None
     except ValueError:
         return None
+
+
+def release_record(
+    session: Session, release_id: UUID, *, tenant_id: UUID
+) -> Mapping[str, Any] | None:
+    """The release `release_id` of `tenant_id` with its solution's workspace and project, its
+    stored (unredacted) manifest and its status; None for an unknown id and another client's
+    alike. No permission check: the caller checks its own (evaluation, delivery)."""
+    row = repository.get_release(session, release_id, tenant_id=tenant_id)
+    return row if row is not None and row["tenant_id"] == tenant_id else None
 
 
 def resolve_pins(
@@ -343,6 +365,47 @@ class SolutionService:
         if errors:
             raise ValidationFailed(CONNECTION_REFUSED, errors=errors)
 
+    def _dataset(
+        self, solution: Mapping[str, Any], dataset_id: UUID | None
+    ) -> Mapping[str, Any] | None:
+        """The evaluation dataset `dataset_id` when it is a dataset of this client in the
+        solution's workspace and project that the caller may read; else None (unknown, another
+        client's, another project's and unreadable alike)."""
+        if dataset_id is None:
+            return None
+        row = repository.get_dataset_placement(
+            self.sc.session, dataset_id, tenant_id=self.sc.tenant_id
+        )
+        if (
+            row is None
+            or row["tenant_id"] != self.sc.tenant_id
+            or row["workspace_id"] != solution["workspace_id"]
+            or row["project_id"] != solution["project_id"]
+        ):
+            return None
+        ref = ResourceRef(
+            self.sc.tenant_id,
+            row["workspace_id"],
+            row["project_id"],
+            resource_type="evaluation_dataset",
+            resource_id=row["id"],
+        )
+        return row if self.sc.pdp.authorize(DATASET_READ, ref).allowed else None
+
+    def _check_dataset(self, solution: Mapping[str, Any], body: s.SolutionVersionCreate) -> None:
+        evaluation = body.evaluation
+        if evaluation is not None and self._dataset(solution, evaluation.dataset_id) is None:
+            raise ValidationFailed(
+                DATASET_REFUSED,
+                errors=[
+                    {
+                        "loc": ["body", "evaluation", "dataset_id"],
+                        "msg": DATASET_REFUSED,
+                        "type": "dataset",
+                    }
+                ],
+            )
+
     def _version_of(self, solution: Mapping[str, Any], version_id: UUID) -> Mapping[str, Any]:
         """The solution's version `version_id`; any other id is `solution version not found`."""
         row = repository.get_version(self.sc.session, version_id, tenant_id=self.sc.tenant_id)
@@ -483,6 +546,7 @@ class SolutionService:
         self._check_connections(
             row, [r.connection_id for r in body.data_reads], ["body", "data_reads"]
         )
+        self._check_dataset(row, body)
         resolve_pins(body.entrypoint_version_id, self.artifacts.direct_pins)  # depth cap
         spec = self._spec(body)
         spec_hash = digest(spec)
@@ -650,9 +714,18 @@ class SolutionService:
             )
             for name in sorted(found.connections)
         ]
-        evaluation = version["spec"].get("evaluation")
-        report.append(_diagnostic("evaluation", None if evaluation else NO_EVALUATION))
+        report.append(_diagnostic("evaluation", self._evaluation_reason(solution, version)))
         return report
+
+    def _evaluation_reason(
+        self, solution: Mapping[str, Any], version: Mapping[str, Any]
+    ) -> str | None:
+        evaluation = version["spec"].get("evaluation")
+        if not evaluation:
+            return NO_EVALUATION
+        if self._dataset(solution, _uuid(evaluation.get("dataset_id"))) is None:
+            return DATASET_REFUSED
+        return None
 
     @staticmethod
     def _shown_path(path: str, hidden: Callable[[str], bool]) -> str:
@@ -664,8 +737,8 @@ class SolutionService:
         version_id = _uuid(name)
         return version_id is None or not self._seen(version_id)
 
-    @staticmethod
     def _manifest(
+        self,
         solution: Mapping[str, Any],
         version: Mapping[str, Any],
         entry: VersionAccess,
@@ -674,6 +747,8 @@ class SolutionService:
     ) -> dict[str, Any]:
         """The release manifest: no digest, sealing time or sealer (settled call 12)."""
         evaluation = version["spec"]["evaluation"]
+        dataset = self._dataset(solution, _uuid(evaluation["dataset_id"]))
+        assert dataset is not None  # the report's `evaluation` diagnostic was supported
         return {
             "schema_version": 1,
             "solution_id": str(solution["id"]),
@@ -699,7 +774,7 @@ class SolutionService:
             },
             "evaluation": {
                 "dataset_id": evaluation["dataset_id"],
-                "dataset_digest": None,
+                "dataset_digest": dataset["digest"],
                 "thresholds": {
                     "min_accuracy": evaluation["min_accuracy"],
                     "max_p95_latency_ms": evaluation["max_p95_latency_ms"],
@@ -862,8 +937,8 @@ class SolutionService:
     def _release(self, release_id: UUID, action: str) -> Mapping[str, Any]:
         """The release the caller may `action` on, its scope its solution's; anything else
         (unknown, another client's, unreadable) is `release not found`."""
-        row = repository.get_release(self.sc.session, release_id, tenant_id=self.sc.tenant_id)
-        if row is None or row["tenant_id"] != self.sc.tenant_id:
+        row = release_record(self.sc.session, release_id, tenant_id=self.sc.tenant_id)
+        if row is None:
             raise NotFound("release not found")
         ref = ResourceRef(
             self.sc.tenant_id,

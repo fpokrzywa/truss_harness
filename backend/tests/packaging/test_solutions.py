@@ -58,7 +58,9 @@ def _lifecycle(h: Hdr, s: Stack) -> None:
     )
     assert dup.status_code == 409, dup.text
 
-    v1 = new_version(c, h, sid, version_body(s.agent_v1, connection=s.connection))
+    v1 = new_version(
+        c, h, sid, version_body(s.agent_v1, connection=s.connection, dataset=s.dataset)
+    )
     assert v1["version_no"] == 1 and HEX64.match(v1["spec_hash"])
     assert v1["entrypoint"] == {
         "kind": "agent",
@@ -68,7 +70,7 @@ def _lifecycle(h: Hdr, s: Stack) -> None:
     assert v1["pins"] == [{"role": "prompt", "version_id": s.prompt_v1, "spec_hash": s.prompt_hash}]
     assert v1["spec"]["screens"] == [] and v1["spec"]["evaluation"]["max_total_cost_usd"] == "1.5"
     assert v1["spec_hash"] == digest(v1["spec"])
-    v2 = new_version(c, h, sid, version_body(s.agent_v1))
+    v2 = new_version(c, h, sid, version_body(s.agent_v1, dataset=s.dataset))
     assert v2["version_no"] == 2
 
     listed = c.get(f"{solutions()}/{sid}/versions", headers=h).json()["items"]
@@ -87,10 +89,10 @@ def _lifecycle(h: Hdr, s: Stack) -> None:
 
     # a draft, a prompt as an agent, an agent as a pipeline, an unknown id: one 422
     for body in (
-        version_body(s.agent_draft),
-        version_body(s.prompt_v1),
-        version_body(s.agent_v1, kind="pipeline"),
-        version_body(str(uuid7())),
+        version_body(s.agent_draft, dataset=s.dataset),
+        version_body(s.prompt_v1, dataset=s.dataset),
+        version_body(s.agent_v1, kind="pipeline", dataset=s.dataset),
+        version_body(str(uuid7()), dataset=s.dataset),
     ):
         r = c.post(f"{solutions()}/{sid}/versions", headers=h, json=body)
         assert r.status_code == 422, r.text
@@ -98,7 +100,7 @@ def _lifecycle(h: Hdr, s: Stack) -> None:
     unknown_conn = c.post(
         f"{solutions()}/{sid}/versions",
         headers=h,
-        json=version_body(s.agent_v1, connection=str(uuid7())),
+        json=version_body(s.agent_v1, connection=str(uuid7()), dataset=s.dataset),
     )
     assert unknown_conn.status_code == 422, unknown_conn.text
     assert unknown_conn.json()["errors"][0]["loc"] == ["body", "data_reads", 0, "connection_id"]
@@ -106,7 +108,9 @@ def _lifecycle(h: Hdr, s: Stack) -> None:
     archived = c.post(f"{solutions()}/{sid}/archive", headers=h)
     assert archived.status_code == 200 and archived.json()["status"] == "archived"
     assert c.post(f"{solutions()}/{sid}/archive", headers=h).status_code == 409
-    refused = c.post(f"{solutions()}/{sid}/versions", headers=h, json=version_body(s.agent_v1))
+    refused = c.post(
+        f"{solutions()}/{sid}/versions", headers=h, json=version_body(s.agent_v1, dataset=s.dataset)
+    )
     assert refused.status_code == 409, refused.text
     active = c.get(solutions(), headers=h, params={"status": "active"}).json()["items"]
     assert sid not in [x["id"] for x in active]
@@ -150,7 +154,7 @@ def test_viewer_is_refused_on_every_route(client: TestClient, world: World) -> N
     admin = user_session(client, world.passwords, ADMIN)
     s = stack(admin.client, admin)
     sid = solution(admin.client, admin, "Viewer probe")["id"]
-    vid = new_version(admin.client, admin, sid, version_body(s.agent_v1))["id"]
+    vid = new_version(admin.client, admin, sid, version_body(s.agent_v1, dataset=s.dataset))["id"]
     viewer = user_session(client, world.passwords, VIEWER)
     base = solutions()
     for method, url, body in (
@@ -159,7 +163,7 @@ def test_viewer_is_refused_on_every_route(client: TestClient, world: World) -> N
         ("GET", f"{base}/{sid}", None),
         ("POST", f"{base}/{sid}/archive", None),
         ("GET", f"{base}/{sid}/versions", None),
-        ("POST", f"{base}/{sid}/versions", version_body(s.agent_v1)),
+        ("POST", f"{base}/{sid}/versions", version_body(s.agent_v1, dataset=s.dataset)),
         ("GET", f"{base}/{sid}/versions/{vid}", None),
     ):
         r = viewer.client.request(method, url, headers=viewer, json=body)
@@ -172,12 +176,16 @@ def test_spec_hash_is_stable_and_decimals_are_normalized(client: TestClient, wor
     h = user_session(client, world.passwords, ADMIN)
     s = stack(h.client, h)
     sid = solution(h.client, h, "Hashes")["id"]
-    a = new_version(h.client, h, sid, version_body(s.agent_v1, min_accuracy="0.90"))
-    b = new_version(h.client, h, sid, version_body(s.agent_v1, min_accuracy="0.9"))
+    a = new_version(
+        h.client, h, sid, version_body(s.agent_v1, min_accuracy="0.90", dataset=s.dataset)
+    )
+    b = new_version(
+        h.client, h, sid, version_body(s.agent_v1, min_accuracy="0.9", dataset=s.dataset)
+    )
     assert a["spec"] == b["spec"] and a["spec_hash"] == b["spec_hash"]
     assert a["spec"]["evaluation"]["min_accuracy"] == "0.9"
     for bad in ({"min_accuracy": 0.9}, {"min_accuracy": "1.5"}, {"max_p95_latency_ms": 0}):
-        body = version_body(s.agent_v1)
+        body = version_body(s.agent_v1, dataset=s.dataset)
         body["evaluation"].update(bad)
         r = h.client.post(f"{solutions()}/{sid}/versions", headers=h, json=body)
         assert r.status_code == 422, (bad, r.text)
@@ -187,7 +195,7 @@ def _version_row(client: TestClient, world: World) -> tuple[Stack, str, str]:
     h = user_session(client, world.passwords, ADMIN)
     s = stack(h.client, h)
     sid = solution(h.client, h, "Guarded")["id"]
-    return s, sid, new_version(h.client, h, sid, version_body(s.agent_v1))["id"]
+    return s, sid, new_version(h.client, h, sid, version_body(s.agent_v1, dataset=s.dataset))["id"]
 
 
 def _tenant(owner: Session) -> UUID:

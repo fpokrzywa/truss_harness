@@ -1,6 +1,7 @@
 """Shortcuts of the packaging tests: an organization's build stack (an active fake model and its
-connection, a published prompt and a published agent pinning it, in project `main/sample`), a
-solution, a version body, a Databricks connection, environment bindings and sealing."""
+connection, a published prompt and a published agent pinning it, and an evaluation dataset, in
+project `main/sample`), a solution, a version body, a Databricks connection, environment bindings
+and sealing."""
 
 from __future__ import annotations
 
@@ -14,8 +15,8 @@ from tests._support.p3util import A, connection, fake_model_stack
 from tests._support.p4util import agent_spec, art, edit, prompt_spec, publish
 
 PROJECT = "/workspaces/main/projects/sample"
+UNKNOWN_DATASET = "01900000-0000-7000-8000-00000000d5e7"
 EVALUATION = {
-    "dataset_id": "01900000-0000-7000-8000-00000000d5e7",
     "min_accuracy": "0.9",
     "max_p95_latency_ms": 2000,
     "max_total_cost_usd": "1.50",
@@ -24,6 +25,35 @@ EVALUATION = {
 
 def solutions(org: str = A) -> str:
     return f"{org}{PROJECT}/solutions"
+
+
+def datasets(org: str = A, project: str = PROJECT) -> str:
+    return f"{org}{project}/evaluation-datasets"
+
+
+def dataset(
+    client: TestClient,
+    h: dict[str, str],
+    name: str = "golden",
+    org: str = A,
+    project: str = PROJECT,
+    cases: list[dict[str, Any]] | None = None,
+) -> Any:
+    """A dataset of `org`'s project (one `contains` case unless `cases` is given)."""
+    body = {
+        "name": name,
+        "cases": cases
+        or [
+            {
+                "case_id": "c1",
+                "input": {"message": "hello"},
+                "assertions": [{"id": "a1", "kind": "contains", "value": "hello"}],
+            }
+        ],
+    }
+    r = client.post(datasets(org, project), headers=h, json=body)
+    assert r.status_code == 201, r.text
+    return r.json()
 
 
 @dataclass(frozen=True)
@@ -40,6 +70,8 @@ class Stack:
     agent_draft: str
     model: str = ""
     provider: str = ""
+    dataset: str = ""
+    dataset_digest: str = ""
 
 
 def stack(client: TestClient, h: dict[str, str], org: str = A) -> Stack:
@@ -54,6 +86,7 @@ def stack(client: TestClient, h: dict[str, str], org: str = A) -> Stack:
     agent = art(client, h, "agents", "helper", spec, scope, org=org)
     agent_v1 = publish(client, h, "agents", agent["id"], org=org)
     draft = edit(client, h, "agents", agent["id"], spec, 0, org=org)
+    golden = dataset(client, h, org=org)
     return Stack(
         org=org,
         project_id=project.json()["id"],
@@ -67,6 +100,8 @@ def stack(client: TestClient, h: dict[str, str], org: str = A) -> Stack:
         agent_draft=draft["id"],
         model=models["model"],
         provider=models["provider"],
+        dataset=golden["id"],
+        dataset_digest=golden["digest"],
     )
 
 
@@ -85,14 +120,21 @@ def version_body(
     connection: str | None = None,
     min_accuracy: str = "0.9",
     evaluation: bool = True,
+    dataset: str = UNKNOWN_DATASET,
 ) -> dict[str, Any]:
+    """A version body; its evaluation contract names `dataset` (by default an id of no dataset,
+    which a version create refuses once the entrypoint and connections pass)."""
     return {
         "entrypoint_kind": kind,
         "entrypoint_version_id": entrypoint,
         "data_reads": (
             [{"connection_id": connection, "tables": ["main.sales.orders"]}] if connection else []
         ),
-        "evaluation": {**EVALUATION, "min_accuracy": min_accuracy} if evaluation else None,
+        "evaluation": (
+            {**EVALUATION, "dataset_id": dataset, "min_accuracy": min_accuracy}
+            if evaluation
+            else None
+        ),
     }
 
 

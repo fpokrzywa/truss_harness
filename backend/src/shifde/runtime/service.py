@@ -19,7 +19,9 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Any  # Any: stored documents / audit details
 from uuid import UUID
 
@@ -71,6 +73,42 @@ STATUS_GROUPS = {
 
 def _scope_tuple(pdp_scope: Any) -> tuple[bool, list[UUID], list[UUID]]:  # Any: ScopeFilter
     return pdp_scope.tenant_wide, list(pdp_scope.workspace_ids), list(pdp_scope.project_ids)
+
+
+@dataclass(frozen=True)
+class RunOutcome:
+    """What an evaluation scores of one of its case runs (no permission check: the evaluation
+    run's own check covers it). `output_kept` is False when the run's output content is gone
+    (capture off: scrubbed); `cost` is the run family's known cost in USD, `cost_known` False
+    when a model call of the family has no USD amount."""
+
+    status: str
+    started_at: datetime | None
+    finished_at: datetime | None
+    output_kept: bool
+    output: Any  # Any: the run's output document
+    cost: Decimal
+    cost_known: bool
+
+
+def run_outcome(session: Session, tenant_id: UUID, run_id: UUID) -> RunOutcome | None:
+    """The outcome of the run `run_id` of `tenant_id` and its family (its children's cost
+    included); None for an unknown id and another client's alike."""
+    run = repo.get_run(session, tenant_id, run_id)
+    if run is None or run["tenant_id"] != tenant_id:
+        return None
+    content = repo.get_artifact(session, tenant_id, run["output_ref"])
+    kept = isinstance(content, dict) and "output" in content
+    cost, known = repo.family_cost(session, tenant_id, run["root_run_id"], "USD")
+    return RunOutcome(
+        status=run["status"],
+        started_at=run["started_at"],
+        finished_at=run["finished_at"],
+        output_kept=kept,
+        output=content["output"] if kept else None,
+        cost=cost,
+        cost_known=known,
+    )
 
 
 class RunService:
@@ -220,8 +258,20 @@ class RunService:
         return self._runs_out([row])[0]
 
     # ================================================================== create
-    def create(self, body: s.RunCreate, idempotency_key: str | None) -> tuple[s.RunOut, bool]:
-        """(run, created). `created` is False for an idempotent replay."""
+    def create(
+        self,
+        body: s.RunCreate,
+        idempotency_key: str | None,
+        *,
+        model_overrides: Mapping[UUID, UUID] | None = None,
+        max_cost: Decimal | None = None,
+    ) -> tuple[s.RunOut, bool]:
+        """(run, created). `created` is False for an idempotent replay.
+
+        `model_overrides` (model id -> model id) and `max_cost` are service-level only (never
+        part of an HTTP body): an evaluation's case run calls the release's bound models within
+        its share of the cost threshold. They are stored in the run's input payload
+        (`overrides`), so they hold until the run ends, for its child runs too (`steps`)."""
         self._active_tenant()
         principal = self.sc.principal
         fingerprint = hashlib.sha256(
@@ -244,6 +294,11 @@ class RunService:
             art, version, spec = self._target(body, ref, principal)
             payload = {"input": body.input, "variables": body.variables}
             draft_run = False
+        if model_overrides or max_cost is not None:
+            payload["overrides"] = {
+                "models": {str(k): str(v) for k, v in (model_overrides or {}).items()},
+                "max_cost": format(max_cost, "f") if max_cost is not None else None,
+            }
         if body.kind == "agent":
             allowed = (spec.get("execution_permissions") or {}).get("allowed_principal_types")
             if allowed and principal.principal_type not in allowed:
@@ -620,6 +675,11 @@ class RunService:
         if mode is None:
             mode = "full" if self.runtime.settings.is_development else "metadata"
         return bool(mode == "full")
+
+    def capture_full(self) -> bool:
+        """Whether this organization captures run content in full (its effective
+        `capture_content`, the environment's default when unset), as `result` decides."""
+        return self._capture_full()
 
     def nodes(self, run_id: UUID) -> s.NodeListOut:
         run = self._readable_run(run_id)

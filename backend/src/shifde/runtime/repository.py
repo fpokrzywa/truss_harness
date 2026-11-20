@@ -1229,6 +1229,24 @@ def run_cost(session: Session, tenant_id: UUID, run_id: UUID, currency: str) -> 
     )
 
 
+def family_cost(
+    session: Session, tenant_id: UUID, root_run_id: UUID, currency: str
+) -> tuple[Decimal, bool]:
+    """(known cost in `currency` of the run family of `root_run_id` of `tenant_id`, whether every
+    model call of the family has a cost in `currency`): a model call event with no amount
+    (unpriced or unmeasured) or in another currency makes the cost unknown."""
+    row = session.execute(
+        text(
+            "SELECT COALESCE(sum(cost_amount) FILTER (WHERE currency = :cur), 0), "
+            "count(*) FILTER (WHERE event_type = 'model_call' AND (cost_amount IS NULL "
+            "OR currency IS DISTINCT FROM :cur)) "
+            "FROM shifde.usage_events WHERE tenant_id = :t AND root_run_id = :root"
+        ),
+        {"t": tenant_id, "root": root_run_id, "cur": currency},
+    ).one()
+    return Decimal(row[0]), int(row[1]) == 0
+
+
 def root_pipeline_id(session: Session, tenant_id: UUID, root_run_id: UUID) -> UUID | None:
     row = session.execute(
         text("SELECT pipeline_id FROM shifde.runs WHERE id = :id AND tenant_id = :t"),

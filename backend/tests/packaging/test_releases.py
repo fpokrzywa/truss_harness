@@ -50,6 +50,7 @@ from tests.packaging.helpers import (
     Stack,
     bindings,
     databricks_connection,
+    dataset,
     new_version,
     releases_url,
     seal,
@@ -125,7 +126,7 @@ def _own_bindings(s: Stack, **connections: str) -> dict[str, Any]:
 # ------------------------------------------------------------------ seal, re-seal, list, get
 def test_seal_reseal_and_list(client: TestClient, world: World, owner_session: Session) -> None:
     h, s, sid = _setup(client, world)
-    vid = new_version(h.client, h, sid, version_body(s.agent_v1))["id"]
+    vid = new_version(h.client, h, sid, version_body(s.agent_v1, dataset=s.dataset))["id"]
 
     first = seal(h.client, h, sid, vid, _own_bindings(s))
     assert first.status_code == 201, first.text
@@ -142,7 +143,8 @@ def test_seal_reseal_and_list(client: TestClient, world: World, owner_session: S
     assert m["bindings"]["model_bindings"] == {
         s.model: {"provider_id": s.provider, "model": "served-chat"}
     }
-    assert m["evaluation"]["dataset_digest"] is None
+    assert m["evaluation"]["dataset_id"] == s.dataset
+    assert m["evaluation"]["dataset_digest"] == s.dataset_digest
     assert m["evaluation"]["thresholds"] == {
         "min_accuracy": "0.9",
         "max_p95_latency_ms": 2000,
@@ -208,7 +210,7 @@ def test_unknown_binding_keys_are_a_validation_error(
     client: TestClient, world: World, owner_session: Session
 ) -> None:
     h, s, sid = _setup(client, world)
-    vid = new_version(h.client, h, sid, version_body(s.agent_v1))["id"]
+    vid = new_version(h.client, h, sid, version_body(s.agent_v1, dataset=s.dataset))["id"]
     nobody = str(uuid7())
     for body, loc in (
         (
@@ -228,7 +230,7 @@ def test_unknown_binding_keys_are_a_validation_error(
 
 def test_deprecated_entrypoint_is_unsupported(client: TestClient, world: World) -> None:
     h, s, sid = _setup(client, world)
-    vid = new_version(h.client, h, sid, version_body(s.agent_v1))["id"]
+    vid = new_version(h.client, h, sid, version_body(s.agent_v1, dataset=s.dataset))["id"]
     post(
         h.client,
         f"{A}/agents/{s.agent}/versions/{s.agent_v1}/state",
@@ -309,7 +311,7 @@ def test_each_tool_refusal_reason(
     spec = agent_spec(f"latest:{s.prompt}", s.model, tool_version_ids=sorted(tools.values()))
     agent = art(h.client, h, "agents", "tooled", spec, scope)
     agent_v1 = publish(h.client, h, "agents", agent["id"])["id"]
-    vid = new_version(h.client, h, sid, version_body(agent_v1))["id"]
+    vid = new_version(h.client, h, sid, version_body(agent_v1, dataset=s.dataset))["id"]
     lake = databricks_connection(h.client, h)
 
     r = seal(h.client, h, sid, vid, _own_bindings(s, **{rest_conn: lake, pg_conn: lake}))
@@ -363,7 +365,7 @@ def test_each_model_refusal_reason(
     client: TestClient, world: World, owner_session: Session
 ) -> None:
     h, s, sid = _setup(client, world)
-    vid = new_version(h.client, h, sid, version_body(s.agent_v1))["id"]
+    vid = new_version(h.client, h, sid, version_body(s.agent_v1, dataset=s.dataset))["id"]
     pin = f"models.{s.model}"
     shared = _shared_model(client, world, owner_session)
     for body, reason in (
@@ -381,7 +383,7 @@ def test_each_model_refusal_reason(
     spec = agent_spec(f"latest:{s.prompt}", shared)
     agent = art(h.client, h, "agents", "on-shi", spec, scope)
     shi_v1 = publish(h.client, h, "agents", agent["id"])["id"]
-    shi_vid = new_version(h.client, h, sid, version_body(shi_v1))["id"]
+    shi_vid = new_version(h.client, h, sid, version_body(shi_v1, dataset=s.dataset))["id"]
     r = seal(h.client, h, sid, shi_vid, bindings({shared: s.provider}))
     assert _unsupported(r) == {f"models.{shared}": CLIENT_MODELS}
     assert _count(owner_session) == 0
@@ -392,7 +394,9 @@ def test_each_connection_refusal_reason(
     client: TestClient, world: World, owner_session: Session
 ) -> None:
     h, s, sid = _setup(client, world)
-    vid = new_version(h.client, h, sid, version_body(s.agent_v1, connection=s.connection))["id"]
+    vid = new_version(
+        h.client, h, sid, version_body(s.agent_v1, connection=s.connection, dataset=s.dataset)
+    )["id"]
     pin = f"connections.{s.connection}"
     assert _unsupported(seal(h.client, h, sid, vid, _own_bindings(s))) == {
         pin: "no connection binding"
@@ -446,7 +450,7 @@ def test_pipeline_model_and_connection_refs(
         "inputs": {"term": "$params.term"},
     }
     own = _pipeline(h, s, "own-pipe", [_model_node(s.model), api])
-    vid = new_version(h.client, h, sid, version_body(own, kind="pipeline"))["id"]
+    vid = new_version(h.client, h, sid, version_body(own, kind="pipeline", dataset=s.dataset))["id"]
     assert _unsupported(seal(h.client, h, sid, vid, bindings())) == {
         f"models.{s.model}": "no model binding",
         f"connections.{rest}": "no connection binding",
@@ -458,7 +462,9 @@ def test_pipeline_model_and_connection_refs(
 
     shared = _shared_model(client, world, owner_session)
     on_shi = _pipeline(h, s, "shi-pipe", [_model_node(shared)])
-    shi_vid = new_version(h.client, h, sid, version_body(on_shi, kind="pipeline"))["id"]
+    shi_vid = new_version(
+        h.client, h, sid, version_body(on_shi, kind="pipeline", dataset=s.dataset)
+    )["id"]
     r = seal(h.client, h, sid, shi_vid, bindings({shared: s.provider}))
     assert _unsupported(r) == {f"models.{shared}": CLIENT_MODELS}
     assert _count(owner_session) == 1
@@ -469,7 +475,7 @@ def test_withdraw_then_conflict_and_retire_guard(
     client: TestClient, world: World, owner_session: Session
 ) -> None:
     h, s, sid = _setup(client, world)
-    vid = new_version(h.client, h, sid, version_body(s.agent_v1))["id"]
+    vid = new_version(h.client, h, sid, version_body(s.agent_v1, dataset=s.dataset))["id"]
     rel = seal(h.client, h, sid, vid, _own_bindings(s)).json()
 
     def state(kind: str, artifact: str, version: str, to: str) -> httpx.Response:
@@ -509,7 +515,7 @@ def test_withdraw_then_conflict_and_retire_guard(
 # ------------------------------------------------------------------ the database
 def _release_row(client: TestClient, world: World) -> tuple[str, str]:
     h, s, sid = _setup(client, world)
-    vid = new_version(h.client, h, sid, version_body(s.agent_v1))["id"]
+    vid = new_version(h.client, h, sid, version_body(s.agent_v1, dataset=s.dataset))["id"]
     r = seal(h.client, h, sid, vid, _own_bindings(s))
     assert r.status_code == 201, r.text
     return vid, r.json()["id"]
@@ -611,7 +617,7 @@ def test_hidden_pins_are_redacted_for_a_reader(
     agent = art(h.client, h, "agents", "discreet", spec, scope)
     agent_v1 = publish(h.client, h, "agents", agent["id"])["id"]
     sid = solution(h.client, h, "Discreet")["id"]
-    vid = new_version(h.client, h, sid, version_body(agent_v1))["id"]
+    vid = new_version(h.client, h, sid, version_body(agent_v1, dataset=s.dataset))["id"]
     rid = seal(h.client, h, sid, vid, _own_bindings(s)).json()["id"]
 
     make_user(client, owner_session, h, DEVELOPER, "developer", world.passwords)
@@ -640,7 +646,7 @@ def test_who_may_seal_and_withdraw(
     client: TestClient, world: World, owner_session: Session
 ) -> None:
     h, s, sid = _setup(client, world)
-    vid = new_version(h.client, h, sid, version_body(s.agent_v1))["id"]
+    vid = new_version(h.client, h, sid, version_body(s.agent_v1, dataset=s.dataset))["id"]
     rid = seal(h.client, h, sid, vid, _own_bindings(s)).json()["id"]
     viewer = user_session(client, world.passwords, VIEWER)
     for method, url, body in (
@@ -664,7 +670,7 @@ def test_seal_refuses_a_version_of_another_solution_and_an_archived_solution(
 ) -> None:
     h, s, sid = _setup(client, world)
     other = solution(h.client, h, "Other")["id"]
-    vid = new_version(h.client, h, sid, version_body(s.agent_v1))["id"]
+    vid = new_version(h.client, h, sid, version_body(s.agent_v1, dataset=s.dataset))["id"]
     wrong = seal(h.client, h, other, vid, _own_bindings(s))
     assert wrong.status_code == 404 and wrong.json()["detail"] == "solution version not found"
     listed = h.client.get(releases_url(other, vid), headers=h)
@@ -696,23 +702,62 @@ def test_version_entrypoint_and_connections_must_be_in_the_solutions_scope(
     away_ws = agent_at("away-ws", {"type": "workspace", "id": other_ws})
     away_proj = agent_at("away-proj", {"type": "project", "id": side["id"]})
     for accepted in (org_wide, same_ws):
-        assert h.client.post(url, headers=h, json=version_body(accepted)).status_code == 201
+        assert (
+            h.client.post(
+                url, headers=h, json=version_body(accepted, dataset=s.dataset)
+            ).status_code
+            == 201
+        )
 
     def answer(r: httpx.Response) -> tuple[int, Any]:  # Any: the problem body
         return r.status_code, {
             k: v for k, v in r.json().items() if k not in ("request_id", "instance")
         }
 
-    unknown = answer(h.client.post(url, headers=h, json=version_body(str(uuid7()))))
+    unknown = answer(
+        h.client.post(url, headers=h, json=version_body(str(uuid7()), dataset=s.dataset))
+    )
     assert unknown[0] == 422
     for refused in (away_ws, away_proj):
-        assert answer(h.client.post(url, headers=h, json=version_body(refused))) == unknown
+        assert (
+            answer(h.client.post(url, headers=h, json=version_body(refused, dataset=s.dataset)))
+            == unknown
+        )
 
     away_conn = databricks_connection(h.client, h, "away", scope={"workspace": "other"})
     unknown_conn = answer(
-        h.client.post(url, headers=h, json=version_body(s.agent_v1, connection=str(uuid7())))
+        h.client.post(
+            url,
+            headers=h,
+            json=version_body(s.agent_v1, connection=str(uuid7()), dataset=s.dataset),
+        )
     )
     assert unknown_conn[0] == 422
     assert unknown_conn[1]["errors"][0]["loc"] == ["body", "data_reads", 0, "connection_id"]
-    got = h.client.post(url, headers=h, json=version_body(s.agent_v1, connection=away_conn))
+    got = h.client.post(
+        url, headers=h, json=version_body(s.agent_v1, connection=away_conn, dataset=s.dataset)
+    )
     assert answer(got) == unknown_conn
+
+
+def test_a_dataset_of_another_project_is_refused_as_an_unknown_id(
+    client: TestClient, world: World
+) -> None:
+    """B-2703 within one client: a version's evaluation dataset must be one of the solution's
+    project; another project's dataset gets the 422 an unknown id gets."""
+    h, s, sid = _setup(client, world)
+    url = f"{solutions()}/{sid}/versions"
+    post(h.client, f"{A}/workspaces/main/projects", h, {"slug": "side", "name": "Side"})
+    side = dataset(h.client, h, "side-golden", project="/workspaces/main/projects/side")
+
+    def answer(dataset_id: str) -> tuple[int, Any]:  # Any: the problem body
+        r = h.client.post(url, headers=h, json=version_body(s.agent_v1, dataset=dataset_id))
+        return r.status_code, {
+            k: v for k, v in r.json().items() if k not in ("request_id", "instance")
+        }
+
+    unknown = answer(str(uuid7()))
+    assert unknown[0] == 422
+    assert unknown[1]["errors"][0]["loc"] == ["body", "evaluation", "dataset_id"]
+    assert answer(side["id"]) == unknown
+    assert answer(s.dataset)[0] == 201
