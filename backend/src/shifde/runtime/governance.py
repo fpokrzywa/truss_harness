@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Protocol  # Any: SQL rows
 from uuid import UUID
@@ -43,7 +43,7 @@ from sqlalchemy.orm import Session
 
 from shifde.core.clock import utcnow
 from shifde.core.ids import uuid7
-from shifde.ledger import budgeting
+from shifde.ledger import budgeting, reservations
 from shifde.ledger.budgeting import RUN_ENTITY, effective_limit, period_name, period_start
 from shifde.ledger.enforcement import (
     BudgetDenied,
@@ -71,7 +71,7 @@ __all__ = [
     "scope_params",
 ]
 
-RESERVATION_TTL = timedelta(minutes=10)
+RESERVATION_TTL = reservations.RESERVATION_TTL
 
 
 @dataclass
@@ -199,7 +199,12 @@ class PolicyBudgetHooks:
             if n >= limit:
                 raise BudgetDenied(f"{what} is exhausted", q["id"])
         elif q["metric"] == "tokens_per_day":
-            rule = {"scope_type": q["scope_type"], "scope_id": q["scope_id"], "period": "daily"}
+            rule = {
+                "id": q["id"],
+                "scope_type": q["scope_type"],
+                "scope_id": q["scope_id"],
+                "period": "daily",
+            }
             since = period_start("daily")
             used, held = used_and_held(session, rule, scope, metric="tokens", since=since)
             if used + held >= limit:
@@ -223,27 +228,9 @@ class PolicyBudgetHooks:
             return Reservation(None)
         cost_value = est_cost if est_cost is not None else Decimal(0)
         hold = ev.hold_tokens  # Item 9: never below the call's input + output ceiling
-        res_id = session.execute(
-            text(
-                "INSERT INTO shifde.budget_reservations (id, tenant_id, run_id, step_key, "
-                "budget_ids, amount, cost_amount, currency, expires_at) "
-                "VALUES (:id, :t, :run, :k, :b, :a, :c, :cur, :exp) "
-                "ON CONFLICT (tenant_id, run_id, step_key) DO UPDATE SET status = 'held', "
-                "amount = :a, cost_amount = :c, currency = :cur, budget_ids = :b, "
-                "expires_at = :exp RETURNING id"
-            ),
-            {
-                "id": uuid7(),
-                "t": scope.tenant_id,
-                "run": run_id,
-                "k": step_key,
-                "b": applicable,
-                "a": hold,
-                "c": cost_value,
-                "cur": est_currency,
-                "exp": utcnow() + RESERVATION_TTL,
-            },
-        ).scalar_one()
+        res_id = reservations.reserve_step(
+            session, scope.tenant_id, run_id, step_key, applicable, hold, cost_value, est_currency
+        )
         return Reservation(
             res_id, applicable, hold, cost_value, est_currency, tenant_id=scope.tenant_id
         )
@@ -259,12 +246,8 @@ class PolicyBudgetHooks:
     ) -> list[FiredAlert]:
         if reservation.id is None:
             return []
-        session.execute(
-            text(
-                "UPDATE shifde.budget_reservations SET status = 'settled', settled_amount = :a, "
-                "settled_cost = :c WHERE id = :id AND tenant_id = :t AND status = 'held'"
-            ),
-            {"id": reservation.id, "t": _client(reservation), "a": actual_tokens, "c": actual_cost},
+        reservations.settle(
+            session, _client(reservation), reservation.id, actual_tokens, actual_cost
         )
         return self._alerts(session, reservation)
 
@@ -343,13 +326,7 @@ class PolicyBudgetHooks:
     def release(self, session: Session, reservation: Reservation) -> None:
         if reservation.id is None:
             return
-        session.execute(
-            text(
-                "UPDATE shifde.budget_reservations SET status = 'released' "
-                "WHERE id = :id AND tenant_id = :t AND status = 'held'"
-            ),
-            {"id": reservation.id, "t": _client(reservation)},
-        )
+        reservations.release(session, _client(reservation), reservation.id)
 
 
 def _client(reservation: Reservation) -> UUID:

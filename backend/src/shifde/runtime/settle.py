@@ -12,6 +12,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from shifde import ledger
 from shifde.audit import service as audit
 from shifde.core.clock import utcnow
 from shifde.core.context import RequestContext
@@ -91,8 +92,11 @@ def settle_terminal(
 ) -> None:
     """Housekeeping that belongs to the transition into a terminal state.
 
-    The database side (`shifde.settle_ended_run`, one implementation shared with the reaper) cancels
-    the pending approvals, releases the budget reservations and closes the `running` steps. For a
+    First the run's held budget holds are settled as orphans (`ledger.reservations`): one whose
+    provider call may have started becomes `settled_unknown` with its usage row, any other is
+    released. The database side (`shifde.settle_ended_run`, one implementation shared with the
+    reaper) cancels the pending approvals, releases the unstarted budget reservations and closes
+    the `running` steps. For a
     run that did not complete it also finds the writes that were in flight: a `started` write
     invocation (any write class) or a pipeline write node becomes `indeterminate` and the run
     is flagged `error_class=indeterminate_side_effect` with its approval left open (R1: a
@@ -108,6 +112,7 @@ def settle_terminal(
 
     With capture off the run's content is scrubbed after the settle, which reads the write
     arguments the scrub clears (`scrub_ended`)."""
+    ledger.reservations.settle_orphaned(session, run["tenant_id"], run["id"])
     flagged = repo.settle_ended_run(session, run["tenant_id"], run["id"])
     if flagged > 0:
         audit.record(
