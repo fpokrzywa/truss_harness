@@ -1,36 +1,36 @@
 {
-  "generated": "2026-11-20T00:23:40+00:00",
+  "generated": "2026-11-20T18:31:11+00:00",
   "note": "est_usd is an estimate at list price, not a bill",
   "totals": {
     "all": "all",
-    "input": 32380,
-    "output": 11908913,
-    "cache_write_5m": 62893454,
-    "cache_write_1h": 10948421,
-    "cache_read": 1743286666,
-    "requests": 15793,
-    "est_usd": 899.4874
+    "input": 34162,
+    "output": 12507051,
+    "cache_write_5m": 69982895,
+    "cache_write_1h": 12048625,
+    "cache_read": 1840412270,
+    "requests": 16667,
+    "est_usd": 974.2103
   },
   "by_model": [
     {
       "model": "claude-opus-5-5",
-      "input": 26568,
-      "output": 9535627,
-      "cache_write_5m": 46816982,
-      "cache_write_1h": 10175899,
-      "cache_read": 1480056585,
-      "requests": 12929,
-      "est_usd": 802.3222
+      "input": 28270,
+      "output": 10112905,
+      "cache_write_5m": 53653750,
+      "cache_write_1h": 11276103,
+      "cache_read": 1576377015,
+      "requests": 13765,
+      "est_usd": 876.1242
     },
     {
       "model": "claude-sonnet-5-5",
-      "input": 5082,
-      "output": 1687195,
-      "cache_write_5m": 14143400,
+      "input": 5162,
+      "output": 1708055,
+      "cache_write_5m": 14396073,
       "cache_write_1h": 354601,
-      "cache_read": 233903887,
-      "requests": 2501,
-      "est_usd": 77.0494
+      "cache_read": 234709061,
+      "requests": 2539,
+      "est_usd": 77.9704
     },
     {
       "model": "claude-fable-5-2",
@@ -66,33 +66,33 @@
     },
     {
       "agent_type": "lead",
-      "input": 7896,
-      "output": 2115642,
+      "input": 8358,
+      "output": 2225922,
       "cache_write_5m": 0,
-      "cache_write_1h": 10948421,
-      "cache_read": 558579866,
-      "requests": 3730,
-      "est_usd": 245.2149
+      "cache_write_1h": 12048625,
+      "cache_read": 584748474,
+      "requests": 3950,
+      "est_usd": 261.4577
     },
     {
       "agent_type": "builder",
-      "input": 4694,
-      "output": 1766397,
-      "cache_write_5m": 16588092,
+      "input": 5508,
+      "output": 2072214,
+      "cache_write_5m": 22517552,
       "cache_write_1h": 0,
-      "cache_read": 236850211,
-      "requests": 2299,
-      "est_usd": 165.6572
+      "cache_read": 295793983,
+      "requests": 2702,
+      "est_usd": 213.2129
     },
     {
       "agent_type": "isolation-reviewer",
-      "input": 3802,
-      "output": 1447005,
-      "cache_write_5m": 9125306,
+      "input": 3874,
+      "output": 1469068,
+      "cache_write_5m": 9299642,
       "cache_write_1h": 0,
-      "cache_read": 111594412,
-      "requests": 1884,
-      "est_usd": 96.9007
+      "cache_read": 112838858,
+      "requests": 1920,
+      "est_usd": 98.4628
     },
     {
       "agent_type": "module-builder",
@@ -106,43 +106,43 @@
     },
     {
       "agent_type": "spec-writer",
-      "input": 1290,
-      "output": 547244,
-      "cache_write_5m": 2316286,
+      "input": 1494,
+      "output": 649224,
+      "cache_write_5m": 2671016,
       "cache_write_1h": 0,
-      "cache_read": 31128199,
-      "requests": 643,
-      "est_usd": 28.7571
+      "cache_read": 37770044,
+      "requests": 745,
+      "est_usd": 33.8995
     },
     {
       "agent_type": "general-purpose",
-      "input": 214,
-      "output": 108881,
-      "cache_write_5m": 983654,
+      "input": 228,
+      "output": 117127,
+      "cache_write_5m": 1049072,
       "cache_write_1h": 0,
-      "cache_read": 7573714,
-      "requests": 105,
-      "est_usd": 8.5649
+      "cache_read": 7881779,
+      "requests": 112,
+      "est_usd": 8.8418
     },
     {
       "agent_type": "approver",
-      "input": 420,
-      "output": 108319,
-      "cache_write_5m": 1030469,
+      "input": 432,
+      "output": 111447,
+      "cache_write_5m": 1070283,
       "cache_write_1h": 0,
-      "cache_read": 4355110,
-      "requests": 210,
-      "est_usd": 8.1914
+      "cache_read": 4503502,
+      "requests": 216,
+      "est_usd": 8.4828
     },
     {
       "agent_type": "reviewer-security",
-      "input": 320,
-      "output": 66753,
-      "cache_write_5m": 847697,
+      "input": 370,
+      "output": 79804,
+      "cache_write_5m": 1019014,
       "cache_write_1h": 0,
-      "cache_read": 3735625,
-      "requests": 157,
-      "est_usd": 6.322
+      "cache_read": 4513686,
+      "requests": 182,
+      "est_usd": 7.5954
     },
     {
       "agent_type": "frontend-builder",
@@ -155,34 +155,34 @@
       "est_usd": 4.2139
     },
     {
-      "agent_type": "reviewer-code",
-      "input": 448,
-      "output": 187062,
-      "cache_write_5m": 1361627,
+      "agent_type": "Explore",
+      "input": 146,
+      "output": 36464,
+      "cache_write_5m": 335474,
       "cache_write_1h": 0,
-      "cache_read": 5334413,
-      "requests": 211,
-      "est_usd": 2.7572
+      "cache_read": 4280779,
+      "requests": 73,
+      "est_usd": 3.2634
+    },
+    {
+      "agent_type": "reviewer-code",
+      "input": 486,
+      "output": 194642,
+      "cache_write_5m": 1506402,
+      "cache_write_1h": 0,
+      "cache_read": 5702863,
+      "requests": 228,
+      "est_usd": 3.2318
     },
     {
       "agent_type": "intake",
-      "input": 380,
-      "output": 74452,
-      "cache_write_5m": 518564,
+      "input": 408,
+      "output": 79486,
+      "cache_write_5m": 561044,
       "cache_write_1h": 0,
-      "cache_read": 2033804,
-      "requests": 190,
-      "est_usd": 2.2451
-    },
-    {
-      "agent_type": "Explore",
-      "input": 58,
-      "output": 15505,
-      "cache_write_5m": 168363,
-      "cache_write_1h": 0,
-      "cache_read": 1885473,
-      "requests": 29,
-      "est_usd": 1.5292
+      "cache_read": 2162463,
+      "requests": 204,
+      "est_usd": 2.4145
     },
     {
       "agent_type": "verifier",
@@ -248,13 +248,13 @@
   "by_unit": [
     {
       "unit": "lead",
-      "input": 7896,
-      "output": 2115642,
+      "input": 8358,
+      "output": 2225922,
       "cache_write_5m": 0,
-      "cache_write_1h": 10948421,
-      "cache_read": 558579866,
-      "requests": 3730,
-      "est_usd": 245.2149
+      "cache_write_1h": 12048625,
+      "cache_read": 584748474,
+      "requests": 3950,
+      "est_usd": 261.4577
     },
     {
       "unit": "runtime",
@@ -327,6 +327,16 @@
       "est_usd": 25.0623
     },
     {
+      "unit": "sp3-1",
+      "input": 414,
+      "output": 135054,
+      "cache_write_5m": 3292046,
+      "cache_write_1h": 0,
+      "cache_read": 24817708,
+      "requests": 204,
+      "est_usd": 23.9207
+    },
+    {
       "unit": "app",
       "input": 1296,
       "output": 439570,
@@ -385,6 +395,26 @@
       "cache_read": 21045762,
       "requests": 321,
       "est_usd": 16.4358
+    },
+    {
+      "unit": "sp3-5",
+      "input": 332,
+      "output": 124019,
+      "cache_write_5m": 1846736,
+      "cache_write_1h": 0,
+      "cache_read": 20396684,
+      "requests": 165,
+      "est_usd": 15.7349
+    },
+    {
+      "unit": "031-sp3-2-packaging-compatibility",
+      "input": 360,
+      "output": 170059,
+      "cache_write_5m": 1374448,
+      "cache_write_1h": 0,
+      "cache_read": 20992599,
+      "requests": 178,
+      "est_usd": 14.2419
     },
     {
       "unit": "f-03",
@@ -627,6 +657,16 @@
       "est_usd": 2.848
     },
     {
+      "unit": "030-sp3-5-ledger-runtime",
+      "input": 112,
+      "output": 29521,
+      "cache_write_5m": 343682,
+      "cache_write_1h": 0,
+      "cache_read": 2046634,
+      "requests": 56,
+      "est_usd": 2.5716
+    },
+    {
       "unit": "vendors",
       "input": 164,
       "output": 67158,
@@ -655,6 +695,16 @@
       "cache_read": 7240087,
       "requests": 83,
       "est_usd": 2.0839
+    },
+    {
+      "unit": "sp3-design",
+      "input": 102,
+      "output": 29205,
+      "cache_write_5m": 232529,
+      "cache_write_1h": 0,
+      "cache_read": 2703371,
+      "requests": 51,
+      "est_usd": 2.011
     },
     {
       "unit": "002",
@@ -850,23 +900,23 @@
   "by_sub_project": [
     {
       "sub_project": "sp1",
-      "input": 24484,
-      "output": 9793271,
-      "cache_write_5m": 62893454,
+      "input": 25804,
+      "output": 10281129,
+      "cache_write_5m": 69982895,
       "cache_write_1h": 0,
-      "cache_read": 1184706800,
-      "requests": 12063,
-      "est_usd": 654.2725
+      "cache_read": 1255663796,
+      "requests": 12717,
+      "est_usd": 712.7525
     },
     {
       "sub_project": "lead",
-      "input": 7896,
-      "output": 2115642,
+      "input": 8358,
+      "output": 2225922,
       "cache_write_5m": 0,
-      "cache_write_1h": 10948421,
-      "cache_read": 558579866,
-      "requests": 3730,
-      "est_usd": 245.2149
+      "cache_write_1h": 12048625,
+      "cache_read": 584748474,
+      "requests": 3950,
+      "est_usd": 261.4577
     }
   ],
   "by_day": [
@@ -931,6 +981,16 @@
       "est_usd": 107.3042
     },
     {
+      "day": "2026-11-20",
+      "input": 1854,
+      "output": 626184,
+      "cache_write_5m": 7196174,
+      "cache_write_1h": 1115527,
+      "cache_read": 100368900,
+      "requests": 909,
+      "est_usd": 75.8842
+    },
+    {
       "day": "2026-11-13",
       "input": 1490,
       "output": 1020705,
@@ -939,16 +999,6 @@
       "cache_read": 97275410,
       "requests": 734,
       "est_usd": 64.2802
-    },
-    {
-      "day": "2026-11-20",
-      "input": 72,
-      "output": 28046,
-      "cache_write_5m": 106733,
-      "cache_write_1h": 15323,
-      "cache_read": 3243296,
-      "requests": 35,
-      "est_usd": 1.1613
     }
   ],
   "rounds_per_unit": [
@@ -1077,6 +1127,24 @@
       "review": 0,
       "inventory": 0,
       "other": 0
+    },
+    {
+      "unit": "030-sp3-5-ledger-runtime",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 2,
+      "inventory": 0,
+      "other": 1
+    },
+    {
+      "unit": "031-sp3-2-packaging-compatibility",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 2,
+      "inventory": 0,
+      "other": 3
     },
     {
       "unit": "SP2-5",
@@ -1437,6 +1505,33 @@
       "review": 0,
       "inventory": 0,
       "other": 2
+    },
+    {
+      "unit": "sp3-1",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 2,
+      "inventory": 0,
+      "other": 4
+    },
+    {
+      "unit": "sp3-5",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "sp3-design",
+      "build": 0,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 2,
+      "other": 1
     },
     {
       "unit": "suite-speed-2",
