@@ -1,36 +1,36 @@
 {
-  "generated": "2026-11-19T19:31:29+00:00",
+  "generated": "2026-11-20T00:23:40+00:00",
   "note": "est_usd is an estimate at list price, not a bill",
   "totals": {
     "all": "all",
-    "input": 31502,
-    "output": 11580100,
-    "cache_write_5m": 60836684,
-    "cache_write_1h": 10811896,
-    "cache_read": 1712838641,
-    "requests": 15367,
-    "est_usd": 880.0159
+    "input": 32380,
+    "output": 11908913,
+    "cache_write_5m": 62893454,
+    "cache_write_1h": 10948421,
+    "cache_read": 1743286666,
+    "requests": 15793,
+    "est_usd": 899.4874
   },
   "by_model": [
     {
       "model": "claude-opus-5-5",
-      "input": 25872,
-      "output": 9315684,
-      "cache_write_5m": 45258297,
-      "cache_write_1h": 10039374,
-      "cache_read": 1452517203,
-      "requests": 12590,
-      "est_usd": 783.5271
+      "input": 26568,
+      "output": 9535627,
+      "cache_write_5m": 46816982,
+      "cache_write_1h": 10175899,
+      "cache_read": 1480056585,
+      "requests": 12929,
+      "est_usd": 802.3222
     },
     {
       "model": "claude-sonnet-5-5",
-      "input": 5020,
-      "output": 1677353,
-      "cache_write_5m": 13971934,
+      "input": 5082,
+      "output": 1687195,
+      "cache_write_5m": 14143400,
       "cache_write_1h": 354601,
-      "cache_read": 233573905,
-      "requests": 2474,
-      "est_usd": 76.4892
+      "cache_read": 233903887,
+      "requests": 2501,
+      "est_usd": 77.0494
     },
     {
       "model": "claude-fable-5-2",
@@ -44,13 +44,13 @@
     },
     {
       "model": "claude-haiku-5-5",
-      "input": 450,
-      "output": 382870,
-      "cache_write_5m": 1414020,
+      "input": 570,
+      "output": 481898,
+      "cache_write_5m": 1740639,
       "cache_write_1h": 0,
-      "cache_read": 13148319,
-      "requests": 223,
-      "est_usd": 0.4997
+      "cache_read": 15726980,
+      "requests": 283,
+      "est_usd": 0.6159
     }
   ],
   "by_agent_type": [
@@ -66,23 +66,23 @@
     },
     {
       "agent_type": "lead",
-      "input": 7680,
-      "output": 2087987,
+      "input": 7896,
+      "output": 2115642,
       "cache_write_5m": 0,
-      "cache_write_1h": 10811896,
-      "cache_read": 547601786,
-      "requests": 3626,
-      "est_usd": 241.3732
+      "cache_write_1h": 10948421,
+      "cache_read": 558579866,
+      "requests": 3730,
+      "est_usd": 245.2149
     },
     {
       "agent_type": "builder",
-      "input": 4358,
-      "output": 1620648,
-      "cache_write_5m": 15346327,
+      "input": 4694,
+      "output": 1766397,
+      "cache_write_5m": 16588092,
       "cache_write_1h": 0,
-      "cache_read": 222406061,
-      "requests": 2136,
-      "est_usd": 153.6432
+      "cache_read": 236850211,
+      "requests": 2299,
+      "est_usd": 165.6572
     },
     {
       "agent_type": "isolation-reviewer",
@@ -106,13 +106,13 @@
     },
     {
       "agent_type": "spec-writer",
-      "input": 1206,
-      "output": 512874,
-      "cache_write_5m": 2181416,
+      "input": 1290,
+      "output": 547244,
+      "cache_write_5m": 2316286,
       "cache_write_1h": 0,
-      "cache_read": 29681442,
-      "requests": 601,
-      "est_usd": 27.1057
+      "cache_read": 31128199,
+      "requests": 643,
+      "est_usd": 28.7571
     },
     {
       "agent_type": "general-purpose",
@@ -126,23 +126,23 @@
     },
     {
       "agent_type": "approver",
-      "input": 382,
-      "output": 100013,
-      "cache_write_5m": 920038,
+      "input": 420,
+      "output": 108319,
+      "cache_write_5m": 1030469,
       "cache_write_1h": 0,
-      "cache_read": 3926031,
-      "requests": 191,
-      "est_usd": 7.3872
+      "cache_read": 4355110,
+      "requests": 210,
+      "est_usd": 8.1914
     },
     {
       "agent_type": "reviewer-security",
-      "input": 298,
-      "output": 62890,
-      "cache_write_5m": 776078,
+      "input": 320,
+      "output": 66753,
+      "cache_write_5m": 847697,
       "cache_write_1h": 0,
-      "cache_read": 3494309,
-      "requests": 146,
-      "est_usd": 5.8382
+      "cache_read": 3735625,
+      "requests": 157,
+      "est_usd": 6.322
     },
     {
       "agent_type": "frontend-builder",
@@ -156,23 +156,23 @@
     },
     {
       "agent_type": "reviewer-code",
-      "input": 346,
-      "output": 101792,
-      "cache_write_5m": 1056085,
+      "input": 448,
+      "output": 187062,
+      "cache_write_5m": 1361627,
       "cache_write_1h": 0,
-      "cache_read": 3189318,
-      "requests": 162,
-      "est_usd": 2.447
+      "cache_read": 5334413,
+      "requests": 211,
+      "est_usd": 2.7572
     },
     {
       "agent_type": "intake",
-      "input": 354,
-      "output": 70095,
-      "cache_write_5m": 488010,
+      "input": 380,
+      "output": 74452,
+      "cache_write_5m": 518564,
       "cache_write_1h": 0,
-      "cache_read": 1903105,
-      "requests": 177,
-      "est_usd": 2.112
+      "cache_read": 2033804,
+      "requests": 190,
+      "est_usd": 2.2451
     },
     {
       "agent_type": "Explore",
@@ -205,6 +205,16 @@
       "est_usd": 0.6736
     },
     {
+      "agent_type": "reviewer-ux",
+      "input": 46,
+      "output": 5570,
+      "cache_write_5m": 121366,
+      "cache_write_1h": 0,
+      "cache_read": 248673,
+      "requests": 21,
+      "est_usd": 0.3841
+    },
+    {
       "agent_type": "scout",
       "input": 216,
       "output": 248313,
@@ -215,24 +225,14 @@
       "est_usd": 0.2898
     },
     {
-      "agent_type": "reviewer-ux",
-      "input": 26,
-      "output": 2927,
-      "cache_write_5m": 53942,
-      "cache_write_1h": 0,
-      "cache_read": 119290,
-      "requests": 13,
-      "est_usd": 0.1761
-    },
-    {
       "agent_type": "reviewer-ui",
-      "input": 50,
-      "output": 15482,
-      "cache_write_5m": 105471,
+      "input": 84,
+      "output": 32082,
+      "cache_write_5m": 200036,
       "cache_write_1h": 0,
-      "cache_read": 424285,
-      "requests": 24,
-      "est_usd": 0.0252
+      "cache_read": 927751,
+      "requests": 41,
+      "est_usd": 0.0503
     },
     {
       "agent_type": "web-fetch",
@@ -248,13 +248,13 @@
   "by_unit": [
     {
       "unit": "lead",
-      "input": 7680,
-      "output": 2087987,
+      "input": 7896,
+      "output": 2115642,
       "cache_write_5m": 0,
-      "cache_write_1h": 10811896,
-      "cache_read": 547601786,
-      "requests": 3626,
-      "est_usd": 241.3732
+      "cache_write_1h": 10948421,
+      "cache_read": 558579866,
+      "requests": 3730,
+      "est_usd": 245.2149
     },
     {
       "unit": "runtime",
@@ -467,6 +467,16 @@
       "est_usd": 8.8884
     },
     {
+      "unit": "sp2-10",
+      "input": 304,
+      "output": 158505,
+      "cache_write_5m": 1352724,
+      "cache_write_1h": 0,
+      "cache_read": 10253643,
+      "requests": 149,
+      "est_usd": 8.7882
+    },
+    {
       "unit": "SP2-7",
       "input": 254,
       "output": 130118,
@@ -525,6 +535,16 @@
       "cache_read": 2641063,
       "requests": 89,
       "est_usd": 4.0093
+    },
+    {
+      "unit": "sp2-9",
+      "input": 216,
+      "output": 86911,
+      "cache_write_5m": 388732,
+      "cache_write_1h": 0,
+      "cache_read": 5190181,
+      "requests": 105,
+      "est_usd": 3.9936
     },
     {
       "unit": "core",
@@ -595,6 +615,16 @@
       "cache_read": 2669471,
       "requests": 72,
       "est_usd": 2.9907
+    },
+    {
+      "unit": "sp2-8",
+      "input": 142,
+      "output": 55742,
+      "cache_write_5m": 315314,
+      "cache_write_1h": 0,
+      "cache_read": 4026121,
+      "requests": 68,
+      "est_usd": 2.848
     },
     {
       "unit": "vendors",
@@ -820,23 +850,23 @@
   "by_sub_project": [
     {
       "sub_project": "sp1",
-      "input": 23822,
-      "output": 9492113,
-      "cache_write_5m": 60836684,
+      "input": 24484,
+      "output": 9793271,
+      "cache_write_5m": 62893454,
       "cache_write_1h": 0,
-      "cache_read": 1165236855,
-      "requests": 11741,
-      "est_usd": 638.6427
+      "cache_read": 1184706800,
+      "requests": 12063,
+      "est_usd": 654.2725
     },
     {
       "sub_project": "lead",
-      "input": 7680,
-      "output": 2087987,
+      "input": 7896,
+      "output": 2115642,
       "cache_write_5m": 0,
-      "cache_write_1h": 10811896,
-      "cache_read": 547601786,
-      "requests": 3626,
-      "est_usd": 241.3732
+      "cache_write_1h": 10948421,
+      "cache_read": 558579866,
+      "requests": 3730,
+      "est_usd": 245.2149
     }
   ],
   "by_day": [
@@ -871,6 +901,16 @@
       "est_usd": 132.4012
     },
     {
+      "day": "2026-11-19",
+      "input": 4528,
+      "output": 1596231,
+      "cache_write_5m": 10513502,
+      "cache_write_1h": 673156,
+      "cache_read": 218304210,
+      "requests": 2211,
+      "est_usd": 126.788
+    },
+    {
       "day": "2026-11-17",
       "input": 4620,
       "output": 1292947,
@@ -879,16 +919,6 @@
       "cache_read": 191333170,
       "requests": 2251,
       "est_usd": 115.0785
-    },
-    {
-      "day": "2026-11-19",
-      "input": 3722,
-      "output": 1295464,
-      "cache_write_5m": 8563465,
-      "cache_write_1h": 551954,
-      "cache_read": 191099481,
-      "requests": 1820,
-      "est_usd": 108.4778
     },
     {
       "day": "2026-11-18",
@@ -909,6 +939,16 @@
       "cache_read": 97275410,
       "requests": 734,
       "est_usd": 64.2802
+    },
+    {
+      "day": "2026-11-20",
+      "input": 72,
+      "output": 28046,
+      "cache_write_5m": 106733,
+      "cache_write_1h": 15323,
+      "cache_read": 3243296,
+      "requests": 35,
+      "est_usd": 1.1613
     }
   ],
   "rounds_per_unit": [
@@ -1354,6 +1394,15 @@
       "other": 1
     },
     {
+      "unit": "sp2-10",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 3,
+      "inventory": 0,
+      "other": 3
+    },
+    {
       "unit": "sp2-2",
       "build": 1,
       "verify": 0,
@@ -1361,6 +1410,24 @@
       "review": 0,
       "inventory": 0,
       "other": 0
+    },
+    {
+      "unit": "sp2-8",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 4,
+      "inventory": 0,
+      "other": 1
+    },
+    {
+      "unit": "sp2-9",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 4,
+      "inventory": 0,
+      "other": 3
     },
     {
       "unit": "sp2-design",
