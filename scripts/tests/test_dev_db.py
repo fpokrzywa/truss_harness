@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import subprocess
+import sys
 import tempfile
 import unittest
 import unittest.mock
@@ -17,6 +18,7 @@ _SPEC = importlib.util.spec_from_file_location(
 )
 assert _SPEC and _SPEC.loader
 dev_db = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = dev_db
 _SPEC.loader.exec_module(dev_db)
 
 
