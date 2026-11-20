@@ -1,18 +1,25 @@
 """Shortcuts of the packaging tests: an organization's build stack (an active fake model and its
 connection, a published prompt and a published agent pinning it, in project `main/sample`), a
-solution and a version body."""
+solution, a version body, a Databricks connection, environment bindings and sealing."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any  # Any: JSON bodies
 
+import httpx
 from fastapi.testclient import TestClient
 
-from tests._support.p3util import A, fake_model_stack
+from tests._support.p3util import A, connection, fake_model_stack
 from tests._support.p4util import agent_spec, art, edit, prompt_spec, publish
 
 PROJECT = "/workspaces/main/projects/sample"
+EVALUATION = {
+    "dataset_id": "01900000-0000-7000-8000-00000000d5e7",
+    "min_accuracy": "0.9",
+    "max_p95_latency_ms": 2000,
+    "max_total_cost_usd": "1.50",
+}
 
 
 def solutions(org: str = A) -> str:
@@ -31,6 +38,8 @@ class Stack:
     agent_v1: str
     agent_hash: str
     agent_draft: str
+    model: str = ""
+    provider: str = ""
 
 
 def stack(client: TestClient, h: dict[str, str], org: str = A) -> Stack:
@@ -56,6 +65,8 @@ def stack(client: TestClient, h: dict[str, str], org: str = A) -> Stack:
         agent_v1=agent_v1["id"],
         agent_hash=agent_v1["spec_hash"],
         agent_draft=draft["id"],
+        model=models["model"],
+        provider=models["provider"],
     )
 
 
@@ -73,6 +84,7 @@ def version_body(
     kind: str = "agent",
     connection: str | None = None,
     min_accuracy: str = "0.9",
+    evaluation: bool = True,
 ) -> dict[str, Any]:
     return {
         "entrypoint_kind": kind,
@@ -80,12 +92,7 @@ def version_body(
         "data_reads": (
             [{"connection_id": connection, "tables": ["main.sales.orders"]}] if connection else []
         ),
-        "evaluation": {
-            "dataset_id": "01900000-0000-7000-8000-00000000d5e7",
-            "min_accuracy": min_accuracy,
-            "max_p95_latency_ms": 2000,
-            "max_total_cost_usd": "1.50",
-        },
+        "evaluation": {**EVALUATION, "min_accuracy": min_accuracy} if evaluation else None,
     }
 
 
@@ -95,3 +102,56 @@ def new_version(
     r = client.post(f"{solutions(org)}/{solution_id}/versions", headers=h, json=body)
     assert r.status_code == 201, r.text
     return r.json()
+
+
+def databricks_connection(
+    client: TestClient,
+    h: dict[str, str],
+    name: str = "lakehouse",
+    org: str = A,
+    scope: dict[str, str] | None = None,
+) -> str:
+    """A (draft) Databricks connection of `org`: organization-wide unless `scope` is given
+    (`{"workspace": slug[, "project": slug]}`)."""
+    body = {
+        "name": name,
+        "connection_type": "data_platform",
+        "adapter_key": "databricks",
+        "config": {"host": f"{name}.cloud.databricks.com"},
+        "scope": scope or {},
+    }
+    return str(connection(client, h, body, org)["id"])
+
+
+def bindings(
+    models: dict[str, str] | None = None,
+    connections: dict[str, str] | None = None,
+    *,
+    served: str = "served-chat",
+) -> dict[str, Any]:
+    """A seal body: `models` maps a model pin to a provider id, `connections` a connection pin to
+    a connection id."""
+    return {
+        "environment_bindings": {
+            "model_bindings": {
+                pin: {"provider_id": provider, "model": served}
+                for pin, provider in (models or {}).items()
+            },
+            "connection_bindings": dict(connections or {}),
+        }
+    }
+
+
+def releases_url(solution_id: str, version_id: str, org: str = A) -> str:
+    return f"{solutions(org)}/{solution_id}/versions/{version_id}/releases"
+
+
+def seal(
+    client: TestClient,
+    h: dict[str, str],
+    solution_id: str,
+    version_id: str,
+    body: dict[str, Any],
+    org: str = A,
+) -> httpx.Response:
+    return client.post(releases_url(solution_id, version_id, org), headers=h, json=body)

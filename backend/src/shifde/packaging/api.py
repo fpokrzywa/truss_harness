@@ -1,12 +1,13 @@
-"""Solution and solution version routes (sub-project 3 design sections 4 and 5, settled call 7):
-under a project, `{ws}` and `{proj}` named as in the tenancy routes."""
+"""Solution, solution version and release routes (sub-project 3 design sections 4 and 5, settled
+call 7): under a project, `{ws}` and `{proj}` named as in the tenancy routes; a release is also
+reached under the organization (`/orgs/{org}/releases/{release_id}`)."""
 
 from __future__ import annotations
 
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 
 from shifde.adapters.deps import RuntimeDep
 from shifde.core.pagination import DEFAULT_LIMIT, Page
@@ -76,3 +77,47 @@ def get_solution_version(
     svc: Solutions, ws: str, proj: str, solution_id: UUID, version_id: UUID
 ) -> s.SolutionVersionOut:
     return svc.get_version(ws, proj, solution_id, version_id)
+
+
+@router.post(
+    SOLUTIONS + "/{solution_id}/versions/{version_id}/releases",
+    status_code=201,
+    tags=["packaging"],
+    responses={200: {"model": s.ReleaseOut, "description": "Already sealed: the same release"}},
+)
+def seal_release(
+    svc: Solutions,
+    response: Response,
+    ws: str,
+    proj: str,
+    solution_id: UUID,
+    version_id: UUID,
+    body: s.ReleaseCreate,
+) -> s.ReleaseOut:
+    release, created = svc.seal(ws, proj, solution_id, version_id, body)
+    if not created:
+        response.status_code = 200
+    return release
+
+
+@router.get(SOLUTIONS + "/{solution_id}/versions/{version_id}/releases", tags=["packaging"])
+def list_releases(
+    svc: Solutions,
+    ws: str,
+    proj: str,
+    solution_id: UUID,
+    version_id: UUID,
+    limit: LimitQuery = DEFAULT_LIMIT,
+    cursor: CursorQuery = None,
+) -> Page[s.ReleaseOut]:
+    return svc.list_releases(ws, proj, solution_id, version_id, limit=limit, cursor=cursor)
+
+
+@router.get("/orgs/{org}/releases/{release_id}", tags=["packaging"])
+def get_release(svc: Solutions, release_id: UUID) -> s.ReleaseOut:
+    return svc.get_release(release_id)
+
+
+@router.post("/orgs/{org}/releases/{release_id}/withdraw", tags=["packaging"])
+def withdraw_release(svc: Solutions, release_id: UUID, body: s.ReleaseWithdraw) -> s.ReleaseOut:
+    return svc.withdraw(release_id, body)

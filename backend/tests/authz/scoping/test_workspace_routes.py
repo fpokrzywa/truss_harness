@@ -545,6 +545,10 @@ ROUTES: dict[Op, tuple[str, str]] = {
     ("GET", SOLUTIONS + "/{solution_id}/versions"): (SCOPED, "packaging"),
     ("POST", SOLUTIONS + "/{solution_id}/versions"): (SCOPED, "packaging"),
     ("GET", SOLUTIONS + "/{solution_id}/versions/{version_id}"): (SCOPED, "packaging"),
+    ("POST", SOLUTIONS + "/{solution_id}/versions/{version_id}/releases"): (SCOPED, "packaging"),
+    ("GET", SOLUTIONS + "/{solution_id}/versions/{version_id}/releases"): (SCOPED, "packaging"),
+    ("GET", "/api/v1/orgs/{org}/releases/{release_id}"): (SCOPED, "packaging"),
+    ("POST", "/api/v1/orgs/{org}/releases/{release_id}/withdraw"): (SCOPED, "packaging"),
     # ------------------------------------------------------------------ models
     ("GET", "/api/v1/orgs/{org}/model-allowlists"): (SCOPED, "models"),
     ("PUT", "/api/v1/orgs/{org}/model-allowlists"): (SCOPED, "models"),
@@ -1370,6 +1374,9 @@ PACKAGING = (
     "SELECT * FROM shifde.solutions WHERE workspace_id = :w ORDER BY id",
     "SELECT v.* FROM shifde.solution_versions v JOIN shifde.solutions s "
     "ON s.id = v.solution_id WHERE s.workspace_id = :w ORDER BY v.id",
+    "SELECT r.* FROM shifde.releases r JOIN shifde.solution_versions v "
+    "ON v.id = r.solution_version_id JOIN shifde.solutions s ON s.id = v.solution_id "
+    "WHERE s.workspace_id = :w ORDER BY r.id",
 )
 
 
@@ -1381,7 +1388,31 @@ def _solution_version_body(w: W, n: int) -> dict[str, Any]:  # Any: JSON body
     return {"entrypoint_kind": "agent", "entrypoint_version_id": w("agents.v1", n)}
 
 
-# the archive case last, so W1's version create still finds an active solution
+def _sealable_body(w: W, n: int) -> dict[str, Any]:  # Any: JSON body
+    """A version body with an evaluation contract, so it passes the compatibility check."""
+    return {
+        **_solution_version_body(w, n),
+        "evaluation": {
+            "dataset_id": str(uuid7()),
+            "min_accuracy": "0.9",
+            "max_p95_latency_ms": 2000,
+            "max_total_cost_usd": "1",
+        },
+    }
+
+
+def _seal_body(w: W) -> dict[str, Any]:  # Any: JSON body
+    return {
+        "environment_bindings": {
+            "model_bindings": {w("model", 0): {"provider_id": w("provider", 0), "model": "chat"}},
+            "connection_bindings": {},
+        }
+    }
+
+
+# the archive case last, so W1's version create and seal still find an active solution; the
+# withdraw case after every other release case (W1's seal of the same bindings returns its
+# existing release either way)
 _register(
     "packaging",
     {
@@ -1410,6 +1441,29 @@ _register(
             "POST",
             lambda n: _sol(w, n, "/versions"),
             body=lambda n: _solution_version_body(w, n),
+            state=w.snap(*PACKAGING),
+        ),
+        ("GET", SOLUTIONS + "/{solution_id}/versions/{version_id}/releases"): lambda w: _case(
+            LIST,
+            "GET",
+            lambda n: _sol(w, n, f"/versions/{w('sealable', n)}/releases"),
+            ids=lambda n: w("release", n),
+        ),
+        ("GET", "/api/v1/orgs/{org}/releases/{release_id}"): lambda w: _case(
+            READ, "GET", lambda n: f"/releases/{w('release', n)}"
+        ),
+        ("POST", SOLUTIONS + "/{solution_id}/versions/{version_id}/releases"): lambda w: _case(
+            WRITE,
+            "POST",
+            lambda n: _sol(w, n, f"/versions/{w('sealable', n)}/releases"),
+            body=lambda n: _seal_body(w),
+            state=w.snap(*PACKAGING),
+        ),
+        ("POST", "/api/v1/orgs/{org}/releases/{release_id}/withdraw"): lambda w: _case(
+            WRITE,
+            "POST",
+            lambda n: f"/releases/{w('release', n)}/withdraw",
+            body=lambda n: {"note": "scoping"},
             state=w.snap(*PACKAGING),
         ),
         ("POST", SOLUTIONS + "/{solution_id}/archive"): lambda w: _case(
@@ -2000,7 +2054,10 @@ def test_solutions_and_solution_versions(
     client: TestClient, world: World, owner_session: Session
 ) -> None:
     w = _world(client, owner_session, world.passwords)
-    model = fake_model_stack(w.admin.client, w.admin)["model"]
+    models = fake_model_stack(w.admin.client, w.admin)
+    model = models["model"]
+    w.set("model", 0, model)
+    w.set("provider", 0, models["provider"])
     for n in (1, 2):
         scope = w.scope(n, "project")
         prompt = art(w.admin.client, w.admin, "prompts", f"sol-prompt-{n}", prompt_spec(), scope)
@@ -2013,6 +2070,11 @@ def test_solutions_and_solution_versions(
         w.set("solution", n, made["id"])
         version = w.post(f"{base}/{made['id']}/versions", _solution_version_body(w, n))
         w.set("solution_version", n, version["id"])
+        # a sealable version and its release on each side
+        sealable = w.post(f"{base}/{made['id']}/versions", _sealable_body(w, n))
+        w.set("sealable", n, sealable["id"])
+        release = w.post(f"{base}/{made['id']}/versions/{sealable['id']}/releases", _seal_body(w))
+        w.set("release", n, release["id"])
     # U's version on W1's solution naming W2's agent version: the 422 an unknown id gets
     url = _url(_sol(w, 1, "/versions"))
     answers = []

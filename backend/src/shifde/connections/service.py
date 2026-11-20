@@ -96,6 +96,15 @@ def failure_to_error(exc: AdapterFailure) -> AppError:
     return UpstreamError(f"{ec.value}: {exc.message}")
 
 
+@dataclass(frozen=True)
+class ConnectionPlacement:
+    """Where a connection sits (NULL workspace: organization-wide) and its adapter."""
+
+    workspace_id: UUID | None
+    project_id: UUID | None
+    adapter_key: str
+
+
 class ConnectionService:
     def __init__(self, scope: TenantScope, runtime: IntegrationRuntime) -> None:
         self.sc = scope
@@ -1054,11 +1063,18 @@ class ConnectionService:
     def readable(self, connection_id: UUID) -> bool:
         """Whether `connection_id` is a connection of this client the caller may read (False for
         an unknown id and for another client's, alike)."""
+        return self.placement(connection_id) is not None
+
+    def placement(self, connection_id: UUID) -> ConnectionPlacement | None:
+        """The workspace, project and adapter of a connection of this client the caller may read;
+        None for an unknown, another client's and an unreadable id alike."""
         try:
             row = self._get_row(connection_id)
         except NotFound:
-            return False
-        return self.sc.pdp.authorize("connection:read", self.ref_of(row)).allowed
+            return None
+        if not self.sc.pdp.authorize("connection:read", self.ref_of(row)).allowed:
+            return None
+        return ConnectionPlacement(row["workspace_id"], row["project_id"], row["adapter_key"])
 
     def prepare_call(
         self,

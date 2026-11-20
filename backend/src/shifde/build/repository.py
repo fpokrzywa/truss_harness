@@ -372,6 +372,28 @@ def direct_pins(session: Session, tenant_id: UUID, version_id: UUID) -> list[Row
     )
 
 
+def pipeline_resource_refs(session: Session, tenant_id: UUID, version_id: UUID) -> list[Row]:
+    """(ref_type, ref_id, own) of the `connection` and `model` refs of pipeline version
+    `version_id` of `tenant_id`, each once. A model ref is `own` only when a model of the ref's
+    own client has its id; a shared model (tenant NULL) is returned with `own` false."""
+    return list(
+        session.execute(
+            text(
+                "SELECT DISTINCT r.ref_type, r.ref_id, "
+                "(r.ref_type = 'connection' OR m.id IS NOT NULL) AS own "
+                "FROM shifde.pipeline_version_refs r LEFT JOIN shifde.models m "
+                "ON m.tenant_id = r.tenant_id AND m.id = r.model_id "
+                "WHERE r.tenant_id = :t AND r.pipeline_version_id = :v "
+                "AND r.ref_type IN ('connection', 'model') "
+                "ORDER BY 1, 2"
+            ),
+            {"t": tenant_id, "v": version_id},
+        )
+        .mappings()
+        .all()
+    )
+
+
 def pinned_by_count(session: Session, tenant_id: UUID, version_id: UUID) -> int:
     return int(
         session.execute(

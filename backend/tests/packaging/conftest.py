@@ -1,11 +1,13 @@
 """Fixtures of the packaging tests: the full-app per-test database harness of `tests/app`,
 imported by name rather than copied (as `tests/perf`, B-2633), so each test has the seeded demo
 world (`demo-a`, `demo-b`, each with workspace `main` and project `sample`) in a database of its
-own. Solutions and solution versions are registered in `CLEAN_TABLES` like every module's
-client data."""
+own. Releases, solutions and solution versions are registered in `CLEAN_TABLES` like every
+module's client data. The REST test server serves the REST connections of tool and pipeline
+fixtures."""
 
 from __future__ import annotations
 
+from tests._support.servers import rest_server
 from tests.app.conftest import (
     _admin_engine,
     _dropper,
@@ -20,7 +22,7 @@ from tests.app.conftest import (
 )
 from tests.conftest import CLEAN_TABLES
 
-for _table in ("solution_versions", "solutions"):
+for _table in ("releases", "solution_versions", "solutions"):
     if _table not in CLEAN_TABLES:
         CLEAN_TABLES.append(_table)
 
@@ -33,6 +35,7 @@ __all__ = [
     "owner_engine",
     "owner_session",
     "owner_url",
+    "rest_server",
     "test_database",
     "world",
 ]
