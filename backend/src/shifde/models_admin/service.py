@@ -276,6 +276,14 @@ class ModelService:
         )
         return row is not None and row["tenant_id"] == self.sc.tenant_id
 
+    def own_model_by_key(self, provider_id: UUID, model_key: str) -> UUID | None:
+        """The id of this client's own model `model_key` served by `provider_id`; None when there
+        is none (a shared SHI model, another client's and an unknown pair alike; no permission
+        check)."""
+        return repository.own_model_id_by_key(
+            self._session, provider_id, model_key, tenant_id=self.sc.tenant_id
+        )
+
     def get_provider(self, provider_id: UUID) -> s.ProviderOut:
         self._read()
         return _provider_out(self._provider_row(provider_id))

@@ -215,6 +215,20 @@ def get_model(session: Session, model_id: UUID, *, tenant_id: UUID, shared: bool
     )
 
 
+def own_model_id_by_key(
+    session: Session, provider_id: UUID, model_key: str, *, tenant_id: UUID
+) -> UUID | None:
+    """The id of the client's own model `model_key` of `provider_id` (never a shared model)."""
+    found = session.execute(
+        text(
+            "SELECT id FROM shifde.models WHERE tenant_id = :t AND provider_id = :p "
+            "AND model_key = :k"
+        ),
+        {"t": tenant_id, "p": provider_id, "k": model_key},
+    ).scalar_one_or_none()
+    return UUID(str(found)) if found is not None else None
+
+
 def get_models(
     session: Session, model_ids: Sequence[UUID], *, tenant_id: UUID, shared: bool
 ) -> list[Row]:
