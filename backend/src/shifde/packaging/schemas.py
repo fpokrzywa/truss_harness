@@ -93,7 +93,7 @@ class EntrypointOut(BaseModel):
     spec_hash: str | None
 
 
-class PinOut(BaseModel):
+class SolutionPinOut(BaseModel):
     role: str
     version_id: UUID
     spec_hash: str | None
@@ -106,6 +106,6 @@ class SolutionVersionOut(BaseModel):
     entrypoint: EntrypointOut
     spec: dict[str, Any]
     spec_hash: str
-    pins: list[PinOut]
+    pins: list[SolutionPinOut]
     created_by: UUID
     created_at: datetime

@@ -172,7 +172,8 @@ class SolutionService:
             spec=dict(row["spec"]),
             spec_hash=row["spec_hash"],
             pins=[
-                s.PinOut(role=p.role, version_id=p.version_id, spec_hash=p.spec_hash) for p in pins
+                s.SolutionPinOut(role=p.role, version_id=p.version_id, spec_hash=p.spec_hash)
+                for p in pins
             ],
             created_by=row["created_by"],
             created_at=row["created_at"],

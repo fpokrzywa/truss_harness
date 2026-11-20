@@ -8825,6 +8825,56 @@
         "title": "PermissionOut",
         "type": "object"
       },
+      "PinOut": {
+        "properties": {
+          "artifact_id": {
+            "format": "uuid",
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "version_id": {
+            "format": "uuid",
+            "title": "Version Id",
+            "type": "string"
+          },
+          "version_no": {
+            "title": "Version No",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "role",
+          "version_id",
+          "version_no",
+          "state",
+          "artifact_id",
+          "kind",
+          "key",
+          "name"
+        ],
+        "title": "PinOut",
+        "type": "object"
+      },
       "PlanApprovalOut": {
         "properties": {
           "decided_at": {
@@ -13126,6 +13176,37 @@
         "title": "SolutionOut",
         "type": "object"
       },
+      "SolutionPinOut": {
+        "properties": {
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "spec_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spec Hash"
+          },
+          "version_id": {
+            "format": "uuid",
+            "title": "Version Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "version_id",
+          "spec_hash"
+        ],
+        "title": "SolutionPinOut",
+        "type": "object"
+      },
       "SolutionVersionCreate": {
         "additionalProperties": false,
         "properties": {
@@ -13190,7 +13271,7 @@
           },
           "pins": {
             "items": {
-              "$ref": "#/components/schemas/shifde__packaging__schemas__PinOut"
+              "$ref": "#/components/schemas/SolutionPinOut"
             },
             "title": "Pins",
             "type": "array"
@@ -15027,7 +15108,7 @@
             "anyOf": [
               {
                 "items": {
-                  "$ref": "#/components/schemas/shifde__build__schemas__PinOut"
+                  "$ref": "#/components/schemas/PinOut"
                 },
                 "type": "array"
               },
@@ -15544,56 +15625,6 @@
         "title": "DecideIn",
         "type": "object"
       },
-      "shifde__build__schemas__PinOut": {
-        "properties": {
-          "artifact_id": {
-            "format": "uuid",
-            "title": "Artifact Id",
-            "type": "string"
-          },
-          "key": {
-            "title": "Key",
-            "type": "string"
-          },
-          "kind": {
-            "title": "Kind",
-            "type": "string"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "role": {
-            "title": "Role",
-            "type": "string"
-          },
-          "state": {
-            "title": "State",
-            "type": "string"
-          },
-          "version_id": {
-            "format": "uuid",
-            "title": "Version Id",
-            "type": "string"
-          },
-          "version_no": {
-            "title": "Version No",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "role",
-          "version_id",
-          "version_no",
-          "state",
-          "artifact_id",
-          "kind",
-          "key",
-          "name"
-        ],
-        "title": "PinOut",
-        "type": "object"
-      },
       "shifde__build__schemas__UsageOut": {
         "properties": {
           "input_tokens": {
@@ -16089,37 +16120,6 @@
           "display"
         ],
         "title": "PrincipalOut",
-        "type": "object"
-      },
-      "shifde__packaging__schemas__PinOut": {
-        "properties": {
-          "role": {
-            "title": "Role",
-            "type": "string"
-          },
-          "spec_hash": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Spec Hash"
-          },
-          "version_id": {
-            "format": "uuid",
-            "title": "Version Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "role",
-          "version_id",
-          "spec_hash"
-        ],
-        "title": "PinOut",
         "type": "object"
       },
       "shifde__runtime__schemas__ArtifactOut": {
