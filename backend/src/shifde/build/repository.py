@@ -349,6 +349,29 @@ def list_pins(session: Session, tenant_id: UUID, version_id: UUID) -> list[Row]:
     )
 
 
+def direct_pins(session: Session, tenant_id: UUID, version_id: UUID) -> list[Row]:
+    """(role, version_id, spec_hash) of every artifact version `version_id` names directly: its
+    pins, and for a pipeline its `*_version` refs (the role is the ref type), all of `tenant_id`."""
+    return list(
+        session.execute(
+            text(
+                "SELECT p.role, v.id AS version_id, v.spec_hash "
+                "FROM shifde.artifact_version_pins p JOIN shifde.artifact_versions v "
+                "ON v.tenant_id = p.tenant_id AND v.id = p.pinned_version_id "
+                "WHERE p.tenant_id = :t AND p.version_id = :v "
+                "UNION SELECT r.ref_type, v.id, v.spec_hash "
+                "FROM shifde.pipeline_version_refs r JOIN shifde.artifact_versions v "
+                "ON v.tenant_id = r.tenant_id AND v.id = r.ref_version_id "
+                "WHERE r.tenant_id = :t AND r.pipeline_version_id = :v "
+                "ORDER BY 1, 2"
+            ),
+            {"t": tenant_id, "v": version_id},
+        )
+        .mappings()
+        .all()
+    )
+
+
 def pinned_by_count(session: Session, tenant_id: UUID, version_id: UUID) -> int:
     return int(
         session.execute(

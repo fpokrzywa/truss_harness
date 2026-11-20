@@ -116,6 +116,8 @@ layers = [
   "shifde.main | shifde.executor",
   "shifde.app | shifde.cli",
   "shifde.delivery",
+  "shifde.evaluation",
+  "shifde.packaging",
   "shifde.runtime",
   "shifde.ontology",
   "shifde.build",
@@ -150,6 +152,8 @@ containers = [
   "shifde.runtime",
   "shifde.governance",
   "shifde.delivery",
+  "shifde.evaluation",
+  "shifde.packaging",
 ]
 exhaustive = false
 
@@ -162,6 +166,7 @@ forbidden_modules = [
   "shifde.observability", "shifde.app", "shifde.cli", "shifde.main",
   "shifde.adapters", "shifde.vendors", "shifde.connections", "shifde.models_admin",
   "shifde.build", "shifde.ontology", "shifde.runtime", "shifde.governance", "shifde.ledger",
+  "shifde.evaluation", "shifde.packaging",
 ]
 
 [[tool.importlinter.contracts]]
@@ -175,7 +180,8 @@ forbidden_modules = [
   "shifde.main", "shifde.app", "shifde.cli", "shifde.runtime", "shifde.ontology", "shifde.build",
   "shifde.governance", "shifde.admin", "shifde.models_admin", "shifde.connections",
   "shifde.vendors", "shifde.installation", "shifde.tenancy", "shifde.identity", "shifde.secrets",
-  "shifde.audit", "shifde.authz", "shifde.observability", "shifde.ledger",
+  "shifde.audit", "shifde.authz", "shifde.observability", "shifde.ledger", "shifde.evaluation",
+  "shifde.packaging",
 ]
 
 [[tool.importlinter.contracts]]
@@ -187,7 +193,8 @@ forbidden_modules = [
   "shifde.main", "shifde.app", "shifde.cli", "shifde.runtime", "shifde.ontology", "shifde.build",
   "shifde.governance", "shifde.admin", "shifde.models_admin", "shifde.connections",
   "shifde.vendors", "shifde.installation", "shifde.tenancy", "shifde.identity", "shifde.secrets",
-  "shifde.audit", "shifde.authz", "shifde.observability", "shifde.ledger",
+  "shifde.audit", "shifde.authz", "shifde.observability", "shifde.ledger", "shifde.evaluation",
+  "shifde.packaging",
 ]
 
 [[tool.importlinter.contracts]]
@@ -230,6 +237,8 @@ source_modules = [
   "shifde.runtime.policies", "shifde.observability.tracing", "shifde.observability.metrics",
   "shifde.delivery.service", "shifde.delivery.repository", "shifde.delivery.gateway",
   "shifde.delivery.plans",
+  "shifde.packaging.service", "shifde.packaging.repository", "shifde.packaging.schemas",
+  "shifde.packaging.canonical",
 ]
 forbidden_modules = ["fastapi", "starlette"]
 
@@ -241,7 +250,7 @@ source_modules = [
   "shifde.secrets", "shifde.admin", "shifde.vendors", "shifde.connections",
   "shifde.models_admin", "shifde.build", "shifde.ontology", "shifde.runtime",
   "shifde.governance", "shifde.ledger",
-  "shifde.delivery",
+  "shifde.delivery", "shifde.packaging",
 ]
 forbidden_modules = [
   "shifde.secrets.repository", "shifde.secrets.models",
@@ -251,7 +260,7 @@ forbidden_modules = [
   "shifde.audit.repository", "shifde.audit.models",
   "shifde.vendors.repository", "shifde.connections.repository", "shifde.models_admin.repository",
   "shifde.build.repository", "shifde.ontology.repository", "shifde.governance.repository",
-  "shifde.delivery.repository",
+  "shifde.delivery.repository", "shifde.packaging.repository",
 ]
 allow_indirect_imports = true
 ignore_imports = [
@@ -271,4 +280,5 @@ ignore_imports = [
   "shifde.runtime.** -> shifde.runtime.repository",
   "shifde.governance.** -> shifde.governance.repository",
   "shifde.delivery.** -> shifde.delivery.repository",
+  "shifde.packaging.** -> shifde.packaging.repository",
 ]

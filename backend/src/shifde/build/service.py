@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any  # Any: rows / specs
 from uuid import UUID
 
@@ -99,6 +100,29 @@ def issues_as_errors(issues: list[Issue]) -> list[dict[str, Any]]:
             entry["edge"] = {"from": i.edge[0], "to": i.edge[1]}
         out.append(entry)
     return out
+
+
+@dataclass(frozen=True)
+class VersionAccess:
+    """An artifact version of the caller's client: its artifact, kind and state, its `spec_hash`,
+    and whether the caller may see the artifact (`ArtifactService.visible`)."""
+
+    version_id: UUID
+    artifact_id: UUID
+    kind: str
+    state: str
+    spec_hash: str | None
+    visible: bool
+
+
+@dataclass(frozen=True)
+class PinnedVersion:
+    """An artifact version another version names directly: a pin (`role`) or, for a pipeline, a
+    `*_version` ref (`role` is the ref type)."""
+
+    role: str
+    version_id: UUID
+    spec_hash: str | None
 
 
 class Prepared:
@@ -1290,6 +1314,32 @@ class ArtifactService:
         if row is None or row["tenant_id"] != self.sc.tenant_id:
             return None
         return dict(row["spec"])
+
+    def version_access(self, version_id: UUID) -> VersionAccess | None:
+        """The version of this client with its artifact and the caller's visibility of it; None
+        for an unknown version or another client's."""
+        row = repository.get_version(self.session, self.sc.tenant_id, version_id)
+        if row is None or row["tenant_id"] != self.sc.tenant_id:
+            return None
+        art = repository.get_artifact(self.session, self.sc.tenant_id, row["artifact_id"])
+        if art is None or art["tenant_id"] != self.sc.tenant_id:
+            return None
+        return VersionAccess(
+            version_id=row["id"],
+            artifact_id=art["id"],
+            kind=art["kind"],
+            state=row["state"],
+            spec_hash=row["spec_hash"],
+            visible=self.visible(art),
+        )
+
+    def direct_pins(self, version_id: UUID) -> list[PinnedVersion]:
+        """The versions `version_id` (of this client) names directly, from its pins and its
+        pipeline `*_version` refs, with their `spec_hash`."""
+        return [
+            PinnedVersion(role=r["role"], version_id=r["version_id"], spec_hash=r["spec_hash"])
+            for r in repository.direct_pins(self.session, self.sc.tenant_id, version_id)
+        ]
 
     def draft_of(self, art: Mapping[str, Any]) -> Mapping[str, Any] | None:
         return repository.get_draft(self.session, self.sc.tenant_id, art["id"])

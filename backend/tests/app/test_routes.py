@@ -86,6 +86,18 @@ DELIVERY = {
     ("POST", "/api/executor/v1/jobs/{job_id}/checkpoint"),
     ("POST", "/api/executor/v1/jobs/{job_id}/result"),
 }
+# packaging: solutions and solution versions (sub-project 3 design sections 4 and 5, settled
+# call 7; B-2698): not a SETH module
+SOLUTIONS = "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/solutions"
+PACKAGING = {
+    ("GET", SOLUTIONS),
+    ("POST", SOLUTIONS),
+    ("GET", SOLUTIONS + "/{solution_id}"),
+    ("POST", SOLUTIONS + "/{solution_id}/archive"),
+    ("GET", SOLUTIONS + "/{solution_id}/versions"),
+    ("POST", SOLUTIONS + "/{solution_id}/versions"),
+    ("GET", SOLUTIONS + "/{solution_id}/versions/{version_id}"),
+}
 
 
 def _pairs(rows: list[list[str]]) -> set[tuple[str, str]]:
@@ -103,7 +115,7 @@ def test_the_mounted_route_table_is_sethss_minus_branding(
     seth = _pairs(SNAPSHOT["all"])
     runtime, branding = _pairs(SNAPSHOT["runtime"]), _pairs(SNAPSHOT["branding"])
     assert runtime and branding and seth >= OIDC | PLATFORM_STATUS | SETH_GROUP_WRITES
-    expected = (seth - branding - SETH_GROUP_WRITES) | HEALTHZ | UNIFIED_ONLY | DELIVERY
+    expected = (seth - branding - SETH_GROUP_WRITES) | HEALTHZ | UNIFIED_ONLY | DELIVERY | PACKAGING
     mounted = _mounted(client)
     assert mounted - expected == set(), "mounted but not in SETH"
     assert expected - mounted == set(), "in SETH but not mounted"

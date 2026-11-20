@@ -1051,6 +1051,15 @@ class ConnectionService:
         """The tenant's connection row (NotFound otherwise); authorization is the caller's job."""
         return self._get_row(connection_id)
 
+    def readable(self, connection_id: UUID) -> bool:
+        """Whether `connection_id` is a connection of this client the caller may read (False for
+        an unknown id and for another client's, alike)."""
+        try:
+            row = self._get_row(connection_id)
+        except NotFound:
+            return False
+        return self.sc.pdp.authorize("connection:read", self.ref_of(row)).allowed
+
     def prepare_call(
         self,
         row: Mapping[str, Any],

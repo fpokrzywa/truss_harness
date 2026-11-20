@@ -44,6 +44,7 @@ from shifde.observability import tracing
 from shifde.observability.logging import configure_logging
 from shifde.observability.middleware import RequestIdMiddleware
 from shifde.ontology import api as ontology_api
+from shifde.packaging import api as packaging_api
 from shifde.runtime import api as runtime_api
 from shifde.runtime.governance import TokenBudgetHooks
 from shifde.tenancy import api as tenancy_api
@@ -157,6 +158,7 @@ def create_app(
     features.register("ontology")
     app.include_router(governance_api.router, dependencies=guard)
     features.register("governance")
+    app.include_router(packaging_api.router, dependencies=guard)
     app.include_router(delivery_api.router, dependencies=guard)
     # the executor gateway authenticates `shx_` executor tokens itself: no user session (B-2664)
     app.include_router(delivery_gateway_api.router)
