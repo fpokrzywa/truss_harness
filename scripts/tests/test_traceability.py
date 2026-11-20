@@ -6,6 +6,7 @@ import contextlib
 import importlib.util
 import io
 import re
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +16,7 @@ _SPEC = importlib.util.spec_from_file_location(
 )
 assert _SPEC and _SPEC.loader
 tr = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = tr
 _SPEC.loader.exec_module(tr)
 
 

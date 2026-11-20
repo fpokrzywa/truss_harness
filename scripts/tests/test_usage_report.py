@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ _SPEC = importlib.util.spec_from_file_location(
 )
 assert _SPEC and _SPEC.loader
 ur = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = ur
 _SPEC.loader.exec_module(ur)
 
 PREFIX = "proj-x"
