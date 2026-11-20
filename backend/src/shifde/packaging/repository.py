@@ -1,9 +1,11 @@
-"""SQL for solutions and solution versions (RLS tenant context; sub-project 3 design section 4).
+"""SQL for solutions, solution versions and releases (RLS tenant context; sub-project 3 design
+section 4).
 
-Every read and write is keyed by `tenant_id` as well as by row-level security. Solution versions
-are immutable (`shifde.solution_versions_guard`), and the guard also refuses an entrypoint that is
-not a published version of the row's kind. Build tables are never read here: build data comes
-from `shifde.build.service`.
+Every read and write is keyed by `tenant_id` as well as by row-level security, at every join.
+Solution versions are immutable (`shifde.solution_versions_guard`), and the guard also refuses an
+entrypoint that is not a published version of the row's kind; a release changes only from
+`sealed` to `withdrawn` (`shifde.releases_guard`). Build tables are never read here: build data
+comes from `shifde.build.service`.
 """
 
 from __future__ import annotations
@@ -25,6 +27,17 @@ SOLUTION_COLUMNS = (
 VERSION_COLUMNS = (
     "id, tenant_id, solution_id, version_no, entrypoint_kind, entrypoint_version_id, spec, "
     "spec_hash, created_by, created_at"
+)
+
+# a release with its scope: releases -> solution_versions -> solutions, each join on tenant_id
+RELEASE_SELECT = (
+    "SELECT r.id, r.tenant_id, r.solution_version_id, r.digest, r.manifest, r.compatibility, "
+    "r.status, r.sealed_by, r.sealed_at, r.created_at, r.updated_at, v.solution_id, "
+    "v.version_no, s.workspace_id, s.project_id, s.name AS solution_name "
+    "FROM shifde.releases r JOIN shifde.solution_versions v "
+    "ON v.tenant_id = r.tenant_id AND v.id = r.solution_version_id "
+    "JOIN shifde.solutions s ON s.tenant_id = v.tenant_id AND s.id = v.solution_id "
+    "WHERE r.tenant_id = :t "
 )
 
 
@@ -169,4 +182,71 @@ def list_versions(
         session.execute(text(sql), {"t": tenant_id, "s": solution_id, "after": after, "n": limit})
         .mappings()
         .all()
+    )
+
+
+# ------------------------------------------------------------------ releases
+def insert_release(session: Session, values: Mapping[str, Any]) -> UUID | None:
+    """Insert a sealed release; None when this client already has a release with its digest."""
+    inserted = session.execute(
+        text(
+            "INSERT INTO shifde.releases (id, tenant_id, solution_version_id, digest, manifest, "
+            "compatibility, status, sealed_by) VALUES (:id, :tenant_id, :solution_version_id, "
+            ":digest, CAST(:manifest AS jsonb), CAST(:compatibility AS jsonb), 'sealed', "
+            ":sealed_by) ON CONFLICT (tenant_id, digest) DO NOTHING RETURNING id"
+        ),
+        {
+            **values,
+            "manifest": json.dumps(values["manifest"]),
+            "compatibility": json.dumps(values["compatibility"]),
+        },
+    ).scalar_one_or_none()
+    return UUID(str(inserted)) if inserted is not None else None
+
+
+def get_release(session: Session, release_id: UUID, *, tenant_id: UUID) -> Row | None:
+    return (
+        session.execute(text(RELEASE_SELECT + "AND r.id = :id"), {"t": tenant_id, "id": release_id})
+        .mappings()
+        .first()
+    )
+
+
+def get_release_by_digest(session: Session, digest: str, *, tenant_id: UUID) -> Row | None:
+    return (
+        session.execute(text(RELEASE_SELECT + "AND r.digest = :d"), {"t": tenant_id, "d": digest})
+        .mappings()
+        .first()
+    )
+
+
+def list_releases(
+    session: Session, solution_version_id: UUID, *, tenant_id: UUID, after: UUID | None, limit: int
+) -> list[Row]:
+    """Newest first (ids are time-ordered); `after` is the last id of the previous page."""
+    sql = (
+        RELEASE_SELECT + "AND r.solution_version_id = :v "
+        "AND (CAST(:after AS uuid) IS NULL OR r.id < :after) "
+        "ORDER BY r.id DESC LIMIT :n"
+    )
+    return list(
+        session.execute(
+            text(sql), {"t": tenant_id, "v": solution_version_id, "after": after, "n": limit}
+        )
+        .mappings()
+        .all()
+    )
+
+
+def withdraw_release(session: Session, release_id: UUID, *, tenant_id: UUID) -> bool:
+    """Withdraw a sealed release; False if it is not sealed (any more)."""
+    return (
+        session.execute(
+            text(
+                "UPDATE shifde.releases SET status = 'withdrawn' "
+                "WHERE tenant_id = :t AND id = :id AND status = 'sealed' RETURNING id"
+            ),
+            {"t": tenant_id, "id": release_id},
+        ).first()
+        is not None
     )
