@@ -59,7 +59,7 @@ Design for each in `docs/superpowers/specs/`; "done when" from design section 6 
 | Sub-project | Design file | State | "Done when" result |
 |---|---|---|---|
 | 2 native delivery, Databricks | `2026-11-17-subproject-2-native-delivery-databricks-design.md` | done (issues #19-#28 merged, last `84aae36`) | **Met against the fake platform; live validation waiting on owner input.** On main `84aae36`: `python scripts/delivery_demo.py --fake` exit 0, `DELIVERY DEMO PASSED` (register target, executor credential, runner, plan, seal, self-approval refused 403, second administrator approves, apply, observe, verify, receipts `platform: fake`); `tests/delivery/test_end_to_end.py` in the 13/13 full suite (3855 passed); Deliver screens (targets, executors, plans, plan approvals, deployments) merged with component tests, not walked through in a browser by an agent (no browser tool). `tests/adapters/native/test_databricks_live.py` skips: "live validation waiting on owner input: no Databricks workspace". Integration stays `experimental` (B-2697). |
-| 3 | not written | todo | |
+| 3 releases, evaluation, cost reservation, Entra | `2026-11-19-subproject-3-releases-evaluation-entra-design.md` | in progress: design settled (B-2698..B-2701), cut into issues #78-#86 (labels `factory`, `sp3`); run with `/factory run <n>` in order ahead of the older follow-ups | |
 | 4 | not written | todo | |
 | 5 | not written | todo | |
 | 6 | not written | todo | |
