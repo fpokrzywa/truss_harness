@@ -3,7 +3,7 @@ session), so every module that produces usage can record it."""
 
 from __future__ import annotations
 
-from shifde.ledger import estimate, pricing
+from shifde.ledger import estimate, pricing, reservations
 from shifde.ledger.usage import (
     ALL,
     COST_KINDS,
@@ -35,6 +35,7 @@ __all__ = [
     "pricing",
     "rebuild",
     "reconcile",
+    "reservations",
     "record",
     "record_model_call",
     "record_model_call_durably",

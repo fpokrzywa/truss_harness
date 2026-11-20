@@ -567,7 +567,7 @@ def stale_holds(session: Session, tenant_id: UUID) -> int:
         session.execute(
             text(
                 "SELECT count(*) FROM shifde.budget_reservations WHERE tenant_id = :t "
-                "AND status = 'held' AND expires_at <= now()"
+                "AND status = 'held' AND expires_at <= now() AND provider_request_at IS NULL"
             ),
             {"t": tenant_id},
         ).scalar_one()
