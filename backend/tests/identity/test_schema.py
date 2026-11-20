@@ -44,7 +44,9 @@ def test_a_head_named_in_depends_on_is_not_a_version_head() -> None:
     tenancy_0004, so tenancy_0004 is not a version head either; tenancy_0006 follows tenancy_0005
     (B-2550). delivery_0002 follows delivery_0001 (B-2664), delivery_0003 follows delivery_0002
     (B-2669), delivery_0004 follows delivery_0003 (B-2675) and delivery_0005 follows delivery_0004
-    (B-2681), so the delivery head is delivery_0005."""
+    (B-2681), so the delivery head is delivery_0005. packaging_0001 depends on build_0002,
+    models_admin_0003 and tenancy_0006 (issue #78, B-2701), so none of the three is a version
+    head any more; packaging_0001 is."""
     heads = code_heads()
     assert "delivery_0005" in heads
     assert "delivery_0004" not in heads
@@ -56,7 +58,10 @@ def test_a_head_named_in_depends_on_is_not_a_version_head() -> None:
     assert "runtime_0003" not in heads
     assert "runtime_0002" not in heads
     assert "runtime_0001" not in heads
-    assert "tenancy_0006" in heads
+    assert "packaging_0001" in heads
+    assert "build_0002" not in heads
+    assert "models_admin_0003" not in heads
+    assert "tenancy_0006" not in heads
     assert "tenancy_0005" not in heads
     assert "tenancy_0004" not in heads
     assert "tenancy_0003" not in heads
