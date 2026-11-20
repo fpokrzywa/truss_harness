@@ -27,7 +27,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any  # Any: rows / provider JSON
+from typing import Any, Literal  # Any: rows / provider JSON
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
@@ -255,6 +255,26 @@ class ModelService:
             items=[_provider_out(r) for r in page],
             next_cursor=encode_cursor(page[-1]["id"]) if more and page else None,
         )
+
+    def provider_owner(self, provider_id: UUID) -> Literal["own", "shared"] | None:
+        """`own` for a provider of this client, `shared` for the shared SHI provider (tenant
+        NULL), None for an unknown id and another client's alike (no permission check)."""
+        row = repository.get_provider(
+            self._session, provider_id, tenant_id=self.sc.tenant_id, shared=True
+        )
+        if row is None:
+            return None
+        if row["tenant_id"] is None:
+            return "shared"
+        return "own" if row["tenant_id"] == self.sc.tenant_id else None
+
+    def own_model(self, model_id: UUID) -> bool:
+        """Whether `model_id` is a model of this client (False for a shared SHI model, another
+        client's and an unknown id; no permission check)."""
+        row = repository.get_model(
+            self._session, model_id, tenant_id=self.sc.tenant_id, shared=False
+        )
+        return row is not None and row["tenant_id"] == self.sc.tenant_id
 
     def get_provider(self, provider_id: UUID) -> s.ProviderOut:
         self._read()

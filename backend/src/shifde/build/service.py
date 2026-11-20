@@ -77,6 +77,7 @@ MAX_SPEC_BYTES = 1_000_000
 BATCH = 200
 STATE_NEXT = {"published": "deprecated", "deprecated": "retired"}
 APPROVAL_SETTING = "publish_requires_approval"
+RELEASE_PINNED = "a sealed release pins this version"
 
 
 def issues_as_errors(issues: list[Issue]) -> list[dict[str, Any]]:
@@ -105,7 +106,8 @@ def issues_as_errors(issues: list[Issue]) -> list[dict[str, Any]]:
 @dataclass(frozen=True)
 class VersionAccess:
     """An artifact version of the caller's client: its artifact, kind and state, its `spec_hash`,
-    and whether the caller may see the artifact (`ArtifactService.visible`)."""
+    whether the caller may see the artifact (`ArtifactService.visible`), and the artifact's
+    workspace and project (NULL workspace: organization-wide)."""
 
     version_id: UUID
     artifact_id: UUID
@@ -113,6 +115,19 @@ class VersionAccess:
     state: str
     spec_hash: str | None
     visible: bool
+    workspace_id: UUID | None
+    project_id: UUID | None
+
+
+@dataclass(frozen=True)
+class PipelineResourceRef:
+    """A `connection` or `model` ref of a pipeline version. `own`: for a model, whether it is a
+    model of the pipeline's own client (False for a shared SHI model); a connection is always
+    the client's own."""
+
+    ref_type: str
+    ref_id: UUID
+    own: bool
 
 
 @dataclass(frozen=True)
@@ -1064,7 +1079,11 @@ class ArtifactService:
                 f"a {version['state']} version cannot become {body.state} "
                 "(published -> deprecated -> retired)"
             )
-        updated = repository.set_state(self.session, self.sc.tenant_id, version_id, body.state)
+        try:
+            updated = repository.set_state(self.session, self.sc.tenant_id, version_id, body.state)
+        except IntegrityError as exc:  # packaging's retire guard: a sealed release pins it
+            self.session.rollback()
+            raise Conflict(RELEASE_PINNED) from exc
         assert updated is not None
         repository.refresh_latest_published(self.session, self.sc.tenant_id, art["id"])
         self._audit(
@@ -1331,6 +1350,8 @@ class ArtifactService:
             state=row["state"],
             spec_hash=row["spec_hash"],
             visible=self.visible(art),
+            workspace_id=art["workspace_id"],
+            project_id=art["project_id"],
         )
 
     def direct_pins(self, version_id: UUID) -> list[PinnedVersion]:
@@ -1339,6 +1360,14 @@ class ArtifactService:
         return [
             PinnedVersion(role=r["role"], version_id=r["version_id"], spec_hash=r["spec_hash"])
             for r in repository.direct_pins(self.session, self.sc.tenant_id, version_id)
+        ]
+
+    def pipeline_resource_refs(self, version_id: UUID) -> list[PipelineResourceRef]:
+        """The `connection` and `model` refs of a pipeline version of this client (none for any
+        other version); a shared model ref is returned with `own` False, never dropped."""
+        return [
+            PipelineResourceRef(ref_type=r["ref_type"], ref_id=r["ref_id"], own=r["own"])
+            for r in repository.pipeline_resource_refs(self.session, self.sc.tenant_id, version_id)
         ]
 
     def draft_of(self, art: Mapping[str, Any]) -> Mapping[str, Any] | None:
