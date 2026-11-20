@@ -749,3 +749,8 @@
   path: [privileges, columns, provider_request_at]
   reason: "the app role sets the provider-request marker (UPDATE only; still no DELETE grant) (design 12.2, issue #82)"
   migration: ledger_0003
+
+- table: artifact_versions
+  path: [triggers, trg_artifact_versions_release_guard]
+  reason: "a published version pinned by a sealed, non-withdrawn release (its manifest's entrypoint or one of its pins) cannot be retired: the invoker-rights trigger refuses with 23514, the owner too, and build's set_state answers 409 (sub-project 3 design 12 item 11, issue #79)"
+  migration: packaging_0002
