@@ -239,6 +239,8 @@ source_modules = [
   "shifde.delivery.plans",
   "shifde.packaging.service", "shifde.packaging.repository", "shifde.packaging.schemas",
   "shifde.packaging.canonical",
+  "shifde.evaluation.service", "shifde.evaluation.repository", "shifde.evaluation.schemas",
+  "shifde.evaluation.assertions", "shifde.evaluation.scoring",
 ]
 forbidden_modules = ["fastapi", "starlette"]
 
@@ -250,7 +252,7 @@ source_modules = [
   "shifde.secrets", "shifde.admin", "shifde.vendors", "shifde.connections",
   "shifde.models_admin", "shifde.build", "shifde.ontology", "shifde.runtime",
   "shifde.governance", "shifde.ledger",
-  "shifde.delivery", "shifde.packaging",
+  "shifde.delivery", "shifde.packaging", "shifde.evaluation",
 ]
 forbidden_modules = [
   "shifde.secrets.repository", "shifde.secrets.models",
@@ -260,7 +262,7 @@ forbidden_modules = [
   "shifde.audit.repository", "shifde.audit.models",
   "shifde.vendors.repository", "shifde.connections.repository", "shifde.models_admin.repository",
   "shifde.build.repository", "shifde.ontology.repository", "shifde.governance.repository",
-  "shifde.delivery.repository", "shifde.packaging.repository",
+  "shifde.delivery.repository", "shifde.packaging.repository", "shifde.evaluation.repository",
 ]
 allow_indirect_imports = true
 ignore_imports = [
@@ -281,4 +283,5 @@ ignore_imports = [
   "shifde.governance.** -> shifde.governance.repository",
   "shifde.delivery.** -> shifde.delivery.repository",
   "shifde.packaging.** -> shifde.packaging.repository",
+  "shifde.evaluation.** -> shifde.evaluation.repository",
 ]

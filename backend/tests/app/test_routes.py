@@ -102,6 +102,18 @@ PACKAGING = {
     ("GET", "/api/v1/orgs/{org}/releases/{release_id}"),
     ("POST", "/api/v1/orgs/{org}/releases/{release_id}/withdraw"),
 }
+# evaluation: datasets and evaluation runs (sub-project 3 design section 6, settled call 7;
+# issue #80): not a SETH module
+EVALUATION_DATASETS = "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/evaluation-datasets"
+EVALUATIONS = "/api/v1/orgs/{org}/releases/{release_id}/evaluations"
+EVALUATION = {
+    ("GET", EVALUATION_DATASETS),
+    ("POST", EVALUATION_DATASETS),
+    ("GET", EVALUATION_DATASETS + "/{dataset_id}"),
+    ("GET", EVALUATIONS),
+    ("POST", EVALUATIONS),
+    ("GET", "/api/v1/orgs/{org}/evaluation-runs/{run_id}"),
+}
 
 
 def _pairs(rows: list[list[str]]) -> set[tuple[str, str]]:
@@ -119,7 +131,14 @@ def test_the_mounted_route_table_is_sethss_minus_branding(
     seth = _pairs(SNAPSHOT["all"])
     runtime, branding = _pairs(SNAPSHOT["runtime"]), _pairs(SNAPSHOT["branding"])
     assert runtime and branding and seth >= OIDC | PLATFORM_STATUS | SETH_GROUP_WRITES
-    expected = (seth - branding - SETH_GROUP_WRITES) | HEALTHZ | UNIFIED_ONLY | DELIVERY | PACKAGING
+    expected = (
+        (seth - branding - SETH_GROUP_WRITES)
+        | HEALTHZ
+        | UNIFIED_ONLY
+        | DELIVERY
+        | PACKAGING
+        | EVALUATION
+    )
     mounted = _mounted(client)
     assert mounted - expected == set(), "mounted but not in SETH"
     assert expected - mounted == set(), "in SETH but not mounted"

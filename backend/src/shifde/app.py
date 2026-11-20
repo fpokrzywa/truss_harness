@@ -32,6 +32,7 @@ from shifde.core.settings import Settings, get_settings
 from shifde.core.ssrf import OutboundHttp, Resolver, default_resolver
 from shifde.delivery import api as delivery_api
 from shifde.delivery import gateway_api as delivery_gateway_api
+from shifde.evaluation import api as evaluation_api
 from shifde.governance import api as governance_api
 from shifde.identity import api as auth_api
 from shifde.identity.dependencies import require_auth
@@ -159,6 +160,7 @@ def create_app(
     app.include_router(governance_api.router, dependencies=guard)
     features.register("governance")
     app.include_router(packaging_api.router, dependencies=guard)
+    app.include_router(evaluation_api.router, dependencies=guard)
     app.include_router(delivery_api.router, dependencies=guard)
     # the executor gateway authenticates `shx_` executor tokens itself: no user session (B-2664)
     app.include_router(delivery_gateway_api.router)
