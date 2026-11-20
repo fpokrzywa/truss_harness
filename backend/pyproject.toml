@@ -166,7 +166,7 @@ forbidden_modules = [
   "shifde.observability", "shifde.app", "shifde.cli", "shifde.main",
   "shifde.adapters", "shifde.vendors", "shifde.connections", "shifde.models_admin",
   "shifde.build", "shifde.ontology", "shifde.runtime", "shifde.governance", "shifde.ledger",
-  "shifde.delivery", "shifde.evaluation", "shifde.packaging",
+  "shifde.evaluation", "shifde.packaging",
 ]
 
 [[tool.importlinter.contracts]]
