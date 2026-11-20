@@ -96,8 +96,9 @@ def settle_terminal(
     provider call may have started becomes `settled_unknown` with its usage row, any other is
     released. The database side (`shifde.settle_ended_run`, one implementation shared with the
     reaper) cancels the pending approvals, releases the unstarted budget reservations and closes
-    the `running` steps. For a
-    run that did not complete it also finds the writes that were in flight: a `started` write
+    the `running` steps.
+
+    For a run that did not complete it also finds the writes that were in flight: a `started` write
     invocation (any write class) or a pipeline write node becomes `indeterminate` and the run
     is flagged `error_class=indeterminate_side_effect` with its approval left open (R1: a
     cancel or a timeout must not read as a plain cancel or timeout while a write's outcome is
