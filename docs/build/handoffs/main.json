@@ -1,8 +1,8 @@
 {
-  "session_id": "8bb68b18-a595-4b7a-bbf1-ba9fe2fd4591",
-  "head_sha": "a45334e1c83f276cf632ccc5ec3e3f266a69053f",
+  "session_id": "6756ed0d-a3ab-410b-8c16-a0bfce898c10",
+  "head_sha": "88ae516839403b9038386e157ab3a9479cd3d396",
   "branch": "main",
-  "unit_in_progress": "026-sp2-8-front-end (at build round 1, no builder spawned)",
-  "next_step": "/factory run: resume job 026 at build (spawn builder-026-sp2-8-front-end, port 5360), then gate, 4 reviewers, approver; then #27 SP2-9",
-  "written_at": "2026-11-19T19:32:02Z"
+  "unit_in_progress": "none",
+  "next_step": "Sub-project 3, charter 7 step 1: write its short design, builder-read for guesses, settle (B-2698+), cut into factory issues, then /factory run",
+  "written_at": "2026-11-20T00:24:39Z"
 }
