@@ -2,8 +2,10 @@
 
 `test_seeded_catalog_and_templates` is SETH 3ba0e06 `tests/test_rls.py`'s, unchanged. The others
 pin that authz_0001 seeds SETH's final catalog (counts replayed from SETH's migrations, over the
-keys outside `delivery:%`), that delivery_0001 adds exactly its nine `delivery:*` keys and fifteen
-template grants (B-2501), and that `permissions` is read-only for the application role.
+keys outside `delivery:%`, `packaging:%` and `evaluation:%`), that delivery_0001 adds exactly its
+nine `delivery:*` keys and fifteen template grants (B-2501), that packaging_0001 adds exactly its
+eight `packaging:*` and `evaluation:*` keys and fifteen template grants (issue #78), and that
+`permissions` is read-only for the application role.
 """
 
 from __future__ import annotations
@@ -51,10 +53,12 @@ def test_seeded_catalog_and_templates(owner_session: Session) -> None:
 def test_catalog_is_seths_final_catalog(owner_session: Session) -> None:
     counts = owner_session.execute(
         text(
-            "SELECT (SELECT count(*) FROM shifde.permissions WHERE key NOT LIKE 'delivery:%'), "
+            "SELECT (SELECT count(*) FROM shifde.permissions WHERE key NOT LIKE 'delivery:%' "
+            "AND key NOT LIKE 'packaging:%' AND key NOT LIKE 'evaluation:%'), "
             "(SELECT count(*) FROM shifde.roles WHERE is_system), "
             "(SELECT count(*) FROM shifde.role_permissions WHERE tenant_id IS NULL "
-            "AND permission_key NOT LIKE 'delivery:%')"
+            "AND permission_key NOT LIKE 'delivery:%' AND permission_key NOT LIKE 'packaging:%' "
+            "AND permission_key NOT LIKE 'evaluation:%')"
         )
     ).one()
     assert tuple(counts) == (92, 8, 339)
@@ -66,6 +70,15 @@ def test_catalog_is_seths_final_catalog(owner_session: Session) -> None:
         )
     ).one()
     assert tuple(delivery) == (9, 15)
+    packaging = owner_session.execute(
+        text(
+            "SELECT (SELECT count(*) FROM shifde.permissions WHERE key LIKE 'packaging:%' "
+            "OR key LIKE 'evaluation:%'), "
+            "(SELECT count(*) FROM shifde.role_permissions WHERE tenant_id IS NULL "
+            "AND (permission_key LIKE 'packaging:%' OR permission_key LIKE 'evaluation:%'))"
+        )
+    ).one()
+    assert tuple(packaging) == (8, 15)
     platform = set(
         owner_session.execute(
             text(

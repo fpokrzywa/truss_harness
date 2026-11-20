@@ -65,6 +65,8 @@ Op = tuple[str, str]
 SCOPED, CLIENT, PLATFORM, PUBLIC = "scoped", "client", "platform", "public"
 CLASSES = frozenset({SCOPED, CLIENT, PLATFORM, PUBLIC})
 
+SOLUTIONS = "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/solutions"
+
 ROUTES: dict[Op, tuple[str, str]] = {
     # ------------------------------------------------------------------ no organization
     ("GET", "/api/auth/config"): (PUBLIC, "sign-in options, before any session"),
@@ -535,6 +537,14 @@ ROUTES: dict[Op, tuple[str, str]] = {
         PUBLIC,
         "executor credential, no user session; its own organization only",
     ),
+    # ------------------------------------------------------------------ packaging
+    ("GET", SOLUTIONS): (SCOPED, "packaging"),
+    ("POST", SOLUTIONS): (SCOPED, "packaging"),
+    ("GET", SOLUTIONS + "/{solution_id}"): (SCOPED, "packaging"),
+    ("POST", SOLUTIONS + "/{solution_id}/archive"): (SCOPED, "packaging"),
+    ("GET", SOLUTIONS + "/{solution_id}/versions"): (SCOPED, "packaging"),
+    ("POST", SOLUTIONS + "/{solution_id}/versions"): (SCOPED, "packaging"),
+    ("GET", SOLUTIONS + "/{solution_id}/versions/{version_id}"): (SCOPED, "packaging"),
     # ------------------------------------------------------------------ models
     ("GET", "/api/v1/orgs/{org}/model-allowlists"): (SCOPED, "models"),
     ("PUT", "/api/v1/orgs/{org}/model-allowlists"): (SCOPED, "models"),
@@ -1355,6 +1365,60 @@ _register(
 )
 
 
+# ---------------------------------------------------------------------- packaging
+PACKAGING = (
+    "SELECT * FROM shifde.solutions WHERE workspace_id = :w ORDER BY id",
+    "SELECT v.* FROM shifde.solution_versions v JOIN shifde.solutions s "
+    "ON s.id = v.solution_id WHERE s.workspace_id = :w ORDER BY v.id",
+)
+
+
+def _sol(w: W, n: int, tail: str = "") -> str:
+    return f"/workspaces/w{n}/projects/p{n}/solutions/{w('solution', n)}{tail}"
+
+
+def _solution_version_body(w: W, n: int) -> dict[str, Any]:  # Any: JSON body
+    return {"entrypoint_kind": "agent", "entrypoint_version_id": w("agents.v1", n)}
+
+
+# the archive case last, so W1's version create still finds an active solution
+_register(
+    "packaging",
+    {
+        ("GET", SOLUTIONS): lambda w: _case(
+            LIST,
+            "GET",
+            lambda n: f"/workspaces/w{n}/projects/p{n}/solutions",
+            ids=lambda n: w("solution", n),
+        ),
+        ("GET", SOLUTIONS + "/{solution_id}"): lambda w: _case(READ, "GET", lambda n: _sol(w, n)),
+        ("GET", SOLUTIONS + "/{solution_id}/versions"): lambda w: _case(
+            READ, "GET", lambda n: _sol(w, n, "/versions")
+        ),
+        ("GET", SOLUTIONS + "/{solution_id}/versions/{version_id}"): lambda w: _case(
+            READ, "GET", lambda n: _sol(w, n, f"/versions/{w('solution_version', n)}")
+        ),
+        ("POST", SOLUTIONS): lambda w: _case(
+            CREATE,
+            "POST",
+            lambda n: f"/workspaces/w{n}/projects/p{n}/solutions",
+            body=lambda n: {"name": "extra", "target_kind": "databricks.app/v1"},
+            state=w.snap(*PACKAGING),
+        ),
+        ("POST", SOLUTIONS + "/{solution_id}/versions"): lambda w: _case(
+            WRITE,
+            "POST",
+            lambda n: _sol(w, n, "/versions"),
+            body=lambda n: _solution_version_body(w, n),
+            state=w.snap(*PACKAGING),
+        ),
+        ("POST", SOLUTIONS + "/{solution_id}/archive"): lambda w: _case(
+            WRITE, "POST", lambda n: _sol(w, n, "/archive"), state=w.snap(*PACKAGING)
+        ),
+    },
+)
+
+
 def _rest_connection(base_url: str, n: int, name: str) -> dict[str, Any]:  # Any: JSON body
     return {
         "name": name,
@@ -1930,6 +1994,26 @@ def test_connections_and_delivery_targets(
         )
         owner_session.commit()
     _check(w, "connections", "delivery")
+
+
+def test_solutions_and_solution_versions(
+    client: TestClient, world: World, owner_session: Session
+) -> None:
+    w = _world(client, owner_session, world.passwords)
+    model = fake_model_stack(w.admin.client, w.admin)["model"]
+    for n in (1, 2):
+        scope = w.scope(n, "project")
+        prompt = art(w.admin.client, w.admin, "prompts", f"sol-prompt-{n}", prompt_spec(), scope)
+        publish(w.admin.client, w.admin, "prompts", prompt["id"])
+        spec = agent_spec(f"latest:{prompt['id']}", model)
+        agent = art(w.admin.client, w.admin, "agents", f"sol-agent-{n}", spec, scope)
+        w.set("agents.v1", n, publish(w.admin.client, w.admin, "agents", agent["id"])["id"])
+        base = f"/workspaces/w{n}/projects/p{n}/solutions"
+        made = w.post(base, {"name": f"solution-{n}", "target_kind": "databricks.app/v1"})
+        w.set("solution", n, made["id"])
+        version = w.post(f"{base}/{made['id']}/versions", _solution_version_body(w, n))
+        w.set("solution_version", n, version["id"])
+    _check(w, "packaging")
 
 
 def test_models(client: TestClient, world: World, owner_session: Session) -> None:
