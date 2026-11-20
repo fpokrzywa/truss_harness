@@ -1,8 +1,8 @@
 {
-  "session_id": "2661c9bd-61ea-4267-987f-dd2b1432f487",
-  "head_sha": "77b2b1d900bd88e6a36ef4bc80a5e18a8ff8eb46",
+  "session_id": "288d2d6a-e01e-4246-bfb7-8191c072fea9",
+  "head_sha": "27a66f33cdf77c4dbb5e2b5952322499c08218dc",
   "branch": "main",
-  "unit_in_progress": "none",
-  "next_step": "Sub-project 3, charter 7 step 3: /factory run 80, then 81, 83, 84, 85, 86 one at a time; consider #90 and #89 early (main CI red); see docs/build/HANDOFF.md",
-  "written_at": "2026-11-20T18:31:54Z"
+  "unit_in_progress": "Sub-project 3, charter 7 step 3: job 034 (#80) at build round 1",
+  "next_step": "/factory run 80: spawn builder-034-sp3-3-evaluation-datasets for build round 1 (see docs/build/HANDOFF.md), then 81, 83, 84, 85, 86, 96",
+  "written_at": "2026-11-20T20:20:10Z"
 }
