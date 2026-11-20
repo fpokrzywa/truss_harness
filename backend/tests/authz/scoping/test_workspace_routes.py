@@ -2013,6 +2013,14 @@ def test_solutions_and_solution_versions(
         w.set("solution", n, made["id"])
         version = w.post(f"{base}/{made['id']}/versions", _solution_version_body(w, n))
         w.set("solution_version", n, version["id"])
+    # U's version on W1's solution naming W2's agent version: the 422 an unknown id gets
+    url = _url(_sol(w, 1, "/versions"))
+    answers = []
+    for entry in (w("agents.v1", 2), str(uuid7())):
+        body = {"entrypoint_kind": "agent", "entrypoint_version_id": entry}
+        r = w.user.client.post(url, json=body, headers=dict(w.user))
+        answers.append((r.status_code, {k: v for k, v in r.json().items() if k != "request_id"}))
+    assert answers[0][0] == 422 and answers[0] == answers[1], answers
     _check(w, "packaging")
 
 
