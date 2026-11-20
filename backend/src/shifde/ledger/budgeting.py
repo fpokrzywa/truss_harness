@@ -89,31 +89,42 @@ def _held_sql(
     metric: str,
     since: datetime | None,
 ) -> tuple[str, dict[str, Any]]:
+    """Held amount of the rule's window: run holds matched through their run's scope, plus
+    direct-invocation holds (no run) that name the rule's id in `budget_ids` (never for a per-run
+    budget). A hold counts while it is within its TTL or its provider call may have started (the
+    marker): such a hold is never silently freed. `settled_unknown` is spent (its usage row)."""
     params: dict[str, Any] = {"t": tenant_id, "scope_id": b["scope_id"]}
-    where = [
+    live = [
         "res.tenant_id = :t",
         "res.status = 'held'",
-        "res.expires_at > now()",
-        HELD_ENTITY[str(b["scope_type"])],
+        "(res.expires_at > now() OR res.provider_request_at IS NOT NULL)",
     ]
+    where = [*live, HELD_ENTITY[str(b["scope_type"])]]
+    direct = [*live, "res.run_id IS NULL", "CAST(:rule_id AS uuid) = ANY (res.budget_ids)"]
+    params["rule_id"] = b.get("id")
     if period_name(str(b["period"])) == "run":
         where.append("r.root_run_id = :root")
         params["root"] = root_run_id
+        direct.append("FALSE")  # a per-run budget never counts a hold without a run
     elif since is not None:
         where.append("res.created_at >= :since")
+        direct.append("res.created_at >= :since")
         params["since"] = since
     if metric == "cost":
         select = "COALESCE(sum(res.cost_amount), 0)"
         where.append("res.currency = :cur")
+        direct.append("res.currency = :cur")
         params["cur"] = b["currency"]
     else:
         select = "COALESCE(sum(res.amount), 0)"
     return (
         # fixed fragments built in code; values are bound
-        f"SELECT {select} FROM shifde.budget_reservations res "  # nosec B608
+        f"SELECT (SELECT {select} FROM shifde.budget_reservations res "  # nosec B608
         "JOIN shifde.runs r ON r.id = res.run_id AND r.tenant_id = res.tenant_id "
         "JOIN shifde.runs rr ON rr.id = r.root_run_id AND rr.tenant_id = res.tenant_id "
-        f"WHERE {' AND '.join(where)}",
+        f"WHERE {' AND '.join(where)}) + "
+        f"(SELECT {select} FROM shifde.budget_reservations res "
+        f"WHERE {' AND '.join(direct)})",
         params,
     )
 

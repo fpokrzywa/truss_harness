@@ -37,7 +37,9 @@ def test_a_head_named_in_depends_on_is_not_a_version_head() -> None:
     `alembic_version`, and `code_heads` (readiness, skeleton tests) agrees (B-906). identity_0005
     depends on authz_0002, the authz head (B-928). tenancy_0001 merges identity_0005 and
     ledger_0001 (B-1001), so neither is a version head any more; tenancy_0002..0006 follow it.
-    The runtime branch has one head, runtime_0003 (B-2512) after runtime_0002 (B-2514).
+    The runtime branch has one head, runtime_0004 (issue #82) after runtime_0003 (B-2512) and
+    runtime_0002 (B-2514); runtime_0004 depends on ledger_0003, so ledger_0003 is not a version
+    head either.
     delivery_0001 depends on tenancy_0004 and identity_0006 (B-2526); tenancy_0005 follows
     tenancy_0004, so tenancy_0004 is not a version head either; tenancy_0006 follows tenancy_0005
     (B-2550). delivery_0002 follows delivery_0001 (B-2664), delivery_0003 follows delivery_0002
@@ -51,7 +53,9 @@ def test_a_head_named_in_depends_on_is_not_a_version_head() -> None:
     assert "delivery_0003" not in heads
     assert "delivery_0002" not in heads
     assert "delivery_0001" not in heads
-    assert "runtime_0003" in heads
+    assert "runtime_0004" in heads
+    assert "ledger_0003" not in heads
+    assert "runtime_0003" not in heads
     assert "runtime_0002" not in heads
     assert "runtime_0001" not in heads
     assert "packaging_0001" in heads

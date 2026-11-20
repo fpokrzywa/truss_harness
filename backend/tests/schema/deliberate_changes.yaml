@@ -699,3 +699,53 @@
   path: [privileges, columns, settings]
   reason: "Findings Item 13 (J-M2, issue #2, DECISIONS B-2550): shifde_app may UPDATE settings (column grant only), so PUT /orgs/{org}/capture-content can store the client's own capture_content; row-level security confines the write to the client in context, and the tenancy service allows it only with tenant:admin (the client's owner, or a platform administrator through the audited self-add) and audits each change in that client (tenancy.org.capture_content.updated with old, new and the actor)"
   migration: tenancy_0006
+
+- table: budget_reservations
+  path: [columns, invocation_id]
+  reason: "a direct model invocation (models_admin invoke, prompt and agent tests) holds its budget too, keyed by a fresh invocation id instead of a run step (sub-project 3 design 12.1, issue #82)"
+  migration: ledger_0003
+
+- table: budget_reservations
+  path: [columns, provider_request_at]
+  reason: "provider-request marker: set just before the model call may reach the provider; a marked hold never expires after its TTL and becomes settled_unknown at its full amount when its worker is lost (design 7.1, 12.2, issue #82)"
+  migration: ledger_0003
+
+- table: budget_reservations
+  path: [columns, run_id, nullable]
+  reason: "a direct invocation's hold has no run; ck_budget_reservations__owner requires exactly one of run_id / invocation_id (design 12.1, issue #82)"
+  migration: ledger_0003
+
+- table: budget_reservations
+  path: [constraints, budget_reservations_status_check, definition]
+  reason: "status admits settled_unknown: a hold whose call may have reached the provider, charged at its full amount with a usage row marked as unknown usage when its worker is lost (design 12.2, issue #82)"
+  migration: ledger_0003
+
+- table: budget_reservations
+  path: [constraints, ck_budget_reservations__owner]
+  reason: "a hold belongs to exactly one run step or one direct invocation (design 12.1, issue #82)"
+  migration: ledger_0003
+
+- table: budget_reservations
+  path: [constraints, uq_budget_reservations__step]
+  reason: "replaced by the partial unique index uq_budget_reservations__run_step (run holds) next to uq_budget_reservations__invocation (direct-invocation holds), because run_id is nullable (design 12.1, issue #82)"
+  migration: ledger_0003
+
+- table: budget_reservations
+  path: [indexes, uq_budget_reservations__invocation]
+  reason: "one hold per direct invocation per client (design 12.1, issue #82)"
+  migration: ledger_0003
+
+- table: budget_reservations
+  path: [indexes, uq_budget_reservations__run_step]
+  reason: "partial replacement of uq_budget_reservations__step: one hold per run step attempt per client, for holds that have a run (design 12.1, issue #82)"
+  migration: ledger_0003
+
+- table: budget_reservations
+  path: [indexes, uq_budget_reservations__step]
+  reason: "index of the dropped uq_budget_reservations__step constraint, replaced by the partial uq_budget_reservations__run_step (design 12.1, issue #82)"
+  migration: ledger_0003
+
+- table: budget_reservations
+  path: [privileges, columns, provider_request_at]
+  reason: "the app role sets the provider-request marker (UPDATE only; still no DELETE grant) (design 12.2, issue #82)"
+  migration: ledger_0003

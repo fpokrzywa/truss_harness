@@ -51,7 +51,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from shifde import __version__
+from shifde import __version__, ledger
 from shifde.adapters.registry import AdapterRegistry
 from shifde.adapters.runtime import IntegrationRuntime
 from shifde.audit import service as audit
@@ -403,6 +403,7 @@ class Worker:
             self._audit_reaped(row["tenant_id"], row["run_id"], row["reason"])
 
     def _audit_reaped(self, tenant_id: UUID, run_id: UUID, reason: str) -> None:
+        self._settle_reaped_holds(tenant_id, run_id)
         try:
             with self.db.session() as s:
                 db.init_context(s, "reaper")
@@ -431,6 +432,19 @@ class Worker:
                 s.commit()
         except Exception:  # noqa: BLE001 - auditing the reaper must never stop it
             log.error("worker.reap_audit_failed", exc_info=True)
+
+    def _settle_reaped_holds(self, tenant_id: UUID, run_id: UUID) -> None:
+        """The reaped run's orphaned holds, in the run's own client and its own transaction
+        (`settle_ended_run` left the ones whose call may have reached the provider `held`): a
+        failure here leaves them held, still counting and never expiring."""
+        try:
+            with self.db.session() as s:
+                db.init_context(s, "reaper")
+                db.set_tenant(s, tenant_id)
+                ledger.reservations.settle_orphaned(s, tenant_id, run_id)
+                s.commit()
+        except Exception:  # noqa: BLE001 - settling holds must never stop the reaper
+            log.error("worker.reap_holds_failed", exc_info=True)
 
 
 def _install_signals(worker: Worker) -> None:

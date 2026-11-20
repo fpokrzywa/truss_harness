@@ -1,5 +1,5 @@
-"""Budget / quota evaluation shared by the run gate (reservations) and direct model invocations
-(checks without a hold: there is no run to hang a hold on).
+"""Budget / quota evaluation shared by the run gate and direct model invocations; both then hold
+the call's tokens through `ledger.reservations` while the rule locks are held.
 
 Every applicable rule is locked (advisory transaction lock per rule, in id order) and compared in
 the rule's metric; `used + held` is read in ONE statement (one snapshot) so a settle committing
@@ -7,7 +7,7 @@ concurrently is counted exactly once, never by neither read (see `budgeting.used
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from typing import Any  # Any: SQL rows / parameters
@@ -16,7 +16,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from shifde.ledger import budgeting
+from shifde.ledger import budgeting, reservations
 from shifde.ledger import estimate as call_estimate
 from shifde.ledger.budgeting import effective_limit, period_name, period_start
 
@@ -57,6 +57,7 @@ class Evaluation:
     # Tokens the caller must hold for the call: never below the call's input + output ceiling
     # (Item 9: a smaller hold let a hard budget overshoot). Store this, not the caller's figure.
     hold_tokens: int = 0
+    quota_ids: list[UUID] = field(default_factory=list)  # token quotas the call was checked against
 
 
 def scope_match(alias: str) -> str:
@@ -163,14 +164,9 @@ def evaluate(
 ) -> Evaluation:
     """Lock and compare every token / cost budget and token quota covering `scope` with the
     estimated call; raise `BudgetDenied` when a hard rule would be exceeded."""
-    # holds that outlived their TTL stop counting (see held_amount) and are marked expired
-    session.execute(
-        text(
-            "UPDATE shifde.budget_reservations SET status = 'expired' "
-            "WHERE tenant_id = :t AND status = 'held' AND expires_at <= now()"
-        ),
-        {"t": scope.tenant_id},
-    )
+    # holds that outlived their TTL and whose provider call never started stop counting (see
+    # held_amount) and are marked expired; a hold whose call may have started keeps counting
+    reservations.expire_unstarted(session, scope.tenant_id)
     rules: list[dict[str, Any]] = [
         b
         for b in budgets_in_scope(session, scope)
@@ -231,4 +227,6 @@ def evaluate(
             )
         if not is_quota:
             applicable.append(b["id"])
-    return Evaluation(applicable, bool(quota_ids), est_cost, est_currency, hold)
+    return Evaluation(
+        applicable, bool(quota_ids), est_cost, est_currency, hold, sorted(quota_ids, key=str)
+    )

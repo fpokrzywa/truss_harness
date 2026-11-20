@@ -363,6 +363,8 @@ def call_model(
                 finished_at=utcnow(),
             )
             _step_event(ctx, "step_finished", row, {"status": "failed", "recovered": True})
+            # its hold may cover a call that reached the provider: charged in full, never freed
+            ledger.reservations.settle_orphaned(ctx.session, ctx.tenant_id, ctx.run_id)
     last_class, last_msg = state.INTERNAL, "no model was available"
     ref = ctx.run_ref()
     est_input = estimate.estimate_input_tokens(messages)
@@ -401,6 +403,10 @@ def call_model(
                     },
                 )
                 _step_event(ctx, "step_started", step, {"model_id": str(model_id)})
+                if res is not None and res.id is not None:
+                    # from here the call may reach the provider: a lost worker leaves the hold
+                    # held and counting until an orphan handler charges it (design 12.2)
+                    ledger.reservations.mark_provider_request(ctx.session, ctx.tenant_id, res.id)
             started = time.monotonic()
             try:
                 with tracing.start_span(

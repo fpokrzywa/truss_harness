@@ -29,6 +29,7 @@ from uuid import UUID
 import structlog
 from sqlalchemy.orm import Session
 
+from shifde import ledger
 from shifde.adapters.runtime import IntegrationRuntime
 from shifde.audit import service as audit
 from shifde.authz import service as authz
@@ -409,8 +410,10 @@ def _advance(
             # review 9 finding 1): a done, queued or foreign-leased job of the run recovers nothing
             session.commit()
             return "skipped"
-        # the lease belongs to this very job (or to none): recover the abandoned run
+        # the lease belongs to this very job (or to none): recover the abandoned run; a hold
+        # whose call may have reached the provider is charged in full, any other is released
         repo.transition(session, tenant_id, run_id, state.RUNNING, state.PENDING, clear_lease=True)
+        ledger.reservations.settle_orphaned(session, tenant_id, run_id)
         session.commit()
         run = repo.get_run(session, tenant_id, run_id)
         assert run is not None
