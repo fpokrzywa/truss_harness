@@ -1,8 +1,8 @@
 {
-  "session_id": "6756ed0d-a3ab-410b-8c16-a0bfce898c10",
-  "head_sha": "88ae516839403b9038386e157ab3a9479cd3d396",
+  "session_id": "bf5a10ef-4cf1-45fa-b736-f29c0e31c7a4",
+  "head_sha": "b467ef5713655e20501d1f8a2724c5b19b1be13c",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "Sub-project 3, charter 7 step 1: write its short design, builder-read for guesses, settle (B-2698+), cut into factory issues, then /factory run",
-  "written_at": "2026-11-20T00:24:39Z"
+  "next_step": "Sub-project 3, charter 7 step 3: /factory run 78, then 79, 80, 81, 82, 83, 84, 85, 86 one at a time (see docs/build/HANDOFF.md)",
+  "written_at": "2026-11-20T00:47:53Z"
 }
