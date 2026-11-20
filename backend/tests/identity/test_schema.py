@@ -47,19 +47,21 @@ def test_a_head_named_in_depends_on_is_not_a_version_head() -> None:
     (B-2681), so the delivery head is delivery_0005. packaging_0001 depends on build_0002,
     models_admin_0003 and tenancy_0006 (issue #78, B-2701), so none of the three is a version
     head any more; packaging_0002 follows packaging_0001 (issue #79), so packaging_0002 is the
-    packaging head."""
+    packaging head. evaluation_0001 depends on packaging_0002 and runtime_0004 (issue #80), so
+    neither is a version head any more and evaluation_0001 is the evaluation head."""
     heads = code_heads()
+    assert "evaluation_0001" in heads
     assert "delivery_0005" in heads
     assert "delivery_0004" not in heads
     assert "delivery_0003" not in heads
     assert "delivery_0002" not in heads
     assert "delivery_0001" not in heads
-    assert "runtime_0004" in heads
+    assert "runtime_0004" not in heads
     assert "ledger_0003" not in heads
     assert "runtime_0003" not in heads
     assert "runtime_0002" not in heads
     assert "runtime_0001" not in heads
-    assert "packaging_0002" in heads
+    assert "packaging_0002" not in heads
     assert "packaging_0001" not in heads
     assert "build_0002" not in heads
     assert "models_admin_0003" not in heads
