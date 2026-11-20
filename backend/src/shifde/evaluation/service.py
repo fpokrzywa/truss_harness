@@ -67,6 +67,7 @@ RUN_READ, RUN_REQUEST = "evaluation:run:read", "evaluation:run:request"
 DATASET_VERSION_TAKEN = "a concurrent request created this dataset version; try again"
 OUTPUT_NOT_KEPT = "the case output was not kept"
 COST_UNKNOWN = "the case cost is unknown"
+MAX_REASON = 2000
 
 
 class ReleaseWithdrawn(AppError):
@@ -162,6 +163,8 @@ def _finish(
     run_id: UUID,
     values: dict[str, Any],
 ) -> None:
+    if values.get("status_reason"):  # the column holds at most 2000 characters
+        values["status_reason"] = values["status_reason"][:MAX_REASON]
     repository.finish_run(session, run_id, values, tenant_id=release["tenant_id"])
     _audit_run(
         session,
