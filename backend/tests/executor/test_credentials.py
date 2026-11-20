@@ -5,6 +5,7 @@ file's entry. Every refusal is the same `CredentialUnavailable`, naming nothing.
 from __future__ import annotations
 
 import json
+import os
 from datetime import timedelta
 from pathlib import Path
 from typing import Any  # Any: grant field overrides
@@ -105,6 +106,7 @@ def test_the_token_is_never_in_a_repr(tmp_path: Path) -> None:
 def test_a_malformed_file_is_refused_without_echoing_it(tmp_path: Path, content: str) -> None:
     path = tmp_path / "credentials.json"
     path.write_text(content, encoding="utf-8")
+    os.chmod(path, 0o600)
     with pytest.raises(CredentialFileRefused) as raised:
         CredentialBroker.from_file(path)
     assert CREDENTIAL_TOKEN not in str(raised.value)
@@ -130,6 +132,17 @@ def test_posix_refuses_a_file_open_to_group_or_others(
     with pytest.raises(CredentialFileRefused, match="group or others"):
         CredentialBroker.from_file(path)
     Stat.st_mode = 0o100600
+    assert _token(CredentialBroker.from_file(path), _grant()) == CREDENTIAL_TOKEN
+
+
+@pytest.mark.skipif(os.name != "posix", reason="file modes are checked on POSIX only")
+def test_posix_refuses_a_real_file_open_to_group_or_others(tmp_path: Path) -> None:
+    path = credentials_file(tmp_path, HOST)
+    for mode in (0o640, 0o604):
+        os.chmod(path, mode)
+        with pytest.raises(CredentialFileRefused, match="group or others"):
+            CredentialBroker.from_file(path)
+    os.chmod(path, 0o600)
     assert _token(CredentialBroker.from_file(path), _grant()) == CREDENTIAL_TOKEN
 
 

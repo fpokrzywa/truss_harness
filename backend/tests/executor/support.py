@@ -4,6 +4,7 @@ platform, and the requester's plan request."""
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any  # Any: JSON bodies
 
@@ -34,6 +35,7 @@ def credentials_file(
         json.dumps({ref: {"host": host, "token": token, "service_principal": principal}}),
         encoding="utf-8",
     )
+    os.chmod(path, 0o600)  # the broker refuses a file open to group or others on POSIX
     return path
 
 
