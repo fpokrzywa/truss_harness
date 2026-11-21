@@ -55,6 +55,25 @@ describe('ReleaseDetailView', () => {
     expect(within(row).getByRole('link')).toHaveAttribute('href', '/o/acme/evaluations/ev-1');
   });
 
+  it('describes the release by its status in the header', async () => {
+    stubReleases();
+    const { unmount } = renderWithClient(<ReleaseDetailView id="r-1" />);
+    expect(await screen.findByText('Sealed release')).toBeInTheDocument();
+    unmount();
+    vi.unstubAllGlobals();
+
+    stubReleases({ [`GET ${R}`]: () => jsonResponse({ ...RELEASE, status: 'withdrawn' }) });
+    renderWithClient(<ReleaseDetailView id="r-1" />);
+    expect(await screen.findByText('Withdrawn release')).toBeInTheDocument();
+    expect(screen.queryByText('Sealed release')).not.toBeInTheDocument();
+  });
+
+  it('shows an unknown status in parentheses in the header', async () => {
+    stubReleases({ [`GET ${R}`]: () => jsonResponse({ ...RELEASE, status: 'foo' }) });
+    renderWithClient(<ReleaseDetailView id="r-1" />);
+    expect(await screen.findByText('Release (foo)')).toBeInTheDocument();
+  });
+
   it('shows - for manifest items that are absent', async () => {
     stubReleases({ [`GET ${R}`]: () => jsonResponse({ ...RELEASE, manifest: {} }) });
     renderWithClient(<ReleaseDetailView id="r-1" />);
@@ -129,6 +148,7 @@ describe('ReleaseDetailView withdraw', () => {
     expect(bodyOf(fetchMock, `POST ${R}/withdraw`)).toEqual({ note: 'superseded by v2' });
     const summary = screen.getByRole('region', { name: 'Release' });
     expect(await within(summary).findByText('withdrawn')).toBeInTheDocument();
+    expect(screen.getByText('Withdrawn release')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Withdraw' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Run evaluation' })).not.toBeInTheDocument();
   });

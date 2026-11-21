@@ -313,6 +313,28 @@ describe('IdpsView Entra profile', () => {
     );
   });
 
+  it('shows the Entra derived fields as read-only and empty until a tenant id is typed', async () => {
+    const HELP = 'Usually the issuer followed by /.well-known/openid-configuration. HTTPS only.';
+    stubApi({ ...ADMIN_SESSION, [PLATFORM_LIST]: () => list([]) });
+    renderWithClient(<PlatformIdpsView />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Add identity provider' }));
+    const dialog = screen.getByRole('dialog');
+    await userEvent.selectOptions(within(dialog).getByLabelText('Profile'), 'entra');
+    expect(within(dialog).getByLabelText('Issuer')).toHaveValue('');
+    expect(within(dialog).getByLabelText('Discovery URL')).toHaveValue('');
+    expect(document.body.textContent).not.toContain('login.microsoftonline.com//');
+    for (const label of ['Issuer', 'Discovery URL', 'Groups claim']) {
+      const input = within(dialog).getByLabelText(label);
+      expect(input).toHaveAttribute('readonly');
+      expect(input).toHaveClass('input-readonly');
+    }
+    expect(within(dialog).queryByText(HELP)).not.toBeInTheDocument();
+
+    await userEvent.selectOptions(within(dialog).getByLabelText('Profile'), 'generic');
+    expect(within(dialog).getByText(HELP)).toBeInTheDocument();
+    expect(within(dialog).getByLabelText('Issuer')).not.toHaveClass('input-readonly');
+  });
+
   it('requires a GUID tenant id for an Entra IdP', async () => {
     const fetchMock = stubApi({ ...ADMIN_SESSION, [PLATFORM_LIST]: () => list([]) });
     renderWithClient(<PlatformIdpsView />);
@@ -418,6 +440,7 @@ describe('PlatformIdpsView Entra groups', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Entra groups Entra SSO' }));
     const dialog = screen.getByRole('dialog');
     await within(dialog).findByRole('table', { name: 'Mapped groups' });
+    expect(within(dialog).getByRole('status')).toHaveTextContent(/^$/);
     await userEvent.type(within(dialog).getByLabelText('Name'), 'Analysts');
     await userEvent.type(within(dialog).getByLabelText('Slug'), 'analysts');
     await userEvent.type(within(dialog).getByLabelText('Entra object id'), OBJECT);
@@ -433,6 +456,27 @@ describe('PlatformIdpsView Entra groups', () => {
     await waitFor(() => expect(fetchMock.calls.filter((c) => c.key === GROUPS).length).toBe(2));
     await waitFor(() => expect(within(dialog).getByLabelText('Name')).toHaveValue(''));
     expect(within(dialog).getByLabelText('Entra object id')).toHaveValue('');
+    expect(within(dialog).getByRole('status')).toHaveTextContent('Group mapped.');
+  });
+
+  it('follows next_cursor and lists the groups of every page', async () => {
+    const fetchMock = stubApi({
+      ...ADMIN_SESSION,
+      [PLATFORM_LIST]: () => list([ENTRA_IDP]),
+      [GROUPS]: ({ url }) =>
+        url.includes('cursor=c1')
+          ? list([{ ...GROUP, id: 'g-2', slug: 'analysts', name: 'Analysts' }])
+          : list([GROUP], 'c1'),
+    });
+    renderWithClient(<PlatformIdpsView />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Entra groups Entra SSO' }));
+    const dialog = screen.getByRole('dialog');
+    const table = await within(dialog).findByRole('table', { name: 'Mapped groups' });
+    expect(within(table).getByText('Data team')).toBeInTheDocument();
+    expect(within(table).getByText('Analysts')).toBeInTheDocument();
+    const groupCalls = fetchMock.calls.filter((c) => c.key === GROUPS);
+    expect(groupCalls.filter((c) => c.url.includes('cursor=c1'))).toHaveLength(1);
+    expect(groupCalls).toHaveLength(2);
   });
 
   it('validates the name, slug and object id before calling the API', async () => {

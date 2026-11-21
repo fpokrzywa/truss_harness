@@ -70,7 +70,17 @@ export function createSecurityEndpoints(client: ApiClient) {
     getGroup: (org: string, id: string) =>
       client.request<Group>(`${orgBase(org)}/groups/${enc(id)}`),
 
-    listPlatformGroups: () => list<PlatformGroup>(PLATFORM_GROUPS),
+    /** Every platform group: follows next_cursor until the last page. */
+    listPlatformGroups: async (): Promise<ListResponse<PlatformGroup>> => {
+      const items: PlatformGroup[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await list<PlatformGroup>(PLATFORM_GROUPS, { cursor });
+        items.push(...page.items);
+        cursor = page.next_cursor ?? undefined;
+      } while (cursor);
+      return { items, next_cursor: null };
+    },
     createPlatformGroup: (input: PlatformGroupCreate) =>
       send<PlatformGroup>('POST', PLATFORM_GROUPS, input),
 
