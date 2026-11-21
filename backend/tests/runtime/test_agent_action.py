@@ -717,6 +717,58 @@ def test_an_action_runs_only_the_tool_its_ontology_version_pins(
     assert answers["b"].startswith("RunFailed: ")
     [(call, policy)] = seen
     assert call.tool.version_id == a.tool and policy.pinned_version_ids == frozenset({a.tool})
+    assert policy.node_call is True
+
+
+@pytest.mark.parametrize("listed", [True, False])
+def test_an_action_is_refused_by_a_tool_that_lists_its_allowed_agents(
+    listed: bool,
+    pair: tuple[Client, Client],
+    opened: Any,
+    owner_db: Database,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F-13 follow-up (#41, B-2716): an ontology action run has no calling agent, so a tool with
+    an `allowed_agent_ids` list refuses it (`agent_not_allowed`, recorded by the gate) without
+    being invoked; the same tool without the list runs."""
+    a, _ = pair
+    policy = {"allowed_agent_ids": [str(a.agent)]} if listed else {}
+    with owner_db.session() as o:
+        _, tool = add_published(o, a.tenant, "tools", f"tool-{uuid7().hex}",
+                                {**NONE_TOOL, "invocation_policy": policy})  # fmt: skip
+        action = {"key": "act", "tool_version_id": str(tool), "param_mapping": {}}
+        ontology, version = add_published(
+            o, a.tenant, "ontologies", f"onto-{uuid7().hex}", {"actions": [action]}
+        )
+        build_repo.insert_pins(o, a.tenant, version, [(tool, "action_tool")])
+        run = _running(o, a.tenant, a.user, a.token, {"object_pk": "1"}, kind="ontology_action",
+                       ontology_id=ontology, ontology_version_id=version,
+                       action_key="act")  # fmt: skip
+        o.commit()
+    _fake_inputs(monkeypatch, tool)
+    given: list[object] = []
+
+    def invoke_once(conns: object, spec: object, args: object, **kw: Any) -> object:
+        given.append(args)
+        return {"ok": True}
+
+    monkeypatch.setattr(tool_runtime, "invoke_once", invoke_once)
+    if not listed:
+        with opened(a.tenant) as s:
+            assert OntologyActionRunner(_ctx(s, settings, a, run)).run()["output"] == {"ok": True}
+        assert given == [{}]
+        return
+    with opened(a.tenant) as s, pytest.raises(state.GateDenied) as denied:
+        OntologyActionRunner(_ctx(s, settings, a, run)).run()
+    assert denied.value.reason == "agent_not_allowed"
+    assert given == []
+    with owner_db.session() as o:
+        decisions = o.execute(
+            text("SELECT reason_codes FROM shifde.policy_decisions WHERE run_id = :r "
+                 "AND decision = 'deny'"), {"r": run}
+        ).all()  # fmt: skip
+    assert [d[0] for d in decisions] == [["agent_not_allowed"]]
 
 
 def test_an_action_run_naming_bs_ontology_gets_the_unknown_id_answer(

@@ -243,6 +243,12 @@ def _step_event(
     )
 
 
+def _byte_prefix(text: str, limit: int) -> str:
+    """The longest prefix of `text` whose UTF-8 encoding is at most `limit` bytes; a character
+    is never cut."""
+    return text.encode()[:limit].decode("utf-8", "ignore")
+
+
 def _tool_audit(
     ctx: RunContext,
     call: ToolCall,
@@ -284,7 +290,7 @@ def _tool_audit(
             stored = scrub(output)
             raw = json.dumps(stored, default=str)
             if len(raw.encode()) > MAX_AUDIT_OUTPUT_BYTES:
-                stored = {"truncated": True, "preview": raw[:8000]}
+                stored = {"truncated": True, "preview": _byte_prefix(raw, MAX_AUDIT_OUTPUT_BYTES)}
             details["output"] = stored
     ctx.audit("run.tool_invoked", details, outcome=outcome, commit=False)
 
@@ -651,7 +657,8 @@ class ToolPolicy:
     agent_id: UUID | None  # the calling agent artifact (invocation_policy.allowed_agent_ids)
     pinned_version_ids: frozenset[UUID]  # tools this agent / node may call
     force_approval: bool = False  # orchestration approval node already required one
-    node_call: bool = False  # agentless pipeline / graph tool node: refused by `allowed_agent_ids`
+    # agentless pipeline / graph tool node or ontology action run: refused by `allowed_agent_ids`
+    node_call: bool = False
 
 
 def _no_nul(value: Any) -> Any:  # Any: JSON value
