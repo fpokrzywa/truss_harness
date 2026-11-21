@@ -37,7 +37,7 @@ Status column: `ported` = in `frontend/` verbatim; `ported, modified` = in `fron
 
 The `shell` count includes 12 top-level config and tooling files. No SETH front-end file belongs to `admin` (its pages are the `integrate/models` and `integrate/providers` screens, assigned to `models_admin`) or to `core`/`adapters`.
 
-New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src/app/page.test.tsx`; the Deliver screens (SP2-8, SP2-9): `src/app/(app)/o/[org]/deliver/**`, `src/components/deliver/**`, `src/lib/api/delivery-*.ts`, `src/lib/delivery-hooks.ts`, `src/lib/use-now.ts`, `src/test/delivery.ts`.
+New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src/app/page.test.tsx`; the Deliver screens (SP2-8, SP2-9): `src/app/(app)/o/[org]/deliver/**`, `src/components/deliver/**`, `src/lib/api/delivery-*.ts`, `src/lib/delivery-hooks.ts`, `src/lib/use-now.ts`, `src/test/delivery.ts`; the solutions, releases and evaluations screens (SP3-7): `src/app/(app)/o/[org]/solutions/**`, `src/app/(app)/o/[org]/releases/**`, `src/app/(app)/o/[org]/evaluations/**`, `src/components/releases/**`, `src/lib/api/packaging-*.ts`, `src/lib/api/evaluation-*.ts`, `src/lib/release-hooks.ts`, `src/lib/release-utils.ts`, `src/test/releases.ts`.
 
 ## shell
 
