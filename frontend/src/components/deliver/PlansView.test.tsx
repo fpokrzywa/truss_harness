@@ -9,8 +9,9 @@ import {
   RELEASE_CASCADE,
   stubDelivery,
   TARGET,
+  WITHDRAWN_RELEASE,
 } from '@/test/delivery';
-import { RELEASE, RELEASE_DIGEST } from '@/test/releases';
+import { RELEASE, RELEASE_DIGEST, S } from '@/test/releases';
 import { bodyOf } from '@/test/security';
 import { jsonResponse, problemResponse, renderWithClient } from '@/test/utils';
 import { formatDate } from '../admin/ui';
@@ -211,6 +212,59 @@ describe('PlansView request', () => {
       expect(get(l)).toHaveValue('');
       expect(get(l)).toBeDisabled();
     }
+  });
+
+  it('says so when a version has no sealed release', async () => {
+    stubDelivery({
+      ...TARGETS,
+      [`GET ${S}/s-1/versions/sv-1/releases`]: () => list([WITHDRAWN_RELEASE]),
+    });
+    renderWithClient(<PlansView />);
+    const dialog = await openDialog();
+    expect(within(dialog).queryByText('No sealed releases for this version.')).toBeNull();
+    await pickVersion(dialog);
+    expect(
+      await within(dialog).findByText('No sealed releases for this version.'),
+    ).toBeInTheDocument();
+    expect(within(within(dialog).getByLabelText('Release')).getAllByRole('option')).toHaveLength(1);
+  });
+
+  it('says so when a project has no solutions', async () => {
+    stubDelivery({ ...TARGETS, [`GET ${S}`]: () => list([]) });
+    renderWithClient(<PlansView />);
+    const dialog = await openDialog();
+    await pick(dialog, 'Workspace', 'Engineering');
+    await pick(dialog, 'Project', 'API');
+    expect(await within(dialog).findByText('No solutions in this project.')).toBeInTheDocument();
+  });
+
+  it('shows a failed list load under its select', async () => {
+    stubDelivery({
+      ...TARGETS,
+      [`GET ${S}`]: () => problemResponse(403, 'forbidden', { detail: 'missing permission' }),
+    });
+    renderWithClient(<PlansView />);
+    const dialog = await openDialog();
+    await pick(dialog, 'Workspace', 'Engineering');
+    await pick(dialog, 'Project', 'API');
+    const detail = await within(dialog).findByText('missing permission');
+    expect(detail.closest('[role="alert"]')).toHaveTextContent('Could not load the solutions');
+  });
+
+  it('keeps the release link on the requested release after the selects change', async () => {
+    stubDelivery({
+      ...TARGETS,
+      [`POST ${D}/plans`]: () => problemResponse(409, 'evaluation_required', { detail: REQUIRED }),
+    });
+    renderWithClient(<PlansView />);
+    const dialog = await fillRequest();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Request plan' }));
+    await within(dialog).findByText(REQUIRED);
+    await userEvent.selectOptions(within(dialog).getByLabelText('Workspace'), '');
+    expect(within(dialog).getByRole('link', { name: 'Open the release' })).toHaveAttribute(
+      'href',
+      `/o/acme/releases/${RELEASE.id}`,
+    );
   });
 
   it('blocks submit without a chosen release', async () => {

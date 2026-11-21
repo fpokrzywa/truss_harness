@@ -1,5 +1,6 @@
 'use client';
 
+import type { UseQueryResult } from '@tanstack/react-query';
 import Link from 'next/link';
 import { useState, type FormEvent } from 'react';
 import { endpoints } from '@/lib/api/endpoints';
@@ -112,6 +113,8 @@ function RequestPlanDialog({ org, onClose }: { org: string; onClose: () => void 
   const [solutionId, setSolutionId] = useState('');
   const [versionId, setVersionId] = useState('');
   const [releaseId, setReleaseId] = useState('');
+  // The release of the last request, so the evaluation link survives later select changes.
+  const [submittedRelease, setSubmittedRelease] = useState('');
   const workspaces = useWorkspaces(org);
   const projects = useProjects(org, ws || undefined);
   // An empty workspace keeps a hook disabled until the select before it has a value.
@@ -136,6 +139,7 @@ function RequestPlanDialog({ org, onClose }: { org: string; onClose: () => void 
     setErrors(next);
     if (Object.keys(next).length > 0) return;
 
+    setSubmittedRelease(releaseId);
     const res = await action.run(() =>
       endpoints.requestPlan(org, {
         target_id: targetId,
@@ -190,51 +194,89 @@ function RequestPlanDialog({ org, onClose }: { org: string; onClose: () => void 
           />
           {errors.target && <p className="mt-1 text-sm text-red-700">{errors.target}</p>}
         </div>
-        <SelectField
-          label="Workspace"
-          value={ws}
-          onChange={(v) => {
-            setWs(v);
-            setProj('');
-            setSolutionId('');
-            setVersionId('');
-            setReleaseId('');
-          }}
-          options={[SELECT, ...wsOptions]}
-        />
-        <SelectField
-          label="Project"
-          value={proj}
-          disabled={ws === ''}
-          onChange={(v) => {
-            setProj(v);
-            setSolutionId('');
-            setVersionId('');
-            setReleaseId('');
-          }}
-          options={[SELECT, ...projOptions]}
-        />
-        <SelectField
-          label="Solution"
-          value={solutionId}
-          disabled={proj === ''}
-          onChange={(v) => {
-            setSolutionId(v);
-            setVersionId('');
-            setReleaseId('');
-          }}
-          options={[SELECT, ...solutionOptions]}
-        />
-        <SelectField
-          label="Version"
-          value={versionId}
-          disabled={solutionId === ''}
-          onChange={(v) => {
-            setVersionId(v);
-            setReleaseId('');
-          }}
-          options={[SELECT, ...versionOptions]}
-        />
+        <div>
+          <SelectField
+            label="Workspace"
+            value={ws}
+            onChange={(v) => {
+              setWs(v);
+              setProj('');
+              setSolutionId('');
+              setVersionId('');
+              setReleaseId('');
+            }}
+            options={[SELECT, ...wsOptions]}
+          />
+          <StepHint
+            query={workspaces}
+            count={wsOptions.length}
+            noun="workspaces"
+            empty="No active workspaces."
+          />
+        </div>
+        <div>
+          <SelectField
+            label="Project"
+            value={proj}
+            disabled={ws === ''}
+            onChange={(v) => {
+              setProj(v);
+              setSolutionId('');
+              setVersionId('');
+              setReleaseId('');
+            }}
+            options={[SELECT, ...projOptions]}
+          />
+          {ws && (
+            <StepHint
+              query={projects}
+              count={projOptions.length}
+              noun="projects"
+              empty="No active projects in this workspace."
+            />
+          )}
+        </div>
+        <div>
+          <SelectField
+            label="Solution"
+            value={solutionId}
+            disabled={proj === ''}
+            onChange={(v) => {
+              setSolutionId(v);
+              setVersionId('');
+              setReleaseId('');
+            }}
+            options={[SELECT, ...solutionOptions]}
+          />
+          {proj && (
+            <StepHint
+              query={solutions}
+              count={solutionOptions.length}
+              noun="solutions"
+              empty="No solutions in this project."
+            />
+          )}
+        </div>
+        <div>
+          <SelectField
+            label="Version"
+            value={versionId}
+            disabled={solutionId === ''}
+            onChange={(v) => {
+              setVersionId(v);
+              setReleaseId('');
+            }}
+            options={[SELECT, ...versionOptions]}
+          />
+          {solutionId && (
+            <StepHint
+              query={versions}
+              count={versionOptions.length}
+              noun="versions"
+              empty="No versions of this solution."
+            />
+          )}
+        </div>
         <div>
           <SelectField
             label="Release"
@@ -243,6 +285,14 @@ function RequestPlanDialog({ org, onClose }: { org: string; onClose: () => void 
             onChange={setReleaseId}
             options={[SELECT, ...releaseOptions]}
           />
+          {versionId && (
+            <StepHint
+              query={releases}
+              count={releaseOptions.length}
+              noun="releases"
+              empty="No sealed releases for this version."
+            />
+          )}
           {errors.release && <p className="mt-1 text-sm text-red-700">{errors.release}</p>}
         </div>
         <TextField
@@ -263,7 +313,7 @@ function RequestPlanDialog({ org, onClose }: { org: string; onClose: () => void 
         <ActionError error={action.error} title="Could not request the plan" />
         {evaluationRequired && (
           <p className="text-sm">
-            <Link className="text-blue-800 underline" href={releaseHref(org, releaseId)}>
+            <Link className="text-blue-800 underline" href={releaseHref(org, submittedRelease)}>
               Open the release
             </Link>
           </p>
@@ -272,4 +322,28 @@ function RequestPlanDialog({ org, onClose }: { org: string; onClose: () => void 
       </form>
     </Modal>
   );
+}
+
+/** Under a cascade select whose step before it is chosen: loading, load failure or no options. */
+function StepHint({
+  query,
+  count,
+  noun,
+  empty,
+}: {
+  query: UseQueryResult<unknown>;
+  count: number;
+  noun: string;
+  empty: string;
+}) {
+  if (query.isPending) return <p className="mt-1 text-sm text-slate-600">Loading {noun}...</p>;
+  if (query.isError) {
+    return (
+      <div className="mt-1">
+        <ActionError error={query.error} title={`Could not load the ${noun}`} />
+      </div>
+    );
+  }
+  if (count === 0) return <p className="mt-1 text-sm text-slate-600">{empty}</p>;
+  return null;
 }
