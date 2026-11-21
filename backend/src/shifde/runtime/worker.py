@@ -23,6 +23,15 @@ abandons that job: its thread (which Python cannot kill) no longer counts agains
 so the worker keeps claiming new work, and whatever it does when it returns late is fenced by the
 run's lease token (B-2590).
 
+Abandoned threads are capped (issue #44): a client with `worker_max_abandoned_per_client` (at most
+`worker_max_abandoned`) abandoned jobs in flight gets every job of it this worker claims handed
+back (released, one lease of backoff), while other clients' jobs run as usual; once the worker
+holds `worker_max_abandoned` abandoned jobs it claims nothing more, hands back what it had just
+claimed, stops (running jobs are handed back at their next checkpoint, abandoned threads are not
+waited for) and `shifde-worker` exits 4, so a supervisor is expected to restart it with a fresh
+pool and fresh threads. The caps only gate claiming and dispatch: a wedged run is still settled
+by lease expiry and the reaper (C1), never cancelled.
+
 Capture-off sweep (F-12, issue #34): on a tick where this worker won the reaper lock, the reaper
 also sweeps every capture-off client for ended runs (run and root terminal) whose content scrub
 never ran (the reaper's follow-up transaction failed, or a worker died first) and scrubs them:
@@ -44,6 +53,7 @@ import socket
 import sys
 import threading
 import time
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -81,6 +91,7 @@ REAPER_LOCK = "shifde:reaper"
 CAPTURE_SWEEP_LOCK = "shifde:capture-sweep:{}"  # per client
 _CLIENTS = text("SELECT id FROM shifde.tenants ORDER BY id")
 EXIT_UNSAFE_ROLE = 3  # as `shifde-api` (shifde.main)
+EXIT_ABANDONED_CAP = 4  # stopped at `worker_max_abandoned` abandoned threads: restart the worker
 ADVANCE_KIND = "run.advance"
 UNKNOWN_KIND = "unknown job kind"
 REASON_ACTION = {
@@ -128,7 +139,10 @@ class Worker:
         self.reap_every = reap_seconds if reap_seconds is not None else max(self.lease / 4, 1.0)
         # the application role only (`Database` refuses a privileged role, B-2164); a statement
         # (a lock wait included) is bounded, so a thread cannot block forever on the database
-        # (ARCH M3)
+        # (ARCH M3). An abandoned thread holds no pooled connection while its call blocks: the step
+        # commits its write-ahead journal (`ctx.txn`) and `open_for_use` commits the advance
+        # session before the adapter call, so the session has no transaction across it; the
+        # sizing therefore does not depend on `max_abandoned`.
         self.db = Database(
             settings.database_url,
             pool_size=self.concurrency + 3,
@@ -140,6 +154,13 @@ class Worker:
         # killed, no longer counts against `concurrency`, is not waited for at shutdown, and its
         # late return is fenced by the run's lease token (ARCH M3, B-2590)
         self.wedged_after = timedelta(seconds=max(2 * self.lease, 60))
+        # caps on abandoned threads: the worker stops at `max_abandoned`; a client at its share has
+        # its claimed jobs handed back (issue #44)
+        self.max_abandoned = settings.worker_max_abandoned
+        self.max_abandoned_per_client = min(
+            settings.worker_max_abandoned_per_client, self.max_abandoned
+        )
+        self.exit_code = 0
         self.runtime = runtime or IntegrationRuntime(
             settings=settings, registry=AdapterRegistry.load(), resolver=default_resolver
         )
@@ -151,7 +172,9 @@ class Worker:
         self._idle = threading.Condition(self._lock)  # a job ended or was abandoned
 
     # ------------------------------------------------------------------ lifecycle
-    def run(self) -> None:
+    def run(self) -> int:
+        """Run until stopped; return the process exit code (`EXIT_ABANDONED_CAP` after the cap
+        stop, else 0)."""
         with self.db.session() as s:
             repo.upsert_worker(
                 s, self.worker_id, socket.gethostname(), os.getpid(), __version__, self.concurrency
@@ -171,6 +194,7 @@ class Worker:
                 self.wake.clear()
         finally:
             self._shutdown()
+        return self.exit_code
 
     def request_stop(self) -> None:
         self.stop.set()
@@ -192,6 +216,10 @@ class Worker:
     def _claim_and_dispatch(self) -> None:
         with self._lock:
             free = self.concurrency - len(self._active())
+            abandoned = self._abandoned()[0]
+        if abandoned >= self.max_abandoned:
+            self._stop_at_cap(abandoned)
+            return
         if free <= 0:
             return
         try:
@@ -215,8 +243,11 @@ class Worker:
         for row in rows:
             job = _Job(row["job_id"], row["tenant_id"], row["run_id"], row["kind"])
             with self._lock:
+                abandoned, per_client = self._abandoned()
                 busy = job.id in self._inflight
-                if not busy:
+                capped = abandoned >= self.max_abandoned
+                client_capped = per_client[job.tenant_id] >= self.max_abandoned_per_client
+                if not (busy or capped or client_capped):
                     self._inflight[job.id] = job
             if busy:
                 # The reaper requeued a job this worker is still executing (its heartbeat could not
@@ -225,11 +256,38 @@ class Worker:
                 log.warning("worker.reclaimed_inflight_job", job_id=str(job.id))
                 self._release_claim(job)
                 continue
+            if capped:
+                self._stop_at_cap(abandoned)
+                self._release_claim(job)
+                continue
+            if client_capped:
+                # this client already holds its share of abandoned threads: another worker (or
+                # this one, once they return) runs the job
+                log.warning(
+                    "worker.client_abandoned_cap",
+                    tenant_id=str(job.tenant_id),
+                    job_id=str(job.id),
+                    abandoned=per_client[job.tenant_id],
+                )
+                self._release_claim(job)
+                continue
             threading.Thread(
                 target=self._work, args=(job,), daemon=True, name=f"shifde-run-{job.id}"
             ).start()
             started += 1
         return started
+
+    def _stop_at_cap(self, abandoned: int) -> None:
+        """Stop claiming and stop the worker, which then exits `EXIT_ABANDONED_CAP`."""
+        if self.exit_code != EXIT_ABANDONED_CAP:
+            log.warning(
+                "worker.abandoned_cap_reached",
+                worker_id=self.worker_id,
+                abandoned=abandoned,
+                max_abandoned=self.max_abandoned,
+            )
+            self.exit_code = EXIT_ABANDONED_CAP
+        self.request_stop()
 
     def _release_claim(self, job: _Job) -> None:
         try:
@@ -323,6 +381,12 @@ class Worker:
         """The in-flight jobs not abandoned as wedged (call with `self._lock` held)."""
         return [job for job in self._inflight.values() if not job.abandoned.is_set()]
 
+    def _abandoned(self) -> tuple[int, Counter[UUID]]:
+        """The in-flight jobs abandoned as wedged, in total and per client (call with
+        `self._lock` held)."""
+        per_client = Counter(j.tenant_id for j in self._inflight.values() if j.abandoned.is_set())
+        return sum(per_client.values()), per_client
+
     # ------------------------------------------------------------------ heartbeat
     def _heartbeat_loop(self) -> None:
         interval = max(self.lease / 4, 0.2)
@@ -349,7 +413,15 @@ class Worker:
                         # no heartbeat: the lease expires and the reaper settles the run
                         s.commit()
                         if not job.lease_lost.is_set():
-                            log.warning("worker.wedged_job_abandoned", job_id=str(job.id))
+                            with self._lock:
+                                abandoned, per_client = self._abandoned()
+                            log.warning(
+                                "worker.wedged_job_abandoned",
+                                job_id=str(job.id),
+                                tenant_id=str(job.tenant_id),
+                                abandoned=abandoned + 1,  # this job included
+                                client_abandoned=per_client[job.tenant_id] + 1,
+                            )
                             job.lease_lost.set()
                         with self._lock:
                             job.abandoned.set()
@@ -530,7 +602,7 @@ def refuse_unsafe_role(settings: Settings) -> None:
         raise SystemExit(EXIT_UNSAFE_ROLE) from None
 
 
-def run(argv: list[str] | None = None) -> None:
+def run(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="shifde-worker", description="SHIFDE execution worker")
     parser.add_argument("--concurrency", type=int, default=None)
     parser.add_argument("--worker-id", default=None)
@@ -551,8 +623,8 @@ def run(argv: list[str] | None = None) -> None:
         reap_seconds=args.reap_seconds,
     )
     _install_signals(worker)
-    worker.run()
+    return worker.run()
 
 
 if __name__ == "__main__":
-    run()
+    sys.exit(run())

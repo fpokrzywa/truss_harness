@@ -104,6 +104,10 @@ class RestTestServer(_LocalHttpServer):
                 )
 
             def _handle(self) -> None:
+                # Read the whole body before any answer: closing with unread request bytes
+                # sends RST, which can drop the answer before the client reads it (issue #51).
+                length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(length) if length else b""
                 parts = urlsplit(self.path)
                 query = {k: v[0] for k, v in parse_qs(parts.query).items()}
                 outer.requests.append(
@@ -170,7 +174,7 @@ class RestTestServer(_LocalHttpServer):
                     _send_json(self, 200, {"ok": True})
                     return
                 if parts.path == "/echo":
-                    body = _read_json(self) if self.command != "GET" else None
+                    body = json.loads(raw) if raw and self.command != "GET" else None
                     _send_json(self, 200, {"method": self.command, "query": query, "body": body})
                     return
                 _send_json(self, 404, {"error": "not found"})

@@ -109,7 +109,8 @@ def test_a_cancel_during_a_write_is_settled_as_an_unknown_outcome_not_a_plain_ca
         )
         assert approvals == [
             ("indeterminate_side_effect", "pending", {"item": "x"}),
-            ("tool_side_effect", "cancelled", {}),
+            # capture off: the cancelled approval's arguments are scrubbed with the run (B-2715)
+            ("tool_side_effect", "cancelled", {"scrubbed": True}),
         ]
         assert _q(
             o, "SELECT count(*) FROM shifde.run_events WHERE run_id = :r AND type = 'outcome_unknown'",
