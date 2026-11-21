@@ -247,7 +247,19 @@ def test_a_clients_idp_never_syncs_groups(world: World, owner_session: Session) 
     ):
         oidc_flow.owner_oidc_idp(owner_session, world.a.tenant, iss, group_sync_mode="sync")
     row = ResolvedIdp(
-        uuid7(), world.a.tenant, "a", iss, f"{iss}/x", "c", None, [], {}, "off", "sync"
+        uuid7(),
+        world.a.tenant,
+        "a",
+        iss,
+        f"{iss}/x",
+        "c",
+        None,
+        [],
+        {},
+        "off",
+        "sync",
+        "generic",
+        None,
     )
     with pytest.raises(OidcFailure) as refused:
         _require_supported(row)

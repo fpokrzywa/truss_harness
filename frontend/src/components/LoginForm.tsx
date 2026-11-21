@@ -51,6 +51,16 @@ export function LoginForm() {
           administrator.
         </p>
       )}
+      {params.get('error') === 'oidc_groups_overage' && (
+        // An Entra token naming more groups than it carries (fail closed, B-2711).
+        <p
+          role="alert"
+          className="mt-4 rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-900"
+        >
+          Your Entra account is in too many groups for SETH to read. Ask an administrator to limit
+          the groups sent to SETH.
+        </p>
+      )}
 
       {config.isPending && (
         <p role="status" className="mt-4 text-sm text-slate-600">

@@ -720,6 +720,8 @@ class ResolvedIdp:
     claim_mappings: dict[str, str]
     jit: str
     group_sync_mode: str
+    profile: str
+    entra_tenant_id: UUID | None
 
 
 def resolve_idp(session: Session, idp_id: UUID) -> ResolvedIdp | None:

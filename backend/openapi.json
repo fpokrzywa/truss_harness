@@ -5503,6 +5503,18 @@
             "title": "Display Name",
             "type": "string"
           },
+          "entra_tenant_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entra Tenant Id"
+          },
           "group_sync": {
             "default": "off",
             "enum": [
@@ -5526,6 +5538,15 @@
               "create_and_join"
             ],
             "title": "Jit",
+            "type": "string"
+          },
+          "profile": {
+            "default": "generic",
+            "enum": [
+              "generic",
+              "entra"
+            ],
+            "title": "Profile",
             "type": "string"
           },
           "scopes": {
@@ -5585,6 +5606,18 @@
             "title": "Display Name",
             "type": "string"
           },
+          "entra_tenant_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entra Tenant Id"
+          },
           "group_sync": {
             "title": "Group Sync",
             "type": "string"
@@ -5600,6 +5633,10 @@
           },
           "jit": {
             "title": "Jit",
+            "type": "string"
+          },
+          "profile": {
+            "title": "Profile",
             "type": "string"
           },
           "row_version": {
@@ -5655,6 +5692,8 @@
           "jit",
           "group_sync",
           "status",
+          "profile",
+          "entra_tenant_id",
           "row_version",
           "created_at",
           "updated_at"
@@ -5731,6 +5770,18 @@
             ],
             "title": "Display Name"
           },
+          "entra_tenant_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entra Tenant Id"
+          },
           "group_sync": {
             "anyOf": [
               {
@@ -5774,6 +5825,21 @@
               }
             ],
             "title": "Jit"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "enum": [
+                  "generic",
+                  "entra"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile"
           },
           "row_version": {
             "title": "Row Version",

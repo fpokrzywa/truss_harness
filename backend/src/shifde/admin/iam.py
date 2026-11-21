@@ -973,6 +973,23 @@ def _platform_write(session: Session) -> None:
     commit(session, "group")
 
 
+def _external_id(session: Session, body: s.GroupCreate) -> str | None:
+    """An `entra` IdP's groups are mapped by object id: a GUID, stored lowercase as the sign-in
+    claim is matched (SP3-6). Read in the platform-administrator context; an unknown IdP is left
+    to the database's refusal."""
+    if body.idp_config_id is None or body.external_id is None:
+        return body.external_id
+    idp = identity.get_idp(session, None, body.idp_config_id)
+    if idp is None or idp.profile != "entra":
+        return body.external_id
+    try:
+        return str(UUID(body.external_id))
+    except ValueError:
+        raise ValidationFailed(
+            "external_id of an entra group must be its object id (a GUID)"
+        ) from None
+
+
 def create_platform_group(
     session: Session, ctx: RequestContext, principal: Principal, body: s.GroupCreate
 ) -> s.GroupDetailOut:
@@ -982,6 +999,7 @@ def create_platform_group(
     group_id = uuid7()
     try:
         with db.platform_admin_context(session):
+            external_id = _external_id(session, body)
             try:
                 with session.begin_nested():
                     authz.insert_group(
@@ -993,7 +1011,7 @@ def create_platform_group(
                             "description": body.description,
                             "source": "idp" if body.idp_config_id else "local",
                             "idp_config_id": body.idp_config_id,
-                            "external_id": body.external_id,
+                            "external_id": external_id,
                             "status": "active",
                             "created_at": utcnow(),
                             "created_by": principal.user_id,

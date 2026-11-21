@@ -60,6 +60,16 @@ describe('OIDC sign-in buttons', () => {
     expect(alert).toHaveTextContent(/did not complete/i);
     expect(alert).not.toHaveTextContent(/oidc_failed/);
   });
+
+  it('show the overage message for ?error=oidc_groups_overage', async () => {
+    search = 'error=oidc_groups_overage';
+    renderWithClient(<LoginForm />);
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(
+      'Your Entra account is in too many groups for SETH to read. Ask an administrator to limit the groups sent to SETH.',
+    );
+    expect(alert).not.toHaveTextContent(/did not complete/i);
+  });
 });
 
 describe('oidcLoginHref', () => {
