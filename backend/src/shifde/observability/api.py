@@ -94,8 +94,14 @@ OPS_WINDOW_SECONDS = 300
 _LOOPBACK = {"127.0.0.1", "::1"}
 _FORWARD_HEADERS = ("x-forwarded-for", "forwarded", "x-real-ip")
 _WEB_PROXY_HEADER = "x-shifde-via"  # injected by the Next.js web proxy on every proxied request
-_cache_lock = threading.Lock()
-_cache: tuple[float, dict[str, Any]] | None = None  # Any: ops stats document
+
+
+class OpsStatsCache:
+    """One app's ops-stats snapshot and its lock (kept on `app.state`, so apps never share one)."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.entry: tuple[float, dict[str, Any]] | None = None  # Any: ops stats document
 
 
 def _authorize_metrics(request: Request, settings: SettingsDep) -> None:
@@ -124,20 +130,19 @@ def _authorize_metrics(request: Request, settings: SettingsDep) -> None:
         raise Forbidden("metrics are available to loopback clients only (set SHIFDE_METRICS_TOKEN)")
 
 
-def ops_stats(db: Database) -> dict[str, Any]:  # Any: ops stats document
-    """Aggregate-only operational counters across tenants (cached for 5 s per process)."""
-    global _cache
+def ops_stats(db: Database, cache: OpsStatsCache) -> dict[str, Any]:  # Any: ops stats document
+    """Aggregate-only operational counters across tenants (cached for 5 s per app instance)."""
     now = time.monotonic()
-    with _cache_lock:
-        if _cache is not None and now - _cache[0] < 5.0:
-            return _cache[1]
+    with cache.lock:
+        if cache.entry is not None and now - cache.entry[0] < 5.0:
+            return cache.entry[1]
     with db.session() as session:
         raw = session.execute(
             text("SELECT shifde.shifde_ops_stats(:w)"), {"w": OPS_WINDOW_SECONDS}
         ).scalar_one()
     stats = dict(raw) if isinstance(raw, dict) else dict(json.loads(raw))
-    with _cache_lock:
-        _cache = (now, stats)
+    with cache.lock:
+        cache.entry = (now, stats)
     return stats
 
 
@@ -148,7 +153,9 @@ def prometheus_metrics(request: Request, settings: SettingsDep) -> Response:
     _authorize_metrics(request, settings)
     body = metrics.registry.render()
     try:
-        body += metrics.render_ops(ops_stats(request.app.state.db))
+        body += metrics.render_ops(
+            ops_stats(request.app.state.db, request.app.state.ops_stats_cache)
+        )
     except SQLAlchemyError:
         log.warning("metrics.ops_stats_unavailable", exc_info=True)
         body += "# shifde_ops_stats unavailable: database error\n"
