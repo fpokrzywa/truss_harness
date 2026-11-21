@@ -9,14 +9,18 @@ the browser.
 A passing run is evidence, nothing more. Entra stays `experimental` and is not called validated
 because of this run; changing that status (and REQ F-22) is a separate decision for the owner.
 
+The in-process proof against the fake Entra issuer (group mapping, access to `demo-a` but not
+`demo-b`, and the overage refusal) is `python scripts/release_demo.py --fake`.
+
 ## Prerequisites
 
 - **An Entra tenant chosen by the owner**, with permission to register an application there.
 - **An app registration** (Microsoft Entra admin center, App registrations, New registration):
   - Supported account types: accounts in this organizational directory only (single tenant).
-  - Redirect URI, platform Web: `{SHIFDE_OIDC_BASE_URL}/api/auth/oidc/{idp_id}/callback`, where
-    `SHIFDE_OIDC_BASE_URL` is the API origin of the SETH installation and `idp_id` the id of the
-    IdP created below (create the IdP first, then add the redirect URI).
+  - Redirect URI, platform Web: `{SHIFDE_PUBLIC_BASE_URL}/api/auth/oidc/{idp_id}/callback`, where
+    `SHIFDE_PUBLIC_BASE_URL` is the API origin of the SETH installation (when unset, the first of
+    `SHIFDE_ALLOWED_ORIGINS`) and `idp_id` the id of the IdP created below (create the IdP first,
+    then add the redirect URI).
   - A client secret (Certificates & secrets), entered once into SETH and never anywhere else.
   - Token configuration, Add groups claim: **Security groups**, emitted as **Group ID** in the
     ID token. SETH maps groups by their object ids only.
@@ -123,7 +127,7 @@ the application only).
 
 ## Manual browser sign-in
 
-1. Start SETH with `SHIFDE_OIDC_BASE_URL` set to the origin named in the redirect URI.
+1. Start SETH with `SHIFDE_PUBLIC_BASE_URL` set to the origin named in the redirect URI.
 2. Open the login page; the Entra IdP's button is listed under its display name.
 3. Sign in as a test person of the tenant (a member, not a guest) who is in a mapped security
    group.
