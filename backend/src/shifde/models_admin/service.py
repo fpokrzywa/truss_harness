@@ -26,6 +26,7 @@ from __future__ import annotations
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal  # Any: rows / provider JSON
 from uuid import UUID
@@ -41,6 +42,7 @@ from shifde.adapters.base import (
     ConnectionConfig,
     Credential,
     ExecContext,
+    ModelInfo,
     Usage,
 )
 from shifde.adapters.registry import AdapterRegistry
@@ -49,13 +51,14 @@ from shifde.audit import service as audit
 from shifde.authz import service as authz
 from shifde.authz.service import ResourceRef
 from shifde.connections import egress
-from shifde.connections.service import ConnectionService, failure_to_error
+from shifde.connections.service import ERROR_CODE, ConnectionService, failure_to_error
 from shifde.core import classification as data_class
 from shifde.core import db
 from shifde.core.clock import utcnow
 from shifde.core.context import Principal, RequestContext
 from shifde.core.db import Database
 from shifde.core.errors import (
+    AppError,
     BudgetExceeded,
     Conflict,
     Forbidden,
@@ -91,6 +94,17 @@ SHI_NOT_CONFIGURED = "the SHI provider is not configured"
 SHI_CONFIGURED = "model.shi_provider.configured"
 SHI_ACCESS_CHANGED = "model.shi_provider.access_changed"
 SHI_OFF = "shi_provider_off"  # the reason a call-time gate refusal is audited with
+# `shifde.jobs.kind` of a queued provider health check / model discovery (ARCH M2, B-2717)
+HEALTH_JOB_KIND = "model.health_check"
+DISCOVER_JOB_KIND = "model.discover"
+# per kind: the dedupe key's prefix (`{prefix}:{provider_id}`) and the worker's request id
+# (`{prefix}-{job_id}`), the correlation id of the audit event that holds the result
+JOB_PREFIX = {HEALTH_JOB_KIND: "model-health-check", DISCOVER_JOB_KIND: "model-discover"}
+JOB_ACTION = {
+    HEALTH_JOB_KIND: "model.provider.health_checked",
+    DISCOVER_JOB_KIND: "model.provider.models_discovered",
+}
+JOB_NOT_FOUND = "provider job not found"
 
 
 def _provider_out(r: Mapping[str, Any]) -> s.ProviderOut:
@@ -159,6 +173,33 @@ def _access_out(r: Mapping[str, Any] | None) -> s.ShiAccessOut:
     return s.ShiAccessOut(
         enabled=r["enabled"], changed_at=r["changed_at"], row_version=r["row_version"]
     )
+
+
+def _job_state(
+    job: Mapping[str, Any], found: Mapping[str, Any] | None
+) -> tuple[Literal["queued", "running", "done", "failed"], str | None]:
+    """A provider job's status and error code (`ConnectionService._job_out`'s mapping)."""
+    if found is not None:
+        return "done", None
+    if job["status"] == "queued":
+        return "queued", None
+    if job["status"] == "leased":
+        return "running", None
+    # dead, or closed without a result (the reaper's `stale lease`)
+    code = job["last_error"] or ""
+    return "failed", code if ERROR_CODE.fullmatch(code) else "worker_lost"
+
+
+def _discovered(i: ModelInfo) -> dict[str, object]:
+    """A discovered model as its audit event stores it: `max_output_tokens` as `max_output`
+    (`scrub` redacts a key naming tokens); `_discovery_job_out` maps it back."""
+    return {
+        "model_key": i.model_key,
+        "display_name": i.display_name,
+        "context_window": i.context_window,
+        "max_output": i.max_output_tokens,
+        "capabilities": list(i.capabilities),
+    }
 
 
 class ModelService:
@@ -366,7 +407,132 @@ class ModelService:
             conn, purpose, require_usable=purpose != "model.health", deadline=deadline
         )
 
-    def health_check(self, provider_id: UUID) -> s.HealthOut:
+    # ================================================================== provider jobs (ARCH M2)
+    def _job_target(self, provider_id: UUID) -> Mapping[str, Any]:
+        """The provider a health check or discovery may be queued for: `model:manage` (403), an
+        active client (409), an own provider (404; 403 for the shared one), its connection (404)
+        and an implemented adapter (422). No secret is resolved and no adapter is called."""
+        self._manage()
+        provider = self._provider_row(provider_id, write=True)
+        self.conns.require_implemented(self.conns.get_row(provider["connection_id"]))
+        return provider
+
+    def _enqueue(self, kind: str, provider_id: UUID) -> Mapping[str, Any]:
+        self._job_target(provider_id)
+        p = self.sc.principal
+        job = repository.enqueue_provider_job(
+            self._session,
+            tenant_id=self.sc.tenant_id,
+            kind=kind,
+            job_id=uuid7(),
+            dedupe_key=f"{JOB_PREFIX[kind]}:{provider_id}",
+            payload={
+                "provider_id": str(provider_id),
+                "principal_id": str(p.principal_id),
+                "principal_type": p.principal_type,
+                "api_key_id": str(p.api_key_id) if p.api_key_id else None,
+            },
+        )
+        self._session.commit()
+        return job
+
+    def _job(self, kind: str, provider_id: UUID, job_id: UUID) -> Mapping[str, Any]:
+        """The `kind` job `job_id` of a provider of this client; one 404 for every miss (unknown
+        job, another client's, another provider's or of the other kind, unknown provider)."""
+        self._read()
+        try:
+            self._provider_row(provider_id)
+        except NotFound as exc:
+            raise NotFound(JOB_NOT_FOUND) from exc
+        job = repository.get_provider_job(
+            self._session,
+            job_id,
+            tenant_id=self.sc.tenant_id,
+            kinds=(kind,),
+            provider_id=provider_id,
+        )
+        if job is None:
+            raise NotFound(JOB_NOT_FOUND)
+        return job
+
+    def _job_details(self, job: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The result a provider job recorded: its audit event's details (B-2717)."""
+        kind = job["kind"]
+        return audit.find_details(
+            self._session,
+            tenant_id=self.sc.tenant_id,
+            action=JOB_ACTION[kind],
+            target_id=UUID(job["payload"]["provider_id"]),
+            correlation_id=f"{JOB_PREFIX[kind]}-{job['id']}",
+            occurred_from=job["created_at"],
+        )
+
+    def _health_job_out(self, job: Mapping[str, Any]) -> s.HealthCheckJobOut:
+        found = self._job_details(job)
+        status, error = _job_state(job, found)
+        return s.HealthCheckJobOut(
+            id=job["id"],
+            provider_id=UUID(job["payload"]["provider_id"]),
+            status=status,
+            result=(
+                s.HealthOut(
+                    status=found["status"],
+                    latency_ms=found["latency_ms"],
+                    checked_at=datetime.fromisoformat(found["checked_at"]),
+                    detail=found["detail"],
+                )
+                if found is not None
+                else None
+            ),
+            error=error,
+            created_at=job["created_at"],
+        )
+
+    def _discovery_job_out(self, job: Mapping[str, Any]) -> s.DiscoveryJobOut:
+        found = self._job_details(job)
+        status, error = _job_state(job, found)
+        return s.DiscoveryJobOut(
+            id=job["id"],
+            provider_id=UUID(job["payload"]["provider_id"]),
+            status=status,
+            result=(
+                [
+                    s.DiscoveredModelOut(
+                        model_key=m["model_key"],
+                        display_name=m["display_name"],
+                        context_window=m["context_window"],
+                        max_output_tokens=m["max_output"],  # stored renamed (`_discovered`)
+                        capabilities=m["capabilities"],
+                    )
+                    for m in found["models"]
+                ]
+                if found is not None
+                else None
+            ),
+            error=error,
+            created_at=job["created_at"],
+        )
+
+    def enqueue_health_check(self, provider_id: UUID) -> s.HealthCheckJobOut:
+        """Queue the provider's health check on the worker (ARCH M2, B-2717): the API process
+        never calls the adapter. An active health check job of the provider is answered instead
+        of a second one."""
+        return self._health_job_out(self._enqueue(HEALTH_JOB_KIND, provider_id))
+
+    def enqueue_discovery(self, provider_id: UUID) -> s.DiscoveryJobOut:
+        """Queue the provider's model discovery on the worker, as `enqueue_health_check`."""
+        return self._discovery_job_out(self._enqueue(DISCOVER_JOB_KIND, provider_id))
+
+    def health_check_job(self, provider_id: UUID, job_id: UUID) -> s.HealthCheckJobOut:
+        return self._health_job_out(self._job(HEALTH_JOB_KIND, provider_id, job_id))
+
+    def discovery_job(self, provider_id: UUID, job_id: UUID) -> s.DiscoveryJobOut:
+        return self._discovery_job_out(self._job(DISCOVER_JOB_KIND, provider_id, job_id))
+
+    def execute_health_check(self, provider_id: UUID) -> None:
+        """Run the health check and record it (the worker side of `enqueue_health_check`): the
+        provider's health columns and the `model.provider.health_checked` event, which carries
+        the result under this context's request id."""
         self._manage()
         provider = self._provider_row(provider_id, write=True)
         adapter, ctx, cfg = self._provider_call(provider, "model.health")
@@ -388,14 +554,19 @@ class ModelService:
             "model_provider",
             provider_id,
             f"provider:{provider['name']}",
-            {"status": status, "latency_ms": latency},
+            {
+                "status": status,
+                "latency_ms": latency,
+                "checked_at": checked.isoformat(),
+                "detail": detail or None,
+            },
         )
         self._commit("model provider")
-        return s.HealthOut(
-            status=status, latency_ms=latency, checked_at=checked, detail=detail or None
-        )
 
-    def discover_models(self, provider_id: UUID) -> Page[s.DiscoveredModelOut]:
+    def execute_discovery(self, provider_id: UUID) -> None:
+        """Run the model discovery and record it (the worker side of `enqueue_discovery`): the
+        `model.provider.models_discovered` event, which carries the models under this context's
+        request id. An adapter failure raises its mapped error; nothing is recorded then."""
         self._manage()
         provider = self._provider_row(provider_id, write=True)
         adapter, ctx, cfg = self._provider_call(provider, "model.discover")
@@ -408,21 +579,9 @@ class ModelService:
             "model_provider",
             provider_id,
             f"provider:{provider['name']}",
-            {"count": len(infos)},
+            {"count": len(infos), "models": [_discovered(i) for i in infos]},
         )
         self._commit("model provider")
-        return Page(
-            items=[
-                s.DiscoveredModelOut(
-                    model_key=i.model_key,
-                    display_name=i.display_name,
-                    context_window=i.context_window,
-                    max_output_tokens=i.max_output_tokens,
-                    capabilities=list(i.capabilities),
-                )
-                for i in infos
-            ]
-        )
 
     # ================================================================== models
     def list_models(
@@ -1523,7 +1682,88 @@ def platform_set_shi_access(
     return _platform_access_out(org, row)
 
 
+@dataclass(frozen=True)
+class _Requester:
+    """Who queued a provider job (`authz.execution.RunRef`): re-derived when the job runs."""
+
+    tenant_id: UUID
+    initiated_by_principal_id: UUID
+    principal_type: str
+    api_key_id: UUID | None
+
+
+def run_provider_job(
+    database: Database, runtime: IntegrationRuntime, tenant_id: UUID, job_id: UUID
+) -> str | None:
+    """Execute the `model.health_check` or `model.discover` job `job_id` of `tenant_id` (called
+    by `shifde-worker`, B-2717).
+
+    Jobs carry no permissions: the requester is re-derived from the database and `model:manage`
+    is checked again. Returns None once the result is recorded (now or by an earlier run of the
+    same job), else the error code of the refusal or of a failed discovery; nothing is recorded
+    then. A failed health check is recorded as `unavailable`."""
+    session = database.session()
+    db.init_context(session, None)
+    try:
+        db.set_tenant(session, tenant_id)
+        job = repository.get_provider_job(
+            session, job_id, tenant_id=tenant_id, kinds=(HEALTH_JOB_KIND, DISCOVER_JOB_KIND)
+        )
+        if job is None:
+            return NotFound.code
+        kind, payload = job["kind"], job["payload"]
+        provider_id = UUID(payload["provider_id"])
+        request_id = f"{JOB_PREFIX[kind]}-{job_id}"
+        db.set_request_id(session, request_id)
+        recorded = audit.find_details(
+            session,
+            tenant_id=tenant_id,
+            action=JOB_ACTION[kind],
+            target_id=provider_id,
+            correlation_id=request_id,
+            occurred_from=job["created_at"],
+        )
+        if recorded is not None:
+            return None
+        try:
+            principal = authz.execution_principal(
+                session,
+                _Requester(
+                    tenant_id,
+                    UUID(payload["principal_id"]),
+                    payload["principal_type"],
+                    UUID(payload["api_key_id"]) if payload["api_key_id"] else None,
+                ),
+            )
+            header = tenancy.tenant_header(session, tenant_id)
+            if header is None:
+                raise authz.ExecutionDenied("the client is not available")
+            scope = TenantScope(
+                session=session,
+                ctx=RequestContext(request_id=request_id, principal=principal, tenant_id=tenant_id),
+                principal=principal,
+                tenant_id=tenant_id,
+                tenant_slug=header[0],
+                tenant_name=header[1],
+                tenant_status=header[2],
+                pdp=authz.new_pdp(session, principal, tenant_id),
+            )
+            svc = ModelService(scope, runtime)
+            if kind == HEALTH_JOB_KIND:
+                svc.execute_health_check(provider_id)
+            else:
+                svc.execute_discovery(provider_id)
+        except AppError as exc:
+            session.rollback()
+            return exc.code
+        return None
+    finally:
+        session.close()
+
+
 __all__ = [
+    "DISCOVER_JOB_KIND",
+    "HEALTH_JOB_KIND",
     "INVOCABLE",
     "LIFECYCLE_TRANSITIONS",
     "ModelService",
@@ -1531,4 +1771,5 @@ __all__ = [
     "platform_get_shi_provider",
     "platform_put_shi_provider",
     "platform_set_shi_access",
+    "run_provider_job",
 ]
