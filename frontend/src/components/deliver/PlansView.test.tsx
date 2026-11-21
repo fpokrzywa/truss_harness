@@ -10,12 +10,14 @@ vi.mock('next/navigation', () => ({ useParams: () => ({ org: 'acme' }) }));
 afterEach(() => vi.unstubAllGlobals());
 
 const UNRESOLVED = 'The target has an unresolved unknown outcome.';
+const REQUIRED = 'This release has no passing evaluation.';
+const RELEASE = '01900000-0000-7000-8000-0000000000a1';
 const TARGETS = {
   [`GET ${D}/targets`]: () =>
     list([TARGET, { ...TARGET, id: 't-2', name: 'Old target', status: 'archived' }]),
 };
 
-async function fillRequest(applicationKey = 'sales-app') {
+async function fillRequest(applicationKey = 'sales-app', releaseId = RELEASE) {
   await userEvent.click(await screen.findByRole('button', { name: 'Request plan' }));
   const dialog = screen.getByRole('dialog');
   await waitFor(() =>
@@ -23,6 +25,7 @@ async function fillRequest(applicationKey = 'sales-app') {
   );
   expect(within(dialog).queryByRole('option', { name: 'Old target' })).not.toBeInTheDocument();
   await userEvent.selectOptions(within(dialog).getByLabelText('Target'), 't-1');
+  if (releaseId) await userEvent.type(within(dialog).getByLabelText('Release id'), releaseId);
   await userEvent.type(within(dialog).getByLabelText('Application key'), applicationKey);
   await userEvent.type(within(dialog).getByLabelText('Display name'), 'Sales app');
   return dialog;
@@ -76,12 +79,52 @@ describe('PlansView request', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(bodyOf(fetchMock, `POST ${D}/plans`)).toEqual({
       target_id: 't-1',
+      release_id: RELEASE,
       application_key: 'sales-app',
       display_name: 'Sales app',
     });
     await waitFor(() =>
       expect(fetchMock.calls.filter((c) => c.key === `GET ${D}/plans`).length).toBe(2),
     );
+  });
+
+  it('sends the release id as release_id', async () => {
+    const fetchMock = stubDelivery({
+      ...TARGETS,
+      [`POST ${D}/plans`]: () => jsonResponse({ ...PLAN, status: 'requested' }, { status: 201 }),
+    });
+    renderWithClient(<PlansView />);
+    const dialog = await fillRequest('sales-app', RELEASE.toUpperCase());
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Request plan' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(bodyOf(fetchMock, `POST ${D}/plans`)).toMatchObject({
+      release_id: RELEASE.toUpperCase(),
+    });
+  });
+
+  it('blocks submit without a valid release id', async () => {
+    const fetchMock = stubDelivery(TARGETS);
+    renderWithClient(<PlansView />);
+    const dialog = await fillRequest('sales-app', '');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Request plan' }));
+    expect(await within(dialog).findByText('Enter the release id.')).toBeInTheDocument();
+    await userEvent.type(within(dialog).getByLabelText('Release id'), 'not-a-uuid');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Request plan' }));
+    expect(within(dialog).getByText('Enter the release id.')).toBeInTheDocument();
+    expect(fetchMock.calls.some((c) => c.key.startsWith('POST'))).toBe(false);
+  });
+
+  it('shows a 409 evaluation_required problem inside the dialog', async () => {
+    stubDelivery({
+      ...TARGETS,
+      [`POST ${D}/plans`]: () => problemResponse(409, 'evaluation_required', { detail: REQUIRED }),
+    });
+    renderWithClient(<PlansView />);
+    const dialog = await fillRequest();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Request plan' }));
+    const alert = await within(dialog).findByText(REQUIRED);
+    expect(alert.closest('[role="alert"]')).toHaveTextContent('Could not request the plan');
+    expect(within(dialog).getByText('evaluation_required')).toBeInTheDocument();
   });
 
   it('validates the application key before calling the API', async () => {

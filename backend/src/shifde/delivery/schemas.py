@@ -108,10 +108,12 @@ DIGEST = r"^[a-f0-9]{64}$"
 
 
 class PlanCreate(BaseModel):
-    """Settled call 17: the target, the application's slug and its display name."""
+    """Settled call 17: the target, the application's slug and its display name; SP3 settled
+    call 3: the sealed release it deploys."""
 
     model_config = Strict
     target_id: UUID
+    release_id: UUID
     application_key: str = Field(pattern=r"^[a-z][a-z0-9-]{0,62}$")
     display_name: str = Field(min_length=1, max_length=200)
 
@@ -160,6 +162,9 @@ class PlanOut(BaseModel):
     updated_at: datetime | None
     approval: PlanApprovalOut | None
     deployment_id: UUID | None
+    release_id: UUID | None
+    release_digest: str | None
+    evaluation_run_id: UUID | None
 
 
 # ====================================================================== deployments (B-2681..)

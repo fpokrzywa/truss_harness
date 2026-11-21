@@ -90,8 +90,10 @@ executor (API running):
    a local API such as `http://127.0.0.1:8710`, also set `SHIFDE_ENV=development`; otherwise the
    API URL must be https. Then start the executor **without** `--fake-platform`:
    `cd backend; uv run shifde-executor`.
-5. Request a plan, approve it as a second person, and follow the deployment through apply,
-   observe and verify on the Deployments screen.
+5. Request a plan naming a sealed release (its release id) in the target's workspace and project
+   that has a passing evaluation; without one the request is refused (409
+   `evaluation_required`). Approve it as a second person, and follow the deployment through
+   apply, observe and verify on the Deployments screen.
 
 ## What to record
 

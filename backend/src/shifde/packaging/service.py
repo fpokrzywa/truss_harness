@@ -168,6 +168,26 @@ def release_record(
     return row if row is not None and row["tenant_id"] == tenant_id else None
 
 
+def scoped_release(scope: TenantScope, release_id: UUID, action: str = READ) -> Mapping[str, Any]:
+    """The release the caller may `action` on, its scope its solution's; anything else
+    (unknown, another client's, unreadable) is `release not found` (packaging, delivery)."""
+    row = release_record(scope.session, release_id, tenant_id=scope.tenant_id)
+    if row is None:
+        raise NotFound("release not found")
+    ref = ResourceRef(
+        scope.tenant_id,
+        row["workspace_id"],
+        row["project_id"],
+        resource_type="packaging_release",
+        resource_id=row["id"],
+    )
+    try:
+        scope.pdp.require(action, ref, hide_unless=READ)
+    except NotFound as exc:
+        raise NotFound("release not found") from exc
+    return row
+
+
 def resolve_pins(
     entrypoint_version_id: UUID, direct_pins: Callable[[UUID], Sequence[PinnedVersion]]
 ) -> list[PinnedVersion]:
@@ -935,23 +955,8 @@ class SolutionService:
         )
 
     def _release(self, release_id: UUID, action: str) -> Mapping[str, Any]:
-        """The release the caller may `action` on, its scope its solution's; anything else
-        (unknown, another client's, unreadable) is `release not found`."""
-        row = release_record(self.sc.session, release_id, tenant_id=self.sc.tenant_id)
-        if row is None:
-            raise NotFound("release not found")
-        ref = ResourceRef(
-            self.sc.tenant_id,
-            row["workspace_id"],
-            row["project_id"],
-            resource_type="packaging_release",
-            resource_id=row["id"],
-        )
-        try:
-            self.sc.pdp.require(action, ref, hide_unless=READ)
-        except NotFound as exc:
-            raise NotFound("release not found") from exc
-        return row
+        """The release the caller may `action` on (`scoped_release`)."""
+        return scoped_release(self.sc, release_id, action)
 
     def get_release(self, release_id: UUID) -> s.ReleaseOut:
         return self._release_out(self._release(release_id, READ))

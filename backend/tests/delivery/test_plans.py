@@ -22,6 +22,7 @@ from shifde.delivery import plans as plan_service
 from shifde.delivery import service
 from tests.connections.routes import as_user, system_role_user
 from tests.delivery.conftest import ExecutorSide
+from tests.delivery.releases import SealedRelease, make_release, release_for_target
 from tests.delivery.routes import (
     address,
     bearer,
@@ -64,6 +65,9 @@ PLAN_FIELDS = {
     "updated_at",
     "approval",
     "deployment_id",
+    "release_id",
+    "release_digest",
+    "evaluation_run_id",
 }
 
 
@@ -84,11 +88,19 @@ def _target(client: TestClient, world: World, people: People) -> dict[str, Any]:
     return made
 
 
-def _plan(client: TestClient, world: World, people: People) -> dict[str, Any]:
-    """A target of A and a plan on it requested by A's owner (the client is signed out)."""
+def _plan(
+    client: TestClient,
+    world: World,
+    people: People,
+    owner_db: Database,
+    rel: SealedRelease | None = None,
+) -> dict[str, Any]:
+    """A target of A and a plan on it requested by A's owner, of `rel` or a new sealed, passed
+    release in the target's scope (the client is signed out)."""
     target = _target(client, world, people)
+    release = rel or release_for_target(owner_db, target["id"])
     h = as_user(client, people.owner_a)
-    made: dict[str, Any] = request_plan(client, h, world.a.slug, target["id"])
+    made: dict[str, Any] = request_plan(client, h, world.a.slug, target["id"], release.id)
     client.cookies.clear()
     return made
 
@@ -114,10 +126,11 @@ def _plan_jobs(owner_db: Database, plan_id: object) -> list[Any]:
 def test_the_template_artifact_is_stored_with_its_digest_and_size(
     client: TestClient, world: World, people: People, owner_db: Database
 ) -> None:
-    content, digest = plan_service.template_artifact()
+    rel = make_release(owner_db, world.a.tenant, world.a.ws)
+    content, digest = plan_service.template_artifact(rel.manifest, rel.digest)
     assert digest == hashlib.sha256(content).hexdigest()
     assert 0 < len(content) <= plan_service.MAX_ARTIFACT_BYTES
-    made = _plan(client, world, people)
+    made = _plan(client, world, people, owner_db, rel)
     assert set(made) == PLAN_FIELDS  # never the artifact's content
     with owner_db.session() as o:
         row = (
@@ -143,13 +156,19 @@ def test_an_artifact_over_5_mb_is_refused_before_insert(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target = _target(client, world, people)
+    rel = release_for_target(owner_db, target["id"])
     monkeypatch.setattr(
         plan_service, "create_archive", lambda files: b"x" * (plan_service.MAX_ARTIFACT_BYTES + 1)
     )
     h = as_user(client, people.owner_a)
     r = client.post(
         plans(world.a.slug),
-        json={"target_id": target["id"], "application_key": "big", "display_name": "Big"},
+        json={
+            "target_id": target["id"],
+            "release_id": str(rel.id),
+            "application_key": "big",
+            "display_name": "Big",
+        },
         headers=h,
     )
     assert r.status_code == 422 and r.json()["code"] == "validation_error", r.text
@@ -188,9 +207,10 @@ def test_a_request_creates_the_plan_and_one_queued_plan_job(
     client: TestClient, world: World, people: People, owner_db: Database
 ) -> None:
     target = _target(client, world, people)
+    rel = release_for_target(owner_db, target["id"])
     email = system_role_user(owner_db, world.a.tenant, "developer")
     h = as_user(client, email)
-    made = request_plan(client, h, world.a.slug, target["id"], display_name="Sales")
+    made = request_plan(client, h, world.a.slug, target["id"], rel.id, display_name="Sales")
     assert made["status"] == "requested" and made["status_reason"] is None
     assert made["requested_by"] == _user_id(owner_db, email)
     assert made["target_id"] == target["id"] and made["target_revision"] == 1
@@ -203,13 +223,16 @@ def test_a_request_creates_the_plan_and_one_queued_plan_job(
     assert job["kind"] == "plan" and job["status"] == "queued"
     assert str(job["target_id"]) == target["id"] and job["max_attempts"] == 4
     # a second request for the same application is another plan (not unique per target)
-    again = request_plan(client, h, world.a.slug, target["id"])
+    again = request_plan(client, h, world.a.slug, target["id"], rel.id)
     assert again["id"] != made["id"]
     assert client.get(f"{plans(world.a.slug)}/{made['id']}", headers=h).json() == made
 
 
-def test_the_request_body_is_validated(client: TestClient, world: World, people: People) -> None:
+def test_the_request_body_is_validated(
+    client: TestClient, world: World, people: People, owner_db: Database
+) -> None:
     target = _target(client, world, people)
+    rel = release_for_target(owner_db, target["id"])
     h = as_user(client, people.owner_a)
     for overrides in (
         {"application_key": "Sales"},
@@ -219,25 +242,26 @@ def test_the_request_body_is_validated(client: TestClient, world: World, people:
         {"display_name": "x" * 201},
         {"extra": 1},
     ):
-        request_plan(client, h, world.a.slug, target["id"], status=422, **overrides)
+        request_plan(client, h, world.a.slug, target["id"], rel.id, status=422, **overrides)
 
 
 def test_a_plan_needs_a_readable_active_target_in_an_active_scope(
     client: TestClient, world: World, people: People, owner_db: Database
 ) -> None:
     target = _target(client, world, people)
+    rel = release_for_target(owner_db, target["id"])
     h = as_user(client, people.owner_a)
-    unknown = request_plan(client, h, world.a.slug, uuid7(), status=404)
+    unknown = request_plan(client, h, world.a.slug, uuid7(), rel.id, status=404)
     assert unknown["detail"] == "target not found"
     viewer = as_user(client, people.viewer_a)
-    hidden = request_plan(client, viewer, world.a.slug, target["id"], status=404)
+    hidden = request_plan(client, viewer, world.a.slug, target["id"], rel.id, status=404)
     assert {k: v for k, v in hidden.items() if k not in ("instance", "request_id")} == {
         k: v for k, v in unknown.items() if k not in ("instance", "request_id")
     }
     h = as_user(client, people.owner_a)
     r = client.post(f"{targets(world.a.slug)}/{target['id']}/archive", headers=h)
     assert r.status_code == 200, r.text
-    archived = request_plan(client, h, world.a.slug, target["id"], status=409)
+    archived = request_plan(client, h, world.a.slug, target["id"], rel.id, status=409)
     assert archived["code"] == "target_unavailable"
     other = _target(client, world, people)
     with owner_db.session() as o:
@@ -247,9 +271,8 @@ def test_a_plan_needs_a_readable_active_target_in_an_active_scope(
         )
         o.commit()
     h = as_user(client, people.owner_a)
-    assert request_plan(client, h, world.a.slug, other["id"], status=409)["code"] == (
-        "scope_archived"
-    )
+    refused = request_plan(client, h, world.a.slug, other["id"], rel.id, status=409)
+    assert refused["code"] == ("scope_archived")
     with owner_db.session() as o:
         for table in ("delivery_artifacts", "delivery_plans", "delivery_jobs"):
             n = o.execute(
@@ -259,9 +282,11 @@ def test_a_plan_needs_a_readable_active_target_in_an_active_scope(
             assert n == 0, table
 
 
-def test_list_and_its_filters(client: TestClient, world: World, people: People) -> None:
-    first = _plan(client, world, people)
-    second = _plan(client, world, people)
+def test_list_and_its_filters(
+    client: TestClient, world: World, people: People, owner_db: Database
+) -> None:
+    first = _plan(client, world, people, owner_db)
+    second = _plan(client, world, people, owner_db)
     h = as_user(client, people.owner_a)
     listed = client.get(f"{plans(world.a.slug)}?limit=1", headers=h).json()
     assert [p["id"] for p in listed["items"]] == [first["id"]] and listed["next_cursor"]
@@ -289,7 +314,7 @@ def test_lease_moves_the_plan_to_planning_and_a_result_seals_it(
     executor_a: ExecutorSide,
     owner_db: Database,
 ) -> None:
-    made = _plan(client, world, people)
+    made = _plan(client, world, people, owner_db)
     leased = lease_plan(client, executor_a.token)
     assert leased["job"]["plan_id"] == made["id"]
     assert leased["job"]["target_id"] == made["target_id"]
@@ -311,11 +336,28 @@ def test_lease_moves_the_plan_to_planning_and_a_result_seals_it(
         steps=row["steps"],
         adapter_version=row["adapter_version"],
         toolchain_digest=row["toolchain_digest"],
+        release_digest=row["release_digest"],
     )
     out = _get(client, world, people.owner_a, made["id"])
     assert out["status"] == "sealed" and out["digest"] == row["digest"]
     assert out["steps"] == steps
     assert out["approval"] is None
+
+
+def test_plans_of_different_releases_have_different_digests() -> None:
+    common: dict[str, Any] = {
+        "artifact_digest": "a" * 64,
+        "target_revision": 1,
+        "snapshot_fingerprint": "d" * 64,
+        "steps": [{"key": "deploy_app", "action": "create", "resource_key": "app"}],
+        "adapter_version": "0.1.0",
+        "toolchain_digest": "c" * 64,
+    }
+    digests = {
+        service.plan_digest(**common, release_digest=release)
+        for release in ("1" * 64, "2" * 64, None)
+    }
+    assert len(digests) == 3
 
 
 def test_a_failed_result_fails_the_plan(
@@ -325,7 +367,7 @@ def test_a_failed_result_fails_the_plan(
     executor_a: ExecutorSide,
     owner_db: Database,
 ) -> None:
-    made = _plan(client, world, people)
+    made = _plan(client, world, people, owner_db)
     leased = lease_plan(client, executor_a.token)
     r = plan_result(
         client, executor_a.token, leased, status="failed", error_code="execution_failed"
@@ -353,7 +395,7 @@ def test_the_default_policy_fails_the_plan(
     steps: list[dict[str, str]],
     reason: str,
 ) -> None:
-    made = _plan(client, world, people)
+    made = _plan(client, world, people, owner_db)
     leased = lease_plan(client, executor_a.token)
     r = plan_result(client, executor_a.token, leased, status="succeeded", value=plan_value(steps))
     assert r.status_code == 200, r.text
@@ -369,7 +411,7 @@ def test_an_archived_or_changed_target_fails_the_plan(
     executor_a: ExecutorSide,
     owner_db: Database,
 ) -> None:
-    archived = _plan(client, world, people)
+    archived = _plan(client, world, people, owner_db)
     leased = lease_plan(client, executor_a.token)
     h = as_user(client, people.owner_a)
     r = client.post(f"{targets(world.a.slug)}/{archived['target_id']}/archive", headers=h)
@@ -380,7 +422,7 @@ def test_an_archived_or_changed_target_fails_the_plan(
     assert row["status"] == "plan_failed" and row["status_reason"] == (
         "the target is no longer active"
     )
-    changed = _plan(client, world, people)
+    changed = _plan(client, world, people, owner_db)
     leased = lease_plan(client, executor_a.token)
     with owner_db.session() as o:
         o.execute(
@@ -400,7 +442,7 @@ def test_an_invalid_result_value_is_refused_and_changes_nothing(
     executor_a: ExecutorSide,
     owner_db: Database,
 ) -> None:
-    made = _plan(client, world, people)
+    made = _plan(client, world, people, owner_db)
     leased = lease_plan(client, executor_a.token)
     for value in (
         {},
@@ -423,7 +465,7 @@ def test_a_result_for_a_plan_no_longer_planning_changes_nothing(
     executor_a: ExecutorSide,
     owner_db: Database,
 ) -> None:
-    made = _plan(client, world, people)
+    made = _plan(client, world, people, owner_db)
     leased = lease_plan(client, executor_a.token)
     with owner_db.session() as o:
         o.execute(
@@ -449,7 +491,7 @@ def test_a_lost_plan_job_fails_the_plan(
 ) -> None:
     """Expired leases re-queue the job three times; the fourth loss makes it `lost`, and the
     next lease call fails the plan."""
-    made = _plan(client, world, people)
+    made = _plan(client, world, people, owner_db)
     job = _plan_jobs(owner_db, made["id"])[0]["id"]
     for _ in range(4):
         lease_plan(client, executor_a.token)
@@ -468,7 +510,7 @@ def test_a_dead_executor_surfaces_on_read(
     owner_db: Database,
 ) -> None:
     """Settled call 9: the plan routes sweep too, so no executor poll is needed."""
-    made = _plan(client, world, people)
+    made = _plan(client, world, people, owner_db)
     job = _plan_jobs(owner_db, made["id"])[0]["id"]
     for _ in range(3):
         lease_plan(client, executor_a.token)
@@ -482,9 +524,9 @@ def test_a_dead_executor_surfaces_on_read(
 
 # ------------------------------------------------------------------ the sealed-plan guard
 def _sealed(
-    client: TestClient, world: World, people: People, executor: ExecutorSide
+    client: TestClient, world: World, people: People, executor: ExecutorSide, owner_db: Database
 ) -> dict[str, Any]:
-    made = _plan(client, world, people)
+    made = _plan(client, world, people, owner_db)
     leased = lease_plan(client, executor.token)
     assert plan_result(client, executor.token, leased).status_code == 200
     return made
@@ -504,7 +546,7 @@ def test_a_sealed_plan_is_immutable(
     app_db: Database,
     owner_db: Database,
 ) -> None:
-    made = _sealed(client, world, people, executor_a)
+    made = _sealed(client, world, people, executor_a, owner_db)
     before = dict(plan_row(owner_db, made["id"]))
     for column, value in (
         ("steps", "CAST('[]' AS jsonb)"),
@@ -534,12 +576,14 @@ def test_a_sealed_plan_is_immutable(
     for sql in (
         "UPDATE shifde.delivery_plans SET requested_by = gen_random_uuid() WHERE id = :p",
         "UPDATE shifde.delivery_plans SET target_revision = 9 WHERE id = :p",
+        "UPDATE shifde.delivery_plans SET release_id = NULL, release_digest = NULL, "
+        "evaluation_run_id = NULL WHERE id = :p",
         "DELETE FROM shifde.delivery_plans WHERE id = :p",
     ):
         _refused(app_db, world.a.tenant, sql, p=made["id"])
     assert dict(plan_row(owner_db, made["id"])) == before
     # a requested plan cannot skip to approved, and a final status is final
-    other = _plan(client, world, people)
+    other = _plan(client, world, people, owner_db)
     _refused(
         app_db,
         world.a.tenant,
@@ -568,7 +612,8 @@ def test_the_artifact_route_serves_the_plans_archive(
     executor_a: ExecutorSide,
     owner_db: Database,
 ) -> None:
-    made = _plan(client, world, people)
+    rel = make_release(owner_db, world.a.tenant, world.a.ws)
+    made = _plan(client, world, people, owner_db, rel)
     leased = lease_plan(client, executor_a.token)
     url = job_url(leased["job"]["id"], "artifact")
     r = client.get(url, params=proof(leased), headers=bearer(executor_a.token))
@@ -576,7 +621,7 @@ def test_the_artifact_route_serves_the_plans_archive(
     assert r.headers["content-type"] == "application/zip"
     assert r.headers["x-artifact-digest"] == made["artifact_digest"]
     assert hashlib.sha256(r.content).hexdigest() == made["artifact_digest"]
-    content, _ = plan_service.template_artifact()
+    content, _ = plan_service.template_artifact(rel.manifest, rel.digest)
     assert r.content == content
     stale = {"lease_id": str(uuid7()), "fence": leased["fence"]}
     r = client.get(url, params=stale, headers=bearer(executor_a.token))

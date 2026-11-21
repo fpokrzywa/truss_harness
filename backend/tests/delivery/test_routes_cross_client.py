@@ -32,6 +32,7 @@ from shifde.delivery import gateway, repository
 from shifde.identity.apikeys import hash_key
 from tests.connections.routes import as_user, org
 from tests.delivery.conftest import make_executor
+from tests.delivery.releases import release_for_target
 from tests.delivery.routes import (
     WHOAMI,
     address,
@@ -376,6 +377,7 @@ class PlanSide:
     tenant: UUID
     target: str
     plan: str
+    release: str  # a sealed, passed release in the side's target's scope
 
 
 @dataclass(frozen=True)
@@ -385,17 +387,23 @@ class TwoPlans:
 
 
 @pytest.fixture
-def two_plans(client: TestClient, world: World, two: Two) -> TwoPlans:
+def two_plans(client: TestClient, world: World, two: Two, owner_db: Database) -> TwoPlans:
     sides = []
     for side, c in ((two.b, world.b), (two.a, world.a)):
-        made = request_plan(client, as_user(client, side.email), side.slug, side.target)
-        sides.append(PlanSide(side.slug, side.email, c.tenant, side.target, made["id"]))
+        rel = str(release_for_target(owner_db, side.target).id)
+        made = request_plan(client, as_user(client, side.email), side.slug, side.target, rel)
+        sides.append(PlanSide(side.slug, side.email, c.tenant, side.target, made["id"], rel))
     client.cookies.clear()
     return TwoPlans(sides[1], sides[0])
 
 
-def _plan_body(target: str) -> dict[str, str]:
-    return {"target_id": target, "application_key": "intruder", "display_name": "Intruder"}
+def _plan_body(target: str, release: str) -> dict[str, str]:
+    return {
+        "target_id": target,
+        "release_id": release,
+        "application_key": "intruder",
+        "display_name": "Intruder",
+    }
 
 
 def _b_plan_state(owner_db: Database, two: TwoPlans) -> tuple[Any, ...]:
@@ -443,7 +451,7 @@ def test_a_cannot_reach_bs_plan(
     unknown = org(f"no-such-{uuid7().hex[-12:]}")
     for method, path, payload in (
         ("GET", "/delivery/plans", None),
-        ("POST", "/delivery/plans", _plan_body(two.b.target)),
+        ("POST", "/delivery/plans", _plan_body(two.b.target, two.b.release)),
         ("GET", f"/delivery/plans/{two.b.plan}", None),
         ("POST", f"/delivery/plans/{two.b.plan}/approve", digest),
         ("POST", f"/delivery/plans/{two.b.plan}/reject", {}),
@@ -460,11 +468,11 @@ def test_a_cannot_plan_on_bs_target(
 ) -> None:
     two = two_plans
     h = as_user(client, two.a.email)
-    request_plan(client, h, two.a.slug, two.a.target)  # own target first
+    request_plan(client, h, two.a.slug, two.a.target, two.a.release)  # own target first
     before = _b_plan_state(owner_db, two)
     _same_404(
-        client.post(plans(two.a.slug), json=_plan_body(two.b.target), headers=h),
-        client.post(plans(two.a.slug), json=_plan_body(str(uuid7())), headers=h),
+        client.post(plans(two.a.slug), json=_plan_body(two.b.target, two.a.release), headers=h),
+        client.post(plans(two.a.slug), json=_plan_body(str(uuid7()), two.a.release), headers=h),
     )
     assert _b_plan_state(owner_db, two) == before
     with owner_db.session() as o:
@@ -473,6 +481,50 @@ def test_a_cannot_plan_on_bs_target(
             {"t": two.b.target},
         ).scalar_one()
     assert n == 1  # B's own plan only
+
+
+def _a_writes(owner_db: Database, tenant: UUID) -> tuple[Any, ...]:
+    with owner_db.session() as o:
+        return tuple(
+            o.execute(
+                text(
+                    "SELECT (SELECT count(*) FROM shifde.delivery_plans WHERE tenant_id = :t), "
+                    "(SELECT count(*) FROM shifde.delivery_artifacts WHERE tenant_id = :t), "
+                    "(SELECT count(*) FROM shifde.delivery_jobs WHERE tenant_id = :t)"
+                ),
+                {"t": tenant},
+            ).one()
+        )
+
+
+def _b_release_state(owner_db: Database, release: str) -> tuple[Any, ...]:
+    with owner_db.session() as o:
+        rel = o.execute(text("SELECT * FROM shifde.releases WHERE id = :r"), {"r": release}).one()
+        runs = o.execute(
+            text("SELECT * FROM shifde.evaluation_runs WHERE release_id = :r ORDER BY id"),
+            {"r": release},
+        ).all()
+    return tuple(rel), tuple(tuple(r) for r in runs)
+
+
+def test_a_cannot_name_bs_release(
+    client: TestClient, owner_db: Database, two_plans: TwoPlans
+) -> None:
+    """A's plan on A's own target naming B's sealed, passed release: byte for byte the 404 an
+    unknown release id gets; nothing is written for A and B's release and runs are unchanged."""
+    two = two_plans
+    h = as_user(client, two.a.email)
+    request_plan(client, h, two.a.slug, two.a.target, two.a.release)  # own release first
+    a_before, b_before = _a_writes(owner_db, two.a.tenant), _b_plan_state(owner_db, two)
+    release_before = _b_release_state(owner_db, two.b.release)
+    named = client.post(plans(two.a.slug), json=_plan_body(two.a.target, two.b.release), headers=h)
+    unknown = client.post(plans(two.a.slug), json=_plan_body(two.a.target, str(uuid7())), headers=h)
+    _same_404(named, unknown)
+    assert named.json()["detail"] == "release not found"
+    assert named.content == unknown.content
+    assert _a_writes(owner_db, two.a.tenant) == a_before
+    assert _b_plan_state(owner_db, two) == b_before
+    assert _b_release_state(owner_db, two.b.release) == release_before
 
 
 def test_a_lists_only_its_own_plans(client: TestClient, two_plans: TwoPlans) -> None:

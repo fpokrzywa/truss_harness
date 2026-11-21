@@ -12,9 +12,12 @@ The demo creates a scratch database `shifde_demo_<hex>` on the local cluster (cr
 `SHIFDE_TEST_*_DATABASE_URL`, environment first, then `.devdata/dev.env`), migrates it as the
 schema owner and drops it at the end, also on failure; it never uses the checkout's own database.
 In it a fresh organization's requester registers a target, creates an executor and issues its
-credential, and asks for a plan; the runner seals it; the requester cannot approve it and a second
-tenant administrator does; the runner then applies, observes and verifies the deployment. The
-test helpers under `backend/tests/` drive each step.
+credential; sets up a fake model stack (content capture `full`) and seals a release of a solution
+version with an evaluation dataset; a plan of that release is refused (409
+`evaluation_required`); the requester runs a real evaluation of the release to `passed` with an
+in-process worker, then asks for a plan of it; the runner seals it; the requester cannot approve
+it and a second tenant administrator does; the runner then applies, observes and verifies the
+deployment. The test helpers under `backend/tests/` drive each step.
 
 Prints one line per step and ends with `DELIVERY DEMO PASSED` (exit 0) or
 `DELIVERY DEMO FAILED: <step>` (exit 1). Exit 2: the demo could not run. It never prints a token,
@@ -39,8 +42,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
 FAKE_ONLY = (
-    "only the fake platform is supported (no Databricks workspace is configured): "
-    "run with --fake"
+    "only the fake platform is supported (no Databricks workspace is configured): run with --fake"
 )
 RERUN_FLAG = "SHIFDE_DELIVERY_DEMO_RERUN"
 URL_KEYS = (
@@ -139,14 +141,26 @@ def scratch_database() -> Iterator[tuple[str, str]]:
 def drive(app_url: str, owner_url: str, workdir: Path) -> None:
     """The delivery flow, one printed line per step; `StepFailed` names the first failing one."""
     from fastapi.testclient import TestClient
+    from sqlalchemy import text
 
     from shifde.app import create_app
     from shifde.core.db import Database
+    from shifde.core.ids import uuid7
     from shifde.core.settings import Settings
+    from tests._support.p5util import Hdr, thread_worker
     from tests.conftest import ORIGIN
     from tests.connections.routes import as_user, system_role_user
     from tests.delivery.conftest import make_executor
-    from tests.delivery.routes import Flow, address, make_due, plans, register, target_body
+    from tests.delivery.routes import (
+        Flow,
+        address,
+        make_due,
+        plans,
+        register,
+        request_plan,
+        target_body,
+    )
+    from tests.evaluation.helpers import case, release, request, wait_scored
     from tests.executor.support import (
         ask_plan,
         credentials_file,
@@ -154,8 +168,8 @@ def drive(app_url: str, owner_url: str, workdir: Path) -> None:
         fake_platform,
         make_runner,
     )
+    from tests.identity import harness
     from tests.tenancy.conftest import _client
-    from tests.tenancy.routes import ws_slug
 
     def step(name: str, call: Callable[[], Any]) -> Any:
         try:
@@ -186,13 +200,32 @@ def drive(app_url: str, owner_url: str, workdir: Path) -> None:
         allowed_origins=[ORIGIN],
         log_format="json",
         log_level="WARNING",
+        # every step signs the requester in afresh: more than the default 10 a minute
+        login_rate_per_account_per_minute=60,
     )
     owner_db = Database(owner_url, pool_size=2, verify_role=False)  # the schema owner, for setup
+    main_ws = uuid7()
     try:
 
         def people() -> tuple[Any, str, str]:
             with owner_db.session() as o:
                 org = _client(o, "demo")
+                # the packaging helpers' project `main/sample`
+                o.execute(
+                    text(
+                        "INSERT INTO shifde.workspaces (id, tenant_id, slug, name) "
+                        "VALUES (:w, :t, 'main', 'Main')"
+                    ),
+                    {"w": main_ws, "t": org.tenant},
+                )
+                o.execute(
+                    text(
+                        "INSERT INTO shifde.projects (id, tenant_id, workspace_id, slug, name) "
+                        "VALUES (:p, :t, :w, 'sample', 'Sample')"
+                    ),
+                    {"p": uuid7(), "t": org.tenant, "w": main_ws},
+                )
+                o.commit()
             requester = system_role_user(owner_db, org.tenant, "tenant_administrator")
             approver = system_role_user(owner_db, org.tenant, "tenant_administrator")
             return org, requester, approver
@@ -217,7 +250,7 @@ def drive(app_url: str, owner_url: str, workdir: Path) -> None:
 
             def register_target() -> Any:
                 h = as_user(client, requester)
-                made = register(client, h, org.slug, target_body(ws_slug(org), address()))
+                made = register(client, h, org.slug, target_body("main", address()))
                 client.cookies.clear()
                 return made
 
@@ -227,7 +260,7 @@ def drive(app_url: str, owner_url: str, workdir: Path) -> None:
                 lambda: make_executor(client, org, requester),
             )
             flow = Flow(
-                client, org.slug, ws_slug(org), org.tenant, requester, approver, executor.token
+                client, org.slug, "main", org.tenant, requester, approver, executor.token, owner_db
             )
             runner = step(
                 "start the executor's runner against the fake platform",
@@ -236,7 +269,45 @@ def drive(app_url: str, owner_url: str, workdir: Path) -> None:
                 ),
             )
 
-            plan = step("request a plan", lambda: ask_plan(flow, target["id"]))
+            def seal_release() -> Any:
+                own = TestClient(
+                    client.app, base_url="https://testserver", headers={"Origin": ORIGIN}
+                )
+                hdr = Hdr(harness.login(own, requester))
+                hdr.client = own
+                cases = [
+                    case("hello", "hello there", ("contains", "hello there")),
+                    case("bye", "bye now", ("contains", "bye now")),
+                ]
+                with owner_db.session() as o:
+                    return release(hdr, o, cases, org=f"/api/v1/orgs/{org.slug}", org_slug=org.slug)
+
+            rel = step(
+                "a fake model stack (capture full) and a sealed release of a solution version",
+                seal_release,
+            )
+
+            def refused() -> None:
+                h = as_user(client, requester)
+                body = request_plan(client, h, org.slug, target["id"], rel.id, status=409)
+                client.cookies.clear()
+                need(body["code"] == "evaluation_required")
+
+            step("a plan of the release is refused (409 evaluation_required)", refused)
+
+            def evaluate() -> None:
+                requested = request(rel)
+                need(requested.status_code == 201)
+                with thread_worker(settings, concurrency=3):
+                    scored = wait_scored(rel, requested.json()["id"])
+                need(scored["status"] == "passed")
+
+            step("an evaluation of the release runs to passed (in-process worker)", evaluate)
+
+            plan = step(
+                "request a plan of the release",
+                lambda: ask_plan(flow, target["id"], release_id=rel.id),
+            )
 
             def seal() -> Any:
                 need(runner.run_once())

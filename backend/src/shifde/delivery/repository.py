@@ -536,7 +536,8 @@ PLAN_COLUMNS = (
     "p.id, p.tenant_id, p.target_id, p.target_revision, p.artifact_id, p.artifact_digest, "
     "p.application_key, p.display_name, p.status, p.status_reason, p.requested_by, p.steps, "
     "p.snapshot, p.adapter_version, p.toolchain_digest, p.digest, p.sealed_at, p.expires_at, "
-    "p.created_at, p.updated_at, t.workspace_id, t.project_id, "
+    "p.created_at, p.updated_at, p.release_id, p.release_digest, p.evaluation_run_id, "
+    "t.workspace_id, t.project_id, "
     "a.decision AS approval_decision, a.decided_by AS approval_decided_by, "
     "a.decided_at AS approval_decided_at, a.note AS approval_note, "
     "dep.id AS deployment_id, now() AS db_now"
@@ -565,9 +566,10 @@ def insert_plan(session: Session, values: Mapping[str, Any]) -> None:
     session.execute(
         text(
             "INSERT INTO shifde.delivery_plans (tenant_id, id, target_id, target_revision, "
-            "artifact_id, artifact_digest, application_key, display_name, requested_by) VALUES "
-            "(:tenant_id, :id, :target_id, :target_revision, :artifact_id, :artifact_digest, "
-            ":application_key, :display_name, :requested_by)"
+            "artifact_id, artifact_digest, application_key, display_name, requested_by, "
+            "release_id, release_digest, evaluation_run_id) VALUES (:tenant_id, :id, :target_id, "
+            ":target_revision, :artifact_id, :artifact_digest, :application_key, :display_name, "
+            ":requested_by, :release_id, :release_digest, :evaluation_run_id)"
         ),
         dict(values),
     )

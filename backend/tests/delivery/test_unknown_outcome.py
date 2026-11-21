@@ -170,7 +170,12 @@ def test_an_unresolved_target_takes_no_plan_and_holds_its_applies_until_marked_f
     assert deployment_jobs(owner_db, second)[0]["status"] == "queued"
     # no new plan on the target
     h = as_user(flow.client, flow.requester)
-    body = {"target_id": target, "application_key": "more-app", "display_name": "More"}
+    body = {
+        "target_id": target,
+        "release_id": str(flow.release(target)),
+        "application_key": "more-app",
+        "display_name": "More",
+    }
     r = flow.client.post(plans(flow.slug), json=body, headers=h)
     _code(r, 409, "target_unresolved")
     # a person marks the outcome failed: plans are accepted and the held apply is leased

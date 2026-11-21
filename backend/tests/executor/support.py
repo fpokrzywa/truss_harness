@@ -56,10 +56,19 @@ def make_runner(
     )
 
 
-def ask_plan(flow: Flow, target_id: object, application_key: str = "sales-app") -> Any:
-    """The requester's plan request (a `PlanOut` body); the client is signed out afterwards."""
+def ask_plan(
+    flow: Flow,
+    target_id: object,
+    application_key: str = "sales-app",
+    release_id: object | None = None,
+) -> Any:
+    """The requester's plan request (a `PlanOut` body) of `release_id`, or of a new sealed,
+    passed release in the target's scope; the client is signed out afterwards."""
+    release = release_id or flow.release(target_id)
     h = as_user(flow.client, flow.requester)
-    made = request_plan(flow.client, h, flow.slug, target_id, application_key=application_key)
+    made = request_plan(
+        flow.client, h, flow.slug, target_id, release, application_key=application_key
+    )
     flow.client.cookies.clear()
     return made
 
