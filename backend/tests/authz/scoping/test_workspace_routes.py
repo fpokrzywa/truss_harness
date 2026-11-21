@@ -1319,7 +1319,7 @@ _register(
             CREATE,
             "POST",
             lambda n: "/delivery/plans",
-            body=lambda n: _plan_body(w("target", n)),
+            body=lambda n: _plan_body(w("target", n), w("release", n)),
             state=w.snap(*PLANS),
         ),
         ("POST", ORG + "/delivery/plans/{plan_id}/approve"): lambda w: _case(
@@ -1570,8 +1570,28 @@ def _target_body(n: int) -> dict[str, Any]:  # Any: JSON body
     }
 
 
-def _plan_body(target_id: str) -> dict[str, str]:
-    return {"target_id": target_id, "application_key": "app", "display_name": "App"}
+def _plan_body(target_id: str, release_id: str) -> dict[str, str]:
+    return {
+        "target_id": target_id,
+        "release_id": release_id,
+        "application_key": "app",
+        "display_name": "App",
+    }
+
+
+def _passed_evaluation(w: W, owner: Session, n: int) -> None:
+    """A passed evaluation run of side `n`'s release on its manifest's digests, as the owner."""
+    owner.execute(
+        text(
+            "INSERT INTO shifde.evaluation_runs (tenant_id, id, release_id, release_digest, "
+            "dataset_id, dataset_digest, thresholds, status, requested_by) SELECT r.tenant_id, "
+            ":i, r.id, r.digest, CAST(r.manifest->'evaluation'->>'dataset_id' AS uuid), "
+            "r.manifest->'evaluation'->>'dataset_digest', '{}'::jsonb, 'passed', r.sealed_by "
+            "FROM shifde.releases r WHERE r.id = :r"
+        ),
+        {"i": uuid7(), "r": w("release", n)},
+    )
+    owner.commit()
 
 
 # ---------------------------------------------------------------------- models
@@ -2102,14 +2122,17 @@ def test_connections_and_delivery_targets(
     w = _world(client, owner_session, world.passwords)
     w.set("rest", 1, rest_server.base_url)
     token = secret(w.admin.client, w.admin, "rest-token", REST_TOKEN)
+    _solutions_world(w)  # each side's sealed release, in the side's project
     for n in (1, 2):
+        _passed_evaluation(w, owner_session, n)
         cid = _rest(w, n, rest_server.base_url, token)
         w.set("conn", n, cid)
         tested = run_test(w.admin.client, w.admin, A, cid)
         w.set("job", n, tested["id"])
         w.post(f"/connections/{cid}/discover", None, 200)
         w.set("target", n, w.post("/delivery/targets", _target_body(n))["id"])
-        w.set("plan", n, w.post("/delivery/plans", _plan_body(w("target", n)))["id"])
+        plan = w.post("/delivery/plans", _plan_body(w("target", n), w("release", n)))
+        w.set("plan", n, plan["id"])
         w.set("deployment", n, uuid7())
         owner_session.execute(
             text(

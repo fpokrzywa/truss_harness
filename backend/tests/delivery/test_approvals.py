@@ -19,6 +19,7 @@ from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from tests.connections.routes import as_user, system_role_user
 from tests.delivery.conftest import ExecutorSide
+from tests.delivery.releases import release_for_target
 from tests.delivery.routes import (
     address,
     lease_plan,
@@ -48,10 +49,11 @@ def _user_id(owner_db: Database, email: str) -> UUID:
     return uid
 
 
-def _request(client: TestClient, world: World, email: str) -> dict[str, Any]:
+def _request(client: TestClient, world: World, email: str, owner_db: Database) -> dict[str, Any]:
     h = as_user(client, email)
     target = register(client, h, world.a.slug, target_body(ws_slug(world.a), address()))
-    made: dict[str, Any] = request_plan(client, h, world.a.slug, target["id"])
+    release = release_for_target(owner_db, target["id"]).id
+    made: dict[str, Any] = request_plan(client, h, world.a.slug, target["id"], release)
     client.cookies.clear()
     return made
 
@@ -70,7 +72,7 @@ def sealed(
     executor_a: ExecutorSide,
     owner_db: Database,
 ) -> Sealed:
-    made = _request(client, world, people.owner_a)
+    made = _request(client, world, people.owner_a, owner_db)
     _seal(client, executor_a)
     h = as_user(client, people.owner_a)
     plan = client.get(f"{plans(world.a.slug)}/{made['id']}", headers=h).json()
@@ -173,7 +175,7 @@ def test_the_requester_cannot_decide_their_own_plan(
 def test_the_trigger_refuses_a_wrong_digest_or_an_unsealed_plan(
     client: TestClient, world: World, people: People, owner_db: Database, app_db: Database
 ) -> None:
-    made = _request(client, world, people.owner_a)
+    made = _request(client, world, people.owner_a, owner_db)
     other = uuid7()
     for digest in (made["artifact_digest"], "e" * 64):
         with app_session(app_db, world.a.tenant) as s, pytest.raises(DBAPIError) as exc:
@@ -205,7 +207,7 @@ def test_approve_must_quote_the_sealed_digest(
 def test_an_unsealed_plan_cannot_be_decided(
     client: TestClient, world: World, people: People, owner_db: Database
 ) -> None:
-    made = _request(client, world, people.owner_a)
+    made = _request(client, world, people.owner_a, owner_db)
     approver = system_role_user(owner_db, world.a.tenant, "tenant_administrator")
     r = _decide(client, world, approver, made["id"], "approve", {"plan_digest": "a" * 64})
     _code(r, 409, "plan_not_sealed")
@@ -359,7 +361,7 @@ def test_request_approve_and_reject_are_audited(
     owner_db: Database,
     sealed: Sealed,
 ) -> None:
-    second = _request(client, world, people.owner_a)
+    second = _request(client, world, people.owner_a, owner_db)
     _seal(client, executor_a)
     body = {"plan_digest": sealed.plan["digest"]}
     assert _decide(client, world, sealed.approver, sealed.plan["id"], "approve", body).is_success

@@ -41,6 +41,13 @@ for _table in (
     "delivery_deployments",
     "delivery_plans",
     "delivery_artifacts",
+    "evaluation_runs",
+    "evaluation_datasets",
+    "releases",
+    "solution_versions",
+    "solutions",
+    "artifact_versions",
+    "artifacts",
     "delivery_executor_credentials",
     "delivery_executors",
     "delivery_targets",
@@ -115,6 +122,7 @@ def flow(
         people.owner_a,
         system_role_user(owner_db, world.a.tenant, "tenant_administrator"),
         executor_a.token,
+        owner_db,
     )
 
 

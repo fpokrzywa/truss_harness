@@ -24,6 +24,7 @@ from shifde.core.settings import Settings
 from shifde.delivery import api, gateway, gateway_api
 from shifde.identity.dependencies import require_auth
 from tests.connections.routes import as_user
+from tests.delivery.releases import release_for_target
 from tests.identity import harness
 from tests.tenancy.conftest import app_session
 
@@ -238,11 +239,13 @@ def request_plan(
     h: dict[str, str],
     slug: str,
     target_id: object,
+    release_id: object,
     status: int = 201,
     **overrides: Any,
 ) -> Any:  # Any: a JSON body
     body: dict[str, Any] = {
         "target_id": str(target_id),
+        "release_id": str(release_id),
         "application_key": "sales-app",
         "display_name": "Sales app",
     }
@@ -412,7 +415,8 @@ def lease_kind(client: TestClient, token: str, kind: str) -> dict[str, Any]:  # 
 @dataclass
 class Flow:
     """Organization A's delivery path through the routes: the requester registers a target and
-    requests plans, the executor seals them, a second tenant administrator approves them."""
+    requests plans (each of a new sealed, passed release in the target's scope unless one is
+    given), the executor seals them, a second tenant administrator approves them."""
 
     client: TestClient
     slug: str
@@ -421,6 +425,7 @@ class Flow:
     requester: str
     approver: str
     token: str
+    owner_db: Database
 
     def target(self) -> dict[str, Any]:  # Any: a TargetOut body
         h = as_user(self.client, self.requester)
@@ -435,9 +440,13 @@ class Flow:
         target_id: object,
         application_key: str = "sales-app",
         value: Mapping[str, Any] | None = None,
+        release_id: object | None = None,
     ) -> dict[str, Any]:  # Any: a PlanOut body
+        release = release_id or self.release(target_id)
         h = as_user(self.client, self.requester)
-        made = request_plan(self.client, h, self.slug, target_id, application_key=application_key)
+        made = request_plan(
+            self.client, h, self.slug, target_id, release, application_key=application_key
+        )
         self.client.cookies.clear()
         leased = lease_plan(self.client, self.token)
         assert leased["job"]["plan_id"] == made["id"]
@@ -446,6 +455,10 @@ class Flow:
         )
         assert r.status_code == 200, r.text
         return self.get_plan(made["id"])
+
+    def release(self, target_id: object, **options: Any) -> UUID:
+        """A new sealed release in the target's scope with a passed evaluation run."""
+        return release_for_target(self.owner_db, target_id, **options).id
 
     def get_plan(self, plan_id: object) -> dict[str, Any]:  # Any: a PlanOut body
         h = as_user(self.client, self.requester)
