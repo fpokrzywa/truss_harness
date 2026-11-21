@@ -22,6 +22,8 @@ afterEach(() => vi.unstubAllGlobals());
 
 const UNRESOLVED = 'The target has an unresolved unknown outcome.';
 const REQUIRED = 'This release has no passing evaluation.';
+const RELEASE_HELP =
+  'Releases are sealed on the Solutions screen and need a passing evaluation before a plan can be requested.';
 const SEALED = `${RELEASE_DIGEST.slice(0, 12)}, sealed ${formatDate(RELEASE.sealed_at)}`;
 const LATER = ['Project', 'Solution', 'Version', 'Release'];
 const TARGETS = {
@@ -138,6 +140,18 @@ describe('PlansView request', () => {
       expect(order & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
     expect(within(dialog).queryByLabelText('Release id')).not.toBeInTheDocument();
+  });
+
+  it('shows the release help line under the Release select', async () => {
+    stubDelivery(TARGETS);
+    renderWithClient(<PlansView />);
+    const dialog = await openDialog();
+    const help = within(dialog).getByText(RELEASE_HELP);
+    const release = within(dialog).getByLabelText('Release');
+    expect(release.compareDocumentPosition(help) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(help.compareDocumentPosition(within(dialog).getByLabelText('Application key'))).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
   });
 
   it('enables each select in turn, offers only sealed releases and sends the chosen id', async () => {

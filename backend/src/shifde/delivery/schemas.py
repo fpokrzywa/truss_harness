@@ -139,6 +139,9 @@ class PlanApprovalOut(BaseModel):
 
 
 class PlanOut(BaseModel):
+    """A plan; `release_id`, `release_digest` and `evaluation_run_id` are null unless the caller
+    can read the plan's release."""
+
     id: UUID
     target_id: UUID
     application_key: str
