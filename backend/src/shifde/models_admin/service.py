@@ -26,7 +26,7 @@ from __future__ import annotations
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal  # Any: rows / provider JSON
 from uuid import UUID
@@ -105,6 +105,9 @@ JOB_ACTION = {
     DISCOVER_JOB_KIND: "model.provider.models_discovered",
 }
 JOB_NOT_FOUND = "provider job not found"
+# how far before the job's `created_at` (the database clock) its result event may be dated (the
+# worker host's clock): a worker running slightly behind still finds what it recorded
+RESULT_CLOCK_SKEW = timedelta(minutes=5)
 
 
 def _provider_out(r: Mapping[str, Any]) -> s.ProviderOut:
@@ -188,6 +191,19 @@ def _job_state(
     # dead, or closed without a result (the reaper's `stale lease`)
     code = job["last_error"] or ""
     return "failed", code if ERROR_CODE.fullmatch(code) else "worker_lost"
+
+
+def _recorded(session: Session, tenant_id: UUID, job: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The result a provider job recorded: its audit event's details (B-2720)."""
+    kind = job["kind"]
+    return audit.find_details(
+        session,
+        tenant_id=tenant_id,
+        action=JOB_ACTION[kind],
+        target_id=UUID(job["payload"]["provider_id"]),
+        correlation_id=f"{JOB_PREFIX[kind]}-{job['id']}",
+        occurred_from=job["created_at"] - RESULT_CLOCK_SKEW,
+    )
 
 
 def _discovered(i: ModelInfo) -> dict[str, object]:
@@ -456,16 +472,7 @@ class ModelService:
         return job
 
     def _job_details(self, job: Mapping[str, Any]) -> dict[str, Any] | None:
-        """The result a provider job recorded: its audit event's details (B-2720)."""
-        kind = job["kind"]
-        return audit.find_details(
-            self._session,
-            tenant_id=self.sc.tenant_id,
-            action=JOB_ACTION[kind],
-            target_id=UUID(job["payload"]["provider_id"]),
-            correlation_id=f"{JOB_PREFIX[kind]}-{job['id']}",
-            occurred_from=job["created_at"],
-        )
+        return _recorded(self._session, self.sc.tenant_id, job)
 
     def _health_job_out(self, job: Mapping[str, Any]) -> s.HealthCheckJobOut:
         found = self._job_details(job)
@@ -529,10 +536,19 @@ class ModelService:
     def discovery_job(self, provider_id: UUID, job_id: UUID) -> s.DiscoveryJobOut:
         return self._discovery_job_out(self._job(DISCOVER_JOB_KIND, provider_id, job_id))
 
-    def execute_health_check(self, provider_id: UUID) -> None:
-        """Run the health check and record it (the worker side of `enqueue_health_check`): the
-        provider's health columns and the `model.provider.health_checked` event, which carries
-        the result under this context's request id."""
+    def _recorded_meanwhile(self, job: Mapping[str, Any]) -> bool:
+        """Lock the job for the transaction that records its result and tell whether another run
+        of it recorded one meanwhile: the adapter call runs outside any transaction
+        (`prepare_call` commits), so two runs of one job can both get here."""
+        repository.lock_provider_job(self._session, job["id"])
+        return self._job_details(job) is not None
+
+    def execute_health_check(self, job: Mapping[str, Any]) -> None:
+        """Run the health check of the job's provider and record it (the worker side of
+        `enqueue_health_check`): the provider's health columns and the
+        `model.provider.health_checked` event, which carries the result under this context's
+        request id. Nothing is recorded when another run of the job already did."""
+        provider_id = UUID(job["payload"]["provider_id"])
         self._manage()
         provider = self._provider_row(provider_id, write=True)
         adapter, ctx, cfg = self._provider_call(provider, "model.health")
@@ -541,6 +557,8 @@ class ModelService:
             status, latency, detail = result.status, result.latency_ms, scrub_text(result.detail)
         except AdapterFailure as exc:
             status, latency, detail = "unavailable", 0, scrub_text(exc.message)
+        if self._recorded_meanwhile(job):
+            return
         checked = utcnow()
         repository.update_provider(
             self._session,
@@ -558,15 +576,17 @@ class ModelService:
                 "status": status,
                 "latency_ms": latency,
                 "checked_at": checked.isoformat(),
-                "detail": detail or None,
+                "detail": detail[:500] or None,
             },
         )
         self._commit("model provider")
 
-    def execute_discovery(self, provider_id: UUID) -> None:
-        """Run the model discovery and record it (the worker side of `enqueue_discovery`): the
-        `model.provider.models_discovered` event, which carries the models under this context's
-        request id. An adapter failure raises its mapped error; nothing is recorded then."""
+    def execute_discovery(self, job: Mapping[str, Any]) -> None:
+        """Run the model discovery of the job's provider and record it (the worker side of
+        `enqueue_discovery`): the `model.provider.models_discovered` event, which carries the
+        models under this context's request id. An adapter failure raises its mapped error;
+        nothing is recorded then, nor when another run of the job already recorded it."""
+        provider_id = UUID(job["payload"]["provider_id"])
         self._manage()
         provider = self._provider_row(provider_id, write=True)
         adapter, ctx, cfg = self._provider_call(provider, "model.discover")
@@ -574,6 +594,8 @@ class ModelService:
             infos = adapter.list_models(ctx, cfg)
         except AdapterFailure as exc:
             raise failure_to_error(exc) from exc
+        if self._recorded_meanwhile(job):
+            return
         self._audit(
             "model.provider.models_discovered",
             "model_provider",
@@ -1715,18 +1737,9 @@ def run_provider_job(
         if job is None:
             return NotFound.code
         kind, payload = job["kind"], job["payload"]
-        provider_id = UUID(payload["provider_id"])
         request_id = f"{JOB_PREFIX[kind]}-{job_id}"
         db.set_request_id(session, request_id)
-        recorded = audit.find_details(
-            session,
-            tenant_id=tenant_id,
-            action=JOB_ACTION[kind],
-            target_id=provider_id,
-            correlation_id=request_id,
-            occurred_from=job["created_at"],
-        )
-        if recorded is not None:
+        if _recorded(session, tenant_id, job) is not None:
             return None
         try:
             principal = authz.execution_principal(
@@ -1753,11 +1766,17 @@ def run_provider_job(
             )
             svc = ModelService(scope, runtime)
             if kind == HEALTH_JOB_KIND:
-                svc.execute_health_check(provider_id)
+                svc.execute_health_check(job)
             else:
-                svc.execute_discovery(provider_id)
-        except AppError as exc:
+                svc.execute_discovery(job)
+        except (AppError, IntegrityError) as exc:
             session.rollback()
+            # as `run_test_job`: another run of this job recorded the result; nothing more is
+            # written
+            if _recorded(session, tenant_id, job) is not None:
+                return None
+            if isinstance(exc, IntegrityError):
+                raise
             return exc.code
         return None
     finally:

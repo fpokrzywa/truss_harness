@@ -577,3 +577,11 @@ def get_provider_job(
         .mappings()
         .first()
     )
+
+
+def lock_provider_job(session: Session, job_id: UUID) -> None:
+    """Hold a transaction-level advisory lock on the job `job_id` (one run of it at a time)."""
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+        {"k": f"model-job:{job_id}"},
+    )

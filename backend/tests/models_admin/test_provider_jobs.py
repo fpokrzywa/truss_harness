@@ -12,14 +12,19 @@ own job function on a job leased only if it is still queued. The rotated-key hea
 
 from __future__ import annotations
 
+import threading
+from datetime import timedelta
 from typing import Any  # Any: JSON bodies, row values
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
-from shifde.adapters.base import AdapterFailure, ErrorClass
+from shifde.adapters.base import AdapterFailure, ErrorClass, HealthResult
 from shifde.adapters.model_providers import FakeProvider
+from shifde.audit import service as audit_service
 from shifde.core.db import Database
 from shifde.models_admin import repository
 from shifde.models_admin import service as models_admin
@@ -308,3 +313,145 @@ def test_the_synchronous_refusals_queue_nothing(
         assert _jobs(owner_db, pid, kind) == []
     grant(owner_db, world.a.tenant, uid, ["model:manage"])
     assert run_discovery(client, as_user(client, email), A, pid)[0]["model_key"] == "fake-chat"
+
+
+def test_a_long_health_detail_is_truncated_in_the_audit_event(
+    client: TestClient,
+    world: World,
+    people: People,
+    owner_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The event that holds the result keeps at most 500 characters of the detail, as the
+    provider's `health_detail` does."""
+    A, h = org(world.a.slug), as_user(client, people.owner_a)
+    pid = fake_model_stack(client, h, A)["provider"]
+
+    def long(self: Any, ctx: Any, conn: Any) -> Any:  # Any: adapter call arguments
+        return HealthResult(status="degraded", latency_ms=3, detail="x" * 2000)
+
+    monkeypatch.setattr(FakeProvider, "health", long)
+    out = run_job(client, h, A, pid, HEALTH)
+    assert out["status"] == "done" and out["result"]["detail"] == "x" * 500
+    [(_, details)] = _events(owner_db, pid, "model.provider.health_checked")
+    assert details["detail"] == "x" * 500
+    assert _q(
+        owner_db, "SELECT health_detail FROM shifde.model_providers WHERE id = :p", p=pid
+    ) == [("x" * 500,)]
+
+
+def test_a_result_dated_slightly_before_the_job_is_still_found(
+    client: TestClient,
+    world: World,
+    people: People,
+    owner_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker whose clock runs behind the database dates its event before the job's
+    `created_at`: the lookup's margin (`RESULT_CLOCK_SKEW`) still finds it, never
+    `worker_lost`."""
+    A, h = org(world.a.slug), as_user(client, people.owner_a)
+    pid = fake_model_stack(client, h, A)["provider"]
+    for kind in (HEALTH, DISCOVER):
+        job = post_job(client, h, A, pid, kind)
+        [(created,)] = _q(owner_db, "SELECT created_at FROM shifde.jobs WHERE id = :j", j=job["id"])
+        early = created - timedelta(seconds=30)
+        with monkeypatch.context() as m:
+            m.setattr(audit_service, "utcnow", lambda early=early: early)
+            assert execute(client, A, kind, job["id"])
+        [(occurred,)] = _q(
+            owner_db,
+            "SELECT occurred_at FROM shifde.audit_events WHERE correlation_id = :c",
+            c=f"{models_admin.JOB_PREFIX[kind]}-{job['id']}",
+        )
+        assert occurred < created
+        out = job_status(client, h, A, pid, kind, job["id"])
+        assert out["status"] == "done" and out["error"] is None and out["result"] is not None
+
+
+def test_two_concurrent_runs_of_one_job_record_one_result(
+    client: TestClient,
+    world: World,
+    people: People,
+    owner_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two runs of one job both call the adapter (outside any transaction); the one that records
+    second waits for the first (a lock on the job), finds its result and records nothing."""
+    A, h = org(world.a.slug), as_user(client, people.owner_a)
+    pid = fake_model_stack(client, h, A)["provider"]
+    app: Any = client.app  # Any: the FastAPI app behind the test client
+
+    def run_twice(kind: str, method: str) -> None:
+        both = threading.Barrier(2, timeout=30)
+        calls: list[str] = []
+        original = getattr(FakeProvider, method)
+
+        def together(self: Any, ctx: Any, conn: Any) -> Any:  # Any: adapter call arguments
+            calls.append(method)
+            both.wait()  # both runs are past their first result lookup
+            return original(self, ctx, conn)
+
+        monkeypatch.setattr(FakeProvider, method, together)
+        job = post_job(client, h, A, pid, kind)
+        results: list[str | None] = []
+
+        def run() -> None:
+            results.append(
+                models_admin.run_provider_job(
+                    app.state.db, app.state.integration, world.a.tenant, UUID(job["id"])
+                )
+            )
+
+        threads = [threading.Thread(target=run) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(60)
+        assert results == [None, None] and calls == [method, method]
+        assert len(_events(owner_db, pid, models_admin.JOB_ACTION[kind])) == 1
+        assert job_status(client, h, A, pid, kind, job["id"])["status"] == "done"
+
+    run_twice(HEALTH, "health")
+    run_twice(DISCOVER, "list_models")
+
+
+def test_a_unique_violation_after_another_run_recorded_the_result_records_nothing_more(
+    client: TestClient,
+    world: World,
+    people: People,
+    owner_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """As `run_test_job`: an `IntegrityError` once another run of the job recorded its result
+    ends the run without a second result; with no result recorded it is raised."""
+    A, h = org(world.a.slug), as_user(client, people.owner_a)
+    pid = fake_model_stack(client, h, A)["provider"]
+    app: Any = client.app  # Any: the FastAPI app behind the test client
+    original = models_admin.ModelService.execute_health_check
+
+    def run(job_id: str) -> str | None:
+        return models_admin.run_provider_job(
+            app.state.db, app.state.integration, world.a.tenant, UUID(job_id)
+        )
+
+    def collide(self: Any, row: Any) -> None:  # Any: the service under test, the job row
+        monkeypatch.setattr(models_admin.ModelService, "execute_health_check", original)
+        assert run(job["id"]) is None  # another run records the result meanwhile
+        raise IntegrityError("INSERT", {}, Exception("duplicate key"))
+
+    job = post_job(client, h, A, pid, HEALTH)
+    monkeypatch.setattr(models_admin.ModelService, "execute_health_check", collide)
+    assert run(job["id"]) is None
+    assert len(_events(owner_db, pid, "model.provider.health_checked")) == 1
+    assert job_status(client, h, A, pid, HEALTH, job["id"])["result"]["status"] == "healthy"
+
+    def fail(self: Any, row: Any) -> None:  # Any: the service under test, the job row
+        raise IntegrityError("INSERT", {}, Exception("duplicate key"))
+
+    assert execute(client, A, HEALTH, job["id"])  # the first job ends; a new one can be queued
+    again = post_job(client, h, A, pid, HEALTH)
+    monkeypatch.setattr(models_admin.ModelService, "execute_health_check", fail)
+    with pytest.raises(IntegrityError):
+        run(again["id"])
+    assert len(_events(owner_db, pid, "model.provider.health_checked")) == 1
