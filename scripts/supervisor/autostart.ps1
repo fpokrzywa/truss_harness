@@ -18,11 +18,29 @@ function Test-Running($pattern) {
 Set-Location $repo
 Write-Log "autostart: begin (goal $Goal)"
 
-# The cluster may need many minutes of crash recovery after a hard stop; start waits it out.
-& $py scripts/dev_db.py start 2>&1 | ForEach-Object { Write-Log "$_" }
-& $py scripts/dev_db.py status 2>&1 | ForEach-Object { Write-Log "$_" }
+# Native stderr must not end the script: under 'Stop', Windows PowerShell 5.1 turns each
+# stderr line piped through 2>&1 into a terminating error (2026-11-21: the task exited 1
+# before logging why or starting anything).
+function Invoke-DevDb($verb) {
+    $ErrorActionPreference = 'Continue'
+    & $py scripts/dev_db.py $verb 2>&1 | ForEach-Object { Write-Log "$_" }
+    return $LASTEXITCODE
+}
 
-if (Test-Running 'supervise\.py') {
+# The cluster may need many minutes of crash recovery after a hard stop; start waits it out.
+$clusterUp = $false
+foreach ($try in 1..3) {
+    $code = Invoke-DevDb 'start'
+    if ($code -eq 0) { $clusterUp = $true; break }
+    Write-Log "cluster start failed (exit $code, try $try of 3)"
+    Start-Sleep -Seconds 30
+}
+Invoke-DevDb 'status' | Out-Null
+
+if (-not $clusterUp) {
+    # No lead without a database. The watchdog below still starts and alerts that no lead runs.
+    Write-Log 'cluster not running; not starting the supervisor'
+} elseif (Test-Running 'supervise\.py') {
     Write-Log 'supervisor already running; not starting another'
 } else {
     Start-Process -FilePath $py -ArgumentList '-I', 'scripts/supervisor/supervise.py', "$Goal" `
