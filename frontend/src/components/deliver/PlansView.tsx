@@ -1,11 +1,14 @@
 'use client';
 
+import type { UseQueryResult } from '@tanstack/react-query';
 import Link from 'next/link';
 import { useState, type FormEvent } from 'react';
 import { endpoints } from '@/lib/api/endpoints';
+import { ApiError } from '@/lib/api/errors';
 import { usePlans, useRefreshDelivery, useTargets } from '@/lib/delivery-hooks';
-import { useCan } from '@/lib/hooks';
-import { deliverHref } from '@/lib/scope';
+import { useCan, useProjects, useWorkspaces } from '@/lib/hooks';
+import { useSolutions, useSolutionVersions, useVersionReleases } from '@/lib/release-hooks';
+import { deliverHref, releaseHref } from '@/lib/scope';
 import {
   ActionError,
   EmptyState,
@@ -24,7 +27,7 @@ import { targetName } from './targetName';
 
 const COLUMNS = ['Display name', 'Application key', 'Target', 'Status', 'Expires', 'Created'];
 const APPLICATION_KEY = /^[a-z][a-z0-9-]{0,62}$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SELECT = { value: '', label: 'Select...' };
 
 /** Deployment plans: list and request. Server text renders as plain React text only. */
 export function PlansView() {
@@ -105,7 +108,19 @@ function RequestPlanDialog({ org, onClose }: { org: string; onClose: () => void 
   const refresh = useRefreshDelivery(org);
   const action = useAction();
   const [targetId, setTargetId] = useState('');
+  const [ws, setWs] = useState('');
+  const [proj, setProj] = useState('');
+  const [solutionId, setSolutionId] = useState('');
+  const [versionId, setVersionId] = useState('');
   const [releaseId, setReleaseId] = useState('');
+  // The release of the last request, so the evaluation link survives later select changes.
+  const [submittedRelease, setSubmittedRelease] = useState('');
+  const workspaces = useWorkspaces(org);
+  const projects = useProjects(org, ws || undefined);
+  // An empty workspace keeps a hook disabled until the select before it has a value.
+  const solutions = useSolutions(org, proj ? ws : '', proj);
+  const versions = useSolutionVersions(org, solutionId ? ws : '', proj, solutionId);
+  const releases = useVersionReleases(org, versionId ? ws : '', proj, solutionId, versionId);
   const [applicationKey, setApplicationKey] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -114,9 +129,8 @@ function RequestPlanDialog({ org, onClose }: { org: string; onClose: () => void 
     e.preventDefault();
     const next: Record<string, string> = {};
     const name = displayName.trim();
-    const release = releaseId.trim();
     if (targetId === '') next.target = 'Choose a target.';
-    if (!UUID.test(release)) next.releaseId = 'Enter the release id.';
+    if (releaseId === '') next.release = 'Choose a release.';
     if (!APPLICATION_KEY.test(applicationKey)) {
       next.applicationKey =
         'Use 1-63 lowercase letters, digits or hyphens, starting with a letter.';
@@ -125,10 +139,11 @@ function RequestPlanDialog({ org, onClose }: { org: string; onClose: () => void 
     setErrors(next);
     if (Object.keys(next).length > 0) return;
 
+    setSubmittedRelease(releaseId);
     const res = await action.run(() =>
       endpoints.requestPlan(org, {
         target_id: targetId,
-        release_id: release,
+        release_id: releaseId,
         application_key: applicationKey,
         display_name: name,
       }),
@@ -142,6 +157,30 @@ function RequestPlanDialog({ org, onClose }: { org: string; onClose: () => void 
   const targetOptions = (targets.data?.items ?? [])
     .filter((t) => t.status === 'active')
     .map((t) => ({ value: t.id, label: t.name }));
+  const wsOptions = (workspaces.data?.items ?? [])
+    .filter((w) => w.status === 'active')
+    .map((w) => ({ value: w.slug, label: w.name }));
+  const projOptions = ws
+    ? (projects.data?.items ?? [])
+        .filter((p) => p.status === 'active')
+        .map((p) => ({ value: p.slug, label: p.name }))
+    : [];
+  const solutionOptions = proj
+    ? (solutions.data?.items ?? []).map((s) => ({ value: s.id, label: s.name }))
+    : [];
+  const versionOptions = solutionId
+    ? (versions.data?.items ?? []).map((v) => ({ value: v.id, label: `Version ${v.version_no}` }))
+    : [];
+  const releaseOptions = versionId
+    ? (releases.data?.items ?? [])
+        .filter((r) => r.status === 'sealed')
+        .map((r) => ({
+          value: r.id,
+          label: `${r.digest.slice(0, 12)}, sealed ${formatDate(r.sealed_at)}`,
+        }))
+    : [];
+  const evaluationRequired =
+    action.error instanceof ApiError && action.error.code === 'evaluation_required';
 
   return (
     <Modal title="Request plan" onClose={onClose} busy={action.busy}>
@@ -151,18 +190,111 @@ function RequestPlanDialog({ org, onClose }: { org: string; onClose: () => void 
             label="Target"
             value={targetId}
             onChange={setTargetId}
-            options={[{ value: '', label: 'Select...' }, ...targetOptions]}
+            options={[SELECT, ...targetOptions]}
           />
           {errors.target && <p className="mt-1 text-sm text-red-700">{errors.target}</p>}
         </div>
-        <TextField
-          label="Release id"
-          value={releaseId}
-          onChange={setReleaseId}
-          error={errors.releaseId}
-          maxLength={36}
-          monospace
-        />
+        <div>
+          <SelectField
+            label="Workspace"
+            value={ws}
+            onChange={(v) => {
+              setWs(v);
+              setProj('');
+              setSolutionId('');
+              setVersionId('');
+              setReleaseId('');
+            }}
+            options={[SELECT, ...wsOptions]}
+          />
+          <StepHint
+            query={workspaces}
+            count={wsOptions.length}
+            noun="workspaces"
+            empty="No active workspaces."
+          />
+        </div>
+        <div>
+          <SelectField
+            label="Project"
+            value={proj}
+            disabled={ws === ''}
+            onChange={(v) => {
+              setProj(v);
+              setSolutionId('');
+              setVersionId('');
+              setReleaseId('');
+            }}
+            options={[SELECT, ...projOptions]}
+          />
+          {ws && (
+            <StepHint
+              query={projects}
+              count={projOptions.length}
+              noun="projects"
+              empty="No active projects in this workspace."
+            />
+          )}
+        </div>
+        <div>
+          <SelectField
+            label="Solution"
+            value={solutionId}
+            disabled={proj === ''}
+            onChange={(v) => {
+              setSolutionId(v);
+              setVersionId('');
+              setReleaseId('');
+            }}
+            options={[SELECT, ...solutionOptions]}
+          />
+          {proj && (
+            <StepHint
+              query={solutions}
+              count={solutionOptions.length}
+              noun="solutions"
+              empty="No solutions in this project."
+            />
+          )}
+        </div>
+        <div>
+          <SelectField
+            label="Version"
+            value={versionId}
+            disabled={solutionId === ''}
+            onChange={(v) => {
+              setVersionId(v);
+              setReleaseId('');
+            }}
+            options={[SELECT, ...versionOptions]}
+          />
+          {solutionId && (
+            <StepHint
+              query={versions}
+              count={versionOptions.length}
+              noun="versions"
+              empty="No versions of this solution."
+            />
+          )}
+        </div>
+        <div>
+          <SelectField
+            label="Release"
+            value={releaseId}
+            disabled={versionId === ''}
+            onChange={setReleaseId}
+            options={[SELECT, ...releaseOptions]}
+          />
+          {versionId && (
+            <StepHint
+              query={releases}
+              count={releaseOptions.length}
+              noun="releases"
+              empty="No sealed releases for this version."
+            />
+          )}
+          {errors.release && <p className="mt-1 text-sm text-red-700">{errors.release}</p>}
+        </div>
         <TextField
           label="Application key"
           value={applicationKey}
@@ -179,8 +311,39 @@ function RequestPlanDialog({ org, onClose }: { org: string; onClose: () => void 
           maxLength={200}
         />
         <ActionError error={action.error} title="Could not request the plan" />
+        {evaluationRequired && (
+          <p className="text-sm">
+            <Link className="text-blue-800 underline" href={releaseHref(org, submittedRelease)}>
+              Open the release
+            </Link>
+          </p>
+        )}
         <ModalActions onCancel={onClose} busy={action.busy} submitLabel="Request plan" />
       </form>
     </Modal>
   );
+}
+
+/** Under a cascade select whose step before it is chosen: loading, load failure or no options. */
+function StepHint({
+  query,
+  count,
+  noun,
+  empty,
+}: {
+  query: UseQueryResult<unknown>;
+  count: number;
+  noun: string;
+  empty: string;
+}) {
+  if (query.isPending) return <p className="mt-1 text-sm text-slate-600">Loading {noun}...</p>;
+  if (query.isError) {
+    return (
+      <div className="mt-1">
+        <ActionError error={query.error} title={`Could not load the ${noun}`} />
+      </div>
+    );
+  }
+  if (count === 0) return <p className="mt-1 text-sm text-slate-600">{empty}</p>;
+  return null;
 }

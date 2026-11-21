@@ -82,7 +82,7 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 | `src/components/SidebarFrame.test.tsx` | ported |  |
 | `src/components/SidebarFrame.tsx` | ported |  |
 | `src/components/UserMenu.tsx` | ported |  |
-| `src/components/admin/ui.tsx` | ported | generic form/page primitives used by 80+ files; shell. |
+| `src/components/admin/ui.tsx` | ported, modified | generic form/page primitives used by 80+ files; shell. `TextField` takes `readOnly` (SP3-8) |
 | `src/components/command/BrandLockup.tsx` | ported | logo lockup used by `AppBrand` and the sign-in page; shell. |
 | `src/components/governance/GovernGate.test.tsx` | ported | tests `FeatureGate` and `Sidebar` only; shell. |
 | `src/components/security/useOrg.ts` | ported | generic `/o/[org]` route param hook; shell. |
@@ -125,8 +125,8 @@ Files not in SETH: `src/lib/contrast.ts` (shell, new in fe-areas-5): `contrastRa
 | `src/components/security/AuditExplorer.test.tsx` | ported |  |
 | `src/components/security/AuditView.test.tsx` | ported |  |
 | `src/components/security/AuditView.tsx` | ported |  |
-| `src/lib/api/security-endpoints.ts` | ported, modified | `redeemSetup`, `myPermissions` (already in the shell endpoints), `createGroup`, `setGroupMembers` removed: the group create and member routes exist only under `/api/v1/platform/groups` (admin), not `/orgs/{org}/groups`; spread into `endpoints.ts` |
-| `src/lib/api/security-types.ts` | ported, modified | `MyPermissions`, `PermissionDef`, `SetupRedeemResult` re-exported from `./types` (shell-owned copies) instead of redefined |
+| `src/lib/api/security-endpoints.ts` | ported, modified | `redeemSetup`, `myPermissions` (already in the shell endpoints), `createGroup`, `setGroupMembers` removed: the group create and member routes exist only under `/api/v1/platform/groups` (admin), not `/orgs/{org}/groups`; spread into `endpoints.ts`; `listPlatformGroups` and `createPlatformGroup` added (SP3-8) |
+| `src/lib/api/security-types.ts` | ported, modified | `MyPermissions`, `PermissionDef`, `SetupRedeemResult` re-exported from `./types` (shell-owned copies) instead of redefined; `Idp`/`IdpInput` gain `profile` and `entra_tenant_id`, `PlatformGroup` and `PlatformGroupCreate` added (SP3-8) |
 
 ## authz
 
@@ -150,7 +150,7 @@ Files not in SETH: `src/lib/contrast.ts` (shell, new in fe-areas-5): `contrastRa
 | `src/components/security/RolesView.test.tsx` | ported |  |
 | `src/components/security/RolesView.tsx` | ported |  |
 | `src/components/security/SecurityHome.tsx` | ported |  |
-| `src/lib/security-hooks.ts` | ported |  |
+| `src/lib/security-hooks.ts` | ported, modified | `usePlatformGroups` added (SP3-8) |
 
 ## observability
 
@@ -215,8 +215,8 @@ Files not in SETH: `src/lib/contrast.ts` (shell, new in fe-areas-5): `contrastRa
 | `src/components/security/ApiKeysPanel.test.tsx` | ported |  |
 | `src/components/security/ApiKeysPanel.tsx` | ported |  |
 | `src/components/security/ApiKeysView.tsx` | ported |  |
-| `src/components/security/IdpsView.test.tsx` | ported |  |
-| `src/components/security/IdpsView.tsx` | ported |  |
+| `src/components/security/IdpsView.test.tsx` | ported, modified | Entra profile, tenant id and Entra group mapping (SP3-8) |
+| `src/components/security/IdpsView.tsx` | ported, modified | Entra profile, tenant id and Entra group mapping (SP3-8) |
 | `src/components/security/ServiceAccountsView.tsx` | ported |  |
 | `src/components/security/UsersView.test.tsx` | ported |  |
 | `src/components/security/UsersView.tsx` | ported |  |
