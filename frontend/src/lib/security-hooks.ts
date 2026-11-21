@@ -53,6 +53,9 @@ export const useApiKeys = (org: string, filters: ApiKeyFilters = {}) =>
 export const useIdps = (base: string) =>
   useQuery({ queryKey: ['idps', base], queryFn: () => endpoints.listIdps(base) });
 
+export const usePlatformGroups = () =>
+  useQuery({ queryKey: ['platform-groups'], queryFn: () => endpoints.listPlatformGroups() });
+
 export const useSecrets = (org: string) =>
   useQuery({ queryKey: key(org, 'secrets'), queryFn: () => endpoints.listSecrets(org) });
 

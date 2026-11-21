@@ -18,6 +18,8 @@ import type {
   IdpTestResult,
   MemberStatus,
   PermissionDef,
+  PlatformGroup,
+  PlatformGroupCreate,
   Role,
   RoleBinding,
   RoleInput,
@@ -33,6 +35,7 @@ export const orgBase = (org: string) => `/api/v1/orgs/${enc(org)}`;
 /** Base path for IdP routes: tenant IdPs live under the org, installation IdPs under /platform. */
 export const tenantIdpBase = (org: string) => orgBase(org);
 export const PLATFORM_IDP_BASE = '/api/v1/platform';
+const PLATFORM_GROUPS = '/api/v1/platform/groups';
 
 const idpPath = (base: string, id: string) => `${base}/idps/${enc(id)}`;
 
@@ -66,6 +69,10 @@ export function createSecurityEndpoints(client: ApiClient) {
     listGroups: (org: string) => list<Group>(`${orgBase(org)}/groups`),
     getGroup: (org: string, id: string) =>
       client.request<Group>(`${orgBase(org)}/groups/${enc(id)}`),
+
+    listPlatformGroups: () => list<PlatformGroup>(PLATFORM_GROUPS),
+    createPlatformGroup: (input: PlatformGroupCreate) =>
+      send<PlatformGroup>('POST', PLATFORM_GROUPS, input),
 
     listRoles: (org: string) => list<Role>(`${orgBase(org)}/roles`),
     createRole: (org: string, input: RoleInput) =>
