@@ -24,6 +24,7 @@ import { targetName } from './targetName';
 
 const COLUMNS = ['Display name', 'Application key', 'Target', 'Status', 'Expires', 'Created'];
 const APPLICATION_KEY = /^[a-z][a-z0-9-]{0,62}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Deployment plans: list and request. Server text renders as plain React text only. */
 export function PlansView() {
@@ -104,6 +105,7 @@ function RequestPlanDialog({ org, onClose }: { org: string; onClose: () => void 
   const refresh = useRefreshDelivery(org);
   const action = useAction();
   const [targetId, setTargetId] = useState('');
+  const [releaseId, setReleaseId] = useState('');
   const [applicationKey, setApplicationKey] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -112,7 +114,9 @@ function RequestPlanDialog({ org, onClose }: { org: string; onClose: () => void 
     e.preventDefault();
     const next: Record<string, string> = {};
     const name = displayName.trim();
+    const release = releaseId.trim();
     if (targetId === '') next.target = 'Choose a target.';
+    if (!UUID.test(release)) next.releaseId = 'Enter the release id.';
     if (!APPLICATION_KEY.test(applicationKey)) {
       next.applicationKey =
         'Use 1-63 lowercase letters, digits or hyphens, starting with a letter.';
@@ -124,6 +128,7 @@ function RequestPlanDialog({ org, onClose }: { org: string; onClose: () => void 
     const res = await action.run(() =>
       endpoints.requestPlan(org, {
         target_id: targetId,
+        release_id: release,
         application_key: applicationKey,
         display_name: name,
       }),
@@ -150,6 +155,14 @@ function RequestPlanDialog({ org, onClose }: { org: string; onClose: () => void 
           />
           {errors.target && <p className="mt-1 text-sm text-red-700">{errors.target}</p>}
         </div>
+        <TextField
+          label="Release id"
+          value={releaseId}
+          onChange={setReleaseId}
+          error={errors.releaseId}
+          maxLength={36}
+          monospace
+        />
         <TextField
           label="Application key"
           value={applicationKey}

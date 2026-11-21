@@ -71,6 +71,8 @@ export interface CredentialIssued {
 
 export interface PlanCreate {
   target_id: string;
+  /** The sealed release the plan deploys (it needs a passing evaluation). */
+  release_id: string;
   application_key: string;
   display_name: string;
 }
@@ -115,6 +117,9 @@ export interface PlanOut {
   updated_at: string | null;
   approval: PlanApprovalOut | null;
   deployment_id: string | null;
+  release_id: string | null;
+  release_digest: string | null;
+  evaluation_run_id: string | null;
 }
 
 // ---- Deployments -------------------------------------------------------------------------

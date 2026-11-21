@@ -93,6 +93,9 @@ export const PLAN: PlanOut = {
   updated_at: null,
   approval: null,
   deployment_id: null,
+  release_id: '01900000-0000-7000-8000-0000000000a1',
+  release_digest: 'd'.repeat(64),
+  evaluation_run_id: '01900000-0000-7000-8000-0000000000e1',
 };
 
 export const DEPLOYMENT: DeploymentOut = {
