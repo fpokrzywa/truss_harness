@@ -1034,7 +1034,8 @@ class ModelService:
         """Classification x provider trust (ARCH M11, design 5.3): a run whose data classification
         ranks above the provider's `settings.trust_level` (missing or invalid = `public`, so the
         shared SHI provider is `public`) is refused before any network call, audited with the two
-        level names only, never what raised the level."""
+        level names only, never what raised the level. The caller's pending writes are rolled back
+        before the denied record is committed, as on the SHI gate (B-2717)."""
         settings = provider["settings"]
         trust = data_class.level(
             settings.get("trust_level") if isinstance(settings, dict) else None
@@ -1047,6 +1048,8 @@ class ModelService:
             "classification": level,
             "provider_trust_level": trust,
         }
+        # the caller's pending writes (a step's) go with the refused call, not with its record
+        self._session.rollback()
         self._invoked(model, ref, run_id, details, outcome="denied")
         self._session.commit()
         raise ModelNotAllowed(

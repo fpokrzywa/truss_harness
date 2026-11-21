@@ -206,8 +206,11 @@ class Cluster:
             print(f"already running on {HOST}:{PORT}")
             return
         flags = 0
-        if os.name == "nt":  # detach: the postmaster must not hold this console's handles
-            flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        if os.name == "nt":
+            # A hidden console of its own: the postmaster must not hold this console's handles,
+            # and pg_ctl's `cmd /C postgres` must not open a visible window (DETACHED_PROCESS
+            # did; closing that window killed the server with ^C).
+            flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
         subprocess.run(
             [
                 self.tool("pg_ctl"),

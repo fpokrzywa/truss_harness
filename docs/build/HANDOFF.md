@@ -1,35 +1,33 @@
-# Handoff — 2026-11-21 09:55 UTC, charter 7 factory run (lead session 4e057a99)
+# Handoff — 2026-11-21 ~16:30 UTC, charter 7 factory run (lead session 15c9184a)
 
-Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md` ("Charter 7 progress", the SP3 row of "Sub-projects 2 to 8"), then this file.
+Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` ("Charter 7 progress"), then this file.
 
-**State:** no agent and no gate run is running; no merge is half done. `main` = `origin/main` after this commit. Local cluster on 55450 running. No open PRs. Factory `concurrency` is 10 (S-014). Jobs 040-042 are `merged`; worktrees `.worktrees/04[0-2]-*` and `.worktrees/041-merge` are finished and can be removed.
+**State:** main = origin/main after this commit. No agent and no gate is running. Cluster on 55450 running. Factory `concurrency` is now **4** (S-018, supervisor); more than 4 jobs are already open, so `job queue` will not offer `new` lines until some finish.
 
-## What was just finished (this session)
+## Finished this session
+- #41 job 047 merged (PR #113, `job merge`).
+- #55 job 052 merged (PR #120, code+security PASS, approver APPROVE, `job merge`). Note: `ModelService._trust_gate` now rolls back the caller's session before its denied record (same as `_shi_gate`).
+- Intake+spec for jobs 048-054; builds for all of them.
+- Committed the two isolation reviews the previous lead recorded: `reviews/043-isolation-review-1.md`, `reviews/046-isolation-review-1.md` (both APPROVED).
 
-- #96 (job 040, PR #105): `/api/metrics` ops-stats cache moved from module globals to `app.state` (it was shared by every app in a test process, hiding a finished run on fast Linux CI); regression test `tests/app/test_metrics_ops_cache.py`. code PASS, approver APPROVE, `job merge`.
-- #104 (job 042, PR #106): SP3 front-end follow-ups (groups pagination, archived seal hidden, duplicate pins block seal, release header, plan-dialog loading lines, read-only input style, no-datasets hint). code/ux/ui PASS, approver APPROVE, `job merge`.
-- #99 (job 041, PR #107): plan responses null `release_id`, `release_digest`, `evaluation_run_id` for callers without release read; Release help line. All 4 reviews PASS; approver ESCALATE. Lead: isolation review 1 APPROVED (`docs/build/reviews/041-isolation-review-1.md`), `gates.py --name 041-merge` on `2b5b280` 12/13 (2 load flakes outside the diff, pass alone), merged `2d841f3`, decision B-2713.
-- Filed #108 (isolation notes 5-6 of job 041) and #109 (the two load flakes).
+## Jobs and their stages (first action: `factory/bin/job queue`)
+| Job | Issue | PR | Stage | Next |
+|---|---|---|---|---|
+| 043-f-12-follow-up | #33 | #112 | build r1 (READY; hand merge, B-2705) | Branch synced to main at `f7fadcc` (DECISIONS conflict resolved, both rows kept), now behind again: merge origin/main, run `pytest tests/schema tests/identity/test_schema.py`, then `gates.py --ref <sha> --name 043-merge` **on a quiet cluster**. Code/security/isolation all PASS/APPROVED. Merge with `gh pr ready 112; gh pr merge 112 --merge --match-head-commit <sha>`. This also fixes main's failing `test_every_id_taking_function_has_a_case`. Merge it first. |
+| 046-tenants-settings-restrict-app | #39 | #114 | build r1 (READY; hand merge, B-2705) | Lead deliberate_changes entry committed `d72d4dc`; isolation APPROVED; code+security PASS. Merge origin/main, schema tests, `gates.py --name 046-merge`, hand merge as above. |
+| 048-worker-cap-abandoned-wedged | #44 | #117 | needs-human (approver APPROVE; `job merge` hit a conflict with main) | Conflict is DECISIONS.md only (several jobs used B-2717). As the human: merge origin/main into the branch keeping all rows, renumber this job's row to the next free id, push, then `job feedback`-free path: `gates.py --name 048-merge` and `gh pr merge 117 --merge --match-head-commit <sha>`, or send feedback through `factory/bin/job feedback` for a round that only resolves the conflict. |
+| 049-retention-purge-second-cross | #46 | #116 | gate r1, FAIL twice on connection timeouts only (no diff failure; diff is one comment + one test) | Rerun `factory/bin/gate 049-...` alone on a quiet cluster. |
+| 050-arch-m2-rest-move | #47 | #122 | gate r1 (build READY) | Run `factory/bin/gate`. Reviewers code, ux, ui, security. Approver will likely escalate (POST 200 -> 202, worker dispatch). Uses B-2717 too: renumber at merge. |
+| 051-flaky-test-write-node | #51 | #121 | gate r1 (build READY) | Run `factory/bin/gate`. |
+| 053-arch-m11-rest-data | #56 | #119 | gate r1 (build READY) | Run `factory/bin/gate`. Security reviewer routed; approver will likely escalate (new data-export route); then isolation-reviewer + gates.py per charter 7.5. |
+| 054-f-08-follow-up | #58 | #118 | build r1, build.md says BLOCKED only because checks.sh timed out on connections (test-only diff) | Do not send to needs-human: resume `builder-054` to rerun checks.sh on a quiet cluster and set READY. |
 
-## Exact next step
+Still `hold` behind concurrency: #60, #62, #64, #66, #68, #69, #71, #72, #74, #91, #93, #108, #109. Then sub-project 4 (charter 7 steps 1-2, design row 4, go-live; all major audit findings closed or awaiting owner acceptance by its end).
 
-`/factory run` the older follow-ups that `factory/bin/job queue` lists as `new` (#33, #34, #36, #39, #41, #44, #46, #47, #51, #55, then #56 onward, #108, #109), three at a time, keeping one hand merge at a time. Then sub-project 4 per charter 7 steps 1-2: write its short design in `docs/superpowers/specs/` (design table row 4, go-live), have a fresh agent list what it would have to guess, settle and log (next DECISIONS id **B-2714**), cut issues labeled `factory` + `sp4`. All major audit findings must be closed or recorded as needing the owner's written acceptance by the end of SP4.
-
-## Pattern that worked (B-2705)
-
-- A job whose migration changes a ported SETH table (needs a `deliberate_changes.yaml` entry): builder lists the entry in build.md and reports READY with the schema test failing. Lead checks the entry against the migration, appends it on the job branch, merges `origin/main` into the branch, runs `uv run pytest tests/schema tests/identity/test_schema.py`, pushes. Then in parallel: `gates.py --ref <sha> --name <id>-merge` (background, ~35-42 min), `isolation-reviewer`, `reviewer-code`, `reviewer-security` (opus) with the job header. All pass → `gh pr ready <pr>; gh pr merge <pr> --merge --match-head-commit <sha>`; then `job queue` marks merged. The factory gate itself FAILs on the protected path, so do not route these through `factory/bin/gate`.
-- An escalated job without a protected change (e.g. 038): `job advance needs-human`, then the same lead trio (gates.py 13/13, isolation-reviewer, reviewer-security) and `gh pr merge --match-head-commit`.
-- Jobs without escalation: normal factory flow, `factory/bin/job merge`.
-
-## Traps
-
-- Run factory scripts and gates.py with `PYTHONUTF8=1`, `VIRTUAL_ENV` unset and `.venv` removed from PATH: `export PYTHONUTF8=1; unset VIRTUAL_ENV; export PATH="$(echo "$PATH" | tr ':' '\n' | grep -v '\.venv' | paste -sd:)"` (B-2704; `job` crashes under cp1252 otherwise).
-- `isolation-reviewer` is read-only and cannot write its file; the lead writes `docs/build/reviews/<id>-isolation-review-<n>.md` from its report. `reviewer-ui` sometimes returns text without writing its file; tell it in the prompt to write `round-<N>/review-ui.md` itself (works).
-- Never `cd` into a worktree in a Bash call; prefer `git -C`. Edit STATUS/DECISIONS with Python `newline=''`.
-- Approver always escalates a new migration and identity/auth UI.
-- Every new route: classify in `test_workspace_routes.py` and add to the non-SETH list in `tests/app/test_routes.py`; a new head migration updates `tests/identity/test_schema.py` head assertions.
-- Builders must not restart the cluster; never `-m live` or read `.devdata/`. No agent has a browser tool (`agent-browser` not installed), so UI is reviewed from diffs and component tests.
-- The lead's context reaches ~140k after 3 jobs; hand off after 3.
-- `factory/bin/job queue` takes ~2-3 min (it scans every subagent transcript for cost) and crashes on cp1252 without `PYTHONUTF8=1`; run it in the background.
-- `reviewer-code` (sonnet) and `reviewer-ui` sometimes claim they have no Write tool; resume them with SendMessage saying the review file is their required output and they write it. Never write a factory review yourself.
-- Full-suite gates on a hand merge can hit load flakes outside the diff; rerun the failed tests alone and, if they pass, merge per B-2631/B-2713 and file an issue (#109 is open for two of them).
+## Traps learned this session
+- **Run gates one at a time.** Any full checks.sh/gates.py run alongside other jobs' test runs times out on connections (hundreds of ConnectionTimeout lines). Builders also run checks.sh; with several builders active the cluster saturates. Chain gate and merge commands serially in one background shell (`until grep -q "GATE:" <prev output>; do sleep 30; done; ...`).
+- **Decision ids collide across parallel jobs.** 046, 048, 052, 053 each wrote B-2717 (051 wrote B-2715, also used by 043). At each merge, renumber the merging job's row to the next free id on main.
+- Builders often stall (stream watchdog, 600 s) *after* writing build.md and pushing; check `head -1 build.md` and `gh pr list --head <branch>` before respawning.
+- intake once claimed it could not write intake.md; a SendMessage saying it is the required output fixed it.
+- gates.py background runs need a timeout above 90 min under load (max 7200000 ms).
+- All traps in the previous handoff still apply (PYTHONUTF8=1, unset VIRTUAL_ENV, strip .venv from PATH; never cd into a worktree; isolation-reviewer is read-only so the lead writes its file).
