@@ -143,8 +143,8 @@ class RunContext:
         the level; the level never goes down.
 
         With the worker's database (`db`) the event is written in its own short, lease-fenced
-        session of this client and committed there: the caller's transaction (its pending step,
-        lineage, usage and audit rows) is neither committed nor rolled back. The caller must not
+        session of this client and committed there: the caller's transaction (a pending step
+        write) is neither committed nor rolled back. The caller must not
         hold the run-row lock (not inside `txn()`, no uncommitted `add_event` of this run): the
         five-second lock timeout would fail the call. Without `db` the event is written in the
         step's transaction (`txn()`)."""
