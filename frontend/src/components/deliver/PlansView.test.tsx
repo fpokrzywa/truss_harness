@@ -252,6 +252,15 @@ describe('PlansView request', () => {
     expect(await within(dialog).findByText('No solutions in this project.')).toBeInTheDocument();
   });
 
+  it('announces a pending list load under its select as a status', async () => {
+    stubDelivery({ ...TARGETS, [`GET ${S}`]: () => new Promise<Response>(() => {}) });
+    renderWithClient(<PlansView />);
+    const dialog = await openDialog();
+    await pick(dialog, 'Workspace', 'Engineering');
+    await pick(dialog, 'Project', 'API');
+    expect(await within(dialog).findByRole('status')).toHaveTextContent('Loading solutions...');
+  });
+
   it('shows a failed list load under its select', async () => {
     stubDelivery({
       ...TARGETS,

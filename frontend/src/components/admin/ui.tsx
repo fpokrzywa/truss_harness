@@ -110,7 +110,7 @@ export function TextField({
     .join(' ');
   const common = {
     id,
-    className: `input${monospace ? ' font-mono' : ''}`,
+    className: `input${monospace ? ' font-mono' : ''}${readOnly ? ' input-readonly' : ''}`,
     value,
     required,
     disabled,

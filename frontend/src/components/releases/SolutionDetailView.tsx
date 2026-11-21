@@ -21,7 +21,7 @@ import {
   useVersionReleases,
 } from '@/lib/release-hooks';
 import { compatibilityReport, shortDigest } from '@/lib/release-utils';
-import { releaseHref, solutionsHref } from '@/lib/scope';
+import { datasetsHref, releaseHref, solutionsHref } from '@/lib/scope';
 import {
   ActionError,
   EmptyState,
@@ -89,7 +89,7 @@ function SolutionBody({ scope, solution }: { scope: Scope; solution: SolutionOut
   const [creating, setCreating] = useState(false);
   const [sealing, setSealing] = useState<SolutionVersionOut | null>(null);
   const canWrite = can('packaging:solution:write') && solution.status === 'active';
-  const canSeal = can('packaging:release:seal');
+  const canSeal = can('packaging:release:seal') && solution.status === 'active';
 
   return (
     <>
@@ -433,6 +433,14 @@ function NewVersionDialog({
                     })),
                   ]}
                 />
+                {datasets.isSuccess && datasets.data.items.length === 0 && (
+                  <p className="mt-1 text-sm text-slate-600">
+                    This project has no datasets yet.{' '}
+                    <Link className="text-blue-800 underline" href={datasetsHref(org, ws, proj)}>
+                      Add a dataset
+                    </Link>
+                  </p>
+                )}
                 {errors.dataset && <p className="mt-1 text-sm text-red-700">{errors.dataset}</p>}
               </div>
               <div className="grid gap-3 sm:grid-cols-3">
@@ -532,6 +540,22 @@ function SealDialog({
       if (c.pin.trim() === '') next[`conn-${i}-pin`] = 'Pin name is required.';
       if (c.connection_id === '') next[`conn-${i}-connection`] = 'Choose a connection.';
     });
+    // Bindings are keyed by the trimmed pin, so duplicate rows would silently collapse into one.
+    const flagDuplicates = (pins: string[], prefix: string, message: string) =>
+      pins.forEach((pin, i) => {
+        if (pin !== '' && pins.indexOf(pin) !== pins.lastIndexOf(pin))
+          next[`${prefix}-${i}-pin`] = message;
+      });
+    flagDuplicates(
+      models.map((m) => m.pin.trim()),
+      'model',
+      'Another model binding uses this pin name.',
+    );
+    flagDuplicates(
+      connections.map((c) => c.pin.trim()),
+      'conn',
+      'Another connection binding uses this pin name.',
+    );
     setErrors(next);
     if (Object.keys(next).length > 0) return;
 

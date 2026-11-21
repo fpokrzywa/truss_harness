@@ -97,6 +97,7 @@ def create_app(
     app.state.oidc_limiter = SlidingWindowLimiter(
         settings.oidc_rate_per_minute, message="too many sign-in attempts; try again later"
     )
+    app.state.ops_stats_cache = health_api.OpsStatsCache()
     app.state.passwords = PasswordService(fast=settings.env == "test")
     app.state.oidc = OidcClient(
         settings,

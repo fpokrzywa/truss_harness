@@ -292,6 +292,8 @@ function IdpDialog({
   const entra = !tenant && profile === 'entra';
   const derivedIssuer = entraIssuer(tenantId);
   const derivedDiscovery = `${derivedIssuer}/.well-known/openid-configuration`;
+  // Without a tenant id the derived URLs are meaningless, so the fields stay empty.
+  const hasTenantId = tenantId.trim() !== '';
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -383,7 +385,7 @@ function IdpDialog({
         )}
         <TextField
           label="Issuer"
-          value={entra ? derivedIssuer : issuer}
+          value={entra ? (hasTenantId ? derivedIssuer : '') : issuer}
           onChange={setIssuer}
           readOnly={entra}
           error={
@@ -395,11 +397,15 @@ function IdpDialog({
         />
         <TextField
           label="Discovery URL"
-          value={entra ? derivedDiscovery : discovery}
+          value={entra ? (hasTenantId ? derivedDiscovery : '') : discovery}
           onChange={setDiscovery}
           readOnly={entra}
           error={errors.discovery}
-          help="Usually the issuer followed by /.well-known/openid-configuration. HTTPS only."
+          help={
+            entra
+              ? undefined
+              : 'Usually the issuer followed by /.well-known/openid-configuration. HTTPS only.'
+          }
         />
         <TextField
           label="Client ID"
@@ -493,9 +499,11 @@ function EntraGroupsDialog({ idp, onClose }: { idp: Idp; onClose: () => void }) 
   const [slug, setSlug] = useState('');
   const [objectId, setObjectId] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [notice, setNotice] = useState('');
 
   async function submit(e: FormEvent) {
     e.preventDefault();
+    setNotice('');
     const next: Record<string, string> = {};
     const groupName = name.trim();
     if (groupName === '' || groupName.length > 200) next.name = 'Name is 1-200 characters.';
@@ -520,6 +528,7 @@ function EntraGroupsDialog({ idp, onClose }: { idp: Idp; onClose: () => void }) 
       setName('');
       setSlug('');
       setObjectId('');
+      setNotice('Group mapped.');
     }
   }
 
@@ -583,6 +592,9 @@ function EntraGroupsDialog({ idp, onClose }: { idp: Idp; onClose: () => void }) 
           maxLength={36}
           monospace
         />
+        <p role="status" className="text-sm text-green-800">
+          {notice}
+        </p>
         <ActionError error={action.error} title="Could not map the group" />
         <ModalActions
           onCancel={onClose}

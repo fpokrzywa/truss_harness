@@ -340,7 +340,12 @@ function StepHint({
   noun: string;
   empty: string;
 }) {
-  if (query.isPending) return <p className="mt-1 text-sm text-slate-600">Loading {noun}...</p>;
+  if (query.isPending)
+    return (
+      <p role="status" className="mt-1 text-sm text-slate-600">
+        Loading {noun}...
+      </p>
+    );
   if (query.isError) {
     return (
       <div className="mt-1">
