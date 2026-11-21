@@ -1,8 +1,8 @@
 {
-  "session_id": "288d2d6a-e01e-4246-bfb7-8191c072fea9",
-  "head_sha": "27a66f33cdf77c4dbb5e2b5952322499c08218dc",
+  "session_id": "d67c0c20-86b5-4da9-8cc5-da1f5323f727",
+  "head_sha": "545a06d84bc700dfe9cd8e884880093dfe52f027",
   "branch": "main",
-  "unit_in_progress": "Sub-project 3, charter 7 step 3: job 034 (#80) at build round 1",
-  "next_step": "/factory run 80: spawn builder-034-sp3-3-evaluation-datasets for build round 1 (see docs/build/HANDOFF.md), then 81, 83, 84, 85, 86, 96",
-  "written_at": "2026-11-20T20:20:10Z"
+  "unit_in_progress": "main",
+  "next_step": "/factory run 84: create job for #84 (SP3), then #85, #86; see docs/build/HANDOFF.md",
+  "written_at": "2026-11-21T04:24:15Z"
 }
