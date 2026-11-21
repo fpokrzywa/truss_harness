@@ -88,7 +88,7 @@ testpaths = ["tests"]
 norecursedirs = ["*.egg", ".*", "_darcs", "CVS", "dist", "node_modules", "venv", "{arch}"]
 addopts = "-ra"
 markers = [
-    "live: runs against a real Databricks development workspace (opt-in, see docs/runbooks/databricks-live-validation.md)",
+    "live: runs against a real Databricks development workspace or a real Entra tenant (opt-in, see docs/runbooks/databricks-live-validation.md and docs/runbooks/entra-live-validation.md)",
 ]
 
 # Line coverage of the shifde package; CI runs the full suite with `--cov` (F-17).
