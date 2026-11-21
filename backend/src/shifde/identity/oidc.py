@@ -8,9 +8,12 @@ verifier is not stored: it is derived as HMAC(`Settings.pkce_key`, state) (findi
 B-916), so a callback can recompute it and nobody who merely observes `state` can.
 
 ID-token validation: algorithm allow-list (no `none`, no HMAC), signature against the IdP JWKS
-(cached; refreshed once, rate-limited, on a `kid` miss), `iss` == discovery issuer == configured
-issuer, `aud` contains the client id (and `azp` == client id when several audiences), `exp`,
-`iat`, `nbf` with at most 60 s skew, `nonce` bound to this request, non-empty `sub`.
+(cached for a bounded lifetime: the response's `Cache-Control: max-age` held between
+`JWKS_MIN_TTL` and `Settings.oidc_jwks_max_cache_seconds`, else `oidc_jwks_cache_seconds`;
+refetched after expiry and fail-closed if that fetch fails; within the lifetime refreshed once,
+rate-limited, on a `kid` miss), `iss` == discovery issuer == configured issuer, `aud` contains
+the client id (and `azp` == client id when several audiences), `exp`, `iat`, `nbf` with at most
+60 s skew, `nonce` bound to this request, non-empty `sub`.
 Identity mapping is by `(iss, sub)` only; e-mail is an attribute, never the key.
 
 Every failure path ends in a generic redirect; the specific reason is only audited and logged.
@@ -45,6 +48,7 @@ import json
 import re
 import secrets
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any  # Any: decoded JSON documents / JWT claims
 from urllib.parse import urlencode
@@ -75,6 +79,7 @@ log = structlog.get_logger("shifde.oidc")
 ALLOWED_ALGS = ["RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384"]
 SKEW_SECONDS = 60
 DISCOVERY_TTL = 300.0
+JWKS_MIN_TTL = 60.0  # floor of a JWKS lifetime, so `max-age=0` does not refetch per sign-in
 FAILURE_PATH = "/login?error=oidc_failed"
 OVERAGE_PATH = "/login?error=oidc_groups_overage"
 GROUPS_OVERAGE = "groups_overage"
@@ -133,14 +138,33 @@ def pkce_challenge(verifier: str) -> str:
     return _b64url(hashlib.sha256(verifier.encode()).digest())
 
 
+def cache_max_age(cache_control: str | None) -> int | None:
+    """The first `max-age` of a `Cache-Control` header, or None when absent or not all digits;
+    every other directive is ignored."""
+    for directive in (cache_control or "").split(","):
+        name, _, value = directive.strip().partition("=")
+        if name.strip().lower() == "max-age":
+            value = value.strip()
+            return int(value) if value.isascii() and value.isdigit() else None
+    return None
+
+
 class OidcClient:
     """Process-wide helper: discovery + JWKS caches over the SSRF-guarded HTTP client."""
 
-    def __init__(self, settings: Settings, http: OutboundHttp) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        http: OutboundHttp,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._settings = settings
         self._http = http
+        self._clock = clock
         self._discovery: dict[str, tuple[float, Discovery]] = {}
-        self._jwks: dict[str, tuple[float, KeySet]] = {}
+        # jwks_uri -> (fetched at, lifetime in seconds, keys)
+        self._jwks: dict[str, tuple[float, float, KeySet]] = {}
         self._last_forced: dict[str, float] = {}
 
     @property
@@ -149,7 +173,7 @@ class OidcClient:
 
     def discovery(self, url: str, expected_issuer: str) -> Discovery:
         cached = self._discovery.get(url)
-        if cached and time.monotonic() - cached[0] < DISCOVERY_TTL:
+        if cached and self._clock() - cached[0] < DISCOVERY_TTL:
             if cached[1].issuer != expected_issuer:  # another IdP row naming the same URL
                 raise OidcFailure("issuer_mismatch_discovery")
             return cached[1]
@@ -170,28 +194,34 @@ class OidcClient:
             raise OidcFailure("discovery_invalid") from exc
         except EgressViolation as exc:
             raise OidcFailure(f"discovery_unreachable:{exc}") from exc
-        self._discovery[url] = (time.monotonic(), disc)
+        self._discovery[url] = (self._clock(), disc)
         return disc
 
     def _fetch_jwks(self, jwks_uri: str) -> KeySet:
         try:
-            # get_json returns dict[str, Any]; joserfc types the argument as its JWKS TypedDict
-            keys = KeySet.import_key_set(self._http.get_json(jwks_uri))  # type: ignore[arg-type]
+            doc, headers = self._http.get_json_with_headers(jwks_uri)
+            # the document is dict[str, Any]; joserfc types the argument as its JWKS TypedDict
+            keys = KeySet.import_key_set(doc)  # type: ignore[arg-type]
         except (EgressViolation, JoseError, ValueError, KeyError, TypeError) as exc:
             raise OidcFailure("jwks_unavailable") from exc
-        self._jwks[jwks_uri] = (time.monotonic(), keys)
+        max_age = cache_max_age(headers.get("cache-control"))
+        ttl = self._settings.oidc_jwks_cache_seconds if max_age is None else max_age
+        lifetime = min(self._settings.oidc_jwks_max_cache_seconds, max(JWKS_MIN_TTL, ttl))
+        self._jwks[jwks_uri] = (self._clock(), lifetime, keys)
         return keys
 
     def signing_keys(self, jwks_uri: str, kid: str | None) -> KeySet:
-        """Cached JWKS; on a `kid` miss refresh once (rate-limited) before giving up."""
+        """Cached JWKS, refetched once expired (an expired set is never used, even when that
+        fetch fails); within its lifetime a `kid` miss refreshes once (rate-limited)."""
         cached = self._jwks.get(jwks_uri)
-        if cached is None:
+        if cached is None or self._clock() - cached[0] >= cached[1]:
+            self._jwks.pop(jwks_uri, None)
             return self._fetch_jwks(jwks_uri)
-        keys = cached[1]
+        keys = cached[2]
         if kid is not None and not any(k.kid == kid for k in keys.keys):
             last = self._last_forced.get(jwks_uri, 0.0)
-            if time.monotonic() - last >= self._settings.oidc_jwks_min_refresh_seconds:
-                self._last_forced[jwks_uri] = time.monotonic()
+            if self._clock() - last >= self._settings.oidc_jwks_min_refresh_seconds:
+                self._last_forced[jwks_uri] = self._clock()
                 return self._fetch_jwks(jwks_uri)
         return keys
 
