@@ -33,6 +33,12 @@ def query(svc: Svc, ontology_id: UUID, body: s.QueryIn) -> s.QueryOut:
     return svc.query(ontology_id, body)
 
 
+@router.post("/ontologies/{ontology_id}/export")
+def export(svc: Svc, ontology_id: UUID, body: s.QueryIn) -> s.QueryOut:
+    """The query results as JSON; needs tenant-level `data:export` (ARCH M11)."""
+    return svc.export(ontology_id, body)
+
+
 @router.get("/ontologies/{ontology_id}/objects/{object_type}/{pk}")
 def get_object(
     svc: Svc,

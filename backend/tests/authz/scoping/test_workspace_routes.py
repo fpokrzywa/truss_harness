@@ -409,6 +409,10 @@ ROUTES: dict[Op, tuple[str, str]] = {
         "ontologies",
     ),
     ("POST", "/api/v1/orgs/{org}/ontologies/{ontology_id}/query"): (SCOPED, "ontologies"),
+    ("POST", "/api/v1/orgs/{org}/ontologies/{ontology_id}/export"): (
+        CLIENT,
+        "needs data:export at the organization; the ontology itself is scoped",
+    ),
     ("GET", "/api/v1/orgs/{org}/ontology-lineage"): (SCOPED, "ontologies"),
     ("GET", "/api/v1/orgs/{org}/ontology-principal-attributes"): (
         CLIENT,

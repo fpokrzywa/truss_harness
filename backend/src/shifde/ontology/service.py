@@ -10,6 +10,10 @@ Authorization is decided on the server, in this order, and every step fails clos
    request of a denied property -> 403, nothing is silently dropped), row predicates compiled into
    the source query as bound parameters. Denials are audited.
 
+An export (`export`) is that query behind two more checks between 1 and 2: tenant-level
+`data:export` and the client's `data_export` policies (403, audited as `ontology.export_denied`;
+`max_rows` caps the page size), and it is audited as `ontology.exported`.
+
 The connection's own identity is the ceiling: SHIFDE never asks a source for more than its service
 identity may read. Ontology access is authorized by the ontology (permission + policy), not by
 `connection:use` of the caller - the author who mapped the connection held that permission at
@@ -49,6 +53,7 @@ from shifde.core.errors import (
 )
 from shifde.core.ids import uuid7
 from shifde.core.pagination import Page, decode_cursor, encode_cursor, paginate
+from shifde.governance.service import export_row_cap
 from shifde.identity import service as identity
 from shifde.ontology import engine, repository
 from shifde.ontology import policy as pol
@@ -504,6 +509,46 @@ class OntologyService:
             lineage_id=lineage_id,
             truncated=executed.truncated,
         )
+
+    # ================================================================== export
+    def export(self, ontology_id: UUID, body: s.QueryIn) -> s.QueryOut:
+        """The query results as JSON for an export (ARCH M11, B-2647): visibility (404), then
+        tenant-level `data:export` and the `data_export` policies (403, audited), then the API
+        query with its own checks, lineage and audit; `max_rows` clamps the page size."""
+        art = self._artifact(ontology_id, api=True)
+        reason = "missing_permission"
+        try:
+            self.sc.pdp.require("data:export", self.sc.tenant_ref)
+            reason = "data_export_policy"
+            cap = export_row_cap(self.session, self.sc.tenant_id)
+        except Forbidden:
+            self.arts._audit(
+                "ontology.export_denied",
+                art,
+                {"reason": reason, "object_type": body.object_type[:200]},
+                outcome="denied",
+                target_type="ontology",
+            )
+            self.session.commit()
+            raise
+        limit = body.limit if cap is None else min(body.limit, cap)
+        out = self.query(ontology_id, body.model_copy(update={"limit": limit}))
+        self.arts._audit(
+            "ontology.exported",
+            art,
+            {
+                "lineage_id": str(out.lineage_id),
+                "object_type": body.object_type[:200],
+                "rows": len(out.rows),
+                "more": out.next_cursor is not None,
+                "truncated": out.truncated,
+                "row_cap": cap,
+                "classification": self.read_classification,
+            },
+            target_type="ontology",
+        )
+        self.session.commit()
+        return out
 
     def _execute(
         self,
