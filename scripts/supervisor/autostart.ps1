@@ -1,7 +1,7 @@
 # Starts the unattended build after a logon or reboot: the local cluster, then
 # one supervisor and one watchdog. Registered as the "SETH build autostart"
 # scheduled task (at logon). Does nothing for a part that is already running.
-param([int]$Goal = 2, [int]$WatchMinutes = 30)
+param([int]$Goal = 2, [int]$WatchMinutes = 50)
 
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
