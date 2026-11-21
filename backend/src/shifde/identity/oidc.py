@@ -27,7 +27,7 @@ the expected issuer; an unknown or disabled IdP at the callback is audited (revi
 The `entra` profile (SP3-6, design SP3 section 8, B-2711): after the ID token is valid, `tid`
 must be the IdP's Entra tenant, `ver` 2.0 and `oid` a GUID; the identity is keyed by `oid` (as
 `sub`, so the mapping and JIT definers are unchanged). An e-mail counts as verified (link and
-JIT) only for a member of the pinned directory, never a guest (`acct` 1 or a `#EXT#` UPN):
+JIT) only for a proven member of the pinned directory (`acct` present and 0, no `#EXT#` UPN):
 `email` when the optional claim `xms_edov` is true, else `preferred_username`; otherwise the
 sign-in carries no verified e-mail, because an installation IdP links across clients by e-mail
 (isolation review 036-1 item 1, B-2712). A token whose groups do not fit
@@ -417,12 +417,15 @@ def _entra_email(claims: dict[str, Any]) -> tuple[str | None, bool]:
     """(address, verified) of an Entra token (B-2712). `email` is Entra's mutable `mail`
     attribute and a guest's comes from outside the pinned directory: it is verified only with
     `xms_edov` true for a member; a member's `preferred_username` (their UPN in the directory)
-    is verified otherwise; a guest's address is never verified."""
+    is verified otherwise. Fail closed (isolation review 036-2): only `acct` present and exactly
+    0 (int or "0") proves a member, and a `#EXT#` UPN is a guest whatever `acct` says; any other
+    token, `acct` absent included, carries no verified address."""
     email = _text(claims.get("email"))
     username = _text(claims.get("preferred_username"))
     upns = (username, _text(claims.get("upn")))
-    guest = claims.get("acct") in (1, "1") or any(u and "#EXT#" in u.upper() for u in upns)
-    if guest:
+    acct = claims.get("acct")
+    member = (type(acct) is int and acct == 0) or acct == "0"
+    if not member or any(u and "#EXT#" in u.upper() for u in upns):
         return email or username, False
     if email and claims.get("xms_edov") is True:
         return email, True
