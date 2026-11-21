@@ -965,9 +965,17 @@ class ApprovalService:
         if probe["required_permission"] != "approval:decide":
             # a governance approval rule named a further permission its approver must hold
             self.sc.pdp.require(str(probe["required_permission"]), ref)
-        further = (probe["context_summary"] or {}).get("approver_permissions")
-        if isinstance(further, list) and all(isinstance(p, str) for p in further):
-            # several rules matched: the approver must hold every one's permission (B-2728)
+        summary = probe["context_summary"] or {}
+        if "approver_permissions" in summary:
+            # several rules matched: the approver must hold every one's permission (B-2728);
+            # a malformed list fails closed (absent only on approvals pending before B-2728)
+            further = summary["approver_permissions"]
+            if (
+                not isinstance(further, list)
+                or not further
+                or not all(isinstance(p, str) for p in further)
+            ):
+                raise Forbidden("missing permission: approver_permissions")
             for permission in further:
                 self.sc.pdp.require(permission, ref)
         # lock order: run, then approval (the worker locks the run before it writes approvals)
