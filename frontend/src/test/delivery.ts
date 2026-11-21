@@ -6,6 +6,7 @@ import type {
   PlanOut,
   TargetOut,
 } from '@/lib/api/delivery-types';
+import { RELEASE, S, SOLUTION, VERSION } from './releases';
 import { ALL_PERMS, list, stubApi } from './security';
 import { jsonResponse, type Handler } from './utils';
 
@@ -136,6 +137,32 @@ export const DEPLOYMENT_DETAIL: DeploymentDetail = {
       recorded_at: '2026-11-18T10:03:00Z',
     },
   ],
+};
+
+/** A withdrawn release of the same version as `RELEASE`, never offered for a plan. */
+export const WITHDRAWN_RELEASE = {
+  ...RELEASE,
+  id: 'r-2',
+  digest: '0123456789ab'.padEnd(64, '0'),
+  status: 'withdrawn',
+};
+
+/** The request-plan release cascade: active and archived workspaces and projects, eng/api's
+ * solution and version, and one sealed and one withdrawn release. */
+export const RELEASE_CASCADE: Record<string, Handler> = {
+  'GET /api/v1/orgs/acme/workspaces': () =>
+    list([
+      { id: 'ws-1', slug: 'eng', name: 'Engineering', status: 'active', row_version: 1 },
+      { id: 'ws-2', slug: 'old', name: 'Old workspace', status: 'archived', row_version: 1 },
+    ]),
+  'GET /api/v1/orgs/acme/workspaces/eng/projects': () =>
+    list([
+      { id: 'p-1', slug: 'api', name: 'API', status: 'active', row_version: 1 },
+      { id: 'p-2', slug: 'legacy', name: 'Legacy project', status: 'archived', row_version: 1 },
+    ]),
+  [`GET ${S}`]: () => list([SOLUTION]),
+  [`GET ${S}/s-1/versions`]: () => list([VERSION]),
+  [`GET ${S}/s-1/versions/sv-1/releases`]: () => list([RELEASE, WITHDRAWN_RELEASE]),
 };
 
 export { list } from './security';
