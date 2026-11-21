@@ -1,8 +1,8 @@
 {
-  "session_id": "d67c0c20-86b5-4da9-8cc5-da1f5323f727",
-  "head_sha": "545a06d84bc700dfe9cd8e884880093dfe52f027",
+  "session_id": "5b14aafc-dc03-4e4b-a929-9cff1fc31af2",
+  "head_sha": "a1823f6f2a6dc52defc138c9ebc2fc7bb2d6b582",
   "branch": "main",
-  "unit_in_progress": "main",
-  "next_step": "/factory run 84: create job for #84 (SP3), then #85, #86; see docs/build/HANDOFF.md",
-  "written_at": "2026-11-21T04:24:15Z"
+  "unit_in_progress": "none",
+  "next_step": "C:/Program Files/Git/factory run 96, then 99, 104, then older follow-ups from factory/bin/job queue, then write the sub-project 4 design (charter 7 steps 1-2)",
+  "written_at": "2026-11-21T07:48:39Z"
 }
