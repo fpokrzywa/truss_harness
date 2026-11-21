@@ -18,7 +18,13 @@ from sqlalchemy.orm import Session
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
-from tests._support.fake_oidc import CLIENT_ID, Authorization, FakeOidcProvider, resolver
+from tests._support.fake_oidc import (
+    CLIENT_ID,
+    Authorization,
+    FakeOidcProvider,
+    entra_issuer,
+    resolver,
+)
 from tests.identity import harness
 
 FAIL = "/login?error=oidc_failed"
@@ -54,6 +60,32 @@ def owner_oidc_idp(
             "s": status,
             "g": group_sync_mode,
             "j": jit,
+        },
+    )
+    return iid
+
+
+def owner_entra_idp(
+    owner: Session, entra_tenant: str, *, group_sync_mode: str = "off", jit: str = "create_user"
+) -> UUID:
+    """An installation `entra` IdP pinned to `entra_tenant`, at the fake's Entra mode, without a
+    client secret (`require_secret=False`)."""
+    iid = uuid7()
+    issuer = entra_issuer(entra_tenant)
+    owner.execute(
+        text(
+            "INSERT INTO shifde.idp_configs (id, tenant_id, display_name, issuer, discovery_url, "
+            "client_id, group_sync_mode, jit, profile, entra_tenant_id) "
+            "VALUES (:id, NULL, 'Entra', :i, :d, :c, :g, :j, 'entra', :e)"
+        ),
+        {
+            "id": iid,
+            "i": issuer,
+            "d": f"{issuer}/.well-known/openid-configuration",
+            "c": CLIENT_ID,
+            "g": group_sync_mode,
+            "j": jit,
+            "e": entra_tenant,
         },
     )
     return iid
