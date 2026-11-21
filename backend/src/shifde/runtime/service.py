@@ -965,6 +965,11 @@ class ApprovalService:
         if probe["required_permission"] != "approval:decide":
             # a governance approval rule named a further permission its approver must hold
             self.sc.pdp.require(str(probe["required_permission"]), ref)
+        further = (probe["context_summary"] or {}).get("approver_permissions")
+        if isinstance(further, list) and all(isinstance(p, str) for p in further):
+            # several rules matched: the approver must hold every one's permission (B-2728)
+            for permission in further:
+                self.sc.pdp.require(permission, ref)
         # lock order: run, then approval (the worker locks the run before it writes approvals)
         tenant = self.sc.tenant_id
         run = repo.lock_run(self.session, tenant, probe["run_id"])
