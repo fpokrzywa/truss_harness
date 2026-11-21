@@ -754,3 +754,33 @@
   path: [triggers, trg_artifact_versions_release_guard]
   reason: "a published version pinned by a sealed, non-withdrawn release (its manifest's entrypoint or one of its pins) cannot be retired: the invoker-rights trigger refuses with 23514, the owner too, and build's set_state answers 409 (sub-project 3 design 12 item 11, issue #79)"
   migration: packaging_0002
+
+- table: idp_configs
+  path: [columns, profile]
+  reason: "the IdP profile, generic or entra (SP3-6, design SP3 sections 4 and 8, issue #83)"
+  migration: identity_0007
+
+- table: idp_configs
+  path: [columns, entra_tenant_id]
+  reason: "the Entra tenant an entra IdP is pinned to; tid is checked against it at sign-in (SP3-6, issue #83)"
+  migration: identity_0007
+
+- table: idp_configs
+  path: [constraints, ck_idp_configs__profile]
+  reason: "profile is generic or entra (SP3-6, issue #83)"
+  migration: identity_0007
+
+- table: idp_configs
+  path: [constraints, ck_idp_configs__entra_installation]
+  reason: "an entra IdP names its Entra tenant and is an installation IdP (tenant_id NULL); client IdPs stay generic (SP3-6, issue #83, B-2711)"
+  migration: identity_0007
+
+- table: idp_configs
+  path: [privileges, columns, profile]
+  reason: "the platform administrator sets the profile through /platform/idps (UPDATE only) (SP3-6, issue #83)"
+  migration: identity_0007
+
+- table: idp_configs
+  path: [privileges, columns, entra_tenant_id]
+  reason: "the platform administrator sets the Entra tenant through /platform/idps (UPDATE only) (SP3-6, issue #83)"
+  migration: identity_0007
