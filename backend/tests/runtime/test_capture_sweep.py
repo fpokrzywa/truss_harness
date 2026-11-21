@@ -3,8 +3,9 @@ scrub never ran (`Worker._sweep_capture_off`).
 
 Behaviour: an ended run of a capture-off client that still holds content (its scrub never ran) is
 scrubbed by the sweep, sizes and hashes kept; a capture-on client's ended run is untouched; a
-terminal child under a running root keeps its content; a second sweep changes nothing and adds no
-audit row.
+terminal child under a running root keeps its content; a run whose only leftover is a decided
+approval's arguments is swept too (issue #33); a second sweep changes nothing and adds no audit
+row.
 
 Isolation: one sweep over capture-off clients A and B and capture-on client C scrubs A's and B's
 runs, each in its own client's context (`app.tenant_id` equals the scrubbed client), and leaves C's
@@ -27,9 +28,12 @@ from shifde.core.db import Database
 from shifde.core.settings import Settings
 from shifde.runtime import repository as repo
 from tests.runtime.test_capture_off import (
+    APPROVAL_ARG,
     ARGUMENT,
     INPUT,
     SCRUBBED,
+    _approval,
+    _approvals,
     _arguments,
     _artifacts,
     _client,
@@ -151,6 +155,30 @@ def test_one_clients_failure_does_not_stop_the_others(
     assert _snapshot(owner_db, a_tenant) == a_before  # rolled back
     _assert_swept(owner_db, b_run, b_before)
     assert _arguments(owner_db, a_run) == [{"item": ARGUMENT}]
+
+
+def test_a_decided_approvals_arguments_alone_are_swept(
+    owner_db: Database, settings: Settings
+) -> None:
+    """Issue #33 (lead-directed): a run whose artifacts and invocations are already scrubbed but
+    whose decided approval still holds its arguments is swept; a second sweep changes nothing."""
+    tenant, run = _ended(owner_db, "metadata")
+    with owner_db.session() as o:
+        appr = _approval(o, tenant, run, "approved")
+        o.commit()
+    with owner_db.session() as o:  # only the approval is left: the rest was scrubbed earlier
+        o.execute(text("UPDATE shifde.run_artifacts SET content = CAST(:c AS jsonb) "
+                       "WHERE run_id = :r"), {"c": repo.j(SCRUBBED), "r": run})  # fmt: skip
+        o.execute(text("UPDATE shifde.tool_invocations SET arguments = NULL WHERE run_id = :r"),
+                  {"r": run})  # fmt: skip
+        o.commit()
+    before = _approvals(owner_db, run)[appr]
+    assert APPROVAL_ARG in repr(before[0])
+    _sweep(settings)
+    assert _approvals(owner_db, run)[appr] == (SCRUBBED, before[1])
+    swept = _snapshot(owner_db, tenant)
+    _sweep(settings)
+    assert _snapshot(owner_db, tenant) == swept
 
 
 def test_the_sweep_is_idempotent(owner_db: Database, settings: Settings) -> None:

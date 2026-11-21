@@ -1082,6 +1082,8 @@ class ApprovalService:
             self._record_verdict_on_ended_run(
                 run, appr, succeeded=body.decision == "mark_succeeded"
             )
+            # capture off: the now-decided approval's arguments go with the ended run's (#33)
+            scrub_ended(self.session, run, self.runtime.settings)
         if run["status"] == state.WAITING:
             if rejecting:
                 code = state.INDETERMINATE if indeterminate else state.APPROVAL_REJECTED
