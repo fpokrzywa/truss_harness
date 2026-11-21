@@ -597,7 +597,10 @@ def unscrubbed_ended_runs(session: Session, tenant_id: UUID) -> list[UUID]:
                 "AND (EXISTS (SELECT 1 FROM shifde.run_artifacts a WHERE a.tenant_id = :t "
                 "AND a.run_id = r.id AND a.content <> CAST(:c AS jsonb)) "
                 "OR EXISTS (SELECT 1 FROM shifde.tool_invocations i WHERE i.tenant_id = :t "
-                "AND i.run_id = r.id AND i.arguments IS NOT NULL)) ORDER BY r.id"
+                "AND i.run_id = r.id AND i.arguments IS NOT NULL) "
+                "OR EXISTS (SELECT 1 FROM shifde.approvals p WHERE p.tenant_id = :t "
+                "AND p.run_id = r.id AND p.status <> 'pending' "
+                "AND p.arguments <> CAST(:c AS jsonb))) ORDER BY r.id"
             ),
             {"t": tenant_id, "c": j(SCRUBBED)},
         ).scalars()
