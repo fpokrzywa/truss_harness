@@ -125,6 +125,10 @@ def purge(
     committed. A database error rolls the current client back and propagates; clients already
     yielded stay committed."""
     with database.session() as session:
+        # The CLI's trust boundary is the `shifde_app` database credential: whoever holds it may
+        # run this command. The platform-admin flag is set here without a PDP check and is used
+        # only to list tenant ids and slugs; each client is then processed under its own tenant
+        # context.
         with platform_admin_context(session):
             clients = session.execute(_CLIENTS).all()
         session.commit()
