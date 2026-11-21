@@ -12,9 +12,11 @@ import type {
   ConnectionTestResult,
   DiscoveredModel,
   Discovery,
+  DiscoveryJob,
   EgressPolicy,
   EgressPolicyInput,
   EgressRules,
+  HealthCheckJob,
   HealthResult,
   InvokeModelResult,
   Model,
@@ -36,12 +38,55 @@ const org$ = (org: string) => `/api/v1/orgs/${enc(org)}`;
 type Query = Record<string, string | number | undefined>;
 
 /**
- * Status poll of a queued connection test: the interval of `POLL_MS` (operate-hooks imports these
- * endpoints, so it is not imported here), capped at 60 s.
+ * Status poll of a queued connection test, provider health check or model discovery: the interval
+ * of `POLL_MS` (operate-hooks imports these endpoints, so it is not imported here), capped at 60 s.
  */
 const TEST_POLL_MS = 1000;
 const TEST_TIMEOUT_MS = 60_000;
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+interface QueuedJob<R> {
+  id: string;
+  status: 'queued' | 'running' | 'done' | 'failed';
+  result: R | null;
+  error: string | null;
+}
+
+/** How a polled job is named in its errors: code prefix, title and the noun of the detail. */
+interface JobLabel {
+  code: string;
+  title: string;
+  noun: string;
+}
+
+/** Poll a queued job until the worker has recorded its result; a failed job or a timeout throws. */
+async function awaitJob<R>(
+  first: QueuedJob<R>,
+  poll: (jobId: string) => Promise<QueuedJob<R>>,
+  label: JobLabel,
+): Promise<R> {
+  let job = first;
+  const deadline = Date.now() + TEST_TIMEOUT_MS;
+  while (job.status === 'queued' || job.status === 'running') {
+    if (Date.now() >= deadline) {
+      throw new ApiError({
+        status: 504,
+        code: `${label.code}_timeout`,
+        title: `${label.title} did not finish`,
+        detail: `The ${label.noun} did not finish within 60 seconds. Try again later.`,
+      });
+    }
+    await pause(TEST_POLL_MS);
+    job = await poll(job.id);
+  }
+  if (job.status === 'done' && job.result) return job.result;
+  throw new ApiError({
+    status: 409,
+    code: job.error ?? `${label.code}_failed`,
+    title: `${label.title} did not run`,
+    detail: `The ${label.noun} did not run (${job.error ?? 'unknown error'}).`,
+  });
+}
 
 /** Accept either a list envelope or a bare array (the contract shows bare arrays for some GETs). */
 function items<T>(res: ListResponse<T> | T[]): T[] {
@@ -103,15 +148,26 @@ export function createIntegrateEndpoints(client: ApiClient) {
       client.request<ModelProvider>(`${org$(org)}/model-providers/${enc(id)}`),
     createProvider: (org: string, input: ProviderInput) =>
       send<ModelProvider>('POST', `${org$(org)}/model-providers`, input),
-    healthCheck: (org: string, id: string) =>
-      send<HealthResult>('POST', `${org$(org)}/model-providers/${enc(id)}/health-check`, {}),
-    discoverModels: async (org: string, id: string) =>
-      items(
-        await client.request<ListResponse<DiscoveredModel> | DiscoveredModel[]>(
-          `${org$(org)}/model-providers/${enc(id)}/discover-models`,
-          { method: 'POST', body: {} },
+    /** Queue the health check (202), then poll its job until the worker has recorded it. */
+    healthCheck: async (org: string, id: string): Promise<HealthResult> => {
+      const path = `${org$(org)}/model-providers/${enc(id)}`;
+      return awaitJob(
+        await send<HealthCheckJob>('POST', `${path}/health-check`, {}),
+        (jobId) => client.request<HealthCheckJob>(`${path}/health-check-jobs/${enc(jobId)}`),
+        { code: 'health_check', title: 'Health check', noun: 'health check' },
+      );
+    },
+    /** Queue the model discovery (202), then poll its job until the worker has recorded it. */
+    discoverModels: async (org: string, id: string): Promise<DiscoveredModel[]> => {
+      const path = `${org$(org)}/model-providers/${enc(id)}`;
+      return items(
+        await awaitJob(
+          await send<DiscoveryJob>('POST', `${path}/discover-models`, {}),
+          (jobId) => client.request<DiscoveryJob>(`${path}/discovery-jobs/${enc(jobId)}`),
+          { code: 'discovery', title: 'Discovery', noun: 'model discovery' },
         ),
-      ),
+      );
+    },
 
     // Models
     listModels: (org: string) => list<Model>(`${org$(org)}/models`),
@@ -160,35 +216,15 @@ export function createIntegrateEndpoints(client: ApiClient) {
         `${org$(org)}/connections/${enc(id)}/test-jobs/${enc(jobId)}`,
       ),
     /** Queue the test (202), then poll its job until the worker has recorded the result. */
-    testConnection: async (org: string, id: string): Promise<ConnectionTestResult> => {
-      let job = await send<ConnectionTestJob>(
-        'POST',
-        `${org$(org)}/connections/${enc(id)}/test`,
-        {},
-      );
-      const deadline = Date.now() + TEST_TIMEOUT_MS;
-      while (job.status === 'queued' || job.status === 'running') {
-        if (Date.now() >= deadline) {
-          throw new ApiError({
-            status: 504,
-            code: 'test_timeout',
-            title: 'Test did not finish',
-            detail: 'The connection test did not finish within 60 seconds. Try again later.',
-          });
-        }
-        await pause(TEST_POLL_MS);
-        job = await client.request<ConnectionTestJob>(
-          `${org$(org)}/connections/${enc(id)}/test-jobs/${enc(job.id)}`,
-        );
-      }
-      if (job.status === 'done' && job.result) return job.result;
-      throw new ApiError({
-        status: 409,
-        code: job.error ?? 'test_failed',
-        title: 'Test did not run',
-        detail: `The connection test did not run (${job.error ?? 'unknown error'}).`,
-      });
-    },
+    testConnection: async (org: string, id: string): Promise<ConnectionTestResult> =>
+      awaitJob(
+        await send<ConnectionTestJob>('POST', `${org$(org)}/connections/${enc(id)}/test`, {}),
+        (jobId) =>
+          client.request<ConnectionTestJob>(
+            `${org$(org)}/connections/${enc(id)}/test-jobs/${enc(jobId)}`,
+          ),
+        { code: 'test', title: 'Test', noun: 'connection test' },
+      ),
     listConnectionTests: (org: string, id: string) =>
       list<ConnectionTestResult>(`${org$(org)}/connections/${enc(id)}/tests`),
     discoverConnection: (org: string, id: string) =>
