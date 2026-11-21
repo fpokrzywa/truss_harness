@@ -7,7 +7,11 @@ approved; without the flag the same call runs at once; the flag never replaces t
 approval something else requires. An agent listed in `allowed_agent_ids` still calls the tool and
 an unlisted agent is still refused with `agent_not_allowed`. `audit_level: "full"` adds the
 scrubbed arguments and the stored output (a preview above 8 KiB) to `run.tool_invoked` when the
-client captures content; `metadata`, and `full` under capture `metadata`, add neither.
+client captures content; `metadata`, and `full` under capture `metadata`, add neither. The
+preview is the longest prefix of at most 8192 UTF-8 bytes that does not cut a character (B-2716).
+
+Isolation: with `audit_level: "full"`, client A capturing `full` and B `metadata`, only A's event
+holds content, and each client's audit listing shows only its own rows.
 
 Calls are driven through `steps.run_tool` with the policy an agent run builds (`agent.py`: the
 run's agent artifact, `destructive` always approved), under the app role and the schema owner.
@@ -36,6 +40,7 @@ from tests.runtime.test_tool_audit import (
     World,
     _events,
     _fake_tool,
+    _listing,
     _new_tool,
     opened,
     seeds,
@@ -227,8 +232,73 @@ def test_full_audit_caps_a_large_output_at_a_preview(
     output = {"blob": "y" * 20_000}
     details = _audited("full", "full", world, opened, owner_db, settings, monkeypatch, output)
     assert details["output"]["truncated"] is True
-    assert details["output"]["preview"] == json.dumps(output)[:8000]
+    assert details["output"]["preview"] == json.dumps(output)[:8192]
     assert "arguments" in details
+
+
+def test_full_audit_previews_a_multibyte_output_on_a_character_boundary(
+    world: World,
+    opened: Any,
+    owner_db: Database,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = {"blob": "é€😀" * 3000}
+    details = _audited("full", "full", world, opened, owner_db, settings, monkeypatch, output)
+    preview = details["output"]["preview"]
+    assert details["output"]["truncated"] is True
+    assert len(preview.encode("utf-8")) <= steps.MAX_AUDIT_OUTPUT_BYTES == 8192
+    assert preview.encode("utf-8").decode("utf-8") == preview  # strict: no partial character
+    assert json.dumps(output, default=str).startswith(preview)
+
+
+def test_the_preview_cut_never_splits_a_character() -> None:
+    cut = steps._byte_prefix("€" * 5000, steps.MAX_AUDIT_OUTPUT_BYTES)
+    assert (len(cut), len(cut.encode("utf-8"))) == (2730, 8190)
+    assert cut == "€" * 2730
+
+
+def test_full_audit_content_follows_each_clients_capture_and_listings_stay_apart(
+    world: World,
+    opened: Any,
+    app_db: Database,
+    owner_db: Database,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F-13 follow-up (#41): with `audit_level: full`, only the client capturing `full` content
+    gets the arguments and output in `run.tool_invoked`; each client's audit listing, in its own
+    `shifde_app` session, shows only its own rows."""
+    a, b, _, _ = world
+    with owner_db.session() as o:
+        _capture(o, a.tenant, "full")
+        _capture(o, b.tenant, "metadata")
+        o.commit()
+    _fake_tool(monkeypatch, {"rows": ["out-a-7f31"]}, {"rows": ["out-b-29c4"]})
+    for x, marker in ((a, "arg-a-7f31"), (b, "arg-b-29c4")):
+        tool = _new_tool(owner_db, x.tenant, {**READ, "audit_level": "full"})
+        _run(opened, settings, x, tool, _agent_policy(tool, x.agent), args={"item": marker})
+    with owner_db.session() as o:
+        [event_a] = _events(o, a.running)
+        [event_b] = _events(o, b.running)
+        rows = o.execute(
+            text("SELECT id, tenant_id FROM shifde.audit_events WHERE tenant_id IN (:a, :b)"),
+            {"a": a.tenant, "b": b.tenant},
+        ).all()
+    assert event_a["details"]["arguments"] == {"item": "arg-a-7f31"}
+    assert event_a["details"]["output"] == {"rows": ["out-a-7f31"]}
+    assert not {"arguments", "args", "output"} & set(event_b["details"])
+    assert "arg-b-29c4" not in json.dumps(event_b, default=str)
+    assert "out-b-29c4" not in json.dumps(event_b, default=str)
+    owners: dict[UUID, UUID] = {row[0]: row[1] for row in rows}
+    for me, other in ((a, b), (b, a)):
+        listed = _listing(app_db, me.tenant, me.tenant)
+        mine = {e.action for e in listed if e.details.get("run_id") == str(me.running)}
+        assert "run.tool_invoked" in mine  # positive control
+        assert all(owners.get(e.id) == me.tenant for e in listed)
+        assert not [e for e in listed if e.target_id == str(other.running)]
+        assert not [e for e in listed if e.details.get("run_id") == str(other.running)]
+        assert str(other.running) not in json.dumps([e.details for e in listed], default=str)
 
 
 @pytest.mark.parametrize(

@@ -148,3 +148,29 @@ class WaitReadyTests(unittest.TestCase):
         with unittest.mock.patch.object(dev_db.time, "sleep"):
             with self.assertRaises(dev_db.DevDbError):
                 cluster.wait_ready(timeout=-1)  # type: ignore[attr-defined]
+
+
+@unittest.skipUnless(sys.platform == "win32", "Windows console flags")
+class StartConsoleTests(unittest.TestCase):
+    """pg_ctl's `cmd /C postgres` must not get a visible console: closing it kills the cluster.
+
+    With DETACHED_PROCESS pg_ctl has no console, so the cmd.exe it starts gets a new visible
+    terminal window (seen 2026-11-21: the autostart's window was closed and the server died
+    with ^C mid-recovery). CREATE_NO_WINDOW gives pg_ctl a hidden console its children inherit.
+    """
+
+    def test_pg_ctl_gets_a_hidden_console(self) -> None:
+        cluster = dev_db.Cluster.__new__(dev_db.Cluster)
+        state = iter([False, True])
+        cluster.initialised = lambda: True  # type: ignore[method-assign]
+        cluster.running = lambda: next(state)  # type: ignore[method-assign]
+        cluster.wait_ready = lambda *a, **k: None  # type: ignore[method-assign]
+        cluster.tool = lambda name: name  # type: ignore[method-assign]
+        cluster.pgdata = Path("pg")
+        cluster.log_file = Path("postgres.log")
+        with unittest.mock.patch.object(dev_db.subprocess, "run") as run:
+            cluster.start()
+        flags = run.call_args.kwargs["creationflags"]
+        self.assertTrue(flags & subprocess.CREATE_NO_WINDOW)
+        self.assertFalse(flags & subprocess.DETACHED_PROCESS)
+        self.assertTrue(flags & subprocess.CREATE_NEW_PROCESS_GROUP)
