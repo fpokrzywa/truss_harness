@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Any  # Any: audit details / JSON
 from uuid import UUID
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from shifde.adapters.runtime import IntegrationRuntime
@@ -28,7 +29,7 @@ from shifde.build.service import ArtifactService
 from shifde.core import classification
 from shifde.core.clock import utcnow
 from shifde.core.context import Principal, RequestContext
-from shifde.core.db import Database
+from shifde.core.db import Database, set_tenant
 from shifde.core.settings import Settings
 from shifde.runtime import repository as repo
 from shifde.runtime import state
@@ -76,7 +77,9 @@ class RunContext:
         self.principal = principal
         # the worker's database: a model call's usage row is written in its own committed
         # transaction the moment the provider answers (carry_forward Item 11); without one it is
-        # written in the step's transaction
+        # written in the step's transaction. With it, the run's data classification event and run
+        # tree read use their own short session too and leave the caller's transaction untouched
+        # (the caller must not hold the run-row lock then, B-2717)
         self.db = db
         self.tenant_id: UUID = run["tenant_id"]
         self.scope = TenantScope(
@@ -137,26 +140,52 @@ class RunContext:
     def record_classification(self, level: str | None) -> None:
         """Raise the run's data classification to `level` (an ontology read's highest property
         classification). A raise appends a `data_classification_raised` event that names only
-        the level; the level never goes down."""
+        the level; the level never goes down.
+
+        With the worker's database (`db`) the event is written in its own short, lease-fenced
+        session of this client and committed there: the caller's transaction (its pending step,
+        lineage, usage and audit rows) is neither committed nor rolled back. The caller must not
+        hold the run-row lock (not inside `txn()`, no uncommitted `add_event` of this run): the
+        five-second lock timeout would fail the call. Without `db` the event is written in the
+        step's transaction (`txn()`)."""
         if level is None or classification.rank(level) <= classification.rank(
             self.effective_classification()
         ):
             return
-        with self.txn():
-            repo.add_event(
-                self.session,
-                self.run,
-                "data_classification_raised",
-                details={"classification": classification.level(level)},
-            )
+        details = {"classification": classification.level(level)}
+        if self.db is None:
+            with self.txn():
+                repo.add_event(
+                    self.session, self.run, "data_classification_raised", details=details
+                )
+        else:
+            if self.lease_lost.is_set():
+                raise state.LeaseLost()
+            with self.db.session() as s:
+                set_tenant(s, self.tenant_id)
+                s.execute(text("SET LOCAL lock_timeout = '5s'"))
+                if not repo.fence(s, self.tenant_id, self.run_id, self.token):
+                    raise state.LeaseLost()
+                repo.add_event(s, self.run, "data_classification_raised", details=details)
+                s.commit()
         self.classification = classification.level(level)
 
     def effective_classification(self) -> str:
         """The highest data classification of this run's whole run tree (same root, this client):
         its own level and every `data_classification_raised` event of its ancestors, descendants
-        and itself, re-read on every call."""
-        levels = repo.tree_classifications(self.session, self.tenant_id, self.run["root_run_id"])
-        self.session.commit()  # never hold a snapshot across the model call
+        and itself, re-read on every call.
+
+        With the worker's database (`db`) the tree is read in its own short session of this
+        client, leaving the caller's transaction untouched; without it the read is on the step's
+        session, which is then committed."""
+        root = self.run["root_run_id"]
+        if self.db is None:
+            levels = repo.tree_classifications(self.session, self.tenant_id, root)
+            self.session.commit()  # never hold a snapshot across the model call
+        else:
+            with self.db.session() as s:
+                set_tenant(s, self.tenant_id)
+                levels = repo.tree_classifications(s, self.tenant_id, root)
         return classification.highest(self.classification, *levels)
 
     # ------------------------------------------------------------------ time

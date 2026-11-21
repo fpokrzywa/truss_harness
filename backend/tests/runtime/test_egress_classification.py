@@ -26,7 +26,7 @@ from __future__ import annotations
 import copy
 import json
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 from uuid import UUID
 
@@ -516,3 +516,80 @@ def test_one_clients_classification_never_raises_the_others(
         assert repo.tree_classifications(s, b.tenant, run_a) == []
     with app_session(app_db, a.tenant) as s:
         assert repo.tree_classifications(s, a.tenant, run_a) == ["confidential"]
+
+
+# ------------------------------------------------------------------ (h) the caller's transaction
+@pytest.fixture
+def step_db(app_url: str) -> Iterator[Database]:
+    """The caller's own app-role database: `app_db` holds one connection, and the context's
+    short session needs a second one while the caller's transaction is open (as the worker's
+    pool has)."""
+    db = Database(app_url, pool_size=1, max_overflow=0)
+    yield db
+    db.dispose()
+
+
+def test_a_refused_call_after_a_confidential_read_leaves_no_partial_step_write(
+    two: Two, owner_db: Database, app_db: Database, settings: Settings, step_db: Database
+) -> None:
+    """With the worker's database the raise is persisted in its own session: the caller's
+    pending step write is committed neither by the raise, nor by the tree read before the call,
+    nor by the refusal's audit record, and goes with the caller's rollback (#55, B-2717). The
+    raise is `run_query`'s own call after its query (the query commits its lineage itself)."""
+    a, b = two.a, two.b
+    with owner_db.session() as o:
+        model = _model(o, a.tenant, "internal")
+        run = _agent_run(o, a, status="running", lease_token=uuid7(), started_at=utcnow(),
+                         initiated_by_principal_id=a.user)  # fmt: skip
+        o.commit()
+    with app_session(step_db, a.tenant) as s:
+        ctx = run_context(s, settings, run_row(s, a.tenant, run), db=app_db)
+        step = repo.insert_step(s, {"tenant_id": a.tenant, "run_id": run, "seq": 1, "attempt": 1,
+                                    "kind": "model_call", "name": "pending",
+                                    "status": "running"})  # fmt: skip
+        ctx.record_classification("confidential")
+        assert ctx.classification == "confidential"
+        body = ms.InvokeIn(messages=[ms.ChatMessageIn(role="user", content="hi")], max_tokens=16)
+        with pytest.raises(ModelNotAllowed):
+            ctx.artifacts.models.invoke_for_run(
+                ctx.run_ref(), model, body, run_id=ctx.run_id, max_deadline=5,
+                classification=ctx.effective_classification(),
+            )  # fmt: skip
+        s.rollback()
+    with owner_db.session() as o:
+        gone = o.execute(
+            text("SELECT count(*) FROM shifde.run_steps WHERE id = :s"), {"s": step["id"]}
+        ).scalar_one()
+        assert gone == 0
+        assert _raised(o, run) == [{"classification": "confidential"}]
+        [event] = _invoked(o, run)  # the refusal is still on record
+        assert (event["outcome"], event["details"]["reason"]) == ("denied", REASON)
+    with app_session(app_db, a.tenant) as s:
+        mine = s.execute(
+            text("SELECT count(*) FROM shifde.run_events WHERE run_id = :r AND type = :t"),
+            {"r": run, "t": RAISED},
+        ).scalar_one()
+        assert mine == 1
+    with app_session(app_db, b.tenant) as s:
+        theirs = s.execute(
+            text("SELECT count(*) FROM shifde.run_events WHERE run_id = :r"), {"r": run}
+        ).scalar_one()
+        assert theirs == 0
+
+
+def test_a_lost_lease_writes_no_classification_event(
+    two: Two, owner_db: Database, app_db: Database, settings: Settings, step_db: Database
+) -> None:
+    a = two.a
+    with owner_db.session() as o:
+        run = _agent_run(o, a, status="running", lease_token=uuid7(), started_at=utcnow(),
+                         initiated_by_principal_id=a.user)  # fmt: skip
+        o.commit()
+    with app_session(step_db, a.tenant) as s:
+        ctx = run_context(s, settings, run_row(s, a.tenant, run), token=uuid7(), db=app_db)
+        with pytest.raises(state.LeaseLost):
+            _read(ctx, a, ["id", "name"])
+        assert ctx.classification == "public"
+        s.rollback()
+    with owner_db.session() as o:
+        assert _raised(o, run) == []
