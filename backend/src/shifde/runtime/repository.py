@@ -583,6 +583,27 @@ def unscrubbed_counts(session: Session, tenant_id: UUID, run_id: UUID) -> tuple[
     return int(row[0]), int(row[1])
 
 
+def unscrubbed_ended_runs(session: Session, tenant_id: UUID) -> list[UUID]:
+    """The terminal runs of `tenant_id` whose root run has ended too and that still hold content
+    `scrub_run_content` would change (the capture-off sweep's stragglers)."""
+    return list(
+        session.execute(
+            text(
+                "SELECT r.id FROM shifde.runs r JOIN shifde.runs root "
+                "ON root.id = r.root_run_id AND root.tenant_id = :t "
+                "WHERE r.tenant_id = :t "
+                "AND r.status IN ('completed', 'failed', 'cancelled', 'timed_out') "
+                "AND root.status IN ('completed', 'failed', 'cancelled', 'timed_out') "
+                "AND (EXISTS (SELECT 1 FROM shifde.run_artifacts a WHERE a.tenant_id = :t "
+                "AND a.run_id = r.id AND a.content <> CAST(:c AS jsonb)) "
+                "OR EXISTS (SELECT 1 FROM shifde.tool_invocations i WHERE i.tenant_id = :t "
+                "AND i.run_id = r.id AND i.arguments IS NOT NULL)) ORDER BY r.id"
+            ),
+            {"t": tenant_id, "c": j(SCRUBBED)},
+        ).scalars()
+    )
+
+
 def ended_runs_of_root(session: Session, tenant_id: UUID, root_run_id: UUID) -> list[UUID]:
     """The terminal runs of `tenant_id` whose root run is `root_run_id` (the root included)."""
     return list(

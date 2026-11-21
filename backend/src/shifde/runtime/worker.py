@@ -23,6 +23,12 @@ abandons that job: its thread (which Python cannot kill) no longer counts agains
 so the worker keeps claiming new work, and whatever it does when it returns late is fenced by the
 run's lease token (B-2590).
 
+Capture-off sweep (F-12, issue #34): on a tick where this worker won the reaper lock, the reaper
+also sweeps every capture-off client for ended runs (run and root terminal) whose content scrub
+never ran (the reaper's follow-up transaction failed, or a worker died first) and scrubs them:
+per client, in a transaction of its own under that client's context and a per-client advisory
+lock. A failure is logged and the sweep moves on to the next client.
+
 Jobs are dispatched by `kind` (ARCH M2, B-2610): `run.advance` advances its run; `connection.test`
 (no run) runs `connections.service.run_test_job` in the job's own client as its requester,
 re-derived from the database, and ends `done`, or `dead` with the refusal's error code; any other
@@ -68,10 +74,12 @@ from shifde.observability.logging import configure_logging
 from shifde.runtime import lifecycle
 from shifde.runtime import repository as repo
 from shifde.runtime.governance import GovernanceHooks, TokenBudgetHooks
-from shifde.runtime.settle import scrub_ended
+from shifde.runtime.settle import capture_full, scrub_ended
 
 log = structlog.get_logger("shifde.worker")
 REAPER_LOCK = "shifde:reaper"
+CAPTURE_SWEEP_LOCK = "shifde:capture-sweep:{}"  # per client
+_CLIENTS = text("SELECT id FROM shifde.tenants ORDER BY id")
 EXIT_UNSAFE_ROLE = 3  # as `shifde-api` (shifde.main)
 ADVANCE_KIND = "run.advance"
 UNKNOWN_KIND = "unknown job kind"
@@ -401,6 +409,8 @@ class Worker:
             self.wake.set()
         for row in rows:
             self._audit_reaped(row["tenant_id"], row["run_id"], row["reason"])
+        if got:
+            self._sweep_capture_off()
 
     def _audit_reaped(self, tenant_id: UUID, run_id: UUID, reason: str) -> None:
         self._settle_reaped_holds(tenant_id, run_id)
@@ -432,6 +442,46 @@ class Worker:
                 s.commit()
         except Exception:  # noqa: BLE001 - auditing the reaper must never stop it
             log.error("worker.reap_audit_failed", exc_info=True)
+
+    def _sweep_capture_off(self) -> None:
+        """Capture off (F-12): scrub the ended runs (run and root terminal) whose scrub never ran
+        (a follow-up transaction failed, or a worker died first). Clients are listed under the
+        platform-administrator context; each one is then swept in a transaction of its own with
+        only that client set, under a per-client advisory lock. Idempotent; writes no audit."""
+        try:
+            with self.db.session() as s:
+                with db.platform_admin_context(s):
+                    clients = list(s.execute(_CLIENTS).scalars())
+                s.commit()
+        except Exception:  # noqa: BLE001 - the sweep must never stop the reaper
+            log.error("worker.capture_sweep_failed", exc_info=True)
+            return
+        for tenant_id in clients:
+            self._sweep_client(tenant_id)
+
+    def _sweep_client(self, tenant_id: UUID) -> None:
+        with self.db.session() as s:
+            try:
+                db.init_context(s, "reaper")
+                db.set_tenant(s, tenant_id)
+                got = s.execute(
+                    text("SELECT pg_try_advisory_xact_lock(hashtextextended(:k, 0))"),
+                    {"k": CAPTURE_SWEEP_LOCK.format(tenant_id)},
+                ).scalar_one()
+                if not got or capture_full(s, tenant_id, self.settings):
+                    s.rollback()
+                    return
+                run_ids = repo.unscrubbed_ended_runs(s, tenant_id)
+                for run_id in run_ids:
+                    repo.scrub_run_content(s, tenant_id, run_id)
+                s.commit()
+                if run_ids:
+                    log.info("worker.capture_swept", tenant_id=str(tenant_id), runs=len(run_ids))
+            except Exception:  # noqa: BLE001 - one client's failure must not stop the others
+                s.rollback()
+                log.error("worker.capture_sweep_failed", tenant_id=str(tenant_id), exc_info=True)
+            finally:
+                db.forget_tenant(s)
 
     def _settle_reaped_holds(self, tenant_id: UUID, run_id: UUID) -> None:
         """The reaped run's orphaned holds, in the run's own client and its own transaction
