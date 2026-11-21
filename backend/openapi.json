@@ -9546,7 +9546,7 @@
       },
       "PlanCreate": {
         "additionalProperties": false,
-        "description": "Settled call 17: the target, the application's slug and its display name.",
+        "description": "Settled call 17: the target, the application's slug and its display name; SP3 settled\ncall 3: the sealed release it deploys.",
         "properties": {
           "application_key": {
             "pattern": "^[a-z][a-z0-9-]{0,62}$",
@@ -9559,6 +9559,11 @@
             "title": "Display Name",
             "type": "string"
           },
+          "release_id": {
+            "format": "uuid",
+            "title": "Release Id",
+            "type": "string"
+          },
           "target_id": {
             "format": "uuid",
             "title": "Target Id",
@@ -9567,6 +9572,7 @@
         },
         "required": [
           "target_id",
+          "release_id",
           "application_key",
           "display_name"
         ],
@@ -9641,6 +9647,18 @@
             "title": "Display Name",
             "type": "string"
           },
+          "evaluation_run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Run Id"
+          },
           "expires_at": {
             "anyOf": [
               {
@@ -9657,6 +9675,29 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "release_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Digest"
+          },
+          "release_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Id"
           },
           "requested_by": {
             "format": "uuid",
@@ -9777,7 +9818,10 @@
           "created_at",
           "updated_at",
           "approval",
-          "deployment_id"
+          "deployment_id",
+          "release_id",
+          "release_digest",
+          "evaluation_run_id"
         ],
         "title": "PlanOut",
         "type": "object"

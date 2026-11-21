@@ -10,6 +10,14 @@ Approval creates the plan's deployment (`queued`) and its one-attempt `apply` jo
 plan's `expires_at`, in the approval's transaction (B-2684). A target with an unresolved unknown
 outcome takes no new plan (409 `target_unresolved`, settled call 10).
 
+A plan deploys one sealed release (SP3 design sections 4 and 6, settled calls 3 to 6): the request
+names a release the caller can read (else `release not found`), not withdrawn (409
+`release_withdrawn`), of the target's kind and in its workspace and project (409
+`release_target_mismatch`), with a passing evaluation of its digests (409 `evaluation_required`).
+The plan stores the release, its digest and the passing run; the artifact carries `release.json`
+and the plan digest the release digest. Approval checks the release again after the plan row
+lock; reject does not.
+
 A plan is scoped by its target's workspace/project; a plan or target the caller cannot read gets
 the answer an unknown id gets. Every plan route first settles the organization's plans (the lost
 job sweep, lost plan jobs, passed expiries, then the deployment settle step) and commits that, so
@@ -37,6 +45,13 @@ from shifde.core.pagination import Page, decode_cursor, encode_cursor, paginate
 from shifde.delivery import gateway, repository, service
 from shifde.delivery import schemas as s
 from shifde.delivery.service import TargetService
+from shifde.evaluation.service import (
+    EvaluationRequired,
+    ReleaseWithdrawn,
+    require_passing_evaluation,
+)
+from shifde.packaging.canonical import canonical
+from shifde.packaging.service import release_record, scoped_release
 from shifde.tenancy.scope import TenantScope
 
 TARGET_KIND = "databricks.app/v1"
@@ -68,9 +83,22 @@ class TargetUnresolved(AppError):
     status, code, title = 409, "target_unresolved", "Conflict"
 
 
-def template_artifact() -> tuple[bytes, str]:
-    """The SDK template archive (default `databricks.app/v1` spec) and its sha256 digest."""
-    content = create_archive(scaffold_files(DatabricksApplicationSpec()))
+class ReleaseTargetMismatch(AppError):
+    status, code, title = 409, "release_target_mismatch", "Conflict"
+
+
+def check_target_kind(manifest: Mapping[str, Any]) -> None:
+    """A release is deployed only to the kind of target its manifest names."""
+    if manifest.get("target_kind") != TARGET_KIND:
+        raise ReleaseTargetMismatch("The release is for another kind of target.")
+
+
+def template_artifact(manifest: Mapping[str, Any], release_digest: str) -> tuple[bytes, str]:
+    """The SDK template archive (default `databricks.app/v1` spec) with the release at its root
+    (`release.json`, the canonical JSON of the manifest and its digest), and its sha256 digest."""
+    files = scaffold_files(DatabricksApplicationSpec())
+    files["release.json"] = canonical({"manifest": manifest, "digest": release_digest})
+    content = create_archive(files)
     if len(content) > MAX_ARTIFACT_BYTES:
         raise ValidationFailed("the artifact exceeds 5 MB")
     return content, hashlib.sha256(content).hexdigest()
@@ -173,6 +201,9 @@ class PlanService:
             updated_at=row["updated_at"],
             approval=approval,
             deployment_id=row["deployment_id"],
+            release_id=row["release_id"],
+            release_digest=row["release_digest"],
+            evaluation_run_id=row["evaluation_run_id"],
         )
 
     # ================================================================== routes
@@ -214,7 +245,8 @@ class PlanService:
             raise gateway.TargetUnavailable("the target is archived")
         if repository.target_unresolved(self.sc.session, target["id"], tenant_id=self.sc.tenant_id):
             raise TargetUnresolved("the target has an unresolved unknown outcome")
-        content, artifact_digest = template_artifact()
+        release, passing = self._gate(target, body.release_id)
+        content, artifact_digest = template_artifact(release["manifest"], release["digest"])
         session = self.sc.session
         principal_id = self.sc.principal.principal_id
         artifact_id, plan_id = uuid7(), uuid7()
@@ -242,6 +274,9 @@ class PlanService:
                 "application_key": body.application_key,
                 "display_name": body.display_name,
                 "requested_by": principal_id,
+                "release_id": release["id"],
+                "release_digest": release["digest"],
+                "evaluation_run_id": passing["id"],
             },
         )
         job_id = gateway.enqueue_job(
@@ -259,9 +294,44 @@ class PlanService:
             artifact_digest=artifact_digest,
             target_revision=target["revision"],
             job_id=str(job_id),
+            release_id=str(release["id"]),
+            release_digest=release["digest"],
+            evaluation_run_id=str(passing["id"]),
         )
         session.commit()
         return self._out(row)
+
+    def _gate(
+        self, target: Mapping[str, Any], release_id: UUID
+    ) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+        """(release, passing evaluation run) the request may deploy to `target`: a release the
+        caller can read (else `release not found`), still sealed, of the target's kind and
+        scope, with a passing evaluation of its digests (settled calls 3, 4 and 8)."""
+        release = scoped_release(self.sc, release_id)
+        if release["status"] == "withdrawn":
+            raise ReleaseWithdrawn("The release is withdrawn.")
+        check_target_kind(release["manifest"])
+        if release["workspace_id"] != target["workspace_id"] or (
+            target["project_id"] is not None and release["project_id"] != target["project_id"]
+        ):
+            raise ReleaseTargetMismatch("The release is not in the target's workspace and project.")
+        return require_passing_evaluation(self.sc.session, release_id, ctx=self.sc.ctx)
+
+    def _recheck(self, row: Mapping[str, Any]) -> None:
+        """At approval, under the plan row lock: the plan's release is still sealed, unchanged
+        and passed. No packaging permission is asked of the approver."""
+        session = self.sc.session
+        if row["release_id"] is None:
+            raise EvaluationRequired("This release has no passing evaluation.")
+        release = release_record(session, row["release_id"], tenant_id=self.sc.tenant_id)
+        if release is not None and release["status"] == "withdrawn":
+            raise ReleaseWithdrawn("The release is withdrawn.")
+        try:
+            current, _ = require_passing_evaluation(session, row["release_id"], ctx=self.sc.ctx)
+        except (NotFound, EvaluationRequired):
+            raise EvaluationRequired("This release has no passing evaluation.") from None
+        if current["digest"] != row["release_digest"]:
+            raise EvaluationRequired("This release has no passing evaluation.")
 
     def approve(self, plan_id: UUID, body: s.PlanApprove) -> s.PlanOut:
         return self._decide(plan_id, "approve", body.note, body.plan_digest)
@@ -291,6 +361,12 @@ class PlanService:
             raise PlanNotSealed("the plan is not sealed")
         if quoted_digest is not None and quoted_digest != row["digest"]:
             raise PlanDigestMismatch("plan_digest is not the sealed digest")
+        if decision == "approve":
+            try:
+                self._recheck(row)
+            except AppError:
+                session.rollback()  # the plan stays sealed; nothing is written
+                raise
         try:
             with session.begin_nested():
                 repository.insert_approval(

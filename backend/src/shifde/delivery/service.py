@@ -655,9 +655,10 @@ def plan_digest(
     steps: Sequence[Mapping[str, Any]],
     adapter_version: str,
     toolchain_digest: str,
+    release_digest: str | None,
 ) -> str:
     """The sealed plan's digest (design 4): artifact digest, target revision, snapshot
-    fingerprint, steps, adapter version and toolchain digest."""
+    fingerprint, steps, adapter version, toolchain digest and release digest (SP3 section 6)."""
     return digest(
         {
             "artifact_digest": artifact_digest,
@@ -666,6 +667,7 @@ def plan_digest(
             "steps": steps,
             "adapter_version": adapter_version,
             "toolchain_digest": toolchain_digest,
+            "release_digest": release_digest,
         }
     )
 
@@ -739,6 +741,7 @@ def on_plan_result(session: Session, job: Mapping[str, Any], body: JobResultSubm
                 steps=steps,
                 adapter_version=value.adapter_version,
                 toolchain_digest=value.toolchain_digest,
+                release_digest=plan["release_digest"],
             ),
         },
         tenant_id=tenant_id,

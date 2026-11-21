@@ -17,6 +17,10 @@ The platform is real (`RealPlatform`: pinned CLI and workspace REST reads with t
 broker) or the in-memory fake (`FakePlatform`, one per process). The toolchain digest names the
 platform, so a plan made on the fake is never applied by a real executor, and the fake marks
 every `complete` receipt and the apply receipt's handles with `platform: fake`.
+
+A plan's artifact is the SDK source plus a root `release.json`, the release it deploys (SP3-4).
+Its digest covers the whole archive; the adapter reads the source without `release.json`
+(`ReleaseArtifactStore`), so the record is checked but never deployed.
 """
 
 from __future__ import annotations
@@ -38,6 +42,8 @@ from shifde.adapters.native.base import (
     InMemoryArtifactStore,
     NeedsAttention,
     ReadContext,
+    create_archive,
+    read_archive,
 )
 from shifde.adapters.native.contracts import (
     ApplyRequest,
@@ -55,6 +61,7 @@ from shifde.adapters.native.contracts import (
     PlanRequest,
     ReconcileRequest,
     ResourceBinding,
+    SourceArchive,
     Target,
     VerifyRequest,
     digest,
@@ -81,6 +88,7 @@ HEARTBEAT_SECONDS = 15.0  # against the gateway's 45 s lease
 POLL_SECONDS = 2.0
 # application_id = uuid5(namespace, "<target_id>/<application_key>") (B-2690)
 APPLICATION_NAMESPACE = UUID("6f1c2a4e-8d3b-5e7f-9a10-b2c3d4e5f607")
+RELEASE_ENTRY = "release.json"  # the release a plan deploys, at the artifact's root (SP3-4)
 
 TokenProvider = Callable[[str], str]
 ErrorCode = Literal["execution_failed", "credential_unavailable"]
@@ -96,6 +104,18 @@ def toolchain_digest(platform: str) -> str:
 def application_id(target_id: UUID, application_key: str) -> UUID:
     """Stable per target and application key, so redeployments keep the Databricks app name."""
     return uuid5(APPLICATION_NAMESPACE, f"{target_id}/{application_key}")
+
+
+class ReleaseArtifactStore(InMemoryArtifactStore):
+    """The plan's artifact, digest-checked as a whole; read back without `release.json`, so the
+    adapter validates and deploys the application source only."""
+
+    def read(self, reference: SourceArchive, tenant_id: UUID) -> bytes:
+        data = super().read(reference, tenant_id)
+        files = read_archive(data)
+        if files.pop(RELEASE_ENTRY, None) is None:
+            return data
+        return create_archive(files)
 
 
 class Platform(Protocol):
@@ -359,7 +379,7 @@ class Runner:
             tenant_id=target.tenant_id, target=target, owned_resources=owned, deadline=deadline
         )
         if job.kind == "plan":
-            store = InMemoryArtifactStore()
+            store = ReleaseArtifactStore()
             artifact = self._artifact(state, ctx.plan, target, store, app_id, spec)
             planned = adapter.plan(PlanRequest(artifact=artifact), read)
             return PlanJobResult(
@@ -371,7 +391,7 @@ class Runner:
         if job.kind == "apply":
             if ctx.deployment is None:
                 raise ValueError("the apply job has no deployment")
-            store = InMemoryArtifactStore()
+            store = ReleaseArtifactStore()
             artifact = self._artifact(state, ctx.plan, target, store, app_id, spec)
             plan = self._plan(ctx, target, app_id, spec)
             journal = GatewayJournal(
@@ -413,7 +433,7 @@ class Runner:
         state: LeaseState,
         plan: ContextPlan,
         target: Target,
-        store: InMemoryArtifactStore,
+        store: ReleaseArtifactStore,
         app_id: UUID,
         spec: DatabricksApplicationSpec,
     ) -> BuildArtifact:
