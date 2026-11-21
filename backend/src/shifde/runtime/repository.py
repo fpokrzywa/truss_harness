@@ -539,9 +539,11 @@ SCRUBBED = {"scrubbed": True}
 
 def scrub_run_content(session: Session, tenant_id: UUID, run_id: UUID) -> None:
     """Capture off (F-12, B-2514): replace the content of every artifact of this run of
-    `tenant_id` by `SCRUBBED` (id, kind, step, size and hash stay) and clear its tool invocations'
-    arguments. Idempotent; another client's run or an unknown id scrubs nothing. The database
-    allows the artifact update only on a run that has ended (`run_artifacts_guard`)."""
+    `tenant_id` by `SCRUBBED` (id, kind, step, size and hash stay), clear its tool invocations'
+    arguments and replace the arguments of its non-pending approvals by `SCRUBBED` (a pending
+    approval keeps them for its decider, #33). Idempotent; another client's run or an unknown id
+    scrubs nothing. The database allows these updates only on a run that has ended
+    (`run_artifacts_guard`, `tool_invocations_arguments_guard`, `approvals_guard`)."""
     session.execute(
         text(
             "UPDATE shifde.run_artifacts SET content = CAST(:c AS jsonb) "
@@ -555,6 +557,14 @@ def scrub_run_content(session: Session, tenant_id: UUID, run_id: UUID) -> None:
             "WHERE tenant_id = :t AND run_id = :r AND arguments IS NOT NULL"
         ),
         {"t": tenant_id, "r": run_id},
+    )
+    session.execute(
+        text(
+            "UPDATE shifde.approvals SET arguments = CAST(:c AS jsonb) "
+            "WHERE tenant_id = :t AND run_id = :r AND status <> 'pending' "
+            "AND arguments <> CAST(:c AS jsonb)"
+        ),
+        {"t": tenant_id, "r": run_id, "c": j(SCRUBBED)},
     )
 
 
@@ -587,7 +597,10 @@ def unscrubbed_ended_runs(session: Session, tenant_id: UUID) -> list[UUID]:
                 "AND (EXISTS (SELECT 1 FROM shifde.run_artifacts a WHERE a.tenant_id = :t "
                 "AND a.run_id = r.id AND a.content <> CAST(:c AS jsonb)) "
                 "OR EXISTS (SELECT 1 FROM shifde.tool_invocations i WHERE i.tenant_id = :t "
-                "AND i.run_id = r.id AND i.arguments IS NOT NULL)) ORDER BY r.id"
+                "AND i.run_id = r.id AND i.arguments IS NOT NULL) "
+                "OR EXISTS (SELECT 1 FROM shifde.approvals p WHERE p.tenant_id = :t "
+                "AND p.run_id = r.id AND p.status <> 'pending' "
+                "AND p.arguments <> CAST(:c AS jsonb))) ORDER BY r.id"
             ),
             {"t": tenant_id, "c": j(SCRUBBED)},
         ).scalars()
