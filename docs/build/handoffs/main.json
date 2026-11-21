@@ -1,8 +1,8 @@
 {
-  "session_id": "5b14aafc-dc03-4e4b-a929-9cff1fc31af2",
-  "head_sha": "a1823f6f2a6dc52defc138c9ebc2fc7bb2d6b582",
+  "session_id": "4e057a99-c97e-4e7f-a3b4-3efc3679560a",
+  "head_sha": "57df8e1510171b2bbeddc68a07a10ceca8eb5011",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "C:/Program Files/Git/factory run 96, then 99, 104, then older follow-ups from factory/bin/job queue, then write the sub-project 4 design (charter 7 steps 1-2)",
-  "written_at": "2026-11-21T07:48:39Z"
+  "next_step": "/factory run the older new follow-ups from factory/bin/job queue (#33 onward, #108, #109), three at a time; then write the sub-project 4 design (charter 7 steps 1-2), next decision B-2714",
+  "written_at": "2026-11-21T09:57:29Z"
 }
