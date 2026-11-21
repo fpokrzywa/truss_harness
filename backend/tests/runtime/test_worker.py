@@ -25,6 +25,15 @@ not `cancelled`). The abandoned thread no longer takes the slot: the worker clai
 a second run, and stops, while the thread is still blocked; its late return changes none of the
 run's rows and the write was delivered once.
 
+Abandoned-thread caps (issue #44): with a per-client share of 1, once client A's wedged write is
+abandoned the worker hands A's next claimed job back (its `run_after` pushed out, never run here)
+while it still completes a client-B run, the abandoned thread holds no pooled connection while it
+blocks, and A's wedged run still ends `timed_out` with `indeterminate_side_effect` after one
+delivery; with a per-worker cap of 1 the worker stops claiming once the write is abandoned (a B
+job made claimable then stays queued), `Worker.run()` returns 4 while the thread is still
+blocked, and the wedged run is settled `timed_out` with `indeterminate_side_effect` by a reaper,
+never cancelled; `shifde-worker` (`run`) exits with the worker's exit code.
+
 Isolation: the claimed client is the only client a job touches; a job naming another client's id
 (heartbeat, release, finish, reap audit) changes nothing of that client; B's owner sees nothing
 of A's run or decision through the routes.
@@ -152,8 +161,9 @@ def running(settings: Settings) -> Iterator[Callable[..., Worker]]:
     """Start worker loops in threads; every one is stopped and joined at teardown."""
     started: list[tuple[Worker, threading.Thread]] = []
 
-    def start(worker_id: str = "w-loop", **kw: Any) -> Worker:
-        w = _worker(settings, worker_id, **kw)
+    def start(worker_id: str = "w-loop", *, update: dict[str, Any] | None = None,
+              **kw: Any) -> Worker:  # fmt: skip
+        w = _worker(settings.model_copy(update=update or {}), worker_id, **kw)
         t = threading.Thread(target=w.run, daemon=True, name=f"test-{worker_id}")
         t.start()
         started.append((w, t))
@@ -602,6 +612,219 @@ def test_a_wedged_run_thread_gives_up_its_slot_and_the_worker_claims_new_work(
         assert _state(owner_db, b.tenant) == b_before  # the worker and its reaper left B alone
     finally:
         release.set()
+
+
+# ------------------------------------------------------------------ caps on abandoned threads
+def _wedge_writes(
+    a: C, script: type[Script], monkeypatch: pytest.MonkeyPatch
+) -> tuple[threading.Event, threading.Event, list[str]]:
+    """A's run delivers an approved write whose `invoke_once` blocks until `release` is set;
+    every other run completes at once. Returns (writing, release, deliveries)."""
+    writing, release = threading.Event(), threading.Event()
+    deliveries: list[str] = []
+
+    def invoke_once(conns: object, spec: object, args: object, **kw: Any) -> object:
+        deliveries.append(kw["idempotency_key"])
+        writing.set()
+        release.wait(300)  # wedged until the test lets it return
+        return {"written": True}
+
+    monkeypatch.setattr(tool_runtime, "invoke_once", invoke_once)
+    call = steps.ToolCall(a.tool, {"item": "x"}, "w1", node_id="w1")
+    policy = steps.ToolPolicy(frozenset({"write_non_idempotent"}), None,
+                              frozenset({a.tool.version_id}))  # fmt: skip
+    script.behave = staticmethod(
+        lambda ctx: steps.run_tool(ctx, call, policy) if ctx.run["id"] == a.run else {"ok": 1}
+    )
+    return writing, release, deliveries
+
+
+def _approve_and_abandon(
+    w: Worker,
+    a: C,
+    people: People,
+    owner_db: Database,
+    settings: Settings,
+    writing: threading.Event,
+) -> _Job:
+    """Approve A's write, wait until it blocks, move A's run past its deadline and wait until the
+    heartbeat abandons the job; return it."""
+    _until(lambda: _status(owner_db, a.run) == "waiting_for_approval")
+    with runtime_client(settings) as client:
+        h = as_user(client, people.owner_a)
+        base = org(a.slug)
+        asked = client.get(f"{base}/approvals", params={"status": "pending"}, headers=h).json()
+        [first] = [x for x in asked["items"] if x["run_id"] == str(a.run)]
+        ok = client.post(f"{base}/approvals/{first['id']}/decide", headers=h,
+                         json={"decision": "approve"})  # fmt: skip
+        assert ok.status_code == 200, ok.text
+    assert writing.wait(60), "the approved write never started"
+    with w._lock:
+        [job] = [j for j in w._inflight.values() if j.run_id == a.run]
+    with owner_db.session() as o:
+        o.execute(text("UPDATE shifde.runs SET deadline_at = now() - interval '5 seconds' "
+                       "WHERE id = :r"), {"r": a.run})  # fmt: skip
+        o.commit()
+    assert job.abandoned.wait(60), "the wedged job was never abandoned"
+    return job
+
+
+def _later_job(o: Session, tenant: UUID, run: UUID | None = None) -> tuple[UUID, UUID]:
+    """A `run.advance` job of `tenant` claimable in an hour, for a new run unless `run` is
+    given; returns (run, job)."""
+    if run is None:
+        user = add_person(o, tenant, "later", "tenant_administrator")
+        run = add_run(o, tenant, initiated_by_principal_id=user)
+    job = uuid7()
+    insert(o, "jobs", id=job, tenant_id=tenant, kind="run.advance", run_id=run,
+           dedupe_key=f"run:{run}:{job}", run_after=utcnow() + timedelta(hours=1))  # fmt: skip
+    return run, job
+
+
+def _claimable(owner_db: Database, job: UUID) -> None:
+    with owner_db.session() as o:
+        o.execute(text("UPDATE shifde.jobs SET run_after = now() WHERE id = :j"), {"j": job})
+        o.commit()
+
+
+def _settled_unknown(owner_db: Database, run: UUID) -> None:
+    """`run` ended `timed_out` with `indeterminate_side_effect` (not cancelled), its one
+    invocation indeterminate."""
+    row = _q(owner_db, "SELECT status, error_class FROM shifde.runs WHERE id = :r", r=run)[0]
+    assert row == ("timed_out", UNKNOWN) and row[0] != "cancelled"
+    assert _q(owner_db, "SELECT status FROM shifde.tool_invocations WHERE run_id = :r",
+              r=run) == [("indeterminate",)]  # fmt: skip
+
+
+def test_a_client_at_its_abandoned_share_has_its_claimed_jobs_handed_back(
+    two: tuple[C, C],
+    people: People,
+    owner_db: Database,
+    settings: Settings,
+    script: type[Script],
+    running: Callable[..., Worker],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #44, per-client share 1 of 2: once A's write is abandoned, A's next job is handed
+    back and never run here, B's run completes on the same worker, and A's wedged run still ends
+    an unknown outcome after one delivery."""
+    a, b = two
+    with owner_db.session() as o:
+        second, second_job = _later_job(o, a.tenant)
+        _, b_job = _later_job(o, b.tenant, b.run)
+        o.commit()
+    writing, release, deliveries = _wedge_writes(a, script, monkeypatch)
+    caps = {"worker_max_abandoned": 2, "worker_max_abandoned_per_client": 1}
+    w = running("w-share", update=caps, concurrency=2, reap_seconds=1.0)
+    assert (w.max_abandoned, w.max_abandoned_per_client) == (2, 1)
+    w.wedged_after = timedelta(seconds=1)
+    released: list[tuple[UUID, bool]] = []  # (job, its `run_after` pushed out)
+    release_claim = w._release_claim
+    pushed = "SELECT status = 'queued' AND run_after > now() FROM shifde.jobs WHERE id = :j"
+
+    def spy(job: _Job) -> None:
+        release_claim(job)
+        released.append((job.id, _q(owner_db, pushed, j=job.id) == [(True,)]))
+
+    monkeypatch.setattr(w, "_release_claim", spy)
+    try:
+        job = _approve_and_abandon(w, a, people, owner_db, settings, writing)
+        wedged = _thread(f"shifde-run-{job.id}")
+        # the blocked call holds no pooled connection (the worker's pool sizing relies on it)
+        ctx = [c for c in Script.seen if c.run["id"] == a.run][-1]
+        assert not ctx.session.in_transaction()
+        _until(lambda: w.db.engine.pool.checkedout() == 0)  # type: ignore[attr-defined]
+        # 1. A's next job is claimed and handed back with its `run_after` pushed out
+        _claimable(owner_db, second_job)
+        _until(lambda: (second_job, True) in released)
+        # 2. a B run claimed afterwards completes on this worker
+        _claimable(owner_db, b_job)
+        done = "SELECT status, lease_owner FROM shifde.jobs WHERE id = :j"
+        _until(lambda: _q(owner_db, done, j=b_job) == [("done", "w-share")], 60)
+        assert _status(owner_db, b.run) == "completed"
+        assert all(j != b_job for j, _ in released)
+        # 3. A's wedged run is settled by the reaper as an unknown outcome, never cancelled
+        _until(lambda: _status(owner_db, a.run) == "timed_out", 60)
+        _settled_unknown(owner_db, a.run)
+        assert wedged.is_alive() and not release.is_set()
+        assert _status(owner_db, second) == "pending"
+        assert second not in [c.run["id"] for c in Script.seen]
+        assert _q(owner_db, done, j=second_job)[0][0] != "done"
+        assert w.exit_code == 0  # a client's share never stops the worker
+    finally:
+        release.set()
+    assert len(deliveries) == 1, "the write was resent"
+
+
+def test_a_worker_at_its_abandoned_cap_stops_claiming_and_exits_4(
+    two: tuple[C, C],
+    people: People,
+    owner_db: Database,
+    settings: Settings,
+    script: type[Script],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #44, per-worker cap 1: once the write is abandoned the worker claims nothing more
+    and `Worker.run()` returns `EXIT_ABANDONED_CAP` while the thread is still blocked; a reaper
+    settles the wedged run as an unknown outcome, never cancelled."""
+    a, b = two
+    with owner_db.session() as o:
+        _, b_job = _later_job(o, b.tenant, b.run)
+        o.commit()
+    writing, release, deliveries = _wedge_writes(a, script, monkeypatch)
+    w = _worker(settings.model_copy(update={"worker_max_abandoned": 1}), "w-cap", concurrency=2)
+    assert (w.max_abandoned, w.max_abandoned_per_client) == (1, 1)  # the share is capped too
+    w.wedged_after = timedelta(seconds=1)
+    exits: list[int] = []
+    loop = threading.Thread(target=lambda: exits.append(w.run()), daemon=True, name="test-w-cap")
+    loop.start()
+    try:
+        job = _approve_and_abandon(w, a, people, owner_db, settings, writing)
+        wedged = _thread(f"shifde-run-{job.id}")
+        _claimable(owner_db, b_job)  # claimable once the cap is reached: never run here
+        loop.join(60)
+        assert not loop.is_alive(), "the worker waited for the wedged thread"
+        assert exits == [worker_mod.EXIT_ABANDONED_CAP] == [4]
+        assert wedged.is_alive() and not release.is_set()
+        assert _q(owner_db, "SELECT status, lease_owner FROM shifde.jobs WHERE id = :j",
+                  j=b_job) == [("queued", None)]  # fmt: skip
+        assert _status(owner_db, b.run) == "pending"
+        assert b.run not in [c.run["id"] for c in Script.seen]
+        assert _q(owner_db, "SELECT status FROM shifde.workers WHERE id = :w",
+                  w="w-cap") == [("stopped",)]  # fmt: skip
+        # the wedged run's lease expires; another worker's reaper settles it as an unknown outcome
+        reaper = _worker(settings, "w-cap-reaper")
+        try:
+            _until(lambda: reaper._reap() or _status(owner_db, a.run) == "timed_out", 60)
+        finally:
+            reaper.db.dispose()
+        _settled_unknown(owner_db, a.run)
+    finally:
+        release.set()
+        loop.join(60)
+    assert len(deliveries) == 1, "the write was resent"
+
+
+def test_shifde_worker_exits_with_the_workers_exit_code(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built: list[dict[str, Any]] = []
+
+    class Stub:
+        def __init__(self, settings: object, **kw: Any) -> None:
+            built.append(kw)
+
+        def run(self) -> int:
+            return worker_mod.EXIT_ABANDONED_CAP
+
+    monkeypatch.setattr(worker_mod, "Worker", Stub)
+    monkeypatch.setattr(worker_mod, "settings_or_exit", lambda: settings)
+    monkeypatch.setattr(worker_mod, "refuse_unsafe_role", lambda settings: None)
+    monkeypatch.setattr(worker_mod, "configure_logging", lambda *a: None)
+    monkeypatch.setattr(worker_mod.tracing, "configure_from_settings", lambda *a: None)
+    monkeypatch.setattr(worker_mod, "_install_signals", lambda worker: None)
+    assert worker_mod.run(["--concurrency", "2"]) == worker_mod.EXIT_ABANDONED_CAP == 4
+    assert built[0]["concurrency"] == 2
 
 
 # ------------------------------------------------------------------ run-less jobs (ARCH M2)

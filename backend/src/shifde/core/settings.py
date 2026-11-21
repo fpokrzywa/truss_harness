@@ -19,7 +19,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from dotenv import dotenv_values
-from pydantic import SecretStr, ValidationError, field_validator, model_validator
+from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
@@ -203,6 +203,10 @@ class Settings(BaseSettings):
     worker_lease_seconds: int = 60
     worker_concurrency: int = 4
     queue_tenant_max_inflight: int = 0  # 0 = no per-tenant cap on leased jobs
+    # abandoned (wedged) run threads a worker keeps before it stops claiming and exits 4, and
+    # per client before that client's claimed jobs are handed back (ARCH M3)
+    worker_max_abandoned: int = Field(default=4, ge=1)
+    worker_max_abandoned_per_client: int = Field(default=2, ge=1)
     run_default_deadline_seconds: int = 3600
     approval_expiry_hours: int = 24
     runtime_output_reserve_tokens: int = 256  # budget hold for the completion side of a call
