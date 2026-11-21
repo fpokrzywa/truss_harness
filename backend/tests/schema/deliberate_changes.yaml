@@ -785,6 +785,10 @@
   reason: "the platform administrator sets the Entra tenant through /platform/idps (UPDATE only) (SP3-6, issue #83)"
   migration: identity_0007
 
+- table: tenants
+  path: [triggers, trg_tenants_settings_guard]
+  reason: "Issue #39 (isolation review of PR #37, findings 1-2; B-2718): the column grant UPDATE (settings) of tenancy_0006 cannot be limited to one key, so shifde.tenants_settings_guard() (tenancy_0007, invoker rights, search_path pg_catalog, pg_temp) refuses with 42501 any update by a role under row-level security that adds, removes or changes a settings key other than capture_content, or makes settings a non-object, unless the platform-administrator context is on; PUT /orgs/{org}/capture-content is unchanged"
+  migration: tenancy_0007
 - table: approvals
   path: [privileges, columns, arguments]
   reason: "Issue #33 (REQ F-12 follow-up, B-2715): shifde_app may UPDATE arguments, only to replace it by {\"scrubbed\": true} when an ended run of a capture-off client is scrubbed; shifde.approvals_guard() (runtime_0005) allows it only on a non-pending approval whose run (matched on the row's own tenant_id, run_id) is terminal, with every other column unchanged, and still refuses every other update of a decided approval and any change of arguments on a pending one (SETH: arguments not updatable)."
