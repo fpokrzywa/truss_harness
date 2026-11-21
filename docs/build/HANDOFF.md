@@ -1,20 +1,19 @@
-# Handoff — 2026-11-21 02:45, charter 7 factory run (lead session)
+# Handoff — 2026-11-21 09:55 UTC, charter 7 factory run (lead session 4e057a99)
 
 Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md` ("Charter 7 progress", the SP3 row of "Sub-projects 2 to 8"), then this file.
 
-**State:** no agent and no gate run is running; no merge is half done. `main` = `origin/main` after this commit. Local cluster on 55450 running. No open PRs. Factory `concurrency` is 10 (S-014).
+**State:** no agent and no gate run is running; no merge is half done. `main` = `origin/main` after this commit. Local cluster on 55450 running. No open PRs. Factory `concurrency` is 10 (S-014). Jobs 040-042 are `merged`; worktrees `.worktrees/04[0-2]-*` and `.worktrees/041-merge` are finished and can be removed.
 
 ## What was just finished (this session)
 
-- #84 SP3-7 (job 037, PR #101): solutions, releases, evaluations screens; code/ux/ui PASS; approver APPROVE; `job merge` `dc4f7cc`.
-- #85 SP3-8 (job 038, PR #102): release picker in the plan dialog, Entra profile on the platform IdP form, Entra group mapping dialog. Round 1 ux CHANGES fixed in round 2. Approver escalated (identity admin UI). Lead: security review PASS, isolation review 1 APPROVED (`docs/build/reviews/038-isolation-review-1.md`, written by the lead from the read-only reviewer's report), `gates.py --name 038-merge` on `dda51d6` 13/13 (4040 passed), merged `957d330`.
-- #86 SP3-9 (job 039, PR #103): `scripts/release_demo.py --fake` + unit test, runbook fix; code PASS; approver APPROVE; `job merge` `5ede861`.
-- SP3 done-when run on main `5ede861`: `python scripts/release_demo.py --fake` exit 0, `RELEASE DEMO PASSED`. Recorded in STATUS as met against the fake platform, Entra live validation waiting on owner input.
-- Follow-up #104 filed (non-blocking front-end notes from 037/038).
+- #96 (job 040, PR #105): `/api/metrics` ops-stats cache moved from module globals to `app.state` (it was shared by every app in a test process, hiding a finished run on fast Linux CI); regression test `tests/app/test_metrics_ops_cache.py`. code PASS, approver APPROVE, `job merge`.
+- #104 (job 042, PR #106): SP3 front-end follow-ups (groups pagination, archived seal hidden, duplicate pins block seal, release header, plan-dialog loading lines, read-only input style, no-datasets hint). code/ux/ui PASS, approver APPROVE, `job merge`.
+- #99 (job 041, PR #107): plan responses null `release_id`, `release_digest`, `evaluation_run_id` for callers without release read; Release help line. All 4 reviews PASS; approver ESCALATE. Lead: isolation review 1 APPROVED (`docs/build/reviews/041-isolation-review-1.md`), `gates.py --name 041-merge` on `2b5b280` 12/13 (2 load flakes outside the diff, pass alone), merged `2d841f3`, decision B-2713.
+- Filed #108 (isolation notes 5-6 of job 041) and #109 (the two load flakes).
 
 ## Exact next step
 
-`/factory run 96`, then `/factory run 99`, `/factory run 104`, then the older follow-ups that `factory/bin/job queue` lists as `new` (#33, #34, #36, ...); several may run together (concurrency 10) when their intakes show no overlapping files, but keep one hand merge at a time. Then sub-project 4 per charter 7 steps 1-2: write its short design in `docs/superpowers/specs/` (design table row 4, go-live), have a fresh agent list what it would have to guess, settle and log (next DECISIONS id **B-2713**), cut issues labeled `factory` + `sp4`. All major audit findings must be closed or recorded as needing the owner's written acceptance by the end of SP4.
+`/factory run` the older follow-ups that `factory/bin/job queue` lists as `new` (#33, #34, #36, #39, #41, #44, #46, #47, #51, #55, then #56 onward, #108, #109), three at a time, keeping one hand merge at a time. Then sub-project 4 per charter 7 steps 1-2: write its short design in `docs/superpowers/specs/` (design table row 4, go-live), have a fresh agent list what it would have to guess, settle and log (next DECISIONS id **B-2714**), cut issues labeled `factory` + `sp4`. All major audit findings must be closed or recorded as needing the owner's written acceptance by the end of SP4.
 
 ## Pattern that worked (B-2705)
 
@@ -31,3 +30,6 @@ Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md` ("Charter 7 progress",
 - Every new route: classify in `test_workspace_routes.py` and add to the non-SETH list in `tests/app/test_routes.py`; a new head migration updates `tests/identity/test_schema.py` head assertions.
 - Builders must not restart the cluster; never `-m live` or read `.devdata/`. No agent has a browser tool (`agent-browser` not installed), so UI is reviewed from diffs and component tests.
 - The lead's context reaches ~140k after 3 jobs; hand off after 3.
+- `factory/bin/job queue` takes ~2-3 min (it scans every subagent transcript for cost) and crashes on cp1252 without `PYTHONUTF8=1`; run it in the background.
+- `reviewer-code` (sonnet) and `reviewer-ui` sometimes claim they have no Write tool; resume them with SendMessage saying the review file is their required output and they write it. Never write a factory review yourself.
+- Full-suite gates on a hand merge can hit load flakes outside the diff; rerun the failed tests alone and, if they pass, merge per B-2631/B-2713 and file an issue (#109 is open for two of them).

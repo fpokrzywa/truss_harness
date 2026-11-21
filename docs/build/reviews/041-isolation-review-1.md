@@ -1,0 +1,10 @@
+APPROVED
+
+Isolation review 1 of job 041 (#99, PR #107, branch factory/041-sp3-4-follow-up at c5568f7), by isolation-reviewer. The reviewer had no write access; the lead saved its report verbatim.
+
+1. No cross-client path. `_release_visible` (backend/src/shifde/delivery/plans.py:171-186) uses `release_record`, which is tenant-filtered (None for another client's release), and `pdp.authorize`, which denies a cross-tenant ref. Plan rows still come in through the existing tenant-scoped `_get_row` and list, and the per-page cache is keyed by release_id within one tenant's page.
+2. Release fields cannot slip out on these routes. All five plan responses (list :256, get :264, request :327, approve and reject :447) go through `_out`, which nulls the three fields unless `READ` (packaging:solution:read) is allowed on the release's workspace/project, the same ref `scoped_release` checks. An unknown or missing release gives null. Nothing else in delivery returns these fields; DeploymentOut has none.
+3. Nothing is weakened. `_gate` still calls `scoped_release` (404 "release not found"), and `_recheck` (:345-359) is unchanged. `authorize` raises nothing and records no decision, which is right for a read-time mask.
+4. Non-blocking, existing before this branch: an approver without release read can still learn the release's state from approval errors (409 `release_withdrawn` vs `evaluation_required`). The design allows this ("No packaging permission is asked of the approver").
+5. Non-blocking: the plan `digest` (backend/src/shifde/delivery/service.py:650-672) hashes `release_digest` with inputs the reader can see, so someone who already holds a candidate release digest could confirm it; nothing can be recovered from it. Same for `artifact_digest`. If it matters, null `digest` too or document it.
+6. Test gap, non-blocking (no routes added): tests/delivery/test_plan_release_scope.py covers get and list only. Add a test that an approver with plan approve but no release read gets null fields in the approve and reject responses.
