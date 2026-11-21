@@ -127,6 +127,57 @@ def test_an_approval_rule_adds_an_approval_with_its_own_approver_permission(
     assert audit and str(rule["id"]) in audit[0][0]["policy_ids"]
 
 
+def test_two_matching_rules_need_an_approver_holding_both_permissions(
+    client: TestClient, world: World, owner_session: Session, settings: Settings
+) -> None:
+    """Follow-up #60 (A3, B-2728): every matched rule's `approver_permission` is required, not
+    just the first; the row keeps the first sorted one and `context_summary` all of them."""
+    h = login(client, world.passwords, ADMIN)
+    stack = priced_stack(client, h, owner_session, script=[ECHO, FINAL])
+    for permission in ("usage:read", "governance:read"):
+        _policy(
+            client,
+            h,
+            "approval_rule",
+            {"when": {"side_effect_classes": ["none"]}, "approver_permission": permission},
+        )
+    for email, perms in (
+        ("gov1@demo-a.local", [*BASE_PERMS, "approval:decide", "governance:read"]),
+        ("use1@demo-a.local", [*BASE_PERMS, "approval:decide", "usage:read"]),
+        ("both@demo-a.local", [*BASE_PERMS, "approval:decide", "governance:read", "usage:read"]),
+    ):
+        h = login(client, world.passwords, ADMIN)
+        limited_user(client, owner_session, h, world.passwords, email, perms)
+    h = login(client, world.passwords, ADMIN)
+    run = start_run(client, h, stack.agent["id"], "what is the weather")
+    with thread_worker(settings):
+        waiting = wait_run(client, h, run["id"], {"waiting_for_approval", "completed", "failed"})
+        assert waiting["status"] == "waiting_for_approval", waiting
+        (appr,) = _approvals(client, h)
+        stored = _rows(
+            owner_session,
+            "SELECT required_permission, context_summary->'approver_permissions' "
+            "FROM shifde.approvals WHERE id = :i",
+            i=appr["id"],
+        )
+        assert stored == [("governance:read", ["governance:read", "usage:read"])]
+        # holding only one of the two permissions is refused, whichever one it is
+        for email in ("gov1@demo-a.local", "use1@demo-a.local"):
+            one = user_session(client, world.passwords, email)
+            no = one.client.post(
+                f"{A}/approvals/{appr['id']}/decide", json={"decision": "approve"}, headers=one
+            )
+            assert no.status_code == 403, (email, no.text)
+        both = user_session(client, world.passwords, "both@demo-a.local")
+        yes = both.client.post(
+            f"{A}/approvals/{appr['id']}/decide", json={"decision": "approve"}, headers=both
+        )
+        assert yes.status_code == 200, yes.text
+        assert yes.json()["status"] == "approved"
+        done = wait_run(client, login(client, world.passwords, ADMIN), run["id"])
+    assert done["status"] == "completed"
+
+
 def test_a_disabled_or_non_matching_rule_adds_no_approval_and_none_can_waive_one(
     client: TestClient, world: World, owner_session: Session, settings: Settings
 ) -> None:
