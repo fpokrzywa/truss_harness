@@ -10,6 +10,7 @@ finishes it with the worker's `finish_job`. It returns the status route's body.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from typing import Any  # Any: JSON bodies
 from uuid import UUID
 
@@ -35,11 +36,20 @@ def tenant_of(client: TestClient, base: str) -> UUID:
     raise AssertionError(f"the signed-in user is no member of {slug}")
 
 
+Runner = Callable[[Database, IntegrationRuntime, UUID, UUID], str | None]
+
+
 def execute_job(
-    database: Database, runtime: IntegrationRuntime, tenant_id: UUID, job_id: UUID
+    database: Database,
+    runtime: IntegrationRuntime,
+    tenant_id: UUID,
+    job_id: UUID,
+    *,
+    kind: str = connections.TEST_JOB_KIND,
+    runner: Runner = connections.run_test_job,
 ) -> bool:
-    """Lease the queued job `job_id` of `tenant_id`, run it as the worker does and finish it;
-    False when it was no longer queued (nothing is run then)."""
+    """Lease the queued `kind` job `job_id` of `tenant_id`, run it through `runner` as the worker
+    does and finish it; False when it was no longer queued (nothing is run then)."""
     owner = f"test-{uuid7().hex}"
     with database.session() as s:
         db.set_tenant(s, tenant_id)
@@ -51,12 +61,12 @@ def execute_job(
                 "WHERE id = :id AND tenant_id = :t AND kind = :k AND status = 'queued' "
                 "RETURNING id"
             ),
-            {"id": job_id, "t": tenant_id, "k": connections.TEST_JOB_KIND, "w": owner},
+            {"id": job_id, "t": tenant_id, "k": kind, "w": owner},
         ).first()
         s.commit()
     if leased is None:
         return False
-    error = connections.run_test_job(database, runtime, tenant_id, job_id)
+    error = runner(database, runtime, tenant_id, job_id)
     with database.session() as s:
         db.set_tenant(s, tenant_id)
         runtime_repo.finish_job(

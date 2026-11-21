@@ -579,6 +579,14 @@ ROUTES: dict[Op, tuple[str, str]] = {
         CLIENT,
         "model:manage at the organization",
     ),
+    ("GET", "/api/v1/orgs/{org}/model-providers/{provider_id}/health-check-jobs/{job_id}"): (
+        CLIENT,
+        "model:read at the organization",
+    ),
+    ("GET", "/api/v1/orgs/{org}/model-providers/{provider_id}/discovery-jobs/{job_id}"): (
+        CLIENT,
+        "model:read at the organization",
+    ),
     ("GET", "/api/v1/orgs/{org}/model-routes"): (
         CLIENT,
         "model:read at the organization: routes are listed client-wide",

@@ -55,6 +55,7 @@ from shifde.core.db import Database
 from shifde.core.dbrole import UnsafeDatabaseRole
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
+from shifde.models_admin import service as models_admin
 from shifde.runtime import lifecycle, steps
 from shifde.runtime import worker as worker_mod
 from shifde.runtime.context import RunContext
@@ -670,6 +671,64 @@ def test_a_worker_loop_runs_a_connection_test_job_in_its_own_client(
     assert _state(owner_db, world.b.tenant) == b_before
 
 
+def _provider_jobs(o: Session, tenant: UUID) -> tuple[UUID, UUID, UUID]:
+    """A fake model provider of `tenant` and a queued `model.health_check` and `model.discover`
+    job for it, requested by a client administrator (the payload the models route writes)."""
+    user = add_person(o, tenant, "checker", "tenant_administrator")
+    cid, pid, health, discover = uuid7(), uuid7(), uuid7(), uuid7()
+    o.execute(
+        text(
+            "INSERT INTO shifde.connections (id, tenant_id, name, connection_type, adapter_key, "
+            "status) VALUES (:i, :t, :n, 'model_api', 'fake', 'active')"
+        ),
+        {"i": cid, "t": tenant, "n": f"conn-{cid.hex}"},
+    )
+    o.execute(
+        text(
+            "INSERT INTO shifde.model_providers (id, tenant_id, name, adapter_key, connection_id) "
+            "VALUES (:i, :t, :n, 'fake', :c)"
+        ),
+        {"i": pid, "t": tenant, "n": f"prov-{pid.hex}", "c": cid},
+    )
+    payload = json.dumps({"provider_id": str(pid), "principal_id": str(user),
+                          "principal_type": "user", "api_key_id": None})  # fmt: skip
+    for job, kind in ((health, models_admin.HEALTH_JOB_KIND),
+                      (discover, models_admin.DISCOVER_JOB_KIND)):  # fmt: skip
+        o.execute(
+            text(
+                "INSERT INTO shifde.jobs (id, tenant_id, kind, payload, dedupe_key) "
+                "VALUES (:i, :t, :k, CAST(:p AS jsonb), :dk)"
+            ),
+            {"i": job, "t": tenant, "k": kind, "p": payload,
+             "dk": f"{models_admin.JOB_PREFIX[kind]}:{pid}"},
+        )  # fmt: skip
+    return pid, health, discover
+
+
+def test_a_worker_loop_runs_provider_jobs_in_their_own_client(
+    world: World, owner_db: Database, running: Callable[..., Worker]
+) -> None:
+    """ARCH M2 (issue #47): a `model.health_check` and a `model.discover` job run to `done` in
+    their own client and write their result events there; the other client is untouched."""
+    with owner_db.session() as o:
+        pid, health, discover = _provider_jobs(o, world.a.tenant)
+        o.commit()
+    b_before = _state(owner_db, world.b.tenant)
+    running("w-model")
+    job = "SELECT status, last_error, run_id FROM shifde.jobs WHERE id = :j"
+    _until(lambda: _q(owner_db, job, j=health) == [("done", None, None)])
+    _until(lambda: _q(owner_db, job, j=discover) == [("done", None, None)])
+    provider = "SELECT health_status FROM shifde.model_providers WHERE id = :p"
+    assert _q(owner_db, provider, p=pid) == [("healthy",)]
+    events = ("SELECT tenant_id, action, correlation_id FROM shifde.audit_events "
+              "WHERE target_id = :p ORDER BY action")  # fmt: skip
+    assert _q(owner_db, events, p=str(pid)) == [
+        (world.a.tenant, "model.provider.health_checked", f"model-health-check-{health}"),
+        (world.a.tenant, "model.provider.models_discovered", f"model-discover-{discover}"),
+    ]
+    assert _state(owner_db, world.b.tenant) == b_before
+
+
 def test_a_job_of_an_unknown_kind_ends_dead_and_is_never_run(
     world: World,
     owner_db: Database,
@@ -679,6 +738,7 @@ def test_a_job_of_an_unknown_kind_ends_dead_and_is_never_run(
     ran: list[object] = []
     monkeypatch.setattr(worker_mod.lifecycle, "advance", lambda *a, **kw: ran.append(a) or "done")
     monkeypatch.setattr(worker_mod.connections, "run_test_job", lambda *a: ran.append(a))
+    monkeypatch.setattr(worker_mod.models_admin, "run_provider_job", lambda *a: ran.append(a))
     job = uuid7()
     with owner_db.session() as o:
         insert(o, "jobs", id=job, tenant_id=world.a.tenant, kind="mystery.kind",
