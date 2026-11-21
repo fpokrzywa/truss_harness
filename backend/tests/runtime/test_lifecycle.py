@@ -608,3 +608,80 @@ def test_a_run_of_a_client_that_is_not_active_is_neither_advanced_nor_claimed_un
     assert len(fake.seen) == 1
     with owner_db.session() as o:
         assert _run(o, a.run)["status"] == state.COMPLETED
+
+
+@pytest.mark.parametrize("status", ["suspended", "archived"])
+def test_a_running_run_of_a_client_that_is_not_active_is_handed_back_not_failed(
+    two: tuple[C, C],
+    advance: Advance,
+    fake: type[Fake],
+    owner_db: Database,
+    app_db: Database,
+    status: str,
+) -> None:
+    """Issue #36 (F-03, B-2512): a run left running by this worker's own job when its client
+    was suspended or archived goes back to pending with its lease cleared, not failed; the job
+    is handed back and is not claimed (B's is) until the client is active again."""
+    a, b = two
+    with owner_db.session() as o:
+        o.execute(
+            text(
+                "UPDATE shifde.runs SET status = 'running', lease_token = :t, lease_job_id = :j, "
+                "state_version = 2, attempt_count = 1 WHERE id = :r"
+            ),
+            {"t": uuid7(), "j": a.job, "r": a.run},
+        )
+        o.execute(text("UPDATE shifde.tenants SET status = :s WHERE id = :t"),
+                  {"s": status, "t": a.tenant})  # fmt: skip
+        o.commit()
+    assert advance(a.tenant, a.run, a.job) == "released"
+    assert fake.seen == []
+    with owner_db.session() as o:
+        row = _run(o, a.run)
+        assert (row["status"], row["error_class"]) == (state.PENDING, None)
+        assert (row["lease_token"], row["lease_job_id"]) == (None, None)
+        assert "failed" not in _events(o, a.run)
+    with app_session(app_db, a.tenant) as s:  # the worker settles `released`: the job goes back
+        repo.release_job(s, a.tenant, a.job, WORKER)
+        s.commit()
+    with owner_db.session() as o:  # B's job queued too: the claim is not vacuous
+        o.execute(text("UPDATE shifde.jobs SET status = 'queued', lease_owner = NULL, "
+                       "lease_expires_at = NULL WHERE id IN (:a, :b)"),
+                  {"a": a.job, "b": b.job})  # fmt: skip
+        o.commit()
+    assert _claimed(app_db, "w-other") == {b.job}
+    assert _claimed(app_db, "w-other") == set()  # A's job stays queued
+    with owner_db.session() as o:
+        o.execute(text("UPDATE shifde.tenants SET status = 'active' WHERE id = :t"),
+                  {"t": a.tenant})  # fmt: skip
+        o.commit()
+    assert _claimed(app_db, WORKER) == {a.job}
+    assert advance(a.tenant, a.run, a.job) == "done"
+    assert len(fake.seen) == 1
+    with owner_db.session() as o:
+        assert _run(o, a.run)["status"] == state.COMPLETED
+
+
+def test_a_run_mid_advance_when_its_client_is_suspended_finishes_that_advance_only(
+    two: tuple[C, C], advance: Advance, fake: type[Fake], owner_db: Database
+) -> None:
+    """B-2714 (issue #36): the client's status is read once, at the start of each advance; a
+    run already mid-advance when its client is suspended finishes that one advance (tool calls
+    included, no re-check before each), and its next advance is `released`."""
+    a, _ = two
+
+    def suspend_meanwhile(ctx: RunContext) -> Any:  # Any: the executor's result
+        with owner_db.session() as o:
+            o.execute(text("UPDATE shifde.tenants SET status = 'suspended' WHERE id = :t"),
+                      {"t": a.tenant})  # fmt: skip
+            o.commit()
+        return {"ok": 1}
+
+    fake.behave = staticmethod(suspend_meanwhile)
+    assert advance(a.tenant, a.run, a.job) == "done"
+    with owner_db.session() as o:
+        assert _run(o, a.run)["status"] == state.COMPLETED
+        again = add_job(o, a.tenant, a.run)
+        o.commit()
+    assert advance(a.tenant, a.run, again) == "released"
+    assert len(fake.seen) == 1

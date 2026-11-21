@@ -528,7 +528,7 @@ def bind_group_as_platform_admin(
             if header is None:
                 raise NotFound(ORG_NOT_FOUND)
             if header[2] != "active":
-                raise ScopeArchived("organization is archived")
+                raise ScopeArchived(f"organization is {header[2]}")
             _bindable_role(session, tenant_id, body.role_id)
         session.rollback()
     except BaseException:
@@ -662,7 +662,7 @@ def create_user(
             if header is None:
                 raise NotFound(ORG_NOT_FOUND)
             if header[2] != "active":
-                raise ScopeArchived("organization is archived")
+                raise ScopeArchived(f"organization is {header[2]}")
             user_id = identity.create_member_user(
                 session, tenant_id=tenant_id, email=body.email, display_name=body.display_name
             )
