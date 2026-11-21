@@ -82,6 +82,7 @@ interface FieldProps {
   maxLength?: number;
   monospace?: boolean;
   disabled?: boolean;
+  readOnly?: boolean;
 }
 
 /** Labelled input with optional help and error text wired through aria-describedby. */
@@ -101,6 +102,7 @@ export function TextField({
   maxLength,
   monospace,
   disabled,
+  readOnly,
 }: FieldProps) {
   const id = useId();
   const describedBy = [help ? `${id}-help` : null, error ? `${id}-err` : null]
@@ -112,6 +114,7 @@ export function TextField({
     value,
     required,
     disabled,
+    readOnly,
     placeholder,
     maxLength,
     'aria-invalid': error ? true : undefined,

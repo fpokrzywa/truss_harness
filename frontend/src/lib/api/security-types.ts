@@ -50,6 +50,31 @@ export interface Group {
   members?: GroupMember[];
 }
 
+/** Item of `GET /api/v1/platform/groups`; `idp_config_id` and `external_id` map an IdP group. */
+export interface PlatformGroup {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  source: GroupSource;
+  idp_config_id: string | null;
+  external_id: string | null;
+  status: string;
+  row_version: number;
+  member_count: number;
+  created_at: string;
+  updated_at: string | null;
+}
+
+/** `idp_config_id` and `external_id` are set together or not at all. */
+export interface PlatformGroupCreate {
+  slug: string;
+  name: string;
+  description?: string;
+  idp_config_id?: string;
+  external_id?: string;
+}
+
 export interface Role {
   id: string;
   key: string;
@@ -151,6 +176,8 @@ export interface ApiKeyFilters {
 export type JitMode = 'off' | 'create_user' | 'create_and_join';
 export type GroupSyncMode = 'off' | 'sync';
 
+export type IdpProfile = 'generic' | 'entra';
+
 export interface Idp {
   id: string;
   display_name: string;
@@ -164,6 +191,9 @@ export interface Idp {
   group_sync: GroupSyncMode;
   status: 'active' | 'disabled';
   row_version: number;
+  /** Missing on older responses; read as `generic`. */
+  profile: IdpProfile;
+  entra_tenant_id: string | null;
 }
 
 export interface IdpInput {
@@ -179,6 +209,9 @@ export interface IdpInput {
   group_sync: GroupSyncMode;
   status?: 'active' | 'disabled';
   row_version?: number;
+  /** Installation IdPs only; org IdPs are always generic. */
+  profile?: IdpProfile;
+  entra_tenant_id?: string;
 }
 
 export interface IdpTestCheck {
