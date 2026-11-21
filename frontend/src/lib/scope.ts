@@ -21,6 +21,9 @@ export function parseScope(pathname: string): ScopePath {
     seg[2] === 'build' ||
     seg[2] === 'govern' ||
     seg[2] === 'deliver' ||
+    seg[2] === 'solutions' ||
+    seg[2] === 'releases' ||
+    seg[2] === 'evaluations' ||
     seg[2] === 'runs' ||
     seg[2] === 'approvals'
   )
@@ -50,6 +53,19 @@ export const governHref = (org: string, area = '') =>
   `${orgHref(org)}/govern${area ? `/${area}` : ''}`;
 export const deliverHref = (org: string, area = '') =>
   `${orgHref(org)}/deliver${area ? `/${area}` : ''}`;
+/** `?ws=&proj=` query naming the project of an organization-level release screen. */
+const projQuery = (ws?: string, proj?: string) =>
+  ws && proj ? `?ws=${e(ws)}&proj=${e(proj)}` : '';
+export const solutionsHref = (org: string, ws?: string, proj?: string) =>
+  `${orgHref(org)}/solutions${projQuery(ws, proj)}`;
+export const solutionHref = (org: string, id: string, ws: string, proj: string) =>
+  `${orgHref(org)}/solutions/${e(id)}${projQuery(ws, proj)}`;
+export const releaseHref = (org: string, id: string) => `${orgHref(org)}/releases/${e(id)}`;
+/** `evaluations/datasets` or one evaluation run (`evaluations/{id}`). */
+export const evaluationsHref = (org: string, area = '') =>
+  `${orgHref(org)}/evaluations${area ? `/${area}` : ''}`;
+export const datasetsHref = (org: string, ws?: string, proj?: string) =>
+  `${evaluationsHref(org, 'datasets')}${projQuery(ws, proj)}`;
 export const workspacesHref = (org: string) => `${orgHref(org)}/workspaces`;
 export const projectsHref = (org: string, ws: string) => `${wsHref(org, ws)}/projects`;
 
