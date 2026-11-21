@@ -17,6 +17,7 @@ from tests._support.fullapp import World
 from tests._support.p2util import login
 from tests._support.p3util import A
 from tests._support.p5util import (
+    TERMINAL,
     SubprocessWorker,
     audit_actions,
     events,
@@ -280,8 +281,9 @@ def test_write_node_failure_that_may_have_been_delivered_is_indeterminate_never_
         assert (
             w.decide(appr["id"], "retry", "checked the target; it is not there").status_code == 200
         )
-        # generous deadline: a worker thread sharing a loaded machine may take a while to wake
-        done = w.wait(run["id"], timeout=180)
+        # generous deadline: a worker thread sharing a loaded machine may take a while to wake;
+        # a run parked again (the retried call lost its answer) fails at once with its row shown
+        done = w.wait(run["id"], statuses=TERMINAL | {"waiting_for_approval"}, timeout=180)
     assert done["status"] == "completed", done
     calls = [r for r in rest_server.requests if r["path"] == "/flaky"]
     assert len(calls) == 2 and calls[0]["idempotency_key"] != calls[1]["idempotency_key"]

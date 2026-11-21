@@ -54,6 +54,7 @@ class Ids:
     api_key: UUID
     user: UUID  # a person who is a member of this client only
     project: UUID  # the run's project (in `workspace`)
+    ended_root: UUID  # a failed root run whose input was never scrubbed (the capture-off sweep)
 
 
 def _seed_client(o: Session, c: Client) -> Ids:
@@ -106,6 +107,8 @@ def _seed_client(o: Session, c: Client) -> Ids:
     # a classification raised by the child: its root's tree reads it (`tree_classifications`)
     repo.add_event(o, {"tenant_id": t, "id": child_done}, "data_classification_raised",
                    details={"classification": "confidential"})  # fmt: skip
+    ended_root = add_run(o, t, status="failed", finished_at=utcnow())
+    repo.insert_artifact(o, t, ended_root, "input", {"input": "x"})
     pipeline, pipeline_version = add_published(o, t, "pipelines", f"pl-{uuid7().hex}", {})
     pipeline_run = add_run(o, t, kind="pipeline", pipeline_id=pipeline,
                            pipeline_version_id=pipeline_version)  # fmt: skip
@@ -127,7 +130,8 @@ def _seed_client(o: Session, c: Client) -> Ids:
                       "costed": pricing.Costed("calculated", Decimal("1.25"), "USD", None, None)})  # fmt: skip
     return Ids(t, c.run, c.job, queued_job, c.step, c.invocation, f"k-{c.invocation}",
                c.approval, artifact, child_pending, child_done, pipeline_run, c.workspace,
-               principal, "idem", service_account, api_key, user, c.project)  # fmt: skip
+               principal, "idem", service_account, api_key, user, c.project,
+               ended_root)  # fmt: skip
 
 
 @pytest.fixture
@@ -184,6 +188,10 @@ CASES: dict[str, Case] = {
     "scrub_run_content": lambda s, t, x: repo.scrub_run_content(s, t, x.child_done),
     "unscrubbed_counts": lambda s, t, x: repo.unscrubbed_counts(s, t, x.child_done),
     "ended_runs_of_root": lambda s, t, x: tuple(repo.ended_runs_of_root(s, t, x.run)),
+    # takes no id: which of the named client's runs it returns (A's call never lists B's)
+    "unscrubbed_ended_runs": lambda s, t, x: tuple(
+        r for r in repo.unscrubbed_ended_runs(s, t) if r in (x.ended_root, x.child_done, x.run)
+    ),
     "next_seq": lambda s, t, x: repo.next_seq(s, t, x.run),
     "update_step": lambda s, t, x: repo.update_step(s, t, x.step, status="failed"),
     "list_steps": lambda s, t, x: repo.list_steps(s, t, x.run),

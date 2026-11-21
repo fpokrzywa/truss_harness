@@ -9,9 +9,16 @@ With capture on nothing is scrubbed. A child that ends under a running root keep
 until the root ends (the parent reads it), then both are scrubbed. The database refuses every
 other change to an artifact (`run_artifacts_guard`, migration runtime_0002).
 
-Isolation: scrubbing A's runs leaves B's content and arguments byte-for-byte unchanged, and the
-scrub called in A's context with B's run id scrubs nothing, as `shifde_app` and as the schema
-owner (where the client predicate alone confines it); A's own id is scrubbed (not vacuous).
+Approvals (issue #33): the scrub also replaces the copied tool arguments of the run's decided,
+expired and cancelled approvals by `{"scrubbed": true}` (every other column kept); a pending
+unknown-outcome approval keeps them until it is decided, and its decision on the ended run scrubs
+them (capture off only). The database refuses every other update of a decided approval and any
+change of a pending one's arguments (`approvals_guard`, migration runtime_0005).
+
+Isolation: scrubbing A's runs leaves B's content, arguments and approvals byte-for-byte
+unchanged, and the scrub called in A's context with B's run id scrubs nothing, as `shifde_app`
+and as the schema owner (where the client predicate alone confines it); A's own id is scrubbed
+(not vacuous).
 
 Every case is driven under the app role and the schema owner (`opened`); the database is read as
 the owner.
@@ -38,8 +45,9 @@ from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.runtime import lifecycle, state
 from shifde.runtime import repository as repo
+from shifde.runtime import schemas as rs
 from shifde.runtime.governance import BudgetDenied, BudgetScope, PolicyBudgetHooks
-from shifde.runtime.service import RunService
+from shifde.runtime.service import ApprovalService, RunService
 from tests._support.runs import add_run
 from tests._support.tenants import add_tenants
 from tests.build.env_support import add_published
@@ -55,6 +63,8 @@ __all__ = ["MODES", "opened"]
 
 SCRUBBED = {"scrubbed": True}
 INPUT, MODEL_TEXT, ARGUMENT, OUTPUT = "in-7f3a", "model-9c2e", "arg-41bd", "out-d06e"
+APPROVAL_ARG = "appr-arg-5e81"
+DECIDED = ("approved", "rejected", "expired", "cancelled")
 
 
 @dataclass(frozen=True)
@@ -189,6 +199,35 @@ def _end(how: str, s: Session, x: Seeded, settings: Settings) -> None:
     s.commit()
 
 
+def _approval(
+    o: Session, tenant: UUID, run: UUID, status: str, *, reason: str = "tool_side_effect"
+) -> UUID:
+    """An approval of `run` in `status` whose copied arguments hold `APPROVAL_ARG`."""
+    approval = uuid7()
+    ws, proj = o.execute(
+        text("SELECT workspace_id, project_id FROM shifde.runs WHERE id = :r"), {"r": run}
+    ).one()
+    decided: dict[str, Any] = {}  # Any: column values
+    if status in ("approved", "rejected"):
+        decided = {"decision": "approve" if status == "approved" else "reject",
+                   "decided_by": uuid7(), "decided_at": utcnow(), "decision_note": "noted"}  # fmt: skip
+    insert(o, "approvals", id=approval, tenant_id=tenant, run_id=run, workspace_id=ws,
+           project_id=proj, call_ref=f"c-{approval}", reason=reason, requested_by=uuid7(),
+           expires_at=utcnow() + timedelta(hours=1), status=status,
+           arguments=f'{{"item": "{APPROVAL_ARG}"}}', **decided)  # fmt: skip
+    return approval
+
+
+def _approvals(owner_db: Database, run: UUID) -> dict[UUID, tuple[Any, Any]]:  # Any: JSON
+    """id -> (arguments, every other column) of the run's approvals."""
+    with owner_db.session() as o:
+        rows = o.execute(
+            text("SELECT id, arguments, to_jsonb(a) - 'arguments' FROM shifde.approvals a "
+                 "WHERE run_id = :r"), {"r": run},
+        )  # fmt: skip
+        return {r[0]: (r[1], r[2]) for r in rows}
+
+
 # ------------------------------------------------------------------ capture off: every ending
 @pytest.mark.parametrize("how", ["completed", "failed", "cancelled"])
 def test_capture_off_scrubs_an_ended_runs_content_and_keeps_sizes_and_hashes(
@@ -274,6 +313,94 @@ def test_a_child_that_ends_after_its_root_is_scrubbed_at_once(
     with opened(tenant) as s:
         _end("failed", s, child, settings)
     _assert_scrubbed(owner_db, child.run, before)
+
+
+# ------------------------------------------------------------------ approvals (issue #33)
+@pytest.mark.parametrize("how", ["completed", "failed", "cancelled"])
+def test_a_decided_approvals_arguments_are_scrubbed_when_the_run_ends(
+    how: str, opened: Any, owner_db: Database, settings: Settings
+) -> None:
+    tenant, user = _client(owner_db, None)
+    with owner_db.session() as o:
+        x = _seed(o, tenant, user, status="pending" if how == "cancelled" else "running")
+        ids = [_approval(o, tenant, x.run, status) for status in DECIDED]
+        o.commit()
+    before = _approvals(owner_db, x.run)
+    assert all(APPROVAL_ARG in repr(before[i][0]) for i in ids)
+    with opened(tenant) as s:
+        _end(how, s, x, settings)
+    after = _approvals(owner_db, x.run)
+    for i in ids:
+        assert after[i] == (SCRUBBED, before[i][1])
+
+
+def test_an_undecided_approval_keeps_its_arguments(
+    opened: Any, owner_db: Database, settings: Settings
+) -> None:
+    """A pending unknown-outcome approval outlives its run's end (a human still decides it), and
+    a pending approval of a run that has not ended is not touched by another run's end."""
+    tenant, user = _client(owner_db, None)
+    with owner_db.session() as o:
+        x = _seed(o, tenant, user)
+        open_one = _approval(o, tenant, x.run, "pending", reason="indeterminate_side_effect")
+        other = _seed(o, tenant, user)
+        waiting = _approval(o, tenant, other.run, "pending")
+        o.commit()
+    before = {**_approvals(owner_db, x.run), **_approvals(owner_db, other.run)}
+    with opened(tenant) as s:
+        _end("failed", s, x, settings)
+    after = {**_approvals(owner_db, x.run), **_approvals(owner_db, other.run)}
+    assert after[open_one] == before[open_one]
+    assert after[waiting] == before[waiting]
+    assert APPROVAL_ARG in repr(after[open_one][0]) and APPROVAL_ARG in repr(after[waiting][0])
+
+
+@pytest.mark.parametrize("capture", [None, "full"])
+def test_a_decision_after_the_run_ended_scrubs_the_approvals_arguments(
+    capture: str | None, opened: Any, owner_db: Database, settings: Settings
+) -> None:
+    """Capture off: the deciding transaction scrubs the now-decided approval; capture on keeps
+    its arguments."""
+    tenant, user = _client(owner_db, capture)
+    with owner_db.session() as o:
+        approver = add_person(o, tenant, "approver", "tenant_administrator")
+        x = _seed(o, tenant, user)
+        appr = _approval(o, tenant, x.run, "pending", reason="indeterminate_side_effect")
+        o.commit()
+    with opened(tenant) as s:
+        _end("failed", s, x, settings)
+    before = _approvals(owner_db, x.run)[appr]
+    assert APPROVAL_ARG in repr(before[0])
+    with opened(tenant) as s:
+        app = s.execute(text("SELECT current_user")).scalar_one() == "shifde_app"
+        sc = service_for(s, tenant, approver, settings, set_context=app).sc
+        approvals = ApprovalService(sc, IntegrationRuntime(settings=settings, registry=REGISTRY))
+        out = approvals.decide(
+            appr, rs.DecideIn(decision="mark_succeeded", comment="checked the target")
+        )
+    assert out.status == "approved"
+    after = _approvals(owner_db, x.run)[appr]
+    assert after[1]["decision"] == "mark_succeeded"
+    assert after[0] == (before[0] if capture == "full" else SCRUBBED)
+
+
+def test_capture_on_keeps_every_approvals_arguments(
+    opened: Any, owner_db: Database, settings: Settings
+) -> None:
+    tenant, user = _client(owner_db, "full")
+    with owner_db.session() as o:
+        x = _seed(o, tenant, user)
+        for status in DECIDED:
+            _approval(o, tenant, x.run, status)
+        o.commit()
+    sql = text("SELECT id, arguments::text FROM shifde.approvals WHERE run_id = :r ORDER BY id")
+    with owner_db.session() as o:
+        before = o.execute(sql, {"r": x.run}).all()
+    with opened(tenant) as s:
+        _end("completed", s, x, settings)
+    with owner_db.session() as o:
+        after = o.execute(sql, {"r": x.run}).all()
+    assert len(before) == len(DECIDED) and after == before
 
 
 # ------------------------------------------------------------------ recovery and reconcile
@@ -454,6 +581,50 @@ def test_the_database_allows_only_clearing_an_ended_runs_arguments(
     assert ARGUMENT in repr(_arguments(owner_db, active.run))
 
 
+def test_the_database_allows_only_scrubbing_a_decided_approvals_arguments(
+    app_db: Database, owner_db: Database
+) -> None:
+    """`approvals_guard` (runtime_0005): any other value on a decided approval of an ended run,
+    the placeholder on a decided approval of a run that has not ended, on a pending approval of
+    an ended run or together with another column, and any other update of a decided approval are
+    refused, as `shifde_app` and as the owner; the scrub itself is allowed."""
+    tenant = uuid7()
+    with owner_db.session() as o:
+        add_tenants(o, tenant)
+        user = add_person(o, tenant, "runner", "tenant_administrator")
+        active = _seed(o, tenant, user)
+        ended = _seed(o, tenant, user, status="failed")
+        decided_active = _approval(o, tenant, active.run, "approved")
+        decided = _approval(o, tenant, ended.run, "rejected")
+        pending = _approval(o, tenant, ended.run, "pending", reason="indeterminate_side_effect")
+        o.commit()
+    marker = "arguments = '{\"scrubbed\": true}'"
+    refused = [
+        ("UPDATE shifde.approvals SET arguments = '{\"x\": 1}' WHERE id = :a", decided),
+        ("UPDATE shifde.approvals SET arguments = '{}' WHERE id = :a", decided),
+        (f"UPDATE shifde.approvals SET {marker} WHERE id = :a", decided_active),
+        (f"UPDATE shifde.approvals SET {marker} WHERE id = :a", pending),
+        (f"UPDATE shifde.approvals SET {marker}, decision_note = 'n' WHERE id = :a", decided),
+        ("UPDATE shifde.approvals SET decision_note = 'n' WHERE id = :a", decided),
+    ]
+    sessions = (lambda: app_session(app_db, tenant), owner_db.session)
+    for opener in sessions:
+        for sql, approval in refused:
+            with opener() as s:
+                with pytest.raises(DBAPIError) as err:
+                    s.execute(text(sql), {"a": approval})
+                assert getattr(err.value.orig, "sqlstate", None) == "23514", sql
+    before = {**_approvals(owner_db, active.run), **_approvals(owner_db, ended.run)}
+    assert all(APPROVAL_ARG in repr(v[0]) for v in before.values())
+    with app_session(app_db, tenant) as s:
+        repo.scrub_run_content(s, tenant, ended.run)
+        s.commit()
+    after = {**_approvals(owner_db, active.run), **_approvals(owner_db, ended.run)}
+    assert after[decided] == (SCRUBBED, before[decided][1])
+    assert after[pending] == before[pending]
+    assert after[decided_active] == before[decided_active]
+
+
 # ------------------------------------------------------------------ cross-client
 def _snapshot(owner_db: Database, tenant: UUID) -> tuple[Any, ...]:  # Any: row values
     with owner_db.session() as o:
@@ -465,7 +636,11 @@ def _snapshot(owner_db: Database, tenant: UUID) -> tuple[Any, ...]:  # Any: row 
             text("SELECT id, arguments::text FROM shifde.tool_invocations WHERE tenant_id = :t "
                  "ORDER BY id"), {"t": tenant},
         ).all()  # fmt: skip
-    return tuple(map(tuple, arts)), tuple(map(tuple, args))
+        approvals = o.execute(
+            text("SELECT id, arguments::text FROM shifde.approvals WHERE tenant_id = :t "
+                 "ORDER BY id"), {"t": tenant},
+        ).all()  # fmt: skip
+    return tuple(map(tuple, arts)), tuple(map(tuple, args)), tuple(map(tuple, approvals))
 
 
 def test_scrubbing_as_a_never_touches_bs_rows(
@@ -477,9 +652,13 @@ def test_scrubbing_as_a_never_touches_bs_rows(
         a = _seed(o, a_tenant, a_user)
         a_ended = _seed(o, a_tenant, a_user, status="failed")
         b_ended = _seed(o, b_tenant, b_user, status="failed")
+        a_decided = _approval(o, a_tenant, a_ended.run, "approved")
+        _approval(o, a_tenant, a.run, "approved")
+        _approval(o, b_tenant, b_ended.run, "approved")
         o.commit()
     b_before = _snapshot(owner_db, b_tenant)
     assert INPUT in repr(b_before) and ARGUMENT in repr(b_before)
+    assert APPROVAL_ARG in repr(b_before[2])
     with opened(a_tenant) as s:
         _end("completed", s, a, settings)
     assert _snapshot(owner_db, b_tenant) == b_before
@@ -494,4 +673,5 @@ def test_scrubbing_as_a_never_touches_bs_rows(
         repo.scrub_run_content(s, a_tenant, a_ended.run)
         s.commit()
     assert all(x[3] == SCRUBBED for x in _artifacts(owner_db, a_ended.run))
+    assert _approvals(owner_db, a_ended.run)[a_decided][0] == SCRUBBED
     assert _snapshot(owner_db, b_tenant) == b_before
