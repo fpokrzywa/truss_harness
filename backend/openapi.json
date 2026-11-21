@@ -9646,6 +9646,7 @@
         "type": "object"
       },
       "PlanOut": {
+        "description": "A plan; `release_id`, `release_digest` and `evaluation_run_id` are null unless the caller\ncan read the plan's release.",
         "properties": {
           "adapter_version": {
             "anyOf": [

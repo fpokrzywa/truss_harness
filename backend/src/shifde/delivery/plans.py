@@ -22,7 +22,8 @@ A plan is scoped by its target's workspace/project; a plan or target the caller 
 the answer an unknown id gets. Every plan route first settles the organization's plans (the lost
 job sweep, lost plan jobs, passed expiries, then the deployment settle step) and commits that, so
 a refused decision still leaves an expired plan `expired`. The artifact's content is never
-returned on a user route.
+returned on a user route, and a plan's release fields (`release_id`, `release_digest`,
+`evaluation_run_id`) are returned only to a caller who can read that release (else null).
 """
 
 from __future__ import annotations
@@ -51,7 +52,7 @@ from shifde.evaluation.service import (
     require_passing_evaluation,
 )
 from shifde.packaging.canonical import canonical
-from shifde.packaging.service import release_record, scoped_release
+from shifde.packaging.service import READ, release_record, scoped_release
 from shifde.tenancy.scope import TenantScope
 
 TARGET_KIND = "databricks.app/v1"
@@ -167,8 +168,28 @@ class PlanService:
             },
         )
 
-    @staticmethod
-    def _out(row: Mapping[str, Any]) -> s.PlanOut:
+    def _release_visible(self, row: Mapping[str, Any]) -> bool:
+        """The caller may read the plan's release (`packaging:solution:read` on its solution's
+        scope, the ref `scoped_release` checks). `authorize`: no raise, no decision record."""
+        if row["release_id"] is None:
+            return False
+        rel = release_record(self.sc.session, row["release_id"], tenant_id=self.sc.tenant_id)
+        if rel is None:
+            return False
+        ref = ResourceRef(
+            self.sc.tenant_id,
+            rel["workspace_id"],
+            rel["project_id"],
+            resource_type="packaging_release",
+            resource_id=rel["id"],
+        )
+        return self.sc.pdp.authorize(READ, ref).allowed
+
+    def _out(self, row: Mapping[str, Any], visible: bool | None = None) -> s.PlanOut:
+        """The plan; its release fields null unless the caller can read the release (`visible`,
+        else checked here)."""
+        if visible is None:
+            visible = self._release_visible(row)
         approval = (
             s.PlanApprovalOut(
                 decision=row["approval_decision"],
@@ -201,9 +222,9 @@ class PlanService:
             updated_at=row["updated_at"],
             approval=approval,
             deployment_id=row["deployment_id"],
-            release_id=row["release_id"],
-            release_digest=row["release_digest"],
-            evaluation_run_id=row["evaluation_run_id"],
+            release_id=row["release_id"] if visible else None,
+            release_digest=row["release_digest"] if visible else None,
+            evaluation_run_id=row["evaluation_run_id"] if visible else None,
         )
 
     # ================================================================== routes
@@ -227,8 +248,12 @@ class PlanService:
             limit=limit + 1,
         )
         page, more = paginate(rows, limit)
+        visible: dict[UUID, bool] = {}  # one release lookup per distinct release on the page
+        for r in page:
+            if r["release_id"] is not None and r["release_id"] not in visible:
+                visible[r["release_id"]] = self._release_visible(r)
         return Page(
-            items=[self._out(r) for r in page],
+            items=[self._out(r, visible.get(r["release_id"], False)) for r in page],
             next_cursor=encode_cursor(page[-1]["id"]) if more and page else None,
         )
 
