@@ -1,4 +1,4 @@
-"""Provider health checks and model discoveries run on the worker (ARCH M2, issue #47, B-2717).
+"""Provider health checks and model discoveries run on the worker (ARCH M2, issue #47, B-2720).
 
 `POST .../model-providers/{id}/health-check` and `.../discover-models` check permission, the
 provider and its adapter, queue one `model.health_check` / `model.discover` job (no run) in the

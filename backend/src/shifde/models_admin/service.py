@@ -94,7 +94,7 @@ SHI_NOT_CONFIGURED = "the SHI provider is not configured"
 SHI_CONFIGURED = "model.shi_provider.configured"
 SHI_ACCESS_CHANGED = "model.shi_provider.access_changed"
 SHI_OFF = "shi_provider_off"  # the reason a call-time gate refusal is audited with
-# `shifde.jobs.kind` of a queued provider health check / model discovery (ARCH M2, B-2717)
+# `shifde.jobs.kind` of a queued provider health check / model discovery (ARCH M2, B-2720)
 HEALTH_JOB_KIND = "model.health_check"
 DISCOVER_JOB_KIND = "model.discover"
 # per kind: the dedupe key's prefix (`{prefix}:{provider_id}`) and the worker's request id
@@ -456,7 +456,7 @@ class ModelService:
         return job
 
     def _job_details(self, job: Mapping[str, Any]) -> dict[str, Any] | None:
-        """The result a provider job recorded: its audit event's details (B-2717)."""
+        """The result a provider job recorded: its audit event's details (B-2720)."""
         kind = job["kind"]
         return audit.find_details(
             self._session,
@@ -514,7 +514,7 @@ class ModelService:
         )
 
     def enqueue_health_check(self, provider_id: UUID) -> s.HealthCheckJobOut:
-        """Queue the provider's health check on the worker (ARCH M2, B-2717): the API process
+        """Queue the provider's health check on the worker (ARCH M2, B-2720): the API process
         never calls the adapter. An active health check job of the provider is answered instead
         of a second one."""
         return self._health_job_out(self._enqueue(HEALTH_JOB_KIND, provider_id))
@@ -1696,7 +1696,7 @@ def run_provider_job(
     database: Database, runtime: IntegrationRuntime, tenant_id: UUID, job_id: UUID
 ) -> str | None:
     """Execute the `model.health_check` or `model.discover` job `job_id` of `tenant_id` (called
-    by `shifde-worker`, B-2717).
+    by `shifde-worker`, B-2720).
 
     Jobs carry no permissions: the requester is re-derived from the database and `model:manage`
     is checked again. Returns None once the result is recorded (now or by an earlier run of the

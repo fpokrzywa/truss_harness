@@ -29,7 +29,7 @@ never ran (the reaper's follow-up transaction failed, or a worker died first) an
 per client, in a transaction of its own under that client's context and a per-client advisory
 lock. A failure is logged and the sweep moves on to the next client.
 
-Jobs are dispatched by `kind` (ARCH M2, B-2610, B-2717): `run.advance` advances its run;
+Jobs are dispatched by `kind` (ARCH M2, B-2610, B-2720): `run.advance` advances its run;
 `connection.test` (no run) runs `connections.service.run_test_job`, and `model.health_check` and
 `model.discover` (no run) run `models_admin.service.run_provider_job`, in the job's own client as
 its requester, re-derived from the database, and end `done`, or `dead` with the refusal's error
@@ -279,7 +279,7 @@ class Worker:
             # in the job's own client, as its requester re-derived from the database (B-2610)
             job.error = connections.run_test_job(self.db, self.runtime, job.tenant_id, job.id)
         elif job.kind in (models_admin.HEALTH_JOB_KIND, models_admin.DISCOVER_JOB_KIND):
-            # the same, for a provider health check or model discovery (B-2717)
+            # the same, for a provider health check or model discovery (B-2720)
             job.error = models_admin.run_provider_job(self.db, self.runtime, job.tenant_id, job.id)
         else:
             job.error = UNKNOWN_KIND

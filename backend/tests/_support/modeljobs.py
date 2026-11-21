@@ -1,4 +1,4 @@
-"""Provider health checks and model discoveries run on the worker (ARCH M2, issue #47, B-2717):
+"""Provider health checks and model discoveries run on the worker (ARCH M2, issue #47, B-2720):
 test-side shortcuts.
 
 `POST .../model-providers/{id}/health-check` and `.../discover-models` answer 202 with a queued
