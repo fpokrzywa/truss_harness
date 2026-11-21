@@ -31,6 +31,13 @@ const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 /** A manifest scalar as plain text; `-` when absent. */
 const text = (v: unknown): string =>
   typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean' ? String(v) : '-';
+/** Header description for a release status; unknown statuses show the raw value. */
+const statusDescription = (status: string): string =>
+  status === 'sealed'
+    ? 'Sealed release'
+    : status === 'withdrawn'
+      ? 'Withdrawn release'
+      : `Release (${status})`;
 
 /** One sealed release: digest, manifest, compatibility and evaluations. Plain React text only. */
 export function ReleaseDetailView({ id }: { id: string }) {
@@ -63,7 +70,7 @@ function ReleaseBody({ org, release }: { org: string; release: ReleaseOut }) {
     <>
       <PageHeader
         title={`Release of v${release.version_no}`}
-        description="Sealed release"
+        description={statusDescription(release.status)}
         actions={
           <>
             {canEvaluate && (
