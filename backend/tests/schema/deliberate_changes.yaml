@@ -784,3 +784,8 @@
   path: [privileges, columns, entra_tenant_id]
   reason: "the platform administrator sets the Entra tenant through /platform/idps (UPDATE only) (SP3-6, issue #83)"
   migration: identity_0007
+
+- table: tenants
+  path: [triggers, trg_tenants_settings_guard]
+  reason: "Issue #39 (isolation review of PR #37, findings 1-2; B-2717): the column grant UPDATE (settings) of tenancy_0006 cannot be limited to one key, so shifde.tenants_settings_guard() (tenancy_0007, invoker rights, search_path pg_catalog, pg_temp) refuses with 42501 any update by a role under row-level security that adds, removes or changes a settings key other than capture_content, or makes settings a non-object, unless the platform-administrator context is on; PUT /orgs/{org}/capture-content is unchanged"
+  migration: tenancy_0007
