@@ -784,3 +784,8 @@
   path: [privileges, columns, entra_tenant_id]
   reason: "the platform administrator sets the Entra tenant through /platform/idps (UPDATE only) (SP3-6, issue #83)"
   migration: identity_0007
+
+- table: approvals
+  path: [privileges, columns, arguments]
+  reason: "Issue #33 (REQ F-12 follow-up, B-2715): shifde_app may UPDATE arguments, only to replace it by {\"scrubbed\": true} when an ended run of a capture-off client is scrubbed; shifde.approvals_guard() (runtime_0005) allows it only on a non-pending approval whose run (matched on the row's own tenant_id, run_id) is terminal, with every other column unchanged, and still refuses every other update of a decided approval and any change of arguments on a pending one (SETH: arguments not updatable)."
+  migration: runtime_0005
