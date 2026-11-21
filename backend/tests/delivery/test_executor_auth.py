@@ -1,6 +1,8 @@
 """Executor authentication (design 5, section 9 items 12 and 13; B-2664): `GET
 /api/executor/v1/whoami` with an `shx_` token, every refusal one identical 401, user and executor
-tokens kept apart, the resolver definer called directly as `shifde_app`, and pepper rotation.
+tokens kept apart, the resolver definer called directly as `shifde_app`, and pepper rotation. Every
+refusal writes one installation-level audit row with no token material, and failures are limited
+per source address (B-2730).
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from shifde.core.clock import utcnow
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
+from shifde.delivery.service import EXECUTOR_TOKEN_REJECTED
 from shifde.identity import apikeys
 from tests.connections.routes import as_user
 from tests.delivery.routes import (
@@ -287,3 +290,96 @@ def test_a_token_of_a_retired_pepper_still_authenticates(
     )
     with delivery_client(dropped) as c:
         assert c.get(WHOAMI, headers=bearer(token)).status_code == 401
+
+
+# ---------------------------------------------------- B-2730: audited and limited refusals
+REMOTE = ("203.0.113.7", 5000)
+
+
+def _rejections(owner_db: Database) -> list[Any]:
+    with owner_db.session() as o:
+        return list(
+            o.execute(
+                text(
+                    "SELECT e.tenant_id, e.outcome, e.auth_method, e.details->>'reason' AS reason,"
+                    " e.actor_ip, e::text AS whole FROM shifde.audit_events e"
+                    " WHERE e.action = :a ORDER BY e.occurred_at"
+                ),
+                {"a": EXECUTOR_TOKEN_REJECTED},
+            )
+        )
+
+
+def test_every_refusal_is_audited_without_token_material(
+    settings: Settings, world: World, people: People, owner_db: Database
+) -> None:
+    with delivery_client(settings, client=REMOTE) as c:
+        made, token = _setup(c, world, people)
+        _, prefix, secret = token.split("_")
+        other = "".join("A" if ch != "A" else "B" for ch in secret)
+        assert c.get(WHOAMI, headers=bearer(token)).status_code == 200
+        assert _rejections(owner_db) == []  # a success is not audited
+        cred = (
+            "UPDATE shifde.delivery_executor_credentials SET revoked_at = {} WHERE executor_id = :e"
+        )
+        cases: list[tuple[str, dict[str, str], Callable[[], None], Callable[[], None]]] = [
+            ("no header", {}, lambda: None, lambda: None),
+            ("malformed", bearer("shx_short"), lambda: None, lambda: None),
+            ("unknown prefix", bearer(f"shx_ZZZZZZZZ_{secret}"), lambda: None, lambda: None),
+            ("wrong secret", bearer(f"shx_{prefix}_{other}"), lambda: None, lambda: None),
+            (
+                "revoked",
+                bearer(token),
+                lambda: _owner_sql(owner_db, cred.format("now()"), e=made["id"]),
+                lambda: _owner_sql(owner_db, cred.format("NULL"), e=made["id"]),
+            ),
+        ]
+        for count, (name, headers, refuse, restore) in enumerate(cases, start=1):
+            refuse()
+            r = c.get(WHOAMI, headers=headers)
+            assert r.status_code == 401 and r.json()["code"] == "invalid_credentials", name
+            restore()
+            assert len(_rejections(owner_db)) == count, name  # exactly one row per refusal
+        assert c.get(WHOAMI, headers=bearer(token)).status_code == 200
+    rows = _rejections(owner_db)
+    assert len(rows) == len(cases)
+    assert {(r.tenant_id, r.outcome, r.auth_method, r.reason, r.actor_ip) for r in rows} == {
+        (None, "failure", "executor_token", "invalid", REMOTE[0])
+    }
+    dumped = " ".join(r.whole for r in rows)
+    digests = [apikeys.hash_key(p, token).hex() for p in settings.pepper_ring.values()]
+    for material in (token, prefix, secret, *digests):
+        assert material not in dumped
+
+
+def test_failed_executor_authentications_are_limited_per_source(
+    settings: Settings, world: World, people: People
+) -> None:
+    limited = settings.model_copy(update={"executor_auth_failures_per_minute": 3})
+    garbage = bearer("shx_ZZZZZZZZ_" + "a" * 43)
+    with delivery_client(limited, client=REMOTE) as c:
+        _, token = _setup(c, world, people)
+        assert c.get(WHOAMI, headers=bearer(token)).status_code == 200  # successes are not counted
+        for _ in range(3):
+            r = c.get(WHOAMI, headers=garbage)
+            assert r.status_code == 401 and r.json()["code"] == "invalid_credentials"
+        for headers in (garbage, bearer(token)):  # a full window refuses even a valid token
+            r = c.get(WHOAMI, headers=headers)
+            assert r.status_code == 429 and r.json()["code"] == "rate_limited", r.text
+        app = c.app
+    with TestClient(
+        app, base_url="https://testserver", client=("2001:db8:1:2::9", 5000)
+    ) as other:  # another source is not affected, and its successes are never counted
+        for _ in range(10):
+            assert other.get(WHOAMI, headers=bearer(token)).status_code == 200
+
+
+def test_loopback_is_not_limited(settings: Settings, world: World, people: People) -> None:
+    limited = settings.model_copy(update={"executor_auth_failures_per_minute": 3})
+    garbage = bearer("shx_ZZZZZZZZ_" + "a" * 43)
+    with delivery_client(limited, client=("127.0.0.1", 5000)) as c:
+        _, token = _setup(c, world, people)
+        for _ in range(6):
+            r = c.get(WHOAMI, headers=garbage)
+            assert r.status_code == 401 and r.json()["code"] == "invalid_credentials"
+        assert c.get(WHOAMI, headers=bearer(token)).status_code == 200

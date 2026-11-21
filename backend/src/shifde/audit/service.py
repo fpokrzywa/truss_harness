@@ -82,6 +82,10 @@ PRE_TENANT_ACTIONS: frozenset[str] = frozenset(
         # an Entra sign-in refused for group overage (SP3-6, B-2711): filed by `record_failure`
         # like `identity.login.failed`, installation-level for an installation IdP
         "identity.oidc.groups_overage",
+        # a refused executor token (B-2730): the resolver answers nothing for every reason (unknown,
+        # wrong secret, revoked, expired, disabled, suspended) and cannot tell them apart without a
+        # migration, so no organization is proven and no reason is given
+        "delivery.executor.token.rejected",
     }
 )
 # A person's own sign-in events: filed globally only with the acting person as the actor, read

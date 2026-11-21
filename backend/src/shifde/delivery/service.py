@@ -58,6 +58,7 @@ from shifde.audit import service as audit
 from shifde.authz.service import ResourceRef
 from shifde.core import db
 from shifde.core.clock import utcnow
+from shifde.core.context import RequestContext
 from shifde.core.errors import (
     AppError,
     Conflict,
@@ -75,6 +76,7 @@ from shifde.identity import apikeys
 from shifde.tenancy import service as tenancy
 from shifde.tenancy.scope import TenantScope
 
+EXECUTOR_TOKEN_REJECTED = "delivery.executor.token.rejected"
 PLATFORM_ALREADY_REGISTERED = "This platform address is already registered as a deployment target."
 
 
@@ -598,15 +600,39 @@ class AuthenticatedExecutor:
     last_seen_at: datetime | None
 
 
+def _reject_executor_token(session: Session, ctx: RequestContext) -> None:
+    """A refused executor token proves no organization: one installation-level row with the
+    client address and no token material, committed before the 401 (B-2730, as B-917)."""
+    db.set_principal(session, None)
+    db.set_tenant(session, None)
+    audit.record(
+        session,
+        ctx,
+        action=EXECUTOR_TOKEN_REJECTED,
+        outcome="failure",
+        tenant_id=None,
+        auth_method="executor_token",
+        details={"reason": "invalid"},
+    )
+    session.commit()
+
+
 def authenticate_executor(
-    session: Session, peppers: Iterable[bytes], token: str | None, version: str | None
+    session: Session,
+    ctx: RequestContext,
+    peppers: Iterable[bytes],
+    token: str | None,
+    version: str | None,
 ) -> AuthenticatedExecutor:
     """Authenticate an `shx_` executor token (design 5; section 9 items 12, 13).
 
     Every refusal (no or malformed token, unknown prefix, wrong secret, a revoked or expired
     credential, a disabled executor, an organization that is not active) is the same 401
-    `invalid_credentials`. On success the session runs in the executor's organization (no
-    principal), and `last_seen_at` (and `version`, when reported) are updated under RLS."""
+    `invalid_credentials`, and writes one installation-level `delivery.executor.token.rejected`
+    audit row (reason `invalid`, the client address as `actor_ip`, never the token, its prefix or
+    its hash; B-2730). The per-source limit on failures is applied by the caller
+    (`gateway_api.require_executor`). On success the session runs in the executor's organization
+    (no principal), and `last_seen_at` (and `version`, when reported) are updated under RLS."""
     match = EXECUTOR_TOKEN.match(token or "")
     resolved = None
     if match is not None:
@@ -617,6 +643,7 @@ def authenticate_executor(
             if resolved is not None:
                 break
     if resolved is None:
+        _reject_executor_token(session, ctx)
         raise InvalidCredentials("invalid credentials")
     if version is not None and not EXECUTOR_VERSION.fullmatch(version):
         raise ValidationFailed(
