@@ -9,7 +9,8 @@ and finds B's rows absent from A's lists. B's slug in the path gives A the unkno
 organizations' credentials share a prefix. B's job cannot name A's plan (`fk_delivery_jobs__plan`,
 B-2673), and B's executor cannot fetch A's plan artifact. B's job and journal step cannot name A's
 deployment (`fk_delivery_jobs__deployment`, `fk_delivery_journal__deployment`), and B's executor
-leases none of A's apply jobs.
+leases none of A's apply jobs. The executor gateway routes (`delivery.gateway_api.router`) have
+their own table, `GATEWAY_ROUTE_TESTS`, in `test_gateway_cross_client.py`.
 """
 
 from __future__ import annotations
