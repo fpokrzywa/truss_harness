@@ -285,6 +285,10 @@ function RequestPlanDialog({ org, onClose }: { org: string; onClose: () => void 
             onChange={setReleaseId}
             options={[SELECT, ...releaseOptions]}
           />
+          <p className="mt-1 text-sm text-slate-600">
+            Releases are sealed on the Solutions screen and need a passing evaluation before a plan
+            can be requested.
+          </p>
           {versionId && (
             <StepHint
               query={releases}
