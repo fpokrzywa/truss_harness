@@ -129,7 +129,7 @@ def test_an_approval_rule_of_the_runs_client_adds_an_approval_and_bs_rules_never
     with opened(a.tenant) as s:
         ctx = _ctx(s, settings, a)
         found = policies.tool_approval(ctx, None, WRITE)
-        assert found == policies.ApprovalRule((mine,), "a:decide")
+        assert found == policies.ApprovalRule((mine,), ("a:decide",))
         assert policies.tool_approval(ctx, None, "read") is None
         assert not set(b_ids) & {p["id"] for p in policies._policies(ctx, "approval_rule")}
         assert not set(b_ids) & {p["id"] for p in policies._policies(ctx, "cost_threshold")}

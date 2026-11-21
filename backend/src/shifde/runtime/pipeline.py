@@ -18,11 +18,14 @@ journal (one `pipeline_node` step per node attempt) and whatever is ready is exe
   step row (with its idempotency key) is committed BEFORE the call, so a worker that died around
   the call leaves a started-without-outcome step that recovery turns into an `indeterminate`
   approval (an operator decides: mark succeeded / retry / fail) - never a blind second send.
-  Before the write-ahead step the node consults the run's active `approval_rule` policies (F-10:
-  a `write_non_idempotent` data export with the node's optional `target_environment`); a matching
-  rule opens an `approval_rule` approval (an `approval` step, never a `pipeline_node` one) and the
-  run waits; a rejection ends the run. A rule only adds an approval: a granted upstream approval
-  node does not waive it, and an operator-authorized retry of an indeterminate write skips it.
+  Before the write-ahead step the node consults the run's active `approval_rule` policies (F-10,
+  #60: a data export classed by its method - DELETE `destructive`, PUT `write_idempotent`, POST /
+  PATCH `write_non_idempotent` - with the node's optional `target_environment`, matched ignoring
+  case and surrounding spaces; a node with no label matches every environment rule); a matching
+  rule opens an `approval_rule` approval (an `approval` step, never a `pipeline_node` one) that
+  needs every matched rule's approver permission, and the run waits; a rejection ends the run.
+  A rule only adds an approval: a granted upstream approval node does not waive it, and an
+  operator-authorized retry of an indeterminate write skips it.
 * Recovery: a replacement worker rebuilds everything from the journal; succeeded nodes are never
   executed again.
 * Untrusted data: node outputs (database rows, API bodies, model text) only reach models inside
@@ -1217,11 +1220,12 @@ class PipelineRunner:
         )
         if appr is None:
             env = self.nodes[nid]["config"].get("target_environment")
-            rule = policies.write_node_approval(ctx, env)
+            side = policies.write_method_class(method)
+            rule = policies.write_node_approval(ctx, env, side)
             if rule is None:
                 return
             with ctx.txn():  # one transaction: no approval without its step, event and decision
-                self._insert_rule_approval(nid, epoch, method, env, rule)
+                self._insert_rule_approval(nid, epoch, method, side, env, rule)
             raise state.Waiting("approval")
         if appr["status"] == "pending":
             raise state.Waiting("approval")
@@ -1244,7 +1248,13 @@ class PipelineRunner:
         )
 
     def _insert_rule_approval(
-        self, nid: str, epoch: int, method: str, env: str | None, rule: policies.ApprovalRule
+        self,
+        nid: str,
+        epoch: int,
+        method: str,
+        side: str,
+        env: str | None,
+        rule: policies.ApprovalRule,
     ) -> None:
         """In the caller's transaction. The step is an `approval` step, never a `pipeline_node`
         one: write recovery reads a running `pipeline_node` step as a started write."""
@@ -1275,15 +1285,24 @@ class PipelineRunner:
                 "call_ref": f"node:{nid}",
                 "epoch": epoch,
                 "reason": "approval_rule",
-                "side_effect_class": "write_non_idempotent",
+                "side_effect_class": side,
                 # the node, not the payload: exported data stays out of the approvals list
                 "arguments": scrub(
-                    {"node": nid, "type": node["type"], "method": method, "target_environment": env}
+                    {
+                        "node": nid,
+                        "type": node["type"],
+                        "method": method,
+                        "side_effect_class": side,
+                        "target_environment": env,
+                    }
                 ),
-                "context_summary": {"node": nid},
+                "context_summary": {
+                    "node": nid,
+                    **policies.approver_summary(rule.approver_permissions),
+                },
                 "requested_by": self.stored["initiated_by_principal_id"],
                 "expires_at": utcnow() + timedelta(hours=ctx.settings.approval_expiry_hours),
-                "required_permission": rule.approver_permission,
+                "required_permission": policies.required_permission(rule.approver_permissions),
             },
         )
         repo.add_event(
@@ -1299,7 +1318,7 @@ class PipelineRunner:
                 "approval_id": str(approval["id"]),
                 "reason": "approval_rule",
                 "node": nid,
-                "side_effect_class": "write_non_idempotent",
+                "side_effect_class": side,
                 "policy_ids": [str(p) for p in rule.policy_ids],
             },
             commit=False,
