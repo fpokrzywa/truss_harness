@@ -1,8 +1,8 @@
 {
-  "session_id": "15c9184a-7322-460e-9306-d5f20d140ab2",
-  "head_sha": "2a97d11ba40e7ef0622a026425744b38cd47082c",
+  "session_id": "8d51ac6f-3e5b-4130-8993-37773f5cf014",
+  "head_sha": "e008512cbe0ee4bb1d2607139e50cd8b55f94366",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "factory/bin/job queue; hand-merge 043 first (fixes main's failing repository case test), then gates one at a time on a quiet cluster for 049, 050, 051, 053, resume builder-054, resolve 048's DECISIONS conflict and 046 hand merge, per docs/build/HANDOFF.md",
-  "written_at": "2026-11-21T16:36:35Z"
+  "next_step": "factory/bin/job queue; hand-merge 050 (#47, PR #122: renumber B-2717->B-2720, sync main, gates.py 13/13, gh pr merge); spawn 053 reviewers; resume builders 054 and 055",
+  "written_at": "2026-11-21T20:50:10Z"
 }
