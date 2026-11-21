@@ -1,5 +1,6 @@
 import {
   buildHref,
+  datasetsHref,
   deliverHref,
   governHref,
   integrateHref,
@@ -8,6 +9,7 @@ import {
   projHref,
   projectsHref,
   securityHref,
+  solutionsHref,
   workspacesHref,
   wsHref,
   type ScopePath,
@@ -203,6 +205,15 @@ export const NAV_ITEMS: readonly NavItem[] = [
   deliver('plans', 'Plans', ['delivery:plan:read']),
   deliver('approvals', 'Plan approvals', ['delivery:plan:approve']),
   deliver('deployments', 'Deployments', ['delivery:deployment:read']),
+  // SP3-7: organization-level screens outside /deliver; the project comes from `?ws=&proj=`.
+  {
+    ...deliver('solutions', 'Solutions', ['packaging:solution:read']),
+    href: (s) => (s.org ? solutionsHref(s.org) : null),
+  },
+  {
+    ...deliver('evaluation-datasets', 'Evaluation datasets', ['evaluation:dataset:read']),
+    href: (s) => (s.org ? datasetsHref(s.org) : null),
+  },
   govern('overview', 'Governance Overview', ['governance:read']),
   govern('usage', 'Token Usage', ['usage:read']),
   govern('costs', 'Cost Explorer', ['usage:read']),

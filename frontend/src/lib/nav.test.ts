@@ -25,8 +25,10 @@ describe('navigation config (FR-UI-003)', () => {
       'dashboard',
       'deliver-approvals',
       'deliver-deployments',
+      'deliver-evaluation-datasets',
       'deliver-executors',
       'deliver-plans',
+      'deliver-solutions',
       'deliver-targets',
       'govern-audit',
       'govern-budgets',
@@ -380,6 +382,23 @@ describe('permission-aware navigation (FR-UI-004)', () => {
     it('treats /o/{org}/deliver/... as an organization-level area', () => {
       expect(parseScope('/o/acme/deliver/targets')).toEqual({ org: 'acme', area: 'other' });
       expect(parseScope('/o/acme/deliver/executors')).toEqual({ org: 'acme', area: 'other' });
+    });
+
+    it('gates Solutions and Evaluation datasets (SP3-7) on their read permissions', () => {
+      expect(items(['delivery:target:read'])).not.toContain('Solutions=/o/acme/solutions');
+      expect(items(['packaging:solution:write'])).toEqual([]);
+      expect(items(['packaging:solution:read'])).toEqual(['Solutions=/o/acme/solutions']);
+      expect(items(['evaluation:dataset:read'])).toEqual([
+        'Evaluation datasets=/o/acme/evaluations/datasets',
+      ]);
+    });
+
+    it('treats /o/{org}/solutions, releases and evaluations as organization-level areas', () => {
+      expect(parseScope('/o/acme/solutions')).toEqual({ org: 'acme', area: 'other' });
+      expect(parseScope('/o/acme/solutions/s-1')).toEqual({ org: 'acme', area: 'other' });
+      expect(parseScope('/o/acme/releases/x')).toEqual({ org: 'acme', area: 'other' });
+      expect(parseScope('/o/acme/evaluations/datasets')).toEqual({ org: 'acme', area: 'other' });
+      expect(parseScope('/o/acme/evaluations/r-1')).toEqual({ org: 'acme', area: 'other' });
     });
   });
 
