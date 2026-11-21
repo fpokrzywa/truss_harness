@@ -1,8 +1,8 @@
 {
-  "session_id": "8d51ac6f-3e5b-4130-8993-37773f5cf014",
-  "head_sha": "e008512cbe0ee4bb1d2607139e50cd8b55f94366",
+  "session_id": "8b55f00e-6c82-4060-83d6-17c336de8e46",
+  "head_sha": "0735f1b66592673b4e95bb8b8496d3f49f01c624",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "factory/bin/job queue; hand-merge 050 (#47, PR #122: renumber B-2717->B-2720, sync main, gates.py 13/13, gh pr merge); spawn 053 reviewers; resume builders 054 and 055",
-  "written_at": "2026-11-21T20:50:10Z"
+  "next_step": "PYTHONUTF8=1 factory/bin/job queue; hand-merge 050 (#47, PR #122) under S-020 after gates.py 13/13; gate+review 053, 055, 056, 057 one gate at a time (see HANDOFF.md)",
+  "written_at": "2026-11-21T23:22:36Z"
 }
