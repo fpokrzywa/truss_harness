@@ -115,8 +115,8 @@ class FakeOidcProvider:
     def entra_claims_for(
         self, auth: Authorization, *, oid: str, groups: list[str] | None = None, **overrides: Any
     ) -> dict[str, Any]:
-        """An Entra v2.0 ID token's claims: `sub` is pairwise (never `oid`), no
-        `email_verified`; `overrides` set or (with None) drop any claim."""
+        """An Entra v2.0 ID token's claims of a member: `sub` is pairwise (never `oid`), no
+        `email_verified` and no `xms_edov`; `overrides` set or (with None) drop any claim."""
         claims: dict[str, Any] = {
             "tid": self.entra_tenant,
             "oid": oid,
@@ -124,6 +124,7 @@ class FakeOidcProvider:
             "sub": f"pairwise-{uuid.uuid4().hex}",
             "email_verified": None,
             "preferred_username": "entra.user@contoso.test",
+            "acct": 0,  # a member of the directory (1: a guest)
             "groups": groups if groups is not None else [str(uuid.uuid4())],
         }
         claims.update(overrides)

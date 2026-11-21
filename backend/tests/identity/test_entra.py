@@ -7,7 +7,9 @@ Entra issuer (`FakeOidcProvider.entra`, `tests/_support/fake_oidc.py`) over the 
 the pairwise `sub`; `tid`, `ver` and `oid` are checked after the ID token is valid; group overage
 refuses the sign-in (one `identity.oidc.groups_overage` row, its own redirect, memberships and
 sessions unchanged); platform groups are mapped by object id and matched lowercase; and an Entra
-user synced into a group bound only in client A reads A and gets 404 on B. The default fake
+user synced into a group bound only in client A reads A and gets 404 on B. An e-mail is verified
+only for a member (`email` with `xms_edov` true, else `preferred_username`), never for a guest,
+so an unverified address never links a pending user of another client (B-2712). The default fake
 (`https://idp.test`) is covered unchanged by `test_oidc*.py`.
 """
 
@@ -30,7 +32,8 @@ from tests._support.fake_oidc import OVERAGE_CLAIM_NAMES, FakeOidcProvider, reso
 from tests._support.tenants import slug_of
 from tests.admin.conftest import admin_client
 from tests.identity import harness, oidc_flow
-from tests.identity.conftest import World
+from tests.identity.conftest import World, owner_membership, owner_user
+from tests.identity.test_oidc_hardening import _arm_link
 from tests.identity.test_platform_groups import _bind_group, admin_session
 
 TENANT = "3f2a1b4c-5d6e-4f70-8192-a3b4c5d6e7f8"
@@ -126,7 +129,7 @@ def test_jit_sign_in_keys_the_identity_by_oid_and_ignores_sub(
     fake = _fake()
     oid = str(uuid4())
     with entra_client(settings, fake) as c:
-        first = sign_in(c, fake, idp, "c1", oid=oid.upper(), sub="pairwise-one")
+        first = sign_in(c, fake, idp, "c1", oid=oid.upper(), sub="pairwise-one", xms_edov=True)
         assert first.status_code == 302 and first.headers["location"] == "/", first.headers
         assert _has_session(first)
         [(user, subject)] = _identities(owner_session, idp)
@@ -137,7 +140,7 @@ def test_jit_sign_in_keys_the_identity_by_oid_and_ignores_sub(
     email = owner_session.execute(
         text("SELECT primary_email FROM shifde.users WHERE id = :u"), {"u": user}
     ).scalar_one()
-    assert email == "newuser@example.com"  # the `email` claim, without `email_verified`
+    assert email == "newuser@example.com"  # `email` with `xms_edov`, without `email_verified`
 
 
 def test_preferred_username_is_the_address_when_email_is_missing(
@@ -302,3 +305,133 @@ def test_an_entra_user_synced_into_a_group_bound_in_a_reads_a_and_not_b(
     assert a.status_code == 200, a.text
     assert b.status_code == missing.status_code == 404
     assert b.json()["detail"] == missing.json()["detail"]
+
+
+# ------------------------------------------------------------------ e-mail trust (B-2712)
+def _pending_victim(owner: Session, world: World) -> tuple[UUID, str]:
+    """A person of client B only, with a link armed in B: an installation IdP may complete it
+    for whoever presents a verified e-mail of theirs."""
+    email = f"victim-{uuid4().hex[:8]}@b.test"
+    victim = owner_user(owner, email)
+    owner_membership(owner, world.b.tenant, victim)
+    _arm_link(owner, victim, world.b.tenant)
+    owner.commit()
+    return victim, email
+
+
+def _link_pending(owner: Session, user: UUID) -> bool:
+    pending = owner.execute(
+        text(
+            "SELECT count(*) FROM shifde.setup_tokens WHERE user_id = :u "
+            "AND link_pending_until IS NOT NULL"
+        ),
+        {"u": user},
+    ).scalar_one()
+    owner.rollback()
+    return bool(pending)
+
+
+def _user_count(owner: Session) -> int:
+    count = owner.execute(text("SELECT count(*) FROM shifde.users")).scalar_one()
+    owner.rollback()
+    return int(count)
+
+
+@pytest.mark.parametrize(
+    "guest",
+    [
+        {"acct": 1},
+        {"acct": "1"},
+        {"acct": None, "preferred_username": "victim_b.test#EXT#@contoso.onmicrosoft.com"},
+        {"acct": 0, "upn": "victim_b.test#ext#@contoso.onmicrosoft.com"},
+    ],
+    ids=["acct_1", "acct_str", "ext_username", "ext_upn"],
+)
+def test_a_guest_email_never_links_a_pending_user_of_another_client(
+    settings: Settings, world: World, owner_session: Session, guest: dict[str, Any]
+) -> None:
+    """Isolation review 036-1 item 1: a guest of the pinned directory presenting client B's
+    person's address (even with `xms_edov` true) is neither linked to them nor provisioned."""
+    idp = oidc_flow.owner_entra_idp(owner_session, TENANT)
+    victim, email = _pending_victim(owner_session, world)
+    owner_session.commit()
+    users = _user_count(owner_session)
+    fake = _fake()
+    with entra_client(settings, fake) as c:
+        r = sign_in(c, fake, idp, "c1", oid=str(uuid4()), email=email, xms_edov=True, **guest)
+    assert r.headers["location"] == oidc_flow.FAIL and not _has_session(r)
+    assert _identities(owner_session, idp) == []
+    assert _link_pending(owner_session, victim)  # the link is still armed, unused
+    assert _user_count(owner_session) == users  # no JIT user either
+    assert _audit(owner_session, "identity.login.failed") == [("jit_requires_verified_email", None)]
+
+
+@pytest.mark.parametrize("edov", [None, False, "true"], ids=["absent", "false", "string"])
+def test_an_email_without_xms_edov_is_not_verified(
+    settings: Settings, world: World, owner_session: Session, edov: object
+) -> None:
+    """A member's `email` without `xms_edov` true (and no `preferred_username` to fall back
+    on) is no verified e-mail: it links nobody and provisions nobody."""
+    idp = oidc_flow.owner_entra_idp(owner_session, TENANT)
+    victim, email = _pending_victim(owner_session, world)
+    owner_session.commit()
+    users = _user_count(owner_session)
+    fake = _fake()
+    with entra_client(settings, fake) as c:
+        r = sign_in(
+            c,
+            fake,
+            idp,
+            "c1",
+            oid=str(uuid4()),
+            email=email,
+            xms_edov=edov,
+            preferred_username=None,
+        )
+    assert r.headers["location"] == oidc_flow.FAIL and not _has_session(r)
+    assert _identities(owner_session, idp) == []
+    assert _link_pending(owner_session, victim)
+    assert _user_count(owner_session) == users
+
+
+def test_a_member_with_xms_edov_links_the_pending_user(
+    settings: Settings, world: World, owner_session: Session
+) -> None:
+    """Control for the two tests above: a member's verified `email` (`xms_edov` true)
+    completes the armed link, as for any installation IdP."""
+    idp = oidc_flow.owner_entra_idp(owner_session, TENANT)
+    victim, email = _pending_victim(owner_session, world)
+    owner_session.commit()
+    oid = str(uuid4())
+    fake = _fake()
+    with entra_client(settings, fake) as c:
+        r = sign_in(c, fake, idp, "c1", oid=oid, email=email, xms_edov=True)
+    assert r.headers["location"] == "/" and _has_session(r)
+    assert _identities(owner_session, idp) == [(victim, oid)]
+    assert not _link_pending(owner_session, victim)
+
+
+def test_a_member_without_xms_edov_is_provisioned_by_their_username(
+    settings: Settings, world: World, owner_session: Session
+) -> None:
+    """`preferred_username` (the member's UPN) is the verified address when `email` is not
+    vouched for: JIT uses it, never the unverified `email`."""
+    idp = oidc_flow.owner_entra_idp(owner_session, TENANT)
+    owner_session.commit()
+    fake = _fake()
+    with entra_client(settings, fake) as c:
+        r = sign_in(
+            c,
+            fake,
+            idp,
+            "c1",
+            oid=str(uuid4()),
+            email="someone-else@b.test",
+            preferred_username="Member@Contoso.test",
+        )
+    assert r.headers["location"] == "/" and _has_session(r)
+    [(user, _)] = _identities(owner_session, idp)
+    email = owner_session.execute(
+        text("SELECT primary_email FROM shifde.users WHERE id = :u"), {"u": user}
+    ).scalar_one()
+    assert email == "member@contoso.test"
