@@ -1,10 +1,12 @@
 import { api as defaultClient, type ApiClient } from './client';
 import { createBuildEndpoints } from './build-endpoints';
 import { createDeliveryEndpoints } from './delivery-endpoints';
+import { createEvaluationEndpoints } from './evaluation-endpoints';
 import { createOntologyEndpoints } from './ontology-endpoints';
 import { createGovernanceEndpoints } from './governance-endpoints';
 import { createIntegrateEndpoints } from './integrate-endpoints';
 import { createOperateEndpoints } from './operate-endpoints';
+import { createPackagingEndpoints } from './packaging-endpoints';
 import { createPipelineEndpoints } from './pipeline-endpoints';
 import { createSecurityEndpoints } from './security-endpoints';
 import type {
@@ -108,6 +110,8 @@ export function createEndpoints(client: ApiClient = defaultClient) {
     ...createOperateEndpoints(client),
     ...createPipelineEndpoints(client),
     ...createDeliveryEndpoints(client),
+    ...createPackagingEndpoints(client),
+    ...createEvaluationEndpoints(client),
     myPermissions: (org: string, workspace?: string, project?: string) =>
       client.request<MyPermissions>(`${orgPath(org)}/me/permissions`, {
         query: { workspace, project },
