@@ -23,6 +23,8 @@ python -I scripts/supervisor/supervise.py 1 --parallel 3   # goal 1, up to 3 uni
 python -I scripts/supervisor/watchdog.py         # alerts when no lead runs or no commit lands for 30 min
 ```
 
+- After a reboot, the scheduled task "SETH build autostart" (at logon) runs `scripts/supervisor/autostart.ps1`: it starts the cluster, then one supervisor (goal 2) and one watchdog, skipping any already running. Its log is `.devdata/supervisor/logs/autostart.log`. Change the goal with `-Goal <n>` in the task's arguments.
+
 - A second supervisor refuses to start, and so does a supervisor while a lead is still running. Both use `.devdata/supervisor/state.json`.
 - Alerts are a Windows toast, a line in `.devdata/supervisor/logs/ALERTS.log`, and a stdout line starting `ALERT`. Each alert includes the last lead session id and the last 20 lines of the supervisor log.
 

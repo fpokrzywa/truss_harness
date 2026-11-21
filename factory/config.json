@@ -1,5 +1,5 @@
 {
-  "concurrency": 3,
+  "concurrency": 5,
   "max_rounds": 3,
   "base_branch": "main",
   "merge_method": "merge",
@@ -10,19 +10,19 @@
   },
   "routing": {
     "low": {
-      "code": "haiku"
+      "code": "sonnet"
     },
     "medium": {
-      "code": "sonnet"
+      "code": "opus"
     },
     "high": {
-      "code": "sonnet"
+      "code": "opus"
     }
   },
   "surface_reviewers": {
     "ui": {
-      "ux": "sonnet",
-      "ui": "haiku"
+      "ux": "opus",
+      "ui": "sonnet"
     },
     "security": {
       "security": "opus"
