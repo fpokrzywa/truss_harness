@@ -220,3 +220,13 @@ The supervisor locks a unit's declared resources before it starts that unit's le
 - Delegate exploring the codebase, the full test suite and gate runs to agents. Ask each for a summary of at most about 40 lines: the result, each command and its exit code, the failures, the files changed. Never read whole logs or whole files into the lead to find one fact.
 - During a unit, run only the tests for the code being changed (`python scripts/gates.py --ref <sha> --tests tests/<module> ...` or `uv run pytest tests/<module>`).
 - Run the full suite and all 13 gates once, at the unit boundary, in the merge step above.
+
+## 12. One lead, every factory slot full
+
+Added by the owner's supervisor on 2026-11-21 at the owner's request ("1 lead multiple agents reporting to it"). Where this section and an earlier one differ, this one applies.
+
+- One lead runs the factory. `factory/config.json` `concurrency` (10, S-014) is how many jobs may run at once. Keep every slot full: whenever `factory/bin/job queue` shows `new` or `resume` lines, start them. Don't stop starting jobs because a handoff is coming.
+- The factory's job state is the record. A job stopped between steps is resumed by the next lead from `factory/bin/job queue`, so a handoff does not need to wait for jobs to finish, only for the agents already running.
+- At the context limit of section 10: start no new agents; let the agents already running finish and advance their jobs one step; then hand off as section 10 says. In the handoff, list each job id with its stage. The next lead's first action is `factory/bin/job queue` and starting every `resume` and `new` line.
+- Gate runs and the full suite run in agents, never in the lead's context (section 11). Merges still go one at a time through `factory/bin/job merge` and the merge lock, which `job merge` takes; merge as soon as a job is approved, so later jobs sync against a moving main early.
+- If machine load or rework from conflicts between jobs slows merges, the supervising session lowers `concurrency`; the lead doesn't change it.

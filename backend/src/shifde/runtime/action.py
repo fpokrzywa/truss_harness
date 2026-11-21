@@ -17,6 +17,7 @@ the call's `ToolPolicy` both come from the run's pin set, never from the caller 
 side reads it through the caller's own env (visibility and use checks). An action always runs as
 its own `ontology_action` run: nothing else starts one (B-2163). Every repository call names the
 client (B-2115); a new run's id is the repository's (no `id` / `root_run_id` in its values).
+An action is agentless, so a tool that lists `allowed_agent_ids` refuses it (B-2716).
 """
 
 from __future__ import annotations
@@ -154,6 +155,7 @@ class OntologyActionRunner:
             approval_classes=frozenset(WRITE_CLASSES),
             agent_id=None,
             pinned_version_ids=frozenset({tool.version_id}),
+            node_call=True,
         )
         output = steps.run_tool(
             ctx,
