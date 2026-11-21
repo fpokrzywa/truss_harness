@@ -342,7 +342,7 @@ def _user_count(owner: Session) -> int:
     [
         {"acct": 1},
         {"acct": "1"},
-        {"acct": None, "preferred_username": "victim_b.test#EXT#@contoso.onmicrosoft.com"},
+        {"acct": 0, "preferred_username": "victim_b.test#EXT#@contoso.onmicrosoft.com"},
         {"acct": 0, "upn": "victim_b.test#ext#@contoso.onmicrosoft.com"},
     ],
     ids=["acct_1", "acct_str", "ext_username", "ext_upn"],
@@ -364,6 +364,64 @@ def test_a_guest_email_never_links_a_pending_user_of_another_client(
     assert _link_pending(owner_session, victim)  # the link is still armed, unused
     assert _user_count(owner_session) == users  # no JIT user either
     assert _audit(owner_session, "identity.login.failed") == [("jit_requires_verified_email", None)]
+
+
+VICTIM = "<victim>"  # replaced by the client-B person's address
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        {"acct": None, "email": None, "preferred_username": VICTIM},
+        {"acct": None, "email": VICTIM, "xms_edov": True},
+        {"acct": False, "email": VICTIM, "xms_edov": True, "preferred_username": VICTIM},
+        {"acct": "", "email": VICTIM, "xms_edov": True, "preferred_username": VICTIM},
+        {"acct": "2", "email": VICTIM, "xms_edov": True, "preferred_username": VICTIM},
+        {"acct": True, "email": VICTIM, "xms_edov": True, "preferred_username": VICTIM},
+    ],
+    ids=[
+        "no_acct_username",
+        "no_acct_edov_email",
+        "acct_false",
+        "acct_empty",
+        "acct_2",
+        "acct_true",
+    ],
+)
+def test_a_token_that_does_not_prove_a_member_never_links_another_clients_pending_user(
+    settings: Settings, world: World, owner_session: Session, claims: dict[str, Any]
+) -> None:
+    """Isolation review 036-2: `acct` is optional, and a real guest's `preferred_username` is
+    their home address, so only `acct` present and 0 proves a member (fail closed). Without that
+    proof neither `email` (even with `xms_edov`) nor `preferred_username` is verified."""
+    idp = oidc_flow.owner_entra_idp(owner_session, TENANT)
+    victim, email = _pending_victim(owner_session, world)
+    owner_session.commit()
+    users = _user_count(owner_session)
+    fake = _fake()
+    token = {k: (email if v == VICTIM else v) for k, v in claims.items()}
+    with entra_client(settings, fake) as c:
+        r = sign_in(c, fake, idp, "c1", oid=str(uuid4()), **token)
+    assert r.headers["location"] == oidc_flow.FAIL and not _has_session(r)
+    assert _identities(owner_session, idp) == []
+    assert _link_pending(owner_session, victim)
+    assert _user_count(owner_session) == users
+    assert _audit(owner_session, "identity.login.failed") == [("jit_requires_verified_email", None)]
+
+
+@pytest.mark.parametrize("acct", [0, "0"], ids=["int", "str"])
+def test_acct_zero_as_int_or_string_proves_a_member(
+    settings: Settings, world: World, owner_session: Session, acct: object
+) -> None:
+    idp = oidc_flow.owner_entra_idp(owner_session, TENANT)
+    victim, email = _pending_victim(owner_session, world)
+    owner_session.commit()
+    oid = str(uuid4())
+    fake = _fake()
+    with entra_client(settings, fake) as c:
+        r = sign_in(c, fake, idp, "c1", oid=oid, acct=acct, email=email, xms_edov=True)
+    assert r.headers["location"] == "/" and _has_session(r)
+    assert _identities(owner_session, idp) == [(victim, oid)]
 
 
 @pytest.mark.parametrize("edov", [None, False, "true"], ids=["absent", "false", "string"])
