@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { artifact, version } from '@/test/build';
 import { DS, list, ORG, RELEASE, S, SOLUTION, stubReleases, VERSION } from '@/test/releases';
 import { ALL_PERMS, bodyOf } from '@/test/security';
+import { datasetsHref } from '@/lib/scope';
 import { jsonResponse, problemResponse, renderWithClient } from '@/test/utils';
 import { SolutionDetailView } from './SolutionDetailView';
 
@@ -89,6 +90,16 @@ describe('SolutionDetailView', () => {
     await screen.findByRole('table', { name: 'Versions' });
     expect(screen.queryByRole('button', { name: 'New version' })).not.toBeInTheDocument();
   });
+
+  it('has no Seal release button on an archived solution', async () => {
+    stubReleases({
+      ...LOOKUPS,
+      [`GET ${S}/s-1`]: () => jsonResponse({ ...SOLUTION, status: 'archived' }),
+    });
+    renderWithClient(<SolutionDetailView id="s-1" />);
+    await screen.findByRole('table', { name: 'Versions' });
+    expect(screen.queryByRole('button', { name: /Seal release/ })).not.toBeInTheDocument();
+  });
 });
 
 describe('SolutionDetailView new version', () => {
@@ -164,7 +175,87 @@ describe('SolutionDetailView new version', () => {
   });
 });
 
+describe('SolutionDetailView new version datasets', () => {
+  it('links to the Datasets page when the project has no datasets', async () => {
+    stubReleases({ ...LOOKUPS, [`GET ${DS}`]: () => list([]) });
+    renderWithClient(<SolutionDetailView id="s-1" />);
+    await userEvent.click(await screen.findByRole('button', { name: 'New version' }));
+    const d = within(screen.getByRole('dialog'));
+    await userEvent.click(d.getByLabelText('Set an evaluation contract'));
+    expect(await d.findByText(/This project has no datasets yet\./)).toBeInTheDocument();
+    expect(d.getByRole('link', { name: 'Add a dataset' })).toHaveAttribute(
+      'href',
+      datasetsHref('acme', 'eng', 'api'),
+    );
+  });
+
+  it('shows no hint when the project has a dataset', async () => {
+    stubReleases(LOOKUPS);
+    renderWithClient(<SolutionDetailView id="s-1" />);
+    await userEvent.click(await screen.findByRole('button', { name: 'New version' }));
+    const d = within(screen.getByRole('dialog'));
+    await userEvent.click(d.getByLabelText('Set an evaluation contract'));
+    await d.findByRole('option', { name: 'Sales FAQ v2' });
+    expect(d.queryByText(/This project has no datasets yet/)).not.toBeInTheDocument();
+    expect(d.queryByRole('link', { name: 'Add a dataset' })).not.toBeInTheDocument();
+  });
+});
+
 describe('SolutionDetailView seal', () => {
+  it('refuses duplicate model pins without sending the seal', async () => {
+    const fetchMock = stubReleases({ ...LOOKUPS, [SEAL]: () => jsonResponse(RELEASE) });
+    renderWithClient(<SolutionDetailView id="s-1" />);
+    await userEvent.click(await screen.findByRole('button', { name: /Seal release/ }));
+    const d = within(screen.getByRole('dialog'));
+    for (const [i, pin] of [
+      [1, 'gpt-4o'],
+      [2, ' gpt-4o '],
+    ] as const) {
+      await userEvent.click(d.getByRole('button', { name: 'Add model binding' }));
+      await userEvent.type(d.getByLabelText(`Model pin ${i}`), pin);
+      await d.findAllByRole('option', { name: 'Azure OpenAI' });
+      await userEvent.selectOptions(d.getByLabelText(`Provider ${i}`), 'prov-1');
+      await userEvent.type(d.getByLabelText(`Model ${i}`), 'gpt-prod');
+    }
+    await userEvent.click(d.getByRole('button', { name: 'Seal release' }));
+    expect(await d.findAllByText('Another model binding uses this pin name.')).toHaveLength(2);
+    expect(d.getByLabelText('Model pin 1')).toBeInvalid();
+    expect(d.getByLabelText('Model pin 2')).toBeInvalid();
+    expect(fetchMock.calls.some((c) => c.key === SEAL)).toBe(false);
+  });
+
+  it('refuses duplicate connection pins but allows a model and a connection to share one', async () => {
+    const fetchMock = stubReleases({ ...LOOKUPS, [SEAL]: () => jsonResponse(RELEASE) });
+    renderWithClient(<SolutionDetailView id="s-1" />);
+    await userEvent.click(await screen.findByRole('button', { name: /Seal release/ }));
+    const d = within(screen.getByRole('dialog'));
+    await userEvent.click(d.getByRole('button', { name: 'Add model binding' }));
+    await userEvent.type(d.getByLabelText('Model pin 1'), 'shared');
+    await d.findByRole('option', { name: 'Azure OpenAI' });
+    await userEvent.selectOptions(d.getByLabelText('Provider 1'), 'prov-1');
+    await userEvent.type(d.getByLabelText('Model 1'), 'gpt-prod');
+    for (const i of [1, 2]) {
+      await userEvent.click(d.getByRole('button', { name: 'Add connection binding' }));
+      await userEvent.type(d.getByLabelText(`Connection pin ${i}`), 'shared');
+      await d.findAllByRole('option', { name: 'CRM (rest)' });
+      await userEvent.selectOptions(d.getByLabelText(`Connection ${i}`), 'conn-crm');
+    }
+    await userEvent.click(d.getByRole('button', { name: 'Seal release' }));
+    expect(await d.findAllByText('Another connection binding uses this pin name.')).toHaveLength(2);
+    expect(d.queryByText('Another model binding uses this pin name.')).not.toBeInTheDocument();
+    expect(fetchMock.calls.some((c) => c.key === SEAL)).toBe(false);
+
+    await userEvent.click(d.getByRole('button', { name: 'Remove connection binding 2' }));
+    await userEvent.click(d.getByRole('button', { name: 'Seal release' }));
+    await waitFor(() => expect(nav.push).toHaveBeenCalledWith('/o/acme/releases/r-1'));
+    expect(bodyOf(fetchMock, SEAL)).toEqual({
+      environment_bindings: {
+        model_bindings: { shared: { provider_id: 'prov-1', model: 'gpt-prod' } },
+        connection_bindings: { shared: 'conn-crm' },
+      },
+    });
+  });
+
   it('shows the refused compatibility report and adds a binding row for the missing model pin', async () => {
     const fetchMock = stubReleases({
       ...LOOKUPS,
