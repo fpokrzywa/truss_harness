@@ -1,8 +1,8 @@
 {
-  "session_id": "4e057a99-c97e-4e7f-a3b4-3efc3679560a",
-  "head_sha": "57df8e1510171b2bbeddc68a07a10ceca8eb5011",
+  "session_id": "15c9184a-7322-460e-9306-d5f20d140ab2",
+  "head_sha": "2a97d11ba40e7ef0622a026425744b38cd47082c",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "/factory run the older new follow-ups from factory/bin/job queue (#33 onward, #108, #109), three at a time; then write the sub-project 4 design (charter 7 steps 1-2), next decision B-2714",
-  "written_at": "2026-11-21T09:57:29Z"
+  "next_step": "factory/bin/job queue; hand-merge 043 first (fixes main's failing repository case test), then gates one at a time on a quiet cluster for 049, 050, 051, 053, resume builder-054, resolve 048's DECISIONS conflict and 046 hand merge, per docs/build/HANDOFF.md",
+  "written_at": "2026-11-21T16:36:35Z"
 }
