@@ -20,8 +20,11 @@ because of this run; changing that status (and REQ F-22) is a separate decision 
   - A client secret (Certificates & secrets), entered once into SETH and never anywhere else.
   - Token configuration, Add groups claim: **Security groups**, emitted as **Group ID** in the
     ID token. SETH maps groups by their object ids only.
-  - Optional claims of the ID token: `email`, `preferred_username`, `acct` and `xms_edov`
-    (`xms_edov` says Entra verified the `email` domain; without it `email` is never trusted).
+  - Optional claims of the ID token: `acct` (**required**), `email`, `preferred_username` and
+    `xms_edov`. `acct` is what proves a person is a member of the tenant (0) and not a guest:
+    without it no address is ever verified, so nobody is linked or provisioned and sign-in works
+    only through identities already bound to a person. `xms_edov` says Entra verified the
+    `email` domain; without it `email` is never trusted.
 
 ## The env file
 
@@ -84,8 +87,9 @@ At each sign-in SETH checks, after the ID token is valid, that `tid` is the IdP'
 counts as verified (for that link and for just-in-time provisioning) only for a member of the
 tenant (DECISIONS B-2712, narrowing design SP3 section 12 item 24):
 
-- a guest (`acct` = 1, or a `preferred_username` / `upn` containing `#EXT#`) never has a
-  verified address: they sign in only through an identity already bound to them;
+- only `acct` present and equal to 0 proves a member; a guest (`acct` 1), a token without
+  `acct` or with any other value, and any `preferred_username` / `upn` containing `#EXT#`
+  never has a verified address: they sign in only through an identity already bound to them;
 - a member's `email` is verified only when `xms_edov` is `true`;
 - otherwise a member's `preferred_username` (their UPN in the tenant) is the verified address;
 - with neither, the sign-in has no verified address: no link, no new user
