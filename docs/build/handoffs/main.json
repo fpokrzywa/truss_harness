@@ -1,8 +1,8 @@
 {
-  "session_id": "4e057a99-c97e-4e7f-a3b4-3efc3679560a",
-  "head_sha": "57df8e1510171b2bbeddc68a07a10ceca8eb5011",
+  "session_id": "8d51ac6f-3e5b-4130-8993-37773f5cf014",
+  "head_sha": "e008512cbe0ee4bb1d2607139e50cd8b55f94366",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "/factory run the older new follow-ups from factory/bin/job queue (#33 onward, #108, #109), three at a time; then write the sub-project 4 design (charter 7 steps 1-2), next decision B-2714",
-  "written_at": "2026-11-21T09:57:29Z"
+  "next_step": "factory/bin/job queue; hand-merge 050 (#47, PR #122: renumber B-2717->B-2720, sync main, gates.py 13/13, gh pr merge); spawn 053 reviewers; resume builders 054 and 055",
+  "written_at": "2026-11-21T20:50:10Z"
 }

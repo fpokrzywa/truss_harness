@@ -10,7 +10,8 @@ client and every chain still verifies; a second run finds nothing left; invalid 
 values are refused.
 
 Isolation: with A on legal hold and B purged, every A artifact and argument is byte-for-byte
-unchanged, and B really changed (the check is not vacuous).
+unchanged, and B really changed (the check is not vacuous); the same holds when A has no hold but
+a stored `retain_days` longer than its runs' age.
 
 Data is seeded and read as the schema owner; the command itself connects as `shifde_app`.
 """
@@ -271,6 +272,27 @@ def test_purging_b_leaves_a_on_legal_hold_byte_for_byte_unchanged(
     result = _purge(cli, "--older-than", "30")
     assert result.exit_code == 0, result.output
     assert _line(result.output, a.slug) == f"{a.slug}: skipped (legal hold)"
+    assert _line(result.output, b.slug).startswith(f"{b.slug}: runs 2, artifacts 4, ")
+    assert {r: _snapshot(owner_db, r) for r in a_runs} == a_before
+    assert {r: _snapshot(owner_db, r) for r in b_runs} != b_before  # not vacuous
+    assert all(_scrubbed(owner_db, r) for r in b_runs)
+
+
+def test_purging_b_leaves_a_with_longer_retention_byte_for_byte_unchanged(
+    cli: CliRunner, owner_db: Database
+) -> None:
+    """(f2)"""
+    a, b = _client(owner_db), _client(owner_db)
+    _retention(owner_db, a.tenant, "run_artifacts", 400, False)  # no legal hold
+    a_runs = [_run(owner_db, a.tenant, ended_days_ago=OLD) for _ in range(2)]
+    b_runs = [_run(owner_db, b.tenant, ended_days_ago=OLD) for _ in range(2)]
+    a_before = {r: _snapshot(owner_db, r) for r in a_runs}
+    b_before = {r: _snapshot(owner_db, r) for r in b_runs}
+    result = _purge(cli, "--older-than", "30")
+    assert result.exit_code == 0, result.output
+    a_line = _line(result.output, a.slug)
+    assert a_line.startswith(f"{a.slug}: runs 0, artifacts 0, tool invocations 0 (cutoff ")
+    assert a_line != f"{a.slug}: skipped (legal hold)"
     assert _line(result.output, b.slug).startswith(f"{b.slug}: runs 2, artifacts 4, ")
     assert {r: _snapshot(owner_db, r) for r in a_runs} == a_before
     assert {r: _snapshot(owner_db, r) for r in b_runs} != b_before  # not vacuous

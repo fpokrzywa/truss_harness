@@ -339,7 +339,10 @@ def test_state_without_a_decision_gets_one_when_the_run_ends(
         o.execute(text("SELECT shifde.settle_ended_run(:r)"), {"r": run["id"]})
         o.commit()
         [again] = pending_unknown(ah, run["id"])
-        assert again["arguments"] == {"item": "x"}
+        # capture is off (the test environment's default): the run's end scrubbed the
+        # invocation's arguments and the decided approval's copy (B-2715), so the reopened
+        # decision copies the earlier approval's scrubbed marker, not `{}`
+        assert again["arguments"] == {"scrubbed": True}
         # and a decided one is never reopened: a decided retry at that epoch stays decided
         o.execute(
             text(

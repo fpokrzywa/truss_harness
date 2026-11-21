@@ -1,36 +1,36 @@
 {
-  "generated": "2026-11-21T07:47:12+00:00",
+  "generated": "2026-11-21T20:49:37+00:00",
   "note": "est_usd is an estimate at list price, not a bill",
   "totals": {
     "all": "all",
-    "input": 37310,
-    "output": 13448123,
-    "cache_write_5m": 76774168,
-    "cache_write_1h": 12989269,
-    "cache_read": 1996735423,
-    "requests": 18209,
-    "est_usd": 1063.7792
+    "input": 41560,
+    "output": 14503985,
+    "cache_write_5m": 86289537,
+    "cache_write_1h": 13963557,
+    "cache_read": 2154600054,
+    "requests": 20291,
+    "est_usd": 1170.1154
   },
   "by_model": [
     {
       "model": "claude-opus-5-5",
-      "input": 31190,
-      "output": 11013668,
-      "cache_write_5m": 59969061,
-      "cache_write_1h": 12216747,
-      "cache_read": 1731335180,
-      "requests": 15198,
-      "est_usd": 964.2444
+      "input": 35156,
+      "output": 12021507,
+      "cache_write_5m": 69049328,
+      "cache_write_1h": 13191035,
+      "cache_read": 1887464191,
+      "requests": 17145,
+      "est_usd": 1068.8385
     },
     {
       "model": "claude-sonnet-5-5",
-      "input": 5354,
-      "output": 1739284,
-      "cache_write_5m": 14800246,
+      "input": 5638,
+      "output": 1787307,
+      "cache_write_5m": 15235348,
       "cache_write_1h": 354601,
-      "cache_read": 235802152,
-      "requests": 2630,
-      "est_usd": 79.4028
+      "cache_read": 237537772,
+      "requests": 2765,
+      "est_usd": 81.1449
     },
     {
       "model": "claude-fable-5-2",
@@ -55,24 +55,24 @@
   ],
   "by_agent_type": [
     {
-      "agent_type": "lead",
-      "input": 9126,
-      "output": 2348152,
-      "cache_write_5m": 0,
-      "cache_write_1h": 12989269,
-      "cache_read": 624613254,
-      "requests": 4323,
-      "est_usd": 279.4035
+      "agent_type": "builder",
+      "input": 8356,
+      "output": 2986496,
+      "cache_write_5m": 33710460,
+      "cache_write_1h": 0,
+      "cache_read": 442975738,
+      "requests": 4097,
+      "est_usd": 316.9108
     },
     {
-      "agent_type": "builder",
-      "input": 6858,
-      "output": 2596089,
-      "cache_write_5m": 27091556,
-      "cache_write_1h": 0,
-      "cache_read": 394707433,
-      "requests": 3364,
-      "est_usd": 266.3485
+      "agent_type": "lead",
+      "input": 10340,
+      "output": 2584934,
+      "cache_write_5m": 0,
+      "cache_write_1h": 13963557,
+      "cache_read": 705494223,
+      "requests": 4915,
+      "est_usd": 308.1145
     },
     {
       "agent_type": "module-builder-critical",
@@ -86,13 +86,13 @@
     },
     {
       "agent_type": "isolation-reviewer",
-      "input": 3978,
-      "output": 1498422,
-      "cache_write_5m": 9557686,
+      "input": 4046,
+      "output": 1519206,
+      "cache_write_5m": 9686298,
       "cache_write_1h": 0,
-      "cache_read": 114003089,
-      "requests": 1971,
-      "est_usd": 100.5734
+      "cache_read": 114711684,
+      "requests": 2005,
+      "est_usd": 101.7741
     },
     {
       "agent_type": "module-builder",
@@ -106,53 +106,53 @@
     },
     {
       "agent_type": "spec-writer",
-      "input": 1862,
-      "output": 796317,
-      "cache_write_5m": 3304969,
+      "input": 2538,
+      "output": 1020888,
+      "cache_write_5m": 4443028,
       "cache_write_1h": 0,
-      "cache_read": 47846586,
-      "requests": 928,
-      "est_usd": 42.028
+      "cache_read": 62135989,
+      "requests": 1262,
+      "est_usd": 55.0702
     },
     {
       "agent_type": "approver",
-      "input": 514,
-      "output": 133072,
-      "cache_write_5m": 1304807,
+      "input": 660,
+      "output": 165758,
+      "cache_write_5m": 1664871,
       "cache_write_1h": 0,
-      "cache_read": 5391702,
-      "requests": 257,
-      "est_usd": 10.2659
-    },
-    {
-      "agent_type": "reviewer-security",
-      "input": 488,
-      "output": 114018,
-      "cache_write_5m": 1325075,
-      "cache_write_1h": 0,
-      "cache_read": 6224646,
-      "requests": 241,
-      "est_usd": 10.1526
+      "cache_read": 6996484,
+      "requests": 330,
+      "est_usd": 13.0415
     },
     {
       "agent_type": "general-purpose",
-      "input": 228,
-      "output": 117127,
-      "cache_write_5m": 1049072,
+      "input": 352,
+      "output": 172786,
+      "cache_write_5m": 1295417,
       "cache_write_1h": 0,
-      "cache_read": 7881779,
-      "requests": 112,
-      "est_usd": 8.8418
+      "cache_read": 15760784,
+      "requests": 173,
+      "est_usd": 12.5679
+    },
+    {
+      "agent_type": "reviewer-security",
+      "input": 582,
+      "output": 132656,
+      "cache_write_5m": 1556079,
+      "cache_write_1h": 0,
+      "cache_read": 7198731,
+      "requests": 288,
+      "est_usd": 11.8756
     },
     {
       "agent_type": "reviewer-code",
-      "input": 628,
-      "output": 219890,
-      "cache_write_5m": 1930580,
+      "input": 794,
+      "output": 251487,
+      "cache_write_5m": 2337215,
       "cache_write_1h": 0,
-      "cache_read": 7280978,
-      "requests": 297,
-      "est_usd": 5.1302
+      "cache_read": 8953647,
+      "requests": 376,
+      "est_usd": 7.8953
     },
     {
       "agent_type": "frontend-builder",
@@ -165,6 +165,16 @@
       "est_usd": 4.2139
     },
     {
+      "agent_type": "intake",
+      "input": 696,
+      "output": 131766,
+      "cache_write_5m": 961384,
+      "cache_write_1h": 0,
+      "cache_read": 3787441,
+      "requests": 347,
+      "est_usd": 4.1013
+    },
+    {
       "agent_type": "Explore",
       "input": 146,
       "output": 36464,
@@ -175,24 +185,14 @@
       "est_usd": 3.2634
     },
     {
-      "agent_type": "intake",
-      "input": 490,
-      "output": 95272,
-      "cache_write_5m": 687424,
-      "cache_write_1h": 0,
-      "cache_read": 2598504,
-      "requests": 245,
-      "est_usd": 2.9321
-    },
-    {
       "agent_type": "reviewer-ux",
-      "input": 140,
-      "output": 20725,
-      "cache_write_5m": 283904,
+      "input": 172,
+      "output": 26394,
+      "cache_write_5m": 353557,
       "cache_write_1h": 0,
-      "cache_read": 1711914,
-      "requests": 65,
-      "est_usd": 1.7101
+      "cache_read": 1994630,
+      "requests": 81,
+      "est_usd": 2.2284
     },
     {
       "agent_type": "verifier",
@@ -215,6 +215,16 @@
       "est_usd": 0.6736
     },
     {
+      "agent_type": "reviewer-ui",
+      "input": 150,
+      "output": 41149,
+      "cache_write_5m": 313760,
+      "cache_write_1h": 0,
+      "cache_read": 1270509,
+      "requests": 71,
+      "est_usd": 0.3593
+    },
+    {
       "agent_type": "scout",
       "input": 216,
       "output": 248313,
@@ -223,16 +233,6 @@
       "cache_read": 8810740,
       "requests": 108,
       "est_usd": 0.2898
-    },
-    {
-      "agent_type": "reviewer-ui",
-      "input": 124,
-      "output": 38574,
-      "cache_write_5m": 271627,
-      "cache_write_1h": 0,
-      "cache_read": 1155344,
-      "requests": 60,
-      "est_usd": 0.2166
     },
     {
       "agent_type": "web-fetch",
@@ -248,23 +248,23 @@
   "by_unit": [
     {
       "unit": "lead",
-      "input": 9126,
-      "output": 2348152,
+      "input": 10340,
+      "output": 2584934,
       "cache_write_5m": 0,
-      "cache_write_1h": 12989269,
-      "cache_read": 624613254,
-      "requests": 4323,
-      "est_usd": 279.4035
+      "cache_write_1h": 13963557,
+      "cache_read": 705494223,
+      "requests": 4915,
+      "est_usd": 308.1145
     },
     {
       "unit": "unassigned",
-      "input": 4452,
-      "output": 1649419,
-      "cache_write_5m": 14114452,
+      "input": 7146,
+      "output": 2362042,
+      "cache_write_5m": 22859214,
       "cache_write_1h": 0,
-      "cache_read": 206675251,
-      "requests": 2186,
-      "est_usd": 138.9724
+      "cache_read": 273192105,
+      "requests": 3510,
+      "est_usd": 208.8986
     },
     {
       "unit": "runtime",
@@ -637,6 +637,16 @@
       "est_usd": 3.8942
     },
     {
+      "unit": "sp4",
+      "input": 124,
+      "output": 55659,
+      "cache_write_5m": 246345,
+      "cache_write_1h": 0,
+      "cache_read": 7879005,
+      "requests": 61,
+      "est_usd": 3.7261
+    },
+    {
       "unit": "f-12",
       "input": 126,
       "output": 37194,
@@ -767,6 +777,16 @@
       "est_usd": 1.6634
     },
     {
+      "unit": "050",
+      "input": 82,
+      "output": 18983,
+      "cache_write_5m": 220772,
+      "cache_write_1h": 0,
+      "cache_read": 1067510,
+      "requests": 41,
+      "est_usd": 1.6556
+    },
+    {
       "unit": "fe-shell",
       "input": 88,
       "output": 45764,
@@ -857,6 +877,26 @@
       "est_usd": 0.802
     },
     {
+      "unit": "055",
+      "input": 54,
+      "output": 15778,
+      "cache_write_5m": 77669,
+      "cache_write_1h": 0,
+      "cache_read": 744610,
+      "requests": 25,
+      "est_usd": 0.7806
+    },
+    {
+      "unit": "043",
+      "input": 28,
+      "output": 7673,
+      "cache_write_5m": 108768,
+      "cache_write_1h": 0,
+      "cache_read": 344282,
+      "requests": 14,
+      "est_usd": 0.7663
+    },
+    {
       "unit": "fe-areas-1",
       "input": 48,
       "output": 16067,
@@ -917,6 +957,26 @@
       "est_usd": 0.4845
     },
     {
+      "unit": "051",
+      "input": 24,
+      "output": 4807,
+      "cache_write_5m": 62202,
+      "cache_write_1h": 0,
+      "cache_read": 240841,
+      "requests": 12,
+      "est_usd": 0.4554
+    },
+    {
+      "unit": "049",
+      "input": 30,
+      "output": 3557,
+      "cache_write_5m": 54851,
+      "cache_write_1h": 0,
+      "cache_read": 190560,
+      "requests": 13,
+      "est_usd": 0.3149
+    },
+    {
       "unit": "findings",
       "input": 18,
       "output": 42086,
@@ -940,23 +1000,23 @@
   "by_sub_project": [
     {
       "sub_project": "sp1",
-      "input": 28184,
-      "output": 11099971,
-      "cache_write_5m": 76774168,
+      "input": 31220,
+      "output": 11919051,
+      "cache_write_5m": 86289537,
       "cache_write_1h": 0,
-      "cache_read": 1372122169,
-      "requests": 13886,
-      "est_usd": 784.3757
+      "cache_read": 1449105831,
+      "requests": 15376,
+      "est_usd": 862.0009
     },
     {
       "sub_project": "lead",
-      "input": 9126,
-      "output": 2348152,
+      "input": 10340,
+      "output": 2584934,
       "cache_write_5m": 0,
-      "cache_write_1h": 12989269,
-      "cache_read": 624613254,
-      "requests": 4323,
-      "est_usd": 279.4035
+      "cache_write_1h": 13963557,
+      "cache_read": 705494223,
+      "requests": 4915,
+      "est_usd": 308.1145
     }
   ],
   "by_day": [
@@ -979,6 +1039,16 @@
       "cache_read": 375802168,
       "requests": 2874,
       "est_usd": 168.3709
+    },
+    {
+      "day": "2026-11-21",
+      "input": 6056,
+      "output": 1596489,
+      "cache_write_5m": 13574695,
+      "cache_write_1h": 1519464,
+      "cache_read": 237542359,
+      "requests": 2965,
+      "est_usd": 156.5446
     },
     {
       "day": "2026-11-16",
@@ -1039,16 +1109,6 @@
       "cache_read": 97275410,
       "requests": 734,
       "est_usd": 64.2802
-    },
-    {
-      "day": "2026-11-21",
-      "input": 1806,
-      "output": 540627,
-      "cache_write_5m": 4059326,
-      "cache_write_1h": 545176,
-      "cache_read": 79677728,
-      "requests": 883,
-      "est_usd": 50.2084
     }
   ],
   "rounds_per_unit": [
@@ -1222,6 +1282,51 @@
       "review": 1,
       "inventory": 0,
       "other": 3
+    },
+    {
+      "unit": "043",
+      "build": 0,
+      "verify": 0,
+      "fix": 1,
+      "review": 0,
+      "inventory": 0,
+      "other": 0
+    },
+    {
+      "unit": "049",
+      "build": 0,
+      "verify": 0,
+      "fix": 0,
+      "review": 1,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "050",
+      "build": 0,
+      "verify": 0,
+      "fix": 0,
+      "review": 4,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "051",
+      "build": 0,
+      "verify": 0,
+      "fix": 0,
+      "review": 1,
+      "inventory": 0,
+      "other": 1
+    },
+    {
+      "unit": "055",
+      "build": 0,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 2
     },
     {
       "unit": "SP2-5",
@@ -1618,6 +1723,15 @@
       "review": 0,
       "inventory": 2,
       "other": 1
+    },
+    {
+      "unit": "sp4",
+      "build": 0,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 2
     },
     {
       "unit": "suite-speed-2",

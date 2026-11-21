@@ -1,35 +1,29 @@
-# Handoff — 2026-11-21 09:55 UTC, charter 7 factory run (lead session 4e057a99)
+# Handoff — 2026-11-21 ~20:50 UTC, charter 7 factory run (lead session 8d51ac6f)
 
-Read `docs/build/CHARTER.md`, then `docs/build/STATUS.md` ("Charter 7 progress", the SP3 row of "Sub-projects 2 to 8"), then this file.
+Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` ("Charter 7 progress"), then this file.
 
-**State:** no agent and no gate run is running; no merge is half done. `main` = `origin/main` after this commit. Local cluster on 55450 running. No open PRs. Factory `concurrency` is 10 (S-014). Jobs 040-042 are `merged`; worktrees `.worktrees/04[0-2]-*` and `.worktrees/041-merge` are finished and can be removed.
+**State:** main = origin/main after this commit. No agent and no gate is running. Cluster on 55450 running. `concurrency` 4 (S-018).
 
-## What was just finished (this session)
+## Finished this session
+- Merged: #46 job 049 (PR #116, `job merge`); #51 job 051 (PR #121, `job merge`, row renumbered B-2721); #33 job 043 (PR #112, hand merge B-2705, B-2727: r2 full suite found 3 real diff failures, fixed by the builder; r3 12/13 with one unrelated flake, follow-up #132); #39 job 046 (PR #114, hand merge, 13/13 4100 passed, row B-2718); #44 job 048 (PR #117, 13/13 4103 passed, row B-2719). Main's `test_every_id_taking_function_has_a_case` failure is fixed.
+- SP4 go-live short design `docs/superpowers/specs/2026-11-21-subproject-4-go-live-design.md`, read by a fresh builder-reader, 31 guesses settled (section 11), open questions settled B-2723..B-2725; cut into issues #123-#131 (labels `factory`, `sp4`).
+- Decision ids reserved (B-2726): 050 -> B-2720 and 053 -> B-2722 at their merges (both branches still say B-2717). 055 told to use B-2728. Next free for the lead: B-2729.
+- Follow-ups filed: #132 (f09 OAuth2 fake server flake), #133 (050 clock-skew in result lookup), #134 (050 isolation notes 8-9).
 
-- #96 (job 040, PR #105): `/api/metrics` ops-stats cache moved from module globals to `app.state` (it was shared by every app in a test process, hiding a finished run on fast Linux CI); regression test `tests/app/test_metrics_ops_cache.py`. code PASS, approver APPROVE, `job merge`.
-- #104 (job 042, PR #106): SP3 front-end follow-ups (groups pagination, archived seal hidden, duplicate pins block seal, release header, plan-dialog loading lines, read-only input style, no-datasets hint). code/ux/ui PASS, approver APPROVE, `job merge`.
-- #99 (job 041, PR #107): plan responses null `release_id`, `release_digest`, `evaluation_run_id` for callers without release read; Release help line. All 4 reviews PASS; approver ESCALATE. Lead: isolation review 1 APPROVED (`docs/build/reviews/041-isolation-review-1.md`), `gates.py --name 041-merge` on `2b5b280` 12/13 (2 load flakes outside the diff, pass alone), merged `2d841f3`, decision B-2713.
-- Filed #108 (isolation notes 5-6 of job 041) and #109 (the two load flakes).
+## Jobs and their stages (first action: `factory/bin/job queue`)
+| Job | Issue | PR | Stage | Next |
+|---|---|---|---|---|
+| 050-arch-m2-rest-move | #47 | #122 | needs-human (approver ESCALATE: audit/ change, vendor call moved to worker; all 4 reviews PASS) | Charter 7.5 as the human: isolation review 1 APPROVED (`reviews/050-isolation-review-1.md`). Remaining: in its worktree renumber its DECISIONS row B-2717 -> B-2720, merge origin/main (resolve DECISIONS keeping all rows), push, `gates.py --ref <sha> --name 050-merge` (13/13), then `gh pr ready 122; gh pr merge 122 --merge --match-head-commit <sha>`. |
+| 053-arch-m11-rest-data | #56 | #119 | review r1 (gate PASS) | Spawn the routed reviewers from `job.json` (none written yet). Approver will likely escalate (new data-export route) -> isolation-reviewer + gates.py; renumber its row B-2717 -> B-2722 at merge. |
+| 054-f-08-follow-up | #58 | #118 | build r1 | build.md BLOCKED only because checks.sh timed out on connections; resume a builder named `builder-054-f-08-follow-up` to rerun checks.sh on a quiet cluster and set READY. |
+| 055-f-10-follow-up | #60 | - | build r1 (intake ACCEPT high/security, spec written) | Spawn `builder` named `builder-055-f-10-follow-up`, port 5650. Reviewers code+security (opus). Uses B-2728. |
 
-## Exact next step
+Then `hold` behind concurrency: #62, #64, #66, #68, #69, #71, #72, #74, #91, #93, #108, #109, #115, #123-#134. SP4 issues: do SP4-8 (#126, protected migration -> hand merge under B-2705 with isolation review) before SP4-4/5 (#127, #128).
 
-`/factory run` the older follow-ups that `factory/bin/job queue` lists as `new` (#33, #34, #36, #39, #41, #44, #46, #47, #51, #55, then #56 onward, #108, #109), three at a time, keeping one hand merge at a time. Then sub-project 4 per charter 7 steps 1-2: write its short design in `docs/superpowers/specs/` (design table row 4, go-live), have a fresh agent list what it would have to guess, settle and log (next DECISIONS id **B-2714**), cut issues labeled `factory` + `sp4`. All major audit findings must be closed or recorded as needing the owner's written acceptance by the end of SP4.
-
-## Pattern that worked (B-2705)
-
-- A job whose migration changes a ported SETH table (needs a `deliberate_changes.yaml` entry): builder lists the entry in build.md and reports READY with the schema test failing. Lead checks the entry against the migration, appends it on the job branch, merges `origin/main` into the branch, runs `uv run pytest tests/schema tests/identity/test_schema.py`, pushes. Then in parallel: `gates.py --ref <sha> --name <id>-merge` (background, ~35-42 min), `isolation-reviewer`, `reviewer-code`, `reviewer-security` (opus) with the job header. All pass → `gh pr ready <pr>; gh pr merge <pr> --merge --match-head-commit <sha>`; then `job queue` marks merged. The factory gate itself FAILs on the protected path, so do not route these through `factory/bin/gate`.
-- An escalated job without a protected change (e.g. 038): `job advance needs-human`, then the same lead trio (gates.py 13/13, isolation-reviewer, reviewer-security) and `gh pr merge --match-head-commit`.
-- Jobs without escalation: normal factory flow, `factory/bin/job merge`.
-
-## Traps
-
-- Run factory scripts and gates.py with `PYTHONUTF8=1`, `VIRTUAL_ENV` unset and `.venv` removed from PATH: `export PYTHONUTF8=1; unset VIRTUAL_ENV; export PATH="$(echo "$PATH" | tr ':' '\n' | grep -v '\.venv' | paste -sd:)"` (B-2704; `job` crashes under cp1252 otherwise).
-- `isolation-reviewer` is read-only and cannot write its file; the lead writes `docs/build/reviews/<id>-isolation-review-<n>.md` from its report. `reviewer-ui` sometimes returns text without writing its file; tell it in the prompt to write `round-<N>/review-ui.md` itself (works).
-- Never `cd` into a worktree in a Bash call; prefer `git -C`. Edit STATUS/DECISIONS with Python `newline=''`.
-- Approver always escalates a new migration and identity/auth UI.
-- Every new route: classify in `test_workspace_routes.py` and add to the non-SETH list in `tests/app/test_routes.py`; a new head migration updates `tests/identity/test_schema.py` head assertions.
-- Builders must not restart the cluster; never `-m live` or read `.devdata/`. No agent has a browser tool (`agent-browser` not installed), so UI is reviewed from diffs and component tests.
-- The lead's context reaches ~140k after 3 jobs; hand off after 3.
-- `factory/bin/job queue` takes ~2-3 min (it scans every subagent transcript for cost) and crashes on cp1252 without `PYTHONUTF8=1`; run it in the background.
-- `reviewer-code` (sonnet) and `reviewer-ui` sometimes claim they have no Write tool; resume them with SendMessage saying the review file is their required output and they write it. Never write a factory review yourself.
-- Full-suite gates on a hand merge can hit load flakes outside the diff; rerun the failed tests alone and, if they pass, merge per B-2631/B-2713 and file an issue (#109 is open for two of them).
+## Traps learned this session
+- Run heavy runs one at a time (gates.py full ~35-40 min, factory gate 5-15 min). Chain them in one background shell; gates.py needs timeout 7200000.
+- **The factory's checks.sh core set misses diff failures in other modules**: run `gates.py` (full suite) before every hand merge and treat failures as real until shown to be outside the diff.
+- `factory/bin/job` needs `PYTHONUTF8=1` (else UnicodeDecodeError on a review file).
+- A reviewer once replied without writing its file; `job advance approve` refuses ("missing reviews") — always check before spawning the approver. Put "your required output is round-N/review-<r>.md; write it before replying" in reviewer prompts.
+- `gh pr merge` can hit a GitHub TLS timeout; just retry.
+- Builders stall (stream watchdog) after pushing: check `git log origin/<branch>` and `head -1 build.md` before respawning.
