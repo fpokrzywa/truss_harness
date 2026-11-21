@@ -20,7 +20,8 @@ because of this run; changing that status (and REQ F-22) is a separate decision 
   - A client secret (Certificates & secrets), entered once into SETH and never anywhere else.
   - Token configuration, Add groups claim: **Security groups**, emitted as **Group ID** in the
     ID token. SETH maps groups by their object ids only.
-  - Optional claims of the ID token: `email` and `preferred_username`.
+  - Optional claims of the ID token: `email`, `preferred_username`, `acct` and `xms_edov`
+    (`xms_edov` says Entra verified the `email` domain; without it `email` is never trusted).
 
 ## The env file
 
@@ -79,9 +80,18 @@ Then add the redirect URI with the new IdP's id to the app registration, and run
 
 At each sign-in SETH checks, after the ID token is valid, that `tid` is the IdP's tenant,
 `ver` is `2.0` and `oid` is a GUID; the person is keyed by `oid`, never by Entra's pairwise
-`sub`. The address is the `email` claim, else `preferred_username`; it counts as verified for
-linking and just-in-time provisioning even without `email_verified`, because the tenant is
-pinned (design SP3 section 12 item 24). Any refusal is audited `identity.login.failed` with the
+`sub`. An installation IdP links a pending setup token in any client by e-mail, so an address
+counts as verified (for that link and for just-in-time provisioning) only for a member of the
+tenant (DECISIONS B-2712, narrowing design SP3 section 12 item 24):
+
+- a guest (`acct` = 1, or a `preferred_username` / `upn` containing `#EXT#`) never has a
+  verified address: they sign in only through an identity already bound to them;
+- a member's `email` is verified only when `xms_edov` is `true`;
+- otherwise a member's `preferred_username` (their UPN in the tenant) is the verified address;
+- with neither, the sign-in has no verified address: no link, no new user
+  (`jit_requires_verified_email`).
+
+Any refusal is audited `identity.login.failed` with the
 reason (`entra_tenant_mismatch`, `entra_version_invalid`, `entra_oid_invalid`) and the browser
 gets the generic sign-in error.
 
@@ -111,7 +121,8 @@ the application only).
 
 1. Start SETH with `SHIFDE_OIDC_BASE_URL` set to the origin named in the redirect URI.
 2. Open the login page; the Entra IdP's button is listed under its display name.
-3. Sign in as a test person of the tenant who is in a mapped security group.
+3. Sign in as a test person of the tenant (a member, not a guest) who is in a mapped security
+   group.
 4. Check: you land in SETH signed in; the Users screen shows the person with the expected
    address; their platform group membership matches the group; the audit log has the sign-in
    and no failure. A second sign-in maps to the same person.
