@@ -23,6 +23,10 @@ Ported from SETH 3ba0e06 `admin/providers.py`. Changes (DECISIONS B-1621.., B-16
 * A client's IdP never syncs groups (`ck_idp_configs__group_sync_installation_only`, B-932) and
   never provisions people (`ck_idp_configs__tenant_no_jit`): both are a 422 here, before the
   database refuses.
+* The `entra` profile (SP3-6, B-2711) is for installation IdPs only and pins the issuer, the
+  discovery URL and the groups claim to its Entra tenant (`_check_profile`, one rule for create
+  and for a patch merged with the stored row); a 422 before the database refuses
+  (`ck_idp_configs__entra_installation`).
 * Secrets (B-1641): every lookup names the scope's client (`get_secret(..., tenant_id=)`,
   B-802) and responses are built from `SecretMeta` (B-803), so another client's secret id is
   exactly an unknown id and a client never reaches an installation secret. Values never reach a
@@ -71,6 +75,7 @@ from shifde.tenancy.scope import TenantScope
 
 IDP_CONFLICT = "the identity provider conflicts with another identity provider in this scope"
 IDP_NOT_FOUND = "identity provider not found"
+ENTRA_ISSUER = "https://login.microsoftonline.com/{tenant}/v2.0"
 SECRET_NOT_FOUND = "secret not found"
 
 
@@ -149,6 +154,8 @@ def _idp_out(idp: IdpConfig) -> s.IdpOut:
         jit=idp.jit,
         group_sync=idp.group_sync_mode,
         status=idp.status,
+        profile=idp.profile,
+        entra_tenant_id=idp.entra_tenant_id,
         row_version=idp.row_version,
         created_at=idp.created_at,
         updated_at=idp.updated_at,
@@ -164,6 +171,36 @@ def _check_client_idp(sc: IdpScope, jit: str | None, group_sync: str | None) -> 
         raise ValidationFailed("jit must be 'off' for tenant identity providers")
     if group_sync not in (None, "off"):
         raise ValidationFailed("group_sync must be 'off' for tenant identity providers")
+
+
+def _check_profile(
+    tenant_id: UUID | None,
+    profile: str,
+    entra_tenant_id: UUID | None,
+    issuer: str,
+    discovery_url: str,
+    claim_mappings: dict[str, str],
+) -> None:
+    """The profile rules of one IdP row as it will be stored. An `entra` IdP is installation-wide
+    and its issuer, discovery URL and groups claim are those of its Entra tenant."""
+    if profile == "generic":
+        if entra_tenant_id is not None:
+            raise ValidationFailed("entra_tenant_id is only for the entra profile")
+        return
+    if tenant_id is not None:
+        raise ValidationFailed("the entra profile is only for installation identity providers")
+    if entra_tenant_id is None:
+        raise ValidationFailed("an entra identity provider needs entra_tenant_id")
+    expected = ENTRA_ISSUER.format(tenant=entra_tenant_id)  # str(UUID): canonical lowercase
+    if issuer != expected:
+        raise ValidationFailed(f"the issuer of an entra identity provider must be {expected}")
+    if discovery_url != f"{expected}/.well-known/openid-configuration":
+        raise ValidationFailed(
+            "the discovery_url of an entra identity provider must be the issuer followed by "
+            "/.well-known/openid-configuration"
+        )
+    if claim_mappings.get("groups", "groups") != "groups":
+        raise ValidationFailed("an entra identity provider reads groups from the groups claim")
 
 
 def _check_urls(settings: Settings, *urls: str) -> None:
@@ -218,6 +255,14 @@ def create_idp(sc: IdpScope, settings: Settings, body: s.IdpCreate) -> s.IdpOut:
     sc.require()
     _check_urls(settings, body.issuer, body.discovery_url)
     _check_client_idp(sc, body.jit, body.group_sync)
+    _check_profile(
+        sc.tenant_id,
+        body.profile,
+        body.entra_tenant_id,
+        body.issuer,
+        body.discovery_url,
+        body.claim_mappings,
+    )
     idp_id = uuid7()
     try:
         with sc.db_context():
@@ -243,6 +288,8 @@ def create_idp(sc: IdpScope, settings: Settings, body: s.IdpCreate) -> s.IdpOut:
                             "jit": body.jit,
                             "group_sync_mode": body.group_sync,
                             "status": body.status,
+                            "profile": body.profile,
+                            "entra_tenant_id": body.entra_tenant_id,
                             "created_by": sc.principal.principal_id,
                         },
                     )
@@ -258,6 +305,8 @@ def create_idp(sc: IdpScope, settings: Settings, body: s.IdpCreate) -> s.IdpOut:
                     "jit": body.jit,
                     "group_sync": body.group_sync,
                     "client_secret_set": secret_ref is not None,
+                    "profile": body.profile,
+                    "entra_tenant_id": str(body.entra_tenant_id) if body.entra_tenant_id else None,
                 },
             )
             sc.session.flush()
@@ -304,6 +353,8 @@ _PATCH_COLUMNS = (
     ("jit", "jit"),
     ("group_sync", "group_sync_mode"),
     ("status", "status"),
+    ("profile", "profile"),
+    ("entra_tenant_id", "entra_tenant_id"),
 )
 
 
@@ -324,6 +375,32 @@ def _replace_secret(
         values["client_secret_ref_id"] = _new_secret(sc, settings, idp.id, value)
 
 
+def _merged_profile(
+    idp: IdpConfig, body: s.IdpPatch, sent: set[str], values: dict[str, object]
+) -> None:
+    """Check the profile rules on the stored row merged with the patch; a patch that makes the
+    IdP generic also clears its Entra tenant."""
+    profile = body.profile if "profile" in sent and body.profile else idp.profile
+    if "entra_tenant_id" in sent:
+        tenant = body.entra_tenant_id
+        values["entra_tenant_id"] = tenant
+    elif "profile" in sent and profile == "generic":
+        tenant = None
+        values["entra_tenant_id"] = None
+    else:
+        tenant = idp.entra_tenant_id
+    _check_profile(
+        idp.tenant_id,
+        profile,
+        tenant,
+        str(values.get("issuer", idp.issuer)),
+        str(values.get("discovery_url", idp.discovery_url)),
+        body.claim_mappings
+        if "claim_mappings" in sent and body.claim_mappings
+        else idp.claim_mappings,
+    )
+
+
 def update_idp(sc: IdpScope, settings: Settings, idp_id: UUID, body: s.IdpPatch) -> s.IdpOut:
     sc.require()
     sent = body.model_fields_set - {"row_version"}
@@ -339,6 +416,7 @@ def update_idp(sc: IdpScope, settings: Settings, idp_id: UUID, body: s.IdpPatch)
                 value = getattr(body, field)
                 if field in sent and value is not None:
                     values[column] = value
+            _merged_profile(idp, body, sent, values)
             _require_secret_use_for_destination(sc, idp, body, sent)
             if body.client_secret:
                 _replace_secret(sc, settings, idp, body.client_secret, values)

@@ -19,7 +19,7 @@ from datetime import datetime
 from typing import Any, Literal  # Any: free-form audit details
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SLUG_PATTERN = r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
 Strict = ConfigDict(extra="forbid")
@@ -297,11 +297,21 @@ class IdpCreate(BaseModel):
     jit: Literal["off", "create_user", "create_and_join"] = "off"
     group_sync: Literal["off", "sync"] = "off"
     status: Literal["active", "disabled"] = "active"
+    profile: Literal["generic", "entra"] = "generic"
+    entra_tenant_id: UUID | None = None
 
     @field_validator("claim_mappings")
     @classmethod
     def _claims(cls, value: dict[str, str]) -> dict[str, str]:
         return _check_claims(value)
+
+    @model_validator(mode="after")
+    def _profile(self) -> IdpCreate:
+        if self.profile == "entra" and self.entra_tenant_id is None:
+            raise ValueError("an entra identity provider needs entra_tenant_id")
+        if self.profile == "generic" and self.entra_tenant_id is not None:
+            raise ValueError("entra_tenant_id is only for the entra profile")
+        return self
 
 
 class IdpPatch(BaseModel):
@@ -316,6 +326,8 @@ class IdpPatch(BaseModel):
     jit: Literal["off", "create_user", "create_and_join"] | None = None
     group_sync: Literal["off", "sync"] | None = None
     status: Literal["active", "disabled"] | None = None
+    profile: Literal["generic", "entra"] | None = None
+    entra_tenant_id: UUID | None = None
     row_version: int
 
     @field_validator("claim_mappings")
@@ -343,6 +355,8 @@ class IdpOut(BaseModel):
     jit: str
     group_sync: str
     status: str
+    profile: str
+    entra_tenant_id: UUID | None
     row_version: int
     created_at: datetime
     updated_at: datetime | None

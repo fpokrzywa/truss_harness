@@ -23,6 +23,14 @@ sync is only from installation IdPs into platform-level groups the platform admi
 to that IdP (identity part 3b, `shifde_sync_idp_groups`, B-932; a client's IdP never syncs:
 check constraint, and refused here as B-925); a cached discovery document is rechecked against
 the expected issuer; an unknown or disabled IdP at the callback is audited (review 4 item 6).
+
+The `entra` profile (SP3-6, design SP3 section 8, B-2711): after the ID token is valid, `tid`
+must be the IdP's Entra tenant, `ver` 2.0 and `oid` a GUID; the identity is keyed by `oid` (as
+`sub`, so the mapping and JIT definers are unchanged) and the e-mail (`email`, else
+`preferred_username`) is trusted because the tenant is pinned. A token whose groups do not fit
+(overage: `_claim_names.groups`, `hasgroups`, more than `MAX_IDP_GROUPS`) refuses the sign-in
+before any sync, so memberships never follow a partial list (B-2700). Group ids are matched
+lowercase.
 """
 
 from __future__ import annotations
@@ -65,18 +73,28 @@ ALLOWED_ALGS = ["RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "
 SKEW_SECONDS = 60
 DISCOVERY_TTL = 300.0
 FAILURE_PATH = "/login?error=oidc_failed"
+OVERAGE_PATH = "/login?error=oidc_groups_overage"
+GROUPS_OVERAGE = "groups_overage"
+OVERAGE_MESSAGE = (
+    "Your Entra account is in too many groups for SETH to read. Ask an administrator to limit "
+    "the groups sent to SETH."
+)
 MAX_IDP_GROUPS = 200  # SETH 3ba0e06: group names kept per sign-in (the definer refuses more)
 _SAFE_NEXT = re.compile(r"^/(?!/)[A-Za-z0-9\-._~!$&'()*+,;=:@%/?#]*$")
 
 
 class OidcFailure(Exception):
-    """A login failed; `reason` is for the audit log only and never shown to the browser."""
+    """A login failed; `reason` is for the audit log only and never shown to the browser.
+    `message`, when set, is the one text the login page may show for it (group overage)."""
 
-    def __init__(self, reason: str, *, tenant_id: UUID | None = None) -> None:
+    def __init__(
+        self, reason: str, *, tenant_id: UUID | None = None, message: str | None = None
+    ) -> None:
         super().__init__(reason)
         self.reason = reason
         # the client the failure is filed in: set only once that client's IdP has vouched
         self.tenant_id = tenant_id
+        self.message = message
 
 
 @dataclass(frozen=True)
@@ -296,10 +314,11 @@ def record_failure(
     session.rollback()
     db.set_principal(session, None)
     db.set_tenant(session, tenant_id)
+    overage = reason == GROUPS_OVERAGE  # one row, its own action (B-2711)
     audit.record(
         session,
         ctx,
-        action="identity.login.failed",
+        action="identity.oidc.groups_overage" if overage else "identity.login.failed",
         outcome="failure",
         tenant_id=tenant_id,
         auth_method="oidc",
@@ -384,9 +403,34 @@ def _complete(
         raise OidcFailure("no_id_token")
     claims = client.validate_id_token(raw, idp=idp, disc=disc, nonce_hash=req.nonce_hash)
     try:
+        if idp.profile == "entra":
+            claims = _entra_claims(idp, claims)
         return _sign_in(session, settings, ctx, idp, claims, previous_token, req.next_path)
     except OidcFailure as exc:  # the IdP vouched: the failure belongs to its client
-        raise OidcFailure(exc.reason, tenant_id=idp.tenant_id) from exc
+        raise OidcFailure(exc.reason, tenant_id=idp.tenant_id, message=exc.message) from exc
+
+
+def _guid(value: Any) -> UUID | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return UUID(value)
+    except ValueError:
+        return None
+
+
+def _entra_claims(idp: ResolvedIdp, claims: dict[str, Any]) -> dict[str, Any]:
+    """The validated claims of an `entra` IdP's token with `sub` := `oid` (canonical lowercase):
+    the person is keyed by their object id in the pinned tenant, never by the pairwise `sub`."""
+    tid = _guid(claims.get("tid"))
+    if tid is None or tid != idp.entra_tenant_id:
+        raise OidcFailure("entra_tenant_mismatch")
+    if claims.get("ver") != "2.0":
+        raise OidcFailure("entra_version_invalid")
+    oid = _guid(claims.get("oid"))
+    if oid is None:
+        raise OidcFailure("entra_oid_invalid")
+    return {**claims, "sub": str(oid)}
 
 
 def _client_secret(
@@ -424,18 +468,28 @@ def _sign_in(
     next_path: str,
 ) -> OidcLoginResult:
 
-    email_claim = idp.claim_mappings.get("email", "email")
-    email_raw = claims.get(email_claim)
-    email = (
-        identity.normalize_email(email_raw) if isinstance(email_raw, str) and email_raw else None
-    )
-    # `email_verified` only vouches for the standard `email` claim; a custom mapping is untrusted.
-    verified = email_claim == "email" and claims.get("email_verified") is True
+    if idp.profile == "entra":
+        # `email`, else `preferred_username`; trusted because the tenant is pinned (SP3 item 24)
+        email_raw = _text(claims.get("email")) or _text(claims.get("preferred_username"))
+        verified = True
+    else:
+        email_claim = idp.claim_mappings.get("email", "email")
+        email_raw = _text(claims.get(email_claim))
+        # `email_verified` only vouches for the standard `email` claim; a custom mapping is
+        # untrusted.
+        verified = email_claim == "email" and claims.get("email_verified") is True
+    email = identity.normalize_email(email_raw) if email_raw else None
+    groups: list[str] | None = None
+    if idp.tenant_id is None and idp.group_sync_mode == "sync":
+        if idp.profile == "entra" and _groups_overage(claims, idp):
+            # fail closed before any identity, membership or session change (B-2711)
+            raise OidcFailure(GROUPS_OVERAGE, message=OVERAGE_MESSAGE)
+        groups = _claim_groups(claims, idp)
     user_id = _map_identity(session, idp, claims, email if verified else None, email, verified)
     if idp.tenant_id is not None:
         _require_tenant_member(session, idp.tenant_id, user_id)
-    elif idp.group_sync_mode == "sync":
-        _sync_groups(session, idp, user_id, _claim_groups(claims, idp), ctx=ctx)
+    elif groups is not None:
+        _sync_groups(session, idp, user_id, groups, ctx=ctx)
     db.set_tenant(session, None)
     login = identity.establish_session(
         session,
@@ -457,11 +511,35 @@ def _require_supported(idp: ResolvedIdp) -> None:
         raise OidcFailure("group_sync_unavailable")
 
 
-def _claim_groups(claims: dict[str, Any], idp: ResolvedIdp) -> list[str]:
+def _text(value: Any) -> str | None:
+    """A non-empty string claim, else None."""
+    return value if isinstance(value, str) and value else None
+
+
+def _group_names(claims: dict[str, Any], idp: ResolvedIdp) -> list[str]:
+    """The distinct group names of the claim (lowercased for an `entra` IdP: object ids)."""
     raw = claims.get(idp.claim_mappings.get("groups", "groups"))
     items = [raw] if isinstance(raw, str) else raw if isinstance(raw, list) else []
     names = [g.strip() for g in items if isinstance(g, str) and g.strip() and len(g) <= 200]
-    return list(dict.fromkeys(names))[:MAX_IDP_GROUPS]
+    if idp.profile == "entra":
+        names = [g.lower() for g in names]
+    return list(dict.fromkeys(names))
+
+
+def _claim_groups(claims: dict[str, Any], idp: ResolvedIdp) -> list[str]:
+    return _group_names(claims, idp)[:MAX_IDP_GROUPS]
+
+
+def _groups_overage(claims: dict[str, Any], idp: ResolvedIdp) -> bool:
+    """Entra sends a pointer instead of the groups when they do not fit in the token
+    (`_claim_names` / `hasgroups`); more than `MAX_IDP_GROUPS` is overage here as well, never a
+    truncated list (B-2711)."""
+    names = claims.get("_claim_names")
+    return (
+        (isinstance(names, dict) and "groups" in names)
+        or bool(claims.get("hasgroups"))
+        or len(_group_names(claims, idp)) > MAX_IDP_GROUPS
+    )
 
 
 def _sync_groups(

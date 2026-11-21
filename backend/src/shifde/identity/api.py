@@ -215,8 +215,8 @@ def _oidc_limit(request: Request, settings: Settings, ctx: RequestContext, step:
         limiter.check(f"{step}:{source_key(client) or 'unknown'}")
 
 
-def _failure(settings: Settings) -> RedirectResponse:
-    response = RedirectResponse(oidc.FAILURE_PATH, status_code=302)
+def _failure(settings: Settings, path: str = oidc.FAILURE_PATH) -> RedirectResponse:
+    response = RedirectResponse(path, status_code=302)
     response.delete_cookie(settings.oidc_cookie_name, path="/", secure=settings.cookie_secure)
     return response
 
@@ -285,8 +285,11 @@ def oidc_callback(
             binding=request.cookies.get(settings.oidc_cookie_name),
             previous_token=request.cookies.get(settings.session_cookie_name),
         )
-    except oidc.OidcFailure:
+    except oidc.OidcFailure as exc:
         _discard(session)
+        # group overage has its own page text (B-2711); every other reason stays generic
+        if exc.reason == oidc.GROUPS_OVERAGE:
+            return _failure(settings, oidc.OVERAGE_PATH)
         return _failure(settings)
     response = RedirectResponse(result.next_path, status_code=302)
     _set_cookie(response, settings, result.login.session_token, result.login.max_age_seconds)

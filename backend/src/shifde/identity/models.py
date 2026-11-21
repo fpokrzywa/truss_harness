@@ -143,6 +143,8 @@ class IdpConfig(Base):
     jit: Mapped[str] = mapped_column(Text, default="off")
     group_sync_mode: Mapped[str] = mapped_column(Text, default="off")
     status: Mapped[str] = mapped_column(Text, default="active")
+    profile: Mapped[str] = mapped_column(Text, default="generic")
+    entra_tenant_id: Mapped[UUID | None]
     row_version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

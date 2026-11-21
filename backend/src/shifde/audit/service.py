@@ -79,6 +79,9 @@ PRE_TENANT_ACTIONS: frozenset[str] = frozenset(
         # sign-in through `shifde_installation_idp_secret` (secrets_0003, B-2260): no client and
         # no administrator is known; the definer itself refuses a client context
         "secret.idp_client_secret.resolved",
+        # an Entra sign-in refused for group overage (SP3-6, B-2711): filed by `record_failure`
+        # like `identity.login.failed`, installation-level for an installation IdP
+        "identity.oidc.groups_overage",
     }
 )
 # A person's own sign-in events: filed globally only with the acting person as the actor, read
