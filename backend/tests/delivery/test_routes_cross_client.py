@@ -10,8 +10,12 @@ approval quoting its real digest. B's slug in the path gives A the unknown-organ
 organizations' credentials share a prefix. B's job cannot name A's plan: `service.enqueue_job`
 refuses it with the unknown-plan 404 (B-2732) ahead of `fk_delivery_jobs__plan` (B-2673), which
 still refuses a direct `repository.insert_job`, and B's executor cannot fetch A's plan artifact. B's job and journal step cannot name A's
-deployment (`fk_delivery_jobs__deployment`, `fk_delivery_journal__deployment`), and B's executor
-leases none of A's apply jobs. The executor gateway routes (`delivery.gateway_api.router`) have
+deployment (`fk_delivery_jobs__deployment`, `fk_delivery_journal__deployment`), B's native
+resource row cannot name A's deployment or A's target (`fk_delivery_native_resources__deployment`,
+`fk_delivery_native_resources__target`), and B's executor leases none of A's apply jobs. The
+settle step is scoped to the caller's organization: B's lost apply, expired plan and held apply
+behind an unknown outcome stay byte for byte unchanged through A's lease and A's plan and
+deployment list and get, until B's own call settles them. The executor gateway routes (`delivery.gateway_api.router`) have
 their own table, `GATEWAY_ROUTE_TESTS`, in `test_gateway_cross_client.py`.
 """
 
@@ -34,23 +38,31 @@ from shifde.core.settings import Settings
 from shifde.delivery import api as delivery_api
 from shifde.delivery import gateway, repository, service
 from shifde.identity.apikeys import hash_key
-from tests.connections.routes import as_user, org
+from tests.connections.routes import as_user, org, system_role_user
 from tests.delivery.conftest import make_executor
 from tests.delivery.releases import release_for_target
 from tests.delivery.routes import (
     WHOAMI,
+    Flow,
     address,
     bearer,
+    checkpoint,
     create_executor,
+    deployment_jobs,
+    deployment_row,
     deployments,
     enqueue,
     executors,
+    expire,
     issue,
     job_url,
     lease,
+    lease_kind,
     lease_plan,
     make_deployment,
+    owner_sql,
     plan_result,
+    plan_row,
     plans,
     proof,
     register,
@@ -788,6 +800,49 @@ def test_bs_job_and_journal_cannot_name_as_deployment(
     assert rows[0] == [two.a.tenant] and rows[1] == 0
 
 
+def test_bs_native_resource_cannot_name_as_deployment_or_target(
+    owner_db: Database, app_db: Database, two_deployments: TwoDeployments
+) -> None:
+    """`fk_delivery_native_resources__deployment` and `fk_delivery_native_resources__target`
+    refuse B's native resource row naming A's deployment or A's target (each insert wrong in one
+    column); B's own row is accepted and A's rows stay as they were."""
+    two = two_deployments
+    a_target = deployment_row(owner_db, two.a.deployment)["target_id"]
+    b_target = deployment_row(owner_db, two.b.deployment)["target_id"]
+    before = _a_deployment_state(owner_db, two)
+
+    def row(target_id: UUID, deployment_id: UUID) -> dict[str, Any]:
+        return {
+            "tenant_id": two.b.tenant,
+            "target_id": target_id,
+            "application_key": "helper-app",
+            "resource_type": "databricks_app",
+            "native_id": f"app-{uuid7().hex[-12:]}",
+            "deployment_id": deployment_id,
+        }
+
+    for values, key in (
+        (row(b_target, two.a.deployment), "fk_delivery_native_resources__deployment"),
+        (row(a_target, two.b.deployment), "fk_delivery_native_resources__target"),
+    ):
+        with app_session(app_db, two.b.tenant) as s, pytest.raises(IntegrityError) as exc:
+            repository.insert_native_resource(s, values)
+        assert key in str(exc.value)
+    with app_session(app_db, two.b.tenant) as s:  # B's own target and deployment
+        repository.insert_native_resource(s, row(b_target, two.b.deployment))
+        s.commit()
+    with owner_db.session() as o:
+        rows = o.execute(
+            text(
+                "SELECT tenant_id, target_id, deployment_id FROM shifde.delivery_native_resources "
+                "WHERE tenant_id = :t OR target_id = :g OR deployment_id = :d"
+            ),
+            {"t": two.b.tenant, "g": a_target, "d": two.a.deployment},
+        ).all()
+    assert [tuple(r) for r in rows] == [(two.b.tenant, b_target, two.b.deployment)]
+    assert _a_deployment_state(owner_db, two) == before
+
+
 def test_bs_executor_leases_none_of_as_apply_jobs(
     client: TestClient,
     world: World,
@@ -805,3 +860,94 @@ def test_bs_executor_leases_none_of_as_apply_jobs(
     assert _a_deployment_state(owner_db, two) == before
     r = lease(client, a.token, kinds=["apply"])
     assert r.status_code == 200 and r.json()["job"]["id"] == str(two.a.apply_job), r.text
+
+
+# ------------------------------------------------------------------ settle scope
+_ROWS = (
+    "SELECT * FROM shifde.delivery_plans WHERE tenant_id = :t ORDER BY id",
+    "SELECT * FROM shifde.delivery_deployments WHERE tenant_id = :t ORDER BY id",
+    "SELECT * FROM shifde.delivery_jobs WHERE tenant_id = :t ORDER BY id",
+    "SELECT * FROM shifde.delivery_journal WHERE tenant_id = :t ORDER BY deployment_id, step_key",
+)
+
+
+def _rows(owner_db: Database, tenant: UUID) -> tuple[Any, ...]:
+    """Every plan, deployment, job and journal row of `tenant`, whole, read as the owner."""
+    with owner_db.session() as o:
+        return tuple(
+            tuple(tuple(r) for r in o.execute(text(sql), {"t": tenant}).all()) for sql in _ROWS
+        )
+
+
+def test_as_settle_step_leaves_bs_rows_unchanged(
+    client: TestClient, world: World, people: People, owner_db: Database
+) -> None:
+    """The settle step runs for the caller's organization only: B holds a lost apply after an
+    intent (not yet swept), a sealed plan past `expires_at` and an `unknown_outcome` deployment
+    with a queued apply on its target; A's lease and A's plan and deployment list and get leave
+    every B row byte for byte as it was, and B's own next call settles them."""
+    flows = {}
+    for c, email in ((world.a, people.owner_a), (world.b, people.owner_b)):
+        token = make_executor(client, c, email).token
+        approver = system_role_user(owner_db, c.tenant, "tenant_administrator")
+        flows[c.slug] = Flow(client, c.slug, ws_slug(c), c.tenant, email, approver, token, owner_db)
+    a, b = flows[world.a.slug], flows[world.b.slug]
+    # B: every plan and deployment first (a target with an unknown outcome takes no new plan)
+    held, other = b.target()["id"], b.target()["id"]
+    _, unknown = b.deployment(held)
+    _, queued = b.deployment(held)
+    plan, lost = b.deployment(other)
+    leased = lease_kind(client, b.token, "apply")
+    assert leased["job"]["deployment_id"] == unknown
+    assert checkpoint(client, b.token, leased, 1, "intent").status_code == 200
+    expire(owner_db, leased["job"]["id"])
+    assert b.get(unknown)["status"] == "unknown_outcome"  # B's own settle step holds `queued`
+    leased = lease_kind(client, b.token, "apply")
+    assert leased["job"]["deployment_id"] == lost
+    assert checkpoint(client, b.token, leased, 1, "intent").status_code == 200
+    expire(owner_db, leased["job"]["id"])  # lost, not yet swept in B's organization
+    lost_job = leased["job"]["id"]
+    expired_plan = uuid7()  # sealed 20 minutes ago (the seal guard keeps a plan from moving back)
+    owner_sql(
+        owner_db,
+        "INSERT INTO shifde.delivery_plans (tenant_id, id, target_id, target_revision, "
+        "artifact_id, artifact_digest, application_key, display_name, status, requested_by, "
+        "steps, snapshot, adapter_version, toolchain_digest, digest, sealed_at, expires_at) "
+        "SELECT tenant_id, :id, target_id, target_revision, artifact_id, artifact_digest, "
+        "application_key, display_name, 'sealed', requested_by, steps, snapshot, "
+        "adapter_version, toolchain_digest, digest, now() - interval '20 minutes', "
+        "now() - interval '5 minutes' FROM shifde.delivery_plans WHERE id = :p",
+        id=expired_plan,
+        p=plan["id"],
+    )
+    (queued_job,) = deployment_jobs(owner_db, queued, "apply")
+    assert queued_job["status"] == "queued" and queued_job["run_after"] > queued_job["db_now"]
+    assert deployment_row(owner_db, lost)["status"] == "applying"
+    assert plan_row(owner_db, expired_plan)["status"] == "sealed"
+    # A: its own plan and deployment, then the calls that run the settle step
+    a_plan, a_deployment = a.deployment()
+    before = _rows(owner_db, world.b.tenant)
+    r = lease(client, a.token)
+    assert r.status_code == 200 and r.json()["job"]["deployment_id"] == a_deployment, r.text
+    h = as_user(client, a.requester)
+    for url in (
+        plans(a.slug),
+        f"{plans(a.slug)}/{a_plan['id']}",
+        deployments(a.slug),
+        f"{deployments(a.slug)}/{a_deployment}",
+    ):
+        assert client.get(url, headers=h).status_code == 200, url
+    client.cookies.clear()
+    assert _rows(owner_db, world.b.tenant) == before
+    # B's own call settles the pending work: the setup really was pending
+    h = as_user(client, b.requester)
+    assert client.get(deployments(b.slug), headers=h).status_code == 200
+    client.cookies.clear()
+    assert _rows(owner_db, world.b.tenant) != before
+    with owner_db.session() as o:
+        job_status = o.execute(
+            text("SELECT status FROM shifde.delivery_jobs WHERE id = :j"), {"j": lost_job}
+        ).scalar_one()
+    assert job_status == "lost"
+    assert plan_row(owner_db, expired_plan)["status"] == "expired"
+    assert deployment_row(owner_db, lost)["status"] == "unknown_outcome"
