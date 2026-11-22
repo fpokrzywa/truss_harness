@@ -146,6 +146,7 @@ def test_a_successful_export_writes_one_exported_event_without_row_values(
         "more": True,
         "truncated": False,
         "row_cap": None,
+        "capped": False,
         "classification": "internal",
     }
     assert SECRET not in json.dumps(e["details"]) and "name" not in e["details"]
@@ -190,10 +191,83 @@ def test_a_max_rows_policy_caps_the_rows_returned(
     h = as_user(client, two.a.email)
     r = client.post(_export(two.a, two.a.ontology), json={**BODY, "limit": 50}, headers=h)
     assert r.status_code == 200, r.text
-    assert len(r.json()["rows"]) == 2 and r.json()["next_cursor"] is not None
+    assert len(r.json()["rows"]) == 2 and r.json()["next_cursor"] is None
     (e,) = _events(owner_db, two.a.tenant, "ontology.exported")
     assert e["details"]["row_cap"] == 2 and e["details"]["rows"] == 2
-    assert e["details"]["more"] is True
+    assert e["details"]["more"] is False and e["details"]["capped"] is True
+
+
+def _page_through(
+    client: TestClient, side: Side, h: dict[str, str], limit: int
+) -> list[list[Any]]:  # Any: rows
+    """Every page of the side's export, following `next_cursor` until it is null."""
+    pages: list[list[Any]] = []
+    cursor = None
+    while True:
+        body = {**BODY, "limit": limit, **({"cursor": cursor} if cursor else {})}
+        r = client.post(_export(side, side.ontology), json=body, headers=h)
+        assert r.status_code == 200, r.text
+        pages.append(r.json()["rows"])
+        cursor = r.json()["next_cursor"]
+        if cursor is None or len(pages) > SOURCE_ROWS:
+            return pages
+
+
+def test_a_max_rows_policy_caps_the_total_rows_across_pages(
+    client: TestClient, two: Two, owner_db: Database
+) -> None:
+    _export_policy(owner_db, two.a.tenant, {"max_rows": 3})
+    h = as_user(client, two.a.email)
+    pages = _page_through(client, two.a, h, 2)
+    assert [len(p) for p in pages] == [2, 1]
+    assert [row["id"] for p in pages for row in p] == [0, 1, 2]
+    last = _events(owner_db, two.a.tenant, "ontology.exported")[-1]["details"]
+    assert last["capped"] is True and last["more"] is False and last["row_cap"] == 3
+
+
+def test_a_cursor_at_the_cap_is_403_and_denied_is_audited(
+    client: TestClient, two: Two, owner_db: Database
+) -> None:
+    h = as_user(client, two.a.email)
+    first = client.post(_export(two.a, two.a.ontology), json={**BODY, "limit": 2}, headers=h)
+    assert first.status_code == 200, first.text
+    cursor = first.json()["next_cursor"]
+    assert cursor is not None
+    _export_policy(owner_db, two.a.tenant, {"max_rows": 2})
+    queried = len(_events(owner_db, two.a.tenant, "ontology.queried"))
+    r = client.post(
+        _export(two.a, two.a.ontology), json={**BODY, "limit": 2, "cursor": cursor}, headers=h
+    )
+    assert r.status_code == 403, r.text
+    (denied,) = _events(owner_db, two.a.tenant, "ontology.export_denied")
+    assert denied["outcome"] == "denied" and str(denied["target_id"]) == two.a.ontology
+    assert _own(denied["details"]) == {"reason": "row_cap_reached", "object_type": TYPE}
+    assert len(_events(owner_db, two.a.tenant, "ontology.queried")) == queried
+    assert len(_events(owner_db, two.a.tenant, "ontology.exported")) == 1
+
+
+def test_bs_row_cap_and_cursor_do_not_reach_as_export(
+    client: TestClient, two: Two, owner_db: Database
+) -> None:
+    hb = as_user(client, two.b.email)
+    theirs = client.post(_export(two.b, two.b.ontology), json={**BODY, "limit": 2}, headers=hb)
+    assert theirs.status_code == 200, theirs.text
+    b_cursor = theirs.json()["next_cursor"]
+    assert b_cursor is not None
+    _export_policy(owner_db, two.b.tenant, {"max_rows": 1})
+    b_before = _a_state(owner_db, two.b.tenant)
+    h = as_user(client, two.a.email)
+    pages = _page_through(client, two.a, h, 2)
+    assert [len(p) for p in pages] == [2, 2, 1]
+    exported = _events(owner_db, two.a.tenant, "ontology.exported")
+    assert [e["details"]["row_cap"] for e in exported] == [None, None, None]
+    # B's cursor names B's version, so it does not belong to A's query
+    r = client.post(
+        _export(two.a, two.a.ontology), json={**BODY, "limit": 2, "cursor": b_cursor}, headers=h
+    )
+    assert r.status_code == 422, r.text
+    assert "rows" not in r.json()
+    assert _a_state(owner_db, two.b.tenant) == b_before
 
 
 def _a_state(owner_db: Database, tenant: UUID) -> tuple[Any, Any]:  # Any: counts
