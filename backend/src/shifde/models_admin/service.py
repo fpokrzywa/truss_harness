@@ -94,6 +94,7 @@ INVOCABLE = frozenset({"preview", "active"})
 ORG_NOT_FOUND = "organization not found"  # the answer `tenancy.dependencies.resolve_org` gives
 SHARED_READ_ONLY = "the SHI provider and its models are managed by the platform administrator"
 SHI_NOT_CONFIGURED = "the SHI provider is not configured"
+PROVIDER_CONNECTION_SCOPE = "a model provider needs a client-wide model_api connection"
 SHI_CONFIGURED = "model.shi_provider.configured"
 SHI_ACCESS_CHANGED = "model.shi_provider.access_changed"
 SHI_OFF = "shi_provider_off"  # the reason a call-time gate refusal is audited with
@@ -357,6 +358,8 @@ class ModelService:
             raise ValidationFailed(
                 "connection_id must reference a model_api connection of the same adapter"
             )
+        if conn["workspace_id"] is not None:  # #156 rule 4.6
+            raise ValidationFailed(PROVIDER_CONNECTION_SCOPE)
         if body.vendor_id is not None:
             vendors.require_active_vendor(self._session, self.sc.tenant_id, body.vendor_id)
         provider_id = uuid7()
@@ -377,7 +380,12 @@ class ModelService:
             self._session.flush()
         except IntegrityError as exc:
             self._session.rollback()
-            raise Conflict("a model provider with this name already exists") from exc
+            state = getattr(exc.orig, "sqlstate", None)
+            if state == "23505":
+                raise Conflict("a model provider with this name already exists") from exc
+            if state == "23514":  # trg_model_providers_connection_scope (models_admin_0004)
+                raise ValidationFailed(PROVIDER_CONNECTION_SCOPE) from exc
+            raise
         row = self._provider_row(provider_id)
         self._audit(
             "model.provider.created",

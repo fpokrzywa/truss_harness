@@ -7,6 +7,7 @@ import type { Connection } from '@/lib/api/integrate-types';
 import { useCan } from '@/lib/hooks';
 import { useAdapters, useConnections } from '@/lib/integrate-hooks';
 import { adapterMaturity } from '@/lib/maturity';
+import { connectionHref } from '@/lib/scope';
 import { EmptyState, formatDate, PageHeader, QueryGate, SelectField } from '../admin/ui';
 import { useOrgParam } from '../security/useOrg';
 import { ConnectionWizard, CONNECTION_TYPES } from './ConnectionWizard';
@@ -89,10 +90,7 @@ export function ConnectionsView() {
                   {data.items.map((c) => (
                     <tr key={c.id}>
                       <td className="td font-medium">
-                        <Link
-                          className="text-blue-800 underline"
-                          href={`/o/${encodeURIComponent(org)}/integrate/connections/${encodeURIComponent(c.id)}`}
-                        >
+                        <Link className="text-blue-800 underline" href={connectionHref(org, c.id)}>
                           {c.name}
                         </Link>
                       </td>
@@ -125,11 +123,7 @@ export function ConnectionsView() {
         <ConnectionWizard
           org={org}
           onClose={() => setCreating(false)}
-          onCreated={(id) =>
-            router.push(
-              `/o/${encodeURIComponent(org)}/integrate/connections/${encodeURIComponent(id)}`,
-            )
-          }
+          onCreated={(id) => router.push(connectionHref(org, id))}
         />
       )}
     </div>

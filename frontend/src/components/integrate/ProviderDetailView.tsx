@@ -7,6 +7,7 @@ import type { DiscoveredModel, HealthResult } from '@/lib/api/integrate-types';
 import { useCan } from '@/lib/hooks';
 import { useAdapters, useProvider, useRefreshInt } from '@/lib/integrate-hooks';
 import { isPlannedAdapter, PLANNED_EXPLANATION } from '@/lib/maturity';
+import { connectionHref } from '@/lib/scope';
 import { ActionError, EmptyState, formatDate, PageHeader, QueryGate, useAction } from '../admin/ui';
 import { useOrgParam } from '../security/useOrg';
 import { StatusBadge } from './Maturity';
@@ -60,7 +61,7 @@ export function ProviderDetailView({ id }: { id: string }) {
                   <dd>
                     <Link
                       className="text-blue-800 underline"
-                      href={`/o/${encodeURIComponent(org)}/integrate/connections/${encodeURIComponent(p.connection_id)}`}
+                      href={connectionHref(org, p.connection_id)}
                     >
                       View connection
                     </Link>

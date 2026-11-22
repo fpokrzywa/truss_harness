@@ -681,11 +681,47 @@ def test_a_workspace_administrator_cannot_repoint_a_connection_on_a_tenant_scope
 
     admin = login(client, world.passwords, ADMIN)
     sid = secret(client, admin, "tenant-secret", REST_TOKEN)  # tenant scope
+    main = next(
+        w["id"]
+        for w in client.get(f"{A}/workspaces", headers=admin).json()["items"]
+        if w["slug"] == "main"
+    )
+    ws_sid = str(
+        post(
+            client,
+            f"{A}/secrets",
+            admin,
+            {
+                "name": "ws-secret",
+                "value": REST_TOKEN,
+                "scope": {"type": "workspace", "id": main},
+            },
+        )["id"]
+    )
     conn = connection(
         client,
         admin,
-        {**rest_body(rest_server, sid, "ws-conn"), "scope": {"workspace": "main"}},
+        {**rest_body(rest_server, ws_sid, "ws-conn"), "scope": {"workspace": "main"}},
     )
+    # B-2784: connections_0002 (#156 L1) refuses a workspace connection on a tenant-scoped secret,
+    # so the API can no longer create this state. The schema owner makes it here (the guard off
+    # for this one transaction only) to keep proving the API's own refusal (FR-CON-011) as
+    # defense in depth behind the database guard; the refusal and its assertions are unchanged.
+    owner_session.execute(
+        text("SELECT pg_catalog.set_config('app.tenant_id', :t, true)"),
+        {"t": str(tenant_id(owner_session, "demo-a"))},
+    )
+    owner_session.execute(
+        text("ALTER TABLE shifde.connections DISABLE TRIGGER trg_connections_guard")
+    )
+    owner_session.execute(
+        text("UPDATE shifde.connections SET secret_ref_id = :s WHERE id = :c"),
+        {"s": sid, "c": conn["id"]},
+    )
+    owner_session.execute(
+        text("ALTER TABLE shifde.connections ENABLE TRIGGER trg_connections_guard")
+    )
+    owner_session.commit()
     uid = new_user(
         client,
         login(client, world.passwords, ADMIN),

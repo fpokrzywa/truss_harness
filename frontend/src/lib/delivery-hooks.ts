@@ -11,8 +11,8 @@ const key = (org: string, kind: DeliveryKind, ...rest: unknown[]) =>
   ['delivery', org, kind, ...rest] as const;
 
 /** First page of the organization's targets, active and archived. */
-export const useTargets = (org: string) =>
-  useQuery({ queryKey: key(org, 'targets'), queryFn: () => endpoints.listTargets(org) });
+export const useTargets = (org: string, enabled = true) =>
+  useQuery({ queryKey: key(org, 'targets'), queryFn: () => endpoints.listTargets(org), enabled });
 
 export const useExecutors = (org: string) =>
   useQuery({ queryKey: key(org, 'executors'), queryFn: () => endpoints.listExecutors(org) });

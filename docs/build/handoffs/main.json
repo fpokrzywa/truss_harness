@@ -1,8 +1,8 @@
 {
-  "session_id": "0017d47c-7e30-411c-8ea6-681a79a8238e",
-  "head_sha": "fbb3b09be02dfdef73e37614725f2b1e836621da",
+  "session_id": "7d438bdc-c734-4c7c-8a9f-7c168cf2751a",
+  "head_sha": "161cdd8630d33eb448c3a9568b21461df78d3ab7",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "PYTHONUTF8=1 factory/bin/job queue; hand merge 073 (gates 12/13, only #188); gate 088; then gates+hand merge 080, 083, 084, 076 per docs/build/HANDOFF.md; job for #188",
-  "written_at": "2026-11-22T16:45:37Z"
+  "next_step": "PYTHONUTF8=1 factory/bin/job queue; 097 (CM-2) and 077 reviews; 104 spec; hand merges 093, 083, 084, 087",
+  "written_at": "2026-11-22T22:32:03Z"
 }

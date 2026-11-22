@@ -375,9 +375,10 @@ def test_a_secret_of_another_workspace_cannot_be_bound(
     settings: Settings,
     rest_server: RestTestServer,
 ) -> None:
-    """Connections review 1 item 3: nothing in the schema ties a secret's scope to the
-    connection's; `_check_secret` asks for `secret:use` at the secret's own scope (hidden unless
-    `secret:read` there), so a workspace-1 manager cannot bind a workspace-2 secret."""
+    """Connections review 1 item 3: `_check_secret` asks for `secret:use` at the secret's own
+    scope (hidden unless `secret:read` there), so a workspace-1 manager cannot bind a workspace-2
+    secret; it answers before the scope rule (#156 rule 4.4: a connection's secret has exactly the
+    connection's scope, 422 `secret_scope_mismatch` for a readable one of another scope)."""
     a = world.a
     email, uid = limited_user(owner_db, a.tenant, ["connection:read"], label="ws-manager")
     grant(

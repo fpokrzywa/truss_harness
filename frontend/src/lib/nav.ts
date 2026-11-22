@@ -1,5 +1,6 @@
 import {
   buildHref,
+  connectionsHref,
   datasetsHref,
   deliverHref,
   governHref,
@@ -169,10 +170,18 @@ export const NAV_ITEMS: readonly NavItem[] = [
   security('idps', 'Identity Providers', ['idp:manage']),
   security('secrets', 'Secrets', ['secret:read']),
   security('audit', 'Security Audit', ['audit:read']),
+  // CM-6: the Connections space lists connections, model providers and delivery targets.
+  {
+    id: 'integrate-connections',
+    label: 'Connections',
+    group: 'Integrate',
+    feature: 'integrate',
+    href: (s) => (s.org ? connectionsHref(s.org) : null),
+    requiresAny: ['connection:read', 'model:read', 'delivery:target:read'],
+  },
   integrate('models', 'Models', ['model:read']),
   integrate('providers', 'Model Providers', ['model:read']),
   integrate('vendors', 'Vendors', ['vendor:read']),
-  integrate('connections', 'Connections', ['connection:read']),
   integrate('adapters', 'Adapters', ['vendor:read']),
   integrate('egress', 'Egress Policies', ['egress:manage']),
   build('prompts', 'Prompts', ['prompt:read']),

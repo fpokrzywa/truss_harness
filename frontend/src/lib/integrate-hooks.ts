@@ -40,8 +40,12 @@ export const usePlatformVendors = () =>
     queryFn: () => endpoints.listPlatformVendors(),
   });
 
-export const useProviders = (org: string) =>
-  useQuery({ queryKey: key(org, 'providers'), queryFn: () => endpoints.listProviders(org) });
+export const useProviders = (org: string, enabled = true) =>
+  useQuery({
+    queryKey: key(org, 'providers'),
+    queryFn: () => endpoints.listProviders(org),
+    enabled,
+  });
 
 export const useProvider = (org: string, id: string) =>
   useQuery({
@@ -74,10 +78,15 @@ export const useAllowlist = (org: string, scopeType: string, scopeId: string) =>
 export const useRoutes = (org: string) =>
   useQuery({ queryKey: key(org, 'routes'), queryFn: () => endpoints.listRoutes(org) });
 
-export const useConnections = (org: string, q: Record<string, string | undefined> = {}) =>
+export const useConnections = (
+  org: string,
+  q: Record<string, string | undefined> = {},
+  enabled = true,
+) =>
   useQuery({
     queryKey: key(org, 'connections', q),
     queryFn: () => endpoints.listConnections(org, q),
+    enabled,
   });
 
 export const useConnection = (org: string, id: string) =>
