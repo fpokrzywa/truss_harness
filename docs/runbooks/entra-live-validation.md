@@ -18,8 +18,8 @@ The in-process proof against the fake Entra issuer (group mapping, access to `de
 - **An app registration** (Microsoft Entra admin center, App registrations, New registration):
   - Supported account types: accounts in this organizational directory only (single tenant).
   - Redirect URI, platform Web: `{SHIFDE_PUBLIC_BASE_URL}/api/auth/oidc/{idp_id}/callback`, where
-    `SHIFDE_PUBLIC_BASE_URL` is the API origin of the SETH installation (when unset, the first of
-    `SHIFDE_ALLOWED_ORIGINS`) and `idp_id` the id of the IdP created below (create the IdP first,
+    `SHIFDE_PUBLIC_BASE_URL` is the API origin of the SETH installation (required in production;
+    in development and test, when unset, the first of `SHIFDE_ALLOWED_ORIGINS`) and `idp_id` the id of the IdP created below (create the IdP first,
     then add the redirect URI).
   - A client secret (Certificates & secrets), entered once into SETH and never anywhere else.
   - Token configuration, Add groups claim: **Security groups**, emitted as **Group ID** in the
