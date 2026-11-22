@@ -118,6 +118,7 @@ def test_a_retired_key_is_trusted_until_the_lifetime_ends_then_refused() -> None
         (None, 900),  # no header: the default
         ("max-age=soon", 900),  # unparsable: the default
         ("no-cache, s-maxage=120", 900),  # no max-age: the default
+        ("max-age=" + "9" * 5000, 900),  # too long to convert: the default
     ],
 )
 def test_the_jwks_lifetime_is_max_age_clamped_or_the_default(
@@ -165,6 +166,7 @@ def test_the_default_settings_cap_entras_max_age_at_an_hour() -> None:
         ("max-age=1.5", None),
         ('max-age="60"', None),
         ("max-age=abc, max-age=30", None),  # the first max-age is unparsable: the default
+        ("max-age=" + "9" * 5000, None),  # too long for int(): unparsable
     ],
 )
 def test_cache_max_age_parsing(header: str | None, expected: int | None) -> None:
