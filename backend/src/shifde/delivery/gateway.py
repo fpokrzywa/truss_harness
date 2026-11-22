@@ -143,7 +143,8 @@ def enqueue_job(
     run_after: datetime | None = None,
     deadline: datetime | None = None,
 ) -> UUID:
-    """Queue a job (the caller commits); `apply` gets one attempt, other kinds four."""
+    """Queue a job (the caller commits); `apply` gets one attempt, other kinds four. A `plan` job
+    naming a plan must name a plan of the same organization and that plan's target (B-2732)."""
     return service.enqueue_job(
         session,
         tenant_id=tenant_id,

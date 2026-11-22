@@ -4,10 +4,12 @@ B-1019, B-2664, B-2673, B-2675..B-2679).
 Every route of `delivery.api.router` has a test here (`ROUTE_TESTS`, matched against the router):
 the caller first reaches their own object, then asks for B's target, executor, credential or plan
 under A's organization and gets exactly the answer an id that does not exist gets (404, same body),
-and finds B's rows absent from A's lists. B's slug in the path gives A the unknown-organization
+and finds B's rows absent from A's lists; B's sealed plan answers A the same 404, also for an
+approval quoting its real digest. B's slug in the path gives A the unknown-organization
 404. An executor token answers for its own organization's executor only, also when two
-organizations' credentials share a prefix. B's job cannot name A's plan (`fk_delivery_jobs__plan`,
-B-2673), and B's executor cannot fetch A's plan artifact. B's job and journal step cannot name A's
+organizations' credentials share a prefix. B's job cannot name A's plan: `service.enqueue_job`
+refuses it with the unknown-plan 404 (B-2732) ahead of `fk_delivery_jobs__plan` (B-2673), which
+still refuses a direct `repository.insert_job`, and B's executor cannot fetch A's plan artifact. B's job and journal step cannot name A's
 deployment (`fk_delivery_jobs__deployment`, `fk_delivery_journal__deployment`), and B's executor
 leases none of A's apply jobs. The executor gateway routes (`delivery.gateway_api.router`) have
 their own table, `GATEWAY_ROUTE_TESTS`, in `test_gateway_cross_client.py`.
@@ -26,10 +28,11 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from shifde.core.db import Database
+from shifde.core.errors import NotFound
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.delivery import api as delivery_api
-from shifde.delivery import gateway, repository
+from shifde.delivery import gateway, repository, service
 from shifde.identity.apikeys import hash_key
 from tests.connections.routes import as_user, org
 from tests.delivery.conftest import make_executor
@@ -47,6 +50,7 @@ from tests.delivery.routes import (
     lease,
     lease_plan,
     make_deployment,
+    plan_result,
     plans,
     proof,
     register,
@@ -464,6 +468,37 @@ def test_a_cannot_reach_bs_plan(
     assert _b_plan_state(owner_db, two) == before
 
 
+def test_a_cannot_reach_bs_sealed_plan(
+    client: TestClient, world: World, people: People, owner_db: Database, two_plans: TwoPlans
+) -> None:
+    """B's sealed plan: A's read, approval (quoting B's real digest) and rejection each get the
+    unknown-id 404, and B's plan is unchanged."""
+    two = two_plans
+    b = make_executor(client, world.b, people.owner_b)
+    leased = lease_plan(client, b.token)
+    assert leased["job"]["plan_id"] == two.b.plan
+    assert plan_result(client, b.token, leased).status_code == 200
+    with owner_db.session() as o:
+        status, sealed_digest = o.execute(
+            text("SELECT status, digest FROM shifde.delivery_plans WHERE id = :i"),
+            {"i": two.b.plan},
+        ).one()
+    assert status == "sealed" and sealed_digest
+    before = _b_plan_state(owner_db, two)
+    A, h = plans(two.a.slug), as_user(client, two.a.email)
+    nobody = str(uuid7())
+    for method, suffix, payload in (
+        ("GET", "", None),
+        ("POST", "/approve", {"plan_digest": sealed_digest}),
+        ("POST", "/reject", {}),
+    ):
+        _same_404(
+            client.request(method, f"{A}/{two.b.plan}{suffix}", headers=h, json=payload),
+            client.request(method, f"{A}/{nobody}{suffix}", headers=h, json=payload),
+        )
+    assert _b_plan_state(owner_db, two) == before
+
+
 def test_a_cannot_plan_on_bs_target(
     client: TestClient, owner_db: Database, two_plans: TwoPlans
 ) -> None:
@@ -543,7 +578,8 @@ def test_a_lists_only_its_own_plans(client: TestClient, two_plans: TwoPlans) -> 
 def test_bs_job_cannot_name_as_plan(
     owner_db: Database, app_db: Database, two_plans: TwoPlans
 ) -> None:
-    """B-2673: the composite key `fk_delivery_jobs__plan` refuses B's job naming A's plan."""
+    """B's job naming A's plan: the service refuses it as an unknown plan (B-2732), and the
+    composite key `fk_delivery_jobs__plan` refuses a direct insert (B-2673)."""
     two = two_plans
 
     def a_plan() -> tuple[Any, ...]:
@@ -553,11 +589,41 @@ def test_bs_job_cannot_name_as_plan(
             ).one()
         return tuple(row)
 
-    before = a_plan()
+    def b_jobs() -> int:
+        with owner_db.session() as o:
+            n: int = o.execute(
+                text("SELECT count(*) FROM shifde.delivery_jobs WHERE tenant_id = :t"),
+                {"t": two.b.tenant},
+            ).scalar_one()
+        return n
+
+    before, b_before = a_plan(), b_jobs()
+    plan_id, target_id = UUID(two.a.plan), UUID(two.b.target)
+    with app_session(app_db, two.b.tenant) as s:
+        with pytest.raises(NotFound):
+            gateway.enqueue_job(
+                s, tenant_id=two.b.tenant, kind="plan", plan_id=plan_id, target_id=target_id
+            )
+        s.commit()
+    assert b_jobs() == b_before
     with app_session(app_db, two.b.tenant) as s, pytest.raises(IntegrityError) as exc:
-        gateway.enqueue_job(s, tenant_id=two.b.tenant, kind="plan", plan_id=UUID(two.a.plan))
+        repository.insert_job(
+            s,
+            {
+                "tenant_id": two.b.tenant,
+                "id": uuid7(),
+                "kind": "plan",
+                "plan_id": plan_id,
+                "deployment_id": None,
+                "target_id": target_id,
+                "run_after": None,
+                "deadline": None,
+                "max_attempts": service.READ_ONLY_MAX_ATTEMPTS,
+            },
+        )
     assert "fk_delivery_jobs__plan" in str(exc.value)
     assert a_plan() == before
+    assert b_jobs() == b_before
     with owner_db.session() as o:
         jobs = o.execute(
             text("SELECT tenant_id FROM shifde.delivery_jobs WHERE plan_id = :i"),
