@@ -1081,9 +1081,17 @@ class ArtifactService:
             )
         try:
             updated = repository.set_state(self.session, self.sc.tenant_id, version_id, body.state)
-        except IntegrityError as exc:  # packaging's retire guard: a sealed release pins it
+        except IntegrityError as exc:
             self.session.rollback()
-            raise Conflict(RELEASE_PINNED) from exc
+            # only packaging's retire guard (a sealed release pins it) is a 409: the build
+            # trigger raises check_violation on this table too
+            diag = getattr(exc.orig, "diag", None)
+            if (
+                getattr(exc.orig, "sqlstate", None) == "23514"
+                and getattr(diag, "message_primary", None) == RELEASE_PINNED
+            ):
+                raise Conflict(RELEASE_PINNED) from exc
+            raise
         assert updated is not None
         repository.refresh_latest_published(self.session, self.sc.tenant_id, art["id"])
         self._audit(
