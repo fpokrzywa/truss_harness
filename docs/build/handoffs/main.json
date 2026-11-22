@@ -1,8 +1,8 @@
 {
-  "session_id": "5e01de8e-7a1a-4aa7-bcd9-7cf52de746fa",
-  "head_sha": "1ebd00d53b142a82f89695b346c9609d4823efdc",
+  "session_id": "7d438bdc-c734-4c7c-8a9f-7c168cf2751a",
+  "head_sha": "161cdd8630d33eb448c3a9568b21461df78d3ab7",
   "branch": "main",
-  "unit_in_progress": "charter7-factory-run",
-  "next_step": "PYTHONUTF8=1 factory/bin/job queue; 093 gate rerun, 087 sync (test_worker.py conflict), 095 build, 096 CM-1 spec; see HANDOFF.md",
-  "written_at": "2026-11-22T19:58:42Z"
+  "unit_in_progress": "none",
+  "next_step": "PYTHONUTF8=1 factory/bin/job queue; 097 (CM-2) and 077 reviews; 104 spec; hand merges 093, 083, 084, 087",
+  "written_at": "2026-11-22T22:32:03Z"
 }
