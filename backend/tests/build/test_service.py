@@ -15,21 +15,23 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from shifde.build import repository
 from shifde.build import schemas as sch
 from shifde.build.canonical import spec_hash
 from shifde.build.env import VersionRef
-from shifde.build.service import ArtifactService
+from shifde.build.service import RELEASE_PINNED, ArtifactService
 from shifde.connections import repository as conn_repo
 from shifde.core.db import Database, platform_admin_context
-from shifde.core.errors import AppError, NotFound
+from shifde.core.errors import AppError, Conflict, NotFound
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.models_admin import repository as models_repo
@@ -707,3 +709,53 @@ def test_problems_at_names_what_cannot_be_used_at_the_scope(
         listed = env.model_problems([a.model, other["id"], b.model])
         assert listed == {other["id"]: "model_not_allowed", b.model: "model_not_found"}
     _switch(app_db, a.tenant, a.admin, False)
+
+
+# ------------------------------------------------------------------ the retire guard's 409 (#93)
+class _Refusal(Exception):
+    """A driver error with a SQLSTATE and a primary message, as psycopg's."""
+
+    def __init__(self, sqlstate: str, message: str) -> None:
+        super().__init__(message)
+        self.sqlstate = sqlstate
+        self.diag = SimpleNamespace(message_primary=message)
+
+
+@pytest.mark.parametrize(
+    ("sqlstate", "message"),
+    [
+        ("23505", "duplicate key value violates unique constraint"),
+        ("23514", "an artifact version's spec is immutable"),
+    ],
+    ids=["another-sqlstate", "another-check-violation"],
+)
+def test_only_the_release_guard_is_a_conflict_on_set_state(
+    orgs: tuple[Org, Org],
+    owner_session: Session,
+    as_user: Opener,
+    monkeypatch: pytest.MonkeyPatch,
+    sqlstate: str,
+    message: str,
+) -> None:
+    a, _ = orgs
+
+    def refused(error: _Refusal) -> Callable[..., Any]:
+        def set_state(*_args: Any, **_kw: Any) -> Any:
+            raise IntegrityError("UPDATE shifde.artifact_versions", {}, error)
+
+        return set_state
+
+    monkeypatch.setattr(repository, "set_state", refused(_Refusal(sqlstate, message)))
+    with as_user(a.tenant, a.admin) as svc, pytest.raises(IntegrityError) as err:
+        svc.set_state("prompts", a.prompt, a.version, sch.StateIn(state="deprecated"))
+    assert getattr(err.value.orig, "sqlstate", None) == sqlstate  # unchanged, not a Conflict
+
+    monkeypatch.setattr(repository, "set_state", refused(_Refusal("23514", RELEASE_PINNED)))
+    with as_user(a.tenant, a.admin) as svc, pytest.raises(Conflict) as conflict:
+        svc.set_state("prompts", a.prompt, a.version, sch.StateIn(state="deprecated"))
+    assert str(conflict.value) == RELEASE_PINNED
+    state = owner_session.execute(
+        text("SELECT state FROM shifde.artifact_versions WHERE id = :v"), {"v": a.version}
+    ).scalar_one()
+    owner_session.rollback()
+    assert state == "published"  # both refusals rolled back
