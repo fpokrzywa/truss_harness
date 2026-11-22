@@ -45,7 +45,7 @@ from shifde.runtime import lifecycle, state
 from shifde.runtime import repository as repo
 from shifde.runtime.context import RunContext
 from shifde.runtime.governance import PolicyBudgetHooks
-from tests._support.runs import add_run
+from tests._support.runs import add_run, lose_rows
 from tests._support.tenants import add_tenants
 from tests.build.env_support import add_published
 from tests.build.service_support import REGISTRY, add_person
@@ -459,14 +459,26 @@ def test_a_run_the_executor_parked_itself_is_not_moved_again(
 
 
 def test_an_exception_during_a_write_ends_as_an_unknown_outcome_not_failed_internal(
-    two: tuple[C, C], advance: Advance, fake: type[Fake], owner_db: Database
+    two: tuple[C, C],
+    advance: Advance,
+    fake: type[Fake],
+    owner_db: Database,
+    admin_url: str,
+    owner_url: str,
 ) -> None:
     """C1 Python half (B-2151): any exception while an approved write is in flight."""
     a, b = two
     with owner_db.session() as o:
         for c in (a, b):  # both clients have a write in flight
-            o.execute(text("DELETE FROM shifde.run_steps WHERE run_id = :r"), {"r": c.run})
-            o.execute(text("DELETE FROM shifde.tool_invocations WHERE run_id = :r"), {"r": c.run})
+            lose_rows(
+                admin_url, owner_url, "DELETE FROM shifde.run_steps WHERE run_id = :r", r=c.run
+            )
+            lose_rows(
+                admin_url,
+                owner_url,
+                "DELETE FROM shifde.tool_invocations WHERE run_id = :r",
+                r=c.run,
+            )
             write_in_flight(o, c.tenant, c.run, c.tool)
         o.commit()
         b_before = _state(o, b.tenant)
