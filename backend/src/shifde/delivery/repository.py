@@ -756,7 +756,11 @@ SETTLE_DEPLOYMENTS = (
     "WHERE d.tenant_id = :t AND d.status IN ('leased', 'applying') AND EXISTS (SELECT 1 "
     "FROM shifde.delivery_jobs j WHERE j.tenant_id = d.tenant_id AND j.deployment_id = d.id "
     "AND j.kind = 'apply' AND j.status = 'lost' "
-    "AND j.result ->> 'outcome' = 'unknown_outcome')",
+    "AND j.result ->> 'outcome' = 'unknown_outcome') "
+    "RETURNING d.id, d.status_reason, (SELECT j.id FROM shifde.delivery_jobs j "
+    "WHERE j.tenant_id = d.tenant_id AND j.deployment_id = d.id AND j.kind = 'apply' "
+    "AND j.status = 'lost' AND j.result ->> 'outcome' = 'unknown_outcome' "
+    "ORDER BY j.id LIMIT 1) AS job_id",
     # (b) an apply lost before any journal step
     "UPDATE shifde.delivery_deployments d SET status = 'failed', "
     "status_reason = 'no platform write was attempted' "
@@ -810,10 +814,14 @@ SETTLE_DEPLOYMENTS = (
 )
 
 
-def settle_deployments(session: Session, *, tenant_id: UUID) -> None:
-    """Apply the settle rules (a)-(f) to the organization's deployments (B-2683)."""
-    for sql in SETTLE_DEPLOYMENTS:
-        session.execute(text(sql), {"t": tenant_id, "blocked": BLOCKED})
+def settle_deployments(session: Session, *, tenant_id: UUID) -> list[Row]:
+    """Apply the settle rules (a)-(f) to the organization's deployments (B-2683); the deployments
+    rule (a) moved to `unknown_outcome` (`id`, `status_reason`, the lost apply's `job_id`)."""
+    params = {"t": tenant_id, "blocked": BLOCKED}
+    unknown: list[Row] = list(session.execute(text(SETTLE_DEPLOYMENTS[0]), params).mappings())
+    for sql in SETTLE_DEPLOYMENTS[1:]:
+        session.execute(text(sql), params)
+    return unknown
 
 
 def insert_deployment(session: Session, values: Mapping[str, Any]) -> None:
