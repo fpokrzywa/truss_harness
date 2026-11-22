@@ -1,11 +1,12 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TargetOut } from '@/lib/api/delivery-types';
 import type { Connection, ModelProvider } from '@/lib/api/integrate-types';
 import { TARGET } from '@/test/delivery';
 import { ADAPTER_PLANNED, ADAPTER_REST, list, stubInt } from '@/test/integrate';
-import { problemResponse, renderWithClient } from '@/test/utils';
+import { jsonResponse, problemResponse, renderWithClient } from '@/test/utils';
 import { ConnectionsSpaceView } from './ConnectionsSpaceView';
 
 const nav = vi.hoisted(() => ({ query: '', replace: vi.fn(), push: vi.fn() }));
@@ -205,6 +206,64 @@ describe('ConnectionsSpaceView', () => {
     await screen.findByRole('option', { name: 'Engineering' });
     await userEvent.selectOptions(screen.getByLabelText('Workspace'), 'eng');
     expect(nav.replace).toHaveBeenCalledWith('/o/acme/connections?ws=eng');
+  });
+
+  describe('scope changes', () => {
+    const PERMS = 'GET /api/v1/orgs/acme/me/permissions';
+    const WORKSPACES = {
+      'GET /api/v1/orgs/acme/workspaces': () =>
+        list([{ id: 'w-1', slug: 'eng', name: 'Engineering', status: 'active' }]),
+    };
+    /** Re-renders the view when `router.replace` writes a new query, like the real router. */
+    function Harness() {
+      const [, bump] = useState(0);
+      nav.replace.mockImplementation((url: string) => {
+        nav.query = url.split('?')[1] ?? '';
+        bump((n) => n + 1);
+      });
+      return <ConnectionsSpaceView />;
+    }
+    const permsAt = (workspace: string[] | 'pending') => ({
+      [PERMS]: ({ url }: { url: string }) =>
+        !url.includes('workspace=eng')
+          ? jsonResponse({ permissions: READ })
+          : workspace === 'pending'
+            ? new Promise<Response>(() => {})
+            : jsonResponse({ permissions: workspace }),
+    });
+
+    it('keeps the scope control and the chosen tab while the new permissions load', async () => {
+      const fetchMock = stub({}, READ, { ...WORKSPACES, ...permsAt('pending') });
+      renderWithClient(<Harness />);
+      await userEvent.click(await screen.findByRole('tab', { name: 'Model providers' }));
+      await screen.findByRole('option', { name: 'Engineering' });
+      const before = listCalls(fetchMock, C).length;
+      await userEvent.selectOptions(screen.getByLabelText('Workspace'), 'eng');
+      expect(nav.query).toBe('ws=eng');
+      expect(screen.getByLabelText('Workspace')).toHaveValue('eng');
+      expect(screen.getByLabelText('Workspace')).toHaveFocus();
+      expect(screen.getByRole('tab', { name: 'Model providers' })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+      // Nothing is fetched for the new scope until its permissions are known.
+      expect(listCalls(fetchMock, C)).toHaveLength(before);
+    });
+
+    it('keeps the scope control on NoAccess so another scope can be chosen', async () => {
+      stub({}, READ, { ...WORKSPACES, ...permsAt(['secret:read']) });
+      renderWithClient(<Harness />);
+      await screen.findByRole('tablist');
+      await screen.findByRole('option', { name: 'Engineering' });
+      await userEvent.selectOptions(screen.getByLabelText('Workspace'), 'eng');
+      expect(
+        await screen.findByRole('heading', { name: 'Not found or no access' }),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+      await userEvent.selectOptions(screen.getByLabelText('Workspace'), '');
+      expect(await screen.findByRole('tablist')).toBeInTheDocument();
+      expect(nav.query).toBe('');
+    });
   });
 
   it('shows a loading status while a list is pending', async () => {

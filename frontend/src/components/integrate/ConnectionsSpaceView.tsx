@@ -98,7 +98,7 @@ function Section<T>({
               </div>
             );
           return (
-            <div className="card p-0">
+            <div className="card overflow-x-auto p-0">
               <table className="w-full">
                 <caption className="sr-only">{title}</caption>
                 <thead className="border-b border-slate-200">
@@ -147,11 +147,16 @@ export function ConnectionsSpaceView() {
   const pathname = usePathname();
   const { ws, proj } = useProjectQuery();
   const [creating, setCreating] = useState(false);
-  const permissions = usePermissions(org, ws || undefined, proj || undefined);
-  const can = (key: string) => permissions.data?.has(key) ?? false;
-  const canData = can('connection:read');
-  const canModels = can('model:read');
-  const canTargets = can('delivery:target:read');
+  // The last scope's set stays shown while another scope's permissions load, so the tabs and
+  // the scope control do not unmount on a scope change. Fetching waits for the fresh set.
+  const permissions = usePermissions(org, ws || undefined, proj || undefined, true);
+  const shown = permissions.data;
+  const fresh = permissions.isPlaceholderData ? undefined : permissions.data;
+  const can = (key: string) => fresh?.has(key) ?? false;
+  const shows = (key: string) => shown?.has(key) ?? false;
+  const canData = shows('connection:read');
+  const canModels = shows('model:read');
+  const canTargets = shows('delivery:target:read');
   const adapters = useAdapters();
   const connections = useConnections(
     org,
@@ -160,10 +165,10 @@ export function ConnectionsSpaceView() {
       project: proj || undefined,
       include_shared: proj ? 'true' : undefined,
     },
-    canData,
+    can('connection:read'),
   );
-  const providers = useProviders(org, canModels);
-  const targets = useTargets(org, canTargets);
+  const providers = useProviders(org, can('model:read'));
+  const targets = useTargets(org, can('delivery:target:read'));
 
   function setScope(next: { workspace: string; project: string }) {
     const q = new URLSearchParams();
@@ -172,16 +177,6 @@ export function ConnectionsSpaceView() {
     const query = q.toString();
     router.replace(query ? `${pathname}?${query}` : pathname);
   }
-
-  if (permissions.isPending) {
-    return (
-      <p role="status" className="text-sm text-slate-600">
-        Loading permissions...
-      </p>
-    );
-  }
-  if (permissions.isError) return <QueryError error={permissions.error} />;
-  if (!canData && !canModels && !canTargets) return <NoAccess />;
 
   const inScope = (t: TargetOut) =>
     !ws ? true : t.workspace === ws && (!proj || t.project === proj || t.project === null);
@@ -316,7 +311,18 @@ export function ConnectionsSpaceView() {
         }
       />
       <SlugScopeSelect org={org} workspace={ws} project={proj} onChange={setScope} />
-      <Tabs label="Connection groups" tabs={tabs} />
+      {permissions.isError ? (
+        <QueryError error={permissions.error} />
+      ) : !shown ? (
+        <p role="status" className="text-sm text-slate-600">
+          Loading permissions...
+        </p>
+      ) : sections.length === 0 ? (
+        <NoAccess />
+      ) : (
+        // A new set of tabs starts again on "All"; the same set keeps the chosen tab.
+        <Tabs key={sections.map((t) => t.id).join()} label="Connection groups" tabs={tabs} />
+      )}
       {creating && (
         <ConnectionWizard
           org={org}
