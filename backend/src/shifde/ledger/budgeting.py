@@ -92,7 +92,11 @@ def _held_sql(
     """Held amount of the rule's window: run holds matched through their run's scope, plus
     direct-invocation holds (no run) that name the rule's id in `budget_ids` (never for a per-run
     budget). A hold counts while it is within its TTL or its provider call may have started (the
-    marker): such a hold is never silently freed. `settled_unknown` is spent (its usage row)."""
+    marker): such a hold is never silently freed. `settled_unknown` is spent (its usage row).
+    The rule must carry its `id` (every period): without it no direct hold would match, so a
+    rule without one is a ValueError rather than a silent undercount (issue #91)."""
+    if b.get("id") is None:
+        raise ValueError("a budget/quota rule needs its id to count direct-invocation holds")
     params: dict[str, Any] = {"t": tenant_id, "scope_id": b["scope_id"]}
     live = [
         "res.tenant_id = :t",
@@ -168,7 +172,8 @@ def used_and_held(
     """Settled + held in ONE statement. Two statements under READ COMMITTED take two snapshots:
     a settle (usage event inserted, hold marked settled) committing in between would be counted
     by neither read and a hard limit could be overspent. One statement sees one snapshot, so the
-    amount is either still held or already settled, never missing."""
+    amount is either still held or already settled, never missing. `b` must carry its `id`
+    (see `_held_sql`)."""
     used_sql, params = _used_sql(tenant_id, root_run_id, b, metric, since)
     held_sql, held_params = _held_sql(tenant_id, root_run_id, b, metric, since)
     row = session.execute(

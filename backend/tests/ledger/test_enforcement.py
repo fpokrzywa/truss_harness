@@ -167,7 +167,13 @@ def test_another_tenants_usage_budgets_and_holds_are_ignored(owner_session: Sess
         s,
         a,
         None,
-        {"scope_type": "tenant", "scope_id": a, "period": "daily", "currency": None},
+        {
+            "id": budget_a,
+            "scope_type": "tenant",
+            "scope_id": a,
+            "period": "daily",
+            "currency": None,
+        },
         metric="tokens",
         since=budgeting.period_start("daily"),
     )
@@ -176,7 +182,13 @@ def test_another_tenants_usage_budgets_and_holds_are_ignored(owner_session: Sess
         s,
         b,
         None,
-        {"scope_type": "tenant", "scope_id": b, "period": "daily", "currency": None},
+        {
+            "id": budget_b,
+            "scope_type": "tenant",
+            "scope_id": b,
+            "period": "daily",
+            "currency": None,
+        },
         metric="tokens",
         since=budgeting.period_start("daily"),
     )

@@ -133,10 +133,22 @@ def test_held_amount_does_not_count_a_reservation_on_another_tenants_run(
         ),
         {"i": uuid7(), "t": b, "r": run_b},
     )
-    budget_b = {"scope_type": "tenant", "scope_id": b, "period": "run", "currency": None}
+    budget_b = {
+        "id": uuid7(),
+        "scope_type": "tenant",
+        "scope_id": b,
+        "period": "run",
+        "currency": None,
+    }
     own = budgeting.held_amount(owner_session, b, run_b, budget_b, metric="tokens", since=None)
     assert own == 5
-    budget = {"scope_type": "tenant", "scope_id": a, "period": "run", "currency": None}
+    budget = {
+        "id": uuid7(),
+        "scope_type": "tenant",
+        "scope_id": a,
+        "period": "run",
+        "currency": None,
+    }
     held = budgeting.held_amount(owner_session, a, run_b, budget, metric="tokens", since=None)
     assert held == 0
     owner_session.rollback()
