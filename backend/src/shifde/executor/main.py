@@ -30,7 +30,8 @@ DEV_ENVS = ("development", "test")
 EPILOG = f"""environment:
   {API_URL}           the SETH API origin (https outside development and test)
   {TOKEN}             the executor credential (shx_...) issued on the Executors screen
-  {CREDENTIALS_FILE}  JSON: credential_ref -> {{host, token, service_principal}}
+  {CREDENTIALS_FILE}  JSON: credential_ref -> {{tenant_id, host, token, service_principal}},
+                                    one organization per file
   SHIFDE_ENV                        development | test | production (default production)
 """
 

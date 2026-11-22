@@ -6,6 +6,7 @@ from __future__ import annotations
 import subprocess  # nosec B404 - runs the installed console script
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -38,7 +39,7 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(main.API_URL, "https://seth.example.com")
     monkeypatch.setenv(main.TOKEN, TOKEN)
-    monkeypatch.setenv(main.CREDENTIALS_FILE, str(credentials_file(tmp_path, HOST)))
+    monkeypatch.setenv(main.CREDENTIALS_FILE, str(credentials_file(tmp_path, HOST, tenant=uuid4())))
     monkeypatch.delenv("SHIFDE_ENV", raising=False)
 
 

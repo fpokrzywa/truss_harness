@@ -3,9 +3,11 @@ Databricks tokens only; B-2689).
 
 The deployment credential never enters SETH: the target stores only `credential_ref`, and the
 executor's own file (`SHIFDE_EXECUTOR_CREDENTIALS_FILE`) maps it to
-`{"host": "<https url>", "token": "<secret>", "service_principal": "<workspace user name>"}`. A
-token is handed out only for a grant that names this job, executor and target, has not expired,
-and whose audience is the normalized host of the file's entry. Every refusal is the same
+`{"tenant_id": "<organization id>", "host": "<https url>", "token": "<secret>",
+"service_principal": "<workspace user name>"}`. A credentials file belongs to exactly one
+organization (B-2737). A token is handed out only for a grant that names this job, executor and
+target, has not expired, whose audience is the normalized host of the file's entry, and whose
+target belongs to the entry's `tenant_id`. Every refusal is the same
 `CredentialUnavailable`, which names no token, host or reference. On POSIX a file readable or
 writable by group or others is refused; Windows has no such mode bits and is not checked.
 """
@@ -39,6 +41,7 @@ class CredentialFileRefused(ValueError):
 
 class CredentialEntry(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+    tenant_id: UUID
     host: str = Field(min_length=1)
     token: SecretStr
     service_principal: str = Field(min_length=1)
@@ -78,10 +81,17 @@ class CredentialBroker:
         return cls(entries)
 
     def entry_for(
-        self, grant: CredentialGrant, *, job_id: UUID, executor_id: UUID, target_id: UUID
+        self,
+        grant: CredentialGrant,
+        *,
+        job_id: UUID,
+        executor_id: UUID,
+        target_id: UUID,
+        tenant_id: UUID,
     ) -> CredentialEntry:
         """The local entry for a grant that names this job, executor and target, is unexpired,
-        and whose audience is the entry's normalized host; else `CredentialUnavailable`."""
+        whose audience is the entry's normalized host, and whose target's organization is the
+        entry's `tenant_id`; else `CredentialUnavailable`."""
         if (
             grant.job_id != job_id
             or grant.executor_id != executor_id
@@ -90,7 +100,7 @@ class CredentialBroker:
         ):
             raise CredentialUnavailable
         entry = self._entries.get(grant.credential_ref)
-        if entry is None:
+        if entry is None or entry.tenant_id != tenant_id:
             raise CredentialUnavailable
         try:
             host = normalize_databricks_address(entry.host)
@@ -101,7 +111,15 @@ class CredentialBroker:
         return entry
 
     def token_for(
-        self, grant: CredentialGrant, *, job_id: UUID, executor_id: UUID, target_id: UUID
+        self,
+        grant: CredentialGrant,
+        *,
+        job_id: UUID,
+        executor_id: UUID,
+        target_id: UUID,
+        tenant_id: UUID,
     ) -> str:
-        entry = self.entry_for(grant, job_id=job_id, executor_id=executor_id, target_id=target_id)
+        entry = self.entry_for(
+            grant, job_id=job_id, executor_id=executor_id, target_id=target_id, tenant_id=tenant_id
+        )
         return entry.token.get_secret_value()

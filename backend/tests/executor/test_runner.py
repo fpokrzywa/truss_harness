@@ -15,12 +15,12 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from shifde.adapters.native.contracts import JobLease, LeasedJob, utcnow
+from shifde.adapters.native.contracts import JobContext, JobLease, LeasedJob, utcnow
 from shifde.adapters.native.databricks.adapter import DatabricksAdapter
 from shifde.adapters.native.databricks.fake import FakeDatabricksPlatform
 from shifde.core.db import Database
 from shifde.delivery import gateway
-from shifde.executor.client import LeaseLost
+from shifde.executor.client import GatewayClient, LeaseLost
 from shifde.executor.runner import LeaseState, application_id, toolchain_digest
 from tests.delivery.conftest import ExecutorSide
 from tests.delivery.routes import Flow, deployment_jobs, deployment_row, expire, job_row
@@ -40,7 +40,7 @@ def _approved(
     """A target, its credentials file, a plan sealed by the runner and approved: (plan,
     deployment id, credentials file)."""
     target = flow.target()
-    creds = credentials_file(tmp_path, target["address"])
+    creds = credentials_file(tmp_path, target["address"], tenant=flow.tenant)
     plan = ask_plan(flow, target["id"])
     assert make_runner(flow.client, flow.token, creds, fake).run_once()
     sealed = flow.get_plan(plan["id"])
@@ -84,7 +84,9 @@ def test_a_broker_refusal_fails_the_job_before_any_platform_call(
 ) -> None:
     fake = fake_platform()
     _, deployment_id, _ = _approved(flow, tmp_path, fake)
-    other = credentials_file(tmp_path, "https://adb-other.cloud.databricks.com", name="other.json")
+    other = credentials_file(
+        tmp_path, "https://adb-other.cloud.databricks.com", tenant=flow.tenant, name="other.json"
+    )
     assert make_runner(flow.client, flow.token, other, fake).run_once()
     row = deployment_row(owner_db, deployment_id)
     assert row["status"] == "failed"
@@ -93,12 +95,54 @@ def test_a_broker_refusal_fails_the_job_before_any_platform_call(
     assert fake.actions == []
 
 
+def test_a_credentials_entry_of_another_tenant_fails_the_job_before_any_platform_call(
+    flow: Flow, tmp_path: Path, owner_db: Database
+) -> None:
+    fake = fake_platform()
+    target = flow.target()
+    creds = credentials_file(tmp_path, target["address"], tenant=flow.tenant)
+    plan = ask_plan(flow, target["id"])
+    assert make_runner(flow.client, flow.token, creds, fake).run_once()
+    deployment_id = flow.approve(flow.get_plan(plan["id"]))["deployment_id"]
+    # the same host and reference, but the entry belongs to another organization
+    foreign = credentials_file(tmp_path, target["address"], tenant=uuid4(), name="foreign.json")
+    assert make_runner(flow.client, flow.token, foreign, fake).run_once()
+    assert deployment_row(owner_db, deployment_id)["status"] == "failed"
+    jobs = [j for j in deployment_jobs(owner_db, deployment_id) if j["kind"] == "apply"]
+    assert jobs[0]["result"] == {"status": "failed", "error_code": "credential_unavailable"}
+    assert fake.actions == []
+
+
+def test_a_context_naming_another_job_fails_before_any_credential_grant(
+    flow: Flow, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = fake_platform()
+    target = flow.target()
+    creds = credentials_file(tmp_path, target["address"], tenant=flow.tenant)
+    context = GatewayClient.context
+    grants: list[JobLease] = []
+
+    def other_job(self: GatewayClient, lease: JobLease) -> JobContext:
+        ctx = context(self, lease)
+        return ctx.model_copy(update={"job": ctx.job.model_copy(update={"id": uuid4()})})
+
+    monkeypatch.setattr(GatewayClient, "context", other_job)
+    monkeypatch.setattr(GatewayClient, "credential_grant", lambda _, lease: grants.append(lease))
+    plan = ask_plan(flow, target["id"])
+    assert make_runner(flow.client, flow.token, creds, fake).run_once()
+    failed = flow.get_plan(plan["id"])
+    assert failed["status"] == "plan_failed", failed
+    assert failed["status_reason"] == "plan job failed: execution_failed"
+    assert grants == []
+    assert fake.actions == []
+
+
 def test_an_artifact_that_is_not_the_plans_is_refused_before_the_adapter(
     flow: Flow, tmp_path: Path, owner_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake = fake_platform()
     target = flow.target()
-    creds = credentials_file(tmp_path, target["address"])
+    creds = credentials_file(tmp_path, target["address"], tenant=flow.tenant)
     called: list[str] = []
     monkeypatch.setattr(DatabricksAdapter, "plan", lambda *a: called.append("plan"))
     other = b"not the plan's artifact"
