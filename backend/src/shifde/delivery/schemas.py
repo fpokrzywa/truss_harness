@@ -140,7 +140,10 @@ class PlanApprovalOut(BaseModel):
 
 class PlanOut(BaseModel):
     """A plan; `release_id`, `release_digest` and `evaluation_run_id` are null unless the caller
-    can read the plan's release."""
+    can read the plan's release. `digest` is returned even then: it is a commitment (a sha256 over
+    the plan's inputs and its release digest) that reveals nothing on its own; a caller who already
+    holds a candidate release digest can confirm it only by recomputing the digest from the fields
+    they can read. It is kept because approve quotes it."""
 
     id: UUID
     target_id: UUID

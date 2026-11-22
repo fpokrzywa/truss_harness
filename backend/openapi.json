@@ -9752,7 +9752,7 @@
         "type": "object"
       },
       "PlanOut": {
-        "description": "A plan; `release_id`, `release_digest` and `evaluation_run_id` are null unless the caller\ncan read the plan's release.",
+        "description": "A plan; `release_id`, `release_digest` and `evaluation_run_id` are null unless the caller\ncan read the plan's release. `digest` is returned even then: it is a commitment (a sha256 over\nthe plan's inputs and its release digest) that reveals nothing on its own; a caller who already\nholds a candidate release digest can confirm it only by recomputing the digest from the fields\nthey can read. It is kept because approve quotes it.",
         "properties": {
           "adapter_version": {
             "anyOf": [
