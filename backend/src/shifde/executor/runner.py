@@ -261,10 +261,12 @@ class Runner:
         executor_id: UUID,
         platform: Platform,
         *,
+        tenant_id: UUID,
         heartbeat_seconds: float = HEARTBEAT_SECONDS,
         poll_seconds: float = POLL_SECONDS,
     ) -> None:
         self.client, self.broker, self.executor_id = client, broker, executor_id
+        self.tenant_id = tenant_id  # the executor's organization, pinned at start
         self.platform = platform
         self.heartbeat_seconds, self.poll_seconds = heartbeat_seconds, poll_seconds
         self.toolchain_digest = toolchain_digest(platform.kind)
@@ -413,6 +415,13 @@ class Runner:
             raise ValueError("the job has no plan or names another target")
         if ctx.job.id != job.id:
             raise ValueError("the context names another job")
+        tenant = ctx.target.tenant_id
+        if (
+            tenant != self.tenant_id
+            or ctx.plan.tenant_id != tenant
+            or (ctx.deployment is not None and ctx.deployment.tenant_id != tenant)
+        ):
+            raise ValueError("the context names another organization")
         state.grant = self.client.credential_grant(lease)
         entry = self.broker.entry_for(
             state.grant,
