@@ -96,6 +96,10 @@ the repository's `scripts/hosted_db.py setup`; do not write role SQL by hand. It
    connection as `DATABASE_URL=...` in that copy's `.env.local`, then run:
 
    ```bash
+   sudo -i
+   git clone --branch <tag> https://github.com/<owner>/<repo>.git /root/seth-dbsetup
+   install -m 0600 /dev/null /root/seth-dbsetup/.env.local
+   editor /root/seth-dbsetup/.env.local
    cd /root/seth-dbsetup/backend
    uv sync --frozen
    uv run --frozen python ../scripts/hosted_db.py check
@@ -119,14 +123,27 @@ be dropped from them.
 
 ## (d) Install
 
-Users: three non-login service users, plus `seth-deploy`, which owns and builds `/opt/seth`. The
-service users can read the code but not write it, and each gets only its own secrets.
+Users: non-login system users, each with only its own secrets. The service users can read the
+code but not write it.
+
+| User | Runs | Secrets it gets |
+|---|---|---|
+| `seth-deploy` | Nothing; owns and builds `/opt/seth` | None |
+| `seth` | `seth-api`, `seth-worker` | `seth.env` (app role URL, pepper, key ring, metrics token) |
+| `seth-web` | `seth-web` | `web.env` (no secrets) |
+| `seth-exec-<org>` | `seth-executor@<org>`, one user per organization (section (e)) | That organization's executor env and credentials file only |
+| `seth-ops` | `seth-backup.service` and every `sudo seth-admin` run; no long-running service | `seth.env` and `admin.env` (the schema owner URL); owns the dumps |
+
+Because `seth-ops` runs no long-running service, a compromised API or worker (user `seth`) can read
+neither the owner credential from an admin process's `/proc/<pid>/environ` nor the dumps in
+`/var/backups/seth`. Every unit also sets `ProtectProc=invisible`, so a service sees only its own
+processes.
 
 ```bash
 sudo useradd --system --shell /usr/sbin/nologin --home-dir /opt/seth --no-create-home seth-deploy
 sudo useradd --system --shell /usr/sbin/nologin --home-dir /nonexistent --no-create-home seth
 sudo useradd --system --shell /usr/sbin/nologin --home-dir /nonexistent --no-create-home seth-web
-sudo useradd --system --shell /usr/sbin/nologin --home-dir /nonexistent --no-create-home seth-executor
+sudo useradd --system --shell /usr/sbin/nologin --home-dir /nonexistent --no-create-home seth-ops
 ```
 
 Directories and permissions:
@@ -134,8 +151,8 @@ Directories and permissions:
 ```bash
 sudo install -d -o seth-deploy -g seth-deploy -m 0755 /opt/seth
 sudo install -d -o root -g root -m 0755 /etc/seth
-sudo install -d -o root -g seth-executor -m 0750 /etc/seth/executor
-sudo install -d -o seth -g seth -m 0700 /var/backups/seth
+sudo install -d -o root -g root -m 0711 /etc/seth/executor
+sudo install -d -o seth-ops -g seth-ops -m 0700 /var/backups/seth
 ```
 
 Checkout of a release tag (`<tag>`: the release being installed) and the build, as `seth-deploy`.
@@ -167,12 +184,17 @@ sudo editor /etc/seth/seth.env /etc/seth/admin.env /etc/seth/web.env
 | `/etc/seth/seth.env` | 0640 | `root:seth` |
 | `/etc/seth/web.env` | 0640 | `root:seth-web` |
 | `/etc/seth/admin.env` | 0600 | `root:root` |
-| `/etc/seth/executor/<org>.env` | 0640 | `root:seth-executor` |
-| `/etc/seth/executor/<org>.credentials.json` | 0600 | `seth-executor:seth-executor` |
+| `/etc/seth/executor/` | 0711 | `root:root` |
+| `/etc/seth/executor/<org>.env` | 0600 | `root:root` |
+| `/etc/seth/executor/<org>.credentials.json` | 0600 | `seth-exec-<org>:seth-exec-<org>` |
+| `/var/backups/seth` | 0700 | `seth-ops:seth-ops` |
 
-The admin wrapper. `seth-admin` runs `shifde-admin` as `seth` through `systemd-run`, with both
+PID 1 reads every env file (`EnvironmentFile=`), so `admin.env` and the executor env files stay
+`root:root`.
+
+The admin wrapper. `seth-admin` runs `shifde-admin` as `seth-ops` through `systemd-run`, with both
 `seth.env` and `admin.env`. PID 1 reads the env files, so the owner credential is never readable by
-`seth` and never reaches the long-running services:
+a service user and never reaches the long-running services:
 
 ```bash
 sudo install -o root -g root -m 0755 /opt/seth/deploy/ubuntu/seth-admin /usr/local/sbin/seth-admin
@@ -237,7 +259,12 @@ curl --fail --silent --show-error http://127.0.0.1:8720/readyz
 ## (e) Executors
 
 One `seth-executor@<org>` instance per organization (`<org>` is the organization slug). A
-credentials file belongs to one organization, so organizations never share an executor.
+credentials file belongs to one organization, so organizations never share an executor or a uid.
+Each instance runs as its own user `seth-exec-<org>` (`User=seth-exec-%i`), so no instance can read
+another organization's credentials file or its process environment (which holds the `shx_` token).
+User names are at most 32 characters, so for a slug longer than 22 characters pick a shorter
+instance name of your own (for example `org7`) and use it everywhere `<org>` appears below; the
+instance name is only a local label.
 
 1. In SETH, on that organization's Executors screen, create an executor credential (`shx_...`).
 2. Create `/etc/seth/executor/<org>.env` from `executor.env.example`:
@@ -247,12 +274,14 @@ credentials file belongs to one organization, so organizations never share an ex
    `SHIFDE_EXECUTOR_HEALTH_PORT` is a loopback port of its own (8720, 8721, ...).
 3. Create the credentials file: JSON `credential_ref -> {tenant_id, host, token,
    service_principal}`, every entry carrying this organization's id as `tenant_id`.
-4. Set the modes and start the instance. It is never started with `--fake-platform`.
+4. Create the instance's user, set the modes and start the instance. It is never started with
+   `--fake-platform`.
 
 ```bash
-sudo install -o root -g seth-executor -m 0640 /opt/seth/deploy/ubuntu/env/executor.env.example /etc/seth/executor/<org>.env
+sudo useradd --system --shell /usr/sbin/nologin --home-dir /nonexistent --no-create-home seth-exec-<org>
+sudo install -o root -g root -m 0600 /opt/seth/deploy/ubuntu/env/executor.env.example /etc/seth/executor/<org>.env
 sudo editor /etc/seth/executor/<org>.env
-sudo install -o seth-executor -g seth-executor -m 0600 /dev/null /etc/seth/executor/<org>.credentials.json
+sudo install -o seth-exec-<org> -g seth-exec-<org> -m 0600 /dev/null /etc/seth/executor/<org>.credentials.json
 sudo editor /etc/seth/executor/<org>.credentials.json
 sudo systemctl enable --now seth-executor@<org>
 ```
@@ -306,9 +335,10 @@ If a unit file changed in the new tag, install it again as in section (d) and ru
 ## (g) Backup and restore
 
 `seth-backup.timer` starts `seth-backup.service` daily (`Persistent=true`, so a missed run happens
-at the next boot). The service runs `shifde-admin backup create` as the schema owner into a new
-`/var/backups/seth/<UTC timestamp>` and then `backup verify` of that directory; it may write only
-`/var/backups/seth`. A failure shows in `systemctl status seth-backup` and
+at the next boot). The service runs as user `seth-ops`. It runs `shifde-admin backup create` as
+the schema owner into a new `/var/backups/seth/<UTC timestamp>` and then `backup verify` of that
+directory; it may write only `/var/backups/seth` (0700 `seth-ops`, so the API's user cannot read
+the dumps). A failure shows in `systemctl status seth-backup` and
 `journalctl -u seth-backup`. Manual backup and check:
 
 ```bash

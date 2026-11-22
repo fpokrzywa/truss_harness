@@ -1,6 +1,8 @@
 # Nightly SETH backup (started by seth-backup.timer): `shifde-admin backup create` into a new
 # /var/backups/seth/<UTC timestamp>, then `backup verify` of the same directory. Runs as the
-# schema owner through admin.env, which PID 1 reads (root:root 0600), so user seth never can.
+# schema owner through admin.env, which PID 1 reads (root:root 0600), under user seth-ops, which
+# no long-running service uses: the API and worker uid (seth) can read neither this process's
+# environment nor the dumps (/var/backups/seth is 0700 seth-ops).
 [Unit]
 Description=SETH database backup (shifde-admin backup create and verify)
 Documentation=file:///opt/seth/docs/runbooks/ubuntu-host.md
@@ -9,8 +11,8 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=seth
-Group=seth
+User=seth-ops
+Group=seth-ops
 EnvironmentFile=/etc/seth/seth.env
 EnvironmentFile=/etc/seth/admin.env
 WorkingDirectory=/opt/seth/backend
@@ -29,6 +31,7 @@ PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
+ProtectProc=invisible
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictSUIDSGID=yes
 LockPersonality=yes

@@ -1,5 +1,6 @@
 # SETH executor (shifde-executor) for one organization: the instance is the organization slug,
-# e.g. seth-executor@demo-a. Each instance has its own env and credentials file in /etc/seth/executor/.
+# e.g. seth-executor@demo-a. Each instance has its own env and credentials file in /etc/seth/executor/
+# and runs as its own user, seth-exec-<org>.
 # Exit and health contract: SP4 design 6.2 (docs/runbooks/ubuntu-host.md).
 [Unit]
 Description=SETH executor for organization %i (shifde-executor)
@@ -11,8 +12,10 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=seth-executor
-Group=seth-executor
+# A system user of its own per organization (seth-exec-<org>, made at install): no instance can
+# read another's credentials file or /proc/<pid>/environ. PID 1 reads the env file (0600 root:root).
+User=seth-exec-%i
+Group=seth-exec-%i
 EnvironmentFile=/etc/seth/executor/%i.env
 WorkingDirectory=/opt/seth/backend
 # never --fake-platform on a host
@@ -40,6 +43,7 @@ PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
+ProtectProc=invisible
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictSUIDSGID=yes
 LockPersonality=yes

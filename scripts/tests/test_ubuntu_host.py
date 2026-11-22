@@ -27,7 +27,8 @@ CLI_MAIN = REPO / "backend" / "src" / "shifde" / "cli" / "main.py"
 EXECUTOR_MAIN = REPO / "backend" / "src" / "shifde" / "executor" / "main.py"
 PYPROJECT = REPO / "backend" / "pyproject.toml"
 
-SERVICE_USERS = {"seth", "seth-web", "seth-executor"}
+# seth-ops runs only the backup and `seth-admin`; each executor instance has a user of its own
+SERVICE_USERS = {"seth", "seth-web", "seth-exec-%i"}
 # unit -> minimum TimeoutStopSec: the process's default grace + 10 s
 SHIFDE_UNITS = {
     "seth-api.service": 40,
@@ -44,6 +45,7 @@ SANDBOX = {
     "ProtectKernelTunables": "yes",
     "ProtectKernelModules": "yes",
     "ProtectControlGroups": "yes",
+    "ProtectProc": "invisible",
     "RestrictAddressFamilies": "AF_INET AF_INET6 AF_UNIX",
     "RestrictSUIDSGID": "yes",
     "LockPersonality": "yes",
@@ -449,6 +451,14 @@ class UnitFileTests(unittest.TestCase):
         self.assertNotIn(
             "--fake-platform", self.unit("seth-executor@.service")["Service"]["ExecStart"][0]
         )
+        users = {
+            name: self.unit(name)["Service"]["User"][0]
+            for name in (*LONG_RUNNING, "seth-backup.service")
+        }
+        # the owner credential's user and each organization's executor share no uid
+        self.assertEqual(users["seth-executor@.service"], "seth-exec-%i")
+        self.assertEqual(list(users.values()).count("seth-ops"), 1)
+        self.assertNotIn("seth-ops", {users[n] for n in LONG_RUNNING})
         web = self.unit("seth-web.service")["Service"]
         self.assertEqual(web["EnvironmentFile"], ["/etc/seth/web.env"])
         self.assertTrue(web["ExecStart"][0].endswith("start -p ${SHIFDE_WEB_PORT} -H 127.0.0.1"))
@@ -456,7 +466,9 @@ class UnitFileTests(unittest.TestCase):
             self.assertEqual(self.unit(name)["Service"]["EnvironmentFile"], ["/etc/seth/seth.env"])
         backup = self.unit("seth-backup.service")["Service"]
         self.assertEqual(backup["Type"], ["oneshot"])
-        self.assertEqual(backup["User"], ["seth"])
+        self.assertEqual(backup["User"], ["seth-ops"])
+        for key, value in SANDBOX.items():
+            self.assertEqual(backup.get(key), [value], key)
         self.assertEqual(backup["EnvironmentFile"], ["/etc/seth/seth.env", "/etc/seth/admin.env"])
         self.assertEqual(backup["ReadWritePaths"], ["/var/backups/seth"])
         (exec_start,) = backup["ExecStart"]
@@ -525,7 +537,9 @@ class EnvAndEdgeTests(unittest.TestCase):
     def test_the_admin_wrapper_runs_as_seth_with_both_env_files(self) -> None:
         wrapper = (DEPLOY / "seth-admin").read_text(encoding="utf-8")
         self.assertTrue(wrapper.startswith("#!/usr/bin/env bash\n"))
-        self.assertIn("systemd-run --quiet --pipe --wait --collect --uid=seth --gid=seth", wrapper)
+        self.assertIn(
+            "systemd-run --quiet --pipe --wait --collect --uid=seth-ops --gid=seth-ops", wrapper
+        )
         self.assertIn("-p EnvironmentFile=/etc/seth/seth.env", wrapper)
         self.assertIn("-p EnvironmentFile=/etc/seth/admin.env", wrapper)
         self.assertIn('/opt/seth/backend/.venv/bin/shifde-admin "$@"', wrapper)

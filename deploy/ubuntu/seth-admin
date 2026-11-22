@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# seth-admin: run shifde-admin as user seth with /etc/seth/seth.env and /etc/seth/admin.env.
+# seth-admin: run shifde-admin as user seth-ops with /etc/seth/seth.env and /etc/seth/admin.env.
 # Installed as /usr/local/sbin/seth-admin (0755 root:root); run it with sudo.
-# systemd (PID 1) reads the env files, so the owner credential in admin.env (0600 root:root)
-# never has to be readable by seth and never reaches the long-running services.
+# systemd (PID 1) reads the env files, so the owner credential in admin.env (0600 root:root) is
+# never readable by a service user, and seth-ops runs no long-running service, so the API and
+# worker uid (seth) cannot read it from this process's environment either.
 set -euo pipefail
-exec systemd-run --quiet --pipe --wait --collect --uid=seth --gid=seth \
+exec systemd-run --quiet --pipe --wait --collect --uid=seth-ops --gid=seth-ops \
   -p EnvironmentFile=/etc/seth/seth.env -p EnvironmentFile=/etc/seth/admin.env \
   -p WorkingDirectory=/opt/seth/backend \
   /opt/seth/backend/.venv/bin/shifde-admin "$@"
