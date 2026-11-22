@@ -73,6 +73,8 @@ class FakeOidcProvider:
     issuer: str = ISSUER
     # further keys `/jwks` publishes after `key` (a rotation overlap); none by default
     extra_keys: list[RSAKey] = field(default_factory=list)
+    # the `Cache-Control` header `/jwks` sends; none by default
+    jwks_cache_control: str | None = None
     # Entra mode: the directory (tenant) id the issuer and the endpoint paths name
     entra_tenant: str | None = None
 
@@ -203,10 +205,15 @@ class FakeOidcProvider:
 
     def _jwks(self) -> httpx.Response:
         self.jwks_calls += 1
+        headers = (
+            {} if self.jwks_cache_control is None else {"Cache-Control": self.jwks_cache_control}
+        )
         if self.extra_keys:
             keys = [k.as_dict(private=False) for k in (self.key, *self.extra_keys)]
-            return httpx.Response(200, json={"keys": keys})
-        return httpx.Response(200, json={"keys": [self.key.as_dict(private=False)]})
+            return httpx.Response(200, json={"keys": keys}, headers=headers)
+        return httpx.Response(
+            200, json={"keys": [self.key.as_dict(private=False)]}, headers=headers
+        )
 
     def _token(self, request: httpx.Request) -> httpx.Response:
         form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
