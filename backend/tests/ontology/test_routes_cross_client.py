@@ -231,6 +231,11 @@ ROUTES: dict[tuple[str, str], Callable[[Ids, Side], Req]] = {
         f"/ontologies/{i.ontology}/query",
         {"object_type": TYPE, "select": ["id", "name"]},
     ),
+    ("POST", "/orgs/{org}/ontologies/{ontology_id}/export"): lambda i, s: (
+        "POST",
+        f"/ontologies/{i.ontology}/export",
+        {"object_type": TYPE, "select": ["id", "name"]},
+    ),
     ("GET", "/orgs/{org}/ontologies/{ontology_id}/objects/{object_type}/{pk}"): lambda i, s: (
         "GET",
         f"/ontologies/{i.ontology}/objects/{TYPE}/1",

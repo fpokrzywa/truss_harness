@@ -97,6 +97,21 @@ def _csv(rows: list[list[object]], header: list[str]) -> str:
     return out.getvalue()
 
 
+def export_row_cap(session: Session, tenant_id: UUID) -> int | None:
+    """Active `data_export` policies can forbid exports (403) or cap their size: the smallest
+    `max_rows`, None without a cap. Shared by the usage, audit and ontology exports."""
+    cap: int | None = None
+    for pol in repo.list_policies(session, tenant_id, "data_export"):
+        if pol["status"] != "active":
+            continue
+        d = pol["definition"] or {}
+        if d.get("allow_export") is False:
+            raise Forbidden("a data_export policy forbids exports")
+        if isinstance(d.get("max_rows"), int):
+            cap = d["max_rows"] if cap is None else min(cap, d["max_rows"])
+    return cap
+
+
 # ====================================================================== pricing
 @dataclass
 class PricingService:
@@ -819,17 +834,7 @@ class GovernanceService:
         )
 
     def _export_allowed(self) -> int | None:
-        """Active `data_export` policies can forbid exports or cap their size."""
-        cap: int | None = None
-        for pol in repo.list_policies(self.session, self.tenant_id, "data_export"):
-            if pol["status"] != "active":
-                continue
-            d = pol["definition"] or {}
-            if d.get("allow_export") is False:
-                raise Forbidden("a data_export policy forbids exports")
-            if isinstance(d.get("max_rows"), int):
-                cap = d["max_rows"] if cap is None else min(cap, d["max_rows"])
-        return cap
+        return export_row_cap(self.session, self.tenant_id)
 
     def export_usage(
         self,
