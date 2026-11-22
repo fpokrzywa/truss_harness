@@ -7,6 +7,7 @@ withdraw."""
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Any  # Any: JSON bodies
 from uuid import UUID
 
@@ -23,7 +24,7 @@ from shifde.core.ids import uuid7
 from shifde.models_admin.repository import SHI_PROVIDER_ID
 from shifde.packaging.canonical import digest
 from tests._support.fullapp import World
-from tests._support.p2util import post
+from tests._support.p2util import login, new_user, post, system_role
 from tests._support.p3util import (
     ADMIN,
     PLATFORM,
@@ -37,6 +38,7 @@ from tests._support.p3util import (
     secret,
 )
 from tests._support.p4util import (
+    PASSWORD,
     agent_spec,
     art,
     builtin_tool_spec,
@@ -761,3 +763,258 @@ def test_a_dataset_of_another_project_is_refused_as_an_unknown_id(
     assert unknown[1]["errors"][0]["loc"] == ["body", "evaluation", "dataset_id"]
     assert answer(side["id"]) == unknown
     assert answer(s.dataset)[0] == 201
+
+
+# ------------------------------------------------------------------ hidden models, connections
+@dataclass(frozen=True)
+class _Hidden:
+    """A version whose visible pipeline entrypoint pins the administrator's private agent; only
+    that agent names `model`, and only its private SQL tool (`tool`) names `pg`. The data reads
+    are the organization-wide fake connection and the project's `inner` connection; `lake` is
+    an organization-wide Databricks connection."""
+
+    h: Hdr
+    s: Stack
+    sid: str
+    vid: str
+    agent: str
+    tool: str
+    model: str
+    pg: str
+    inner: str
+    lake: str
+
+
+def _hidden(client: TestClient, world: World, sample_db_url: str) -> _Hidden:
+    h, s, sid = _setup(client, world, "Discreet")
+    scope = {"type": "project", "id": s.project_id}
+    model = post(
+        h.client,
+        f"{A}/models",
+        h,
+        {
+            "provider_id": s.provider,
+            "model_key": "hidden-chat",
+            "display_name": "Hidden chat",
+            "capabilities": ["chat"],
+            "context_window": 8192,
+            "max_output_tokens": 1024,
+            "lifecycle": "active",
+            "rate_limits": {},
+        },
+    )["id"]
+    pg_password = sample_db_url.split(":")[2].split("@")[0]
+    pg_secret = secret(h.client, h, "pg-pass", pg_password)
+    pg = connection(h.client, h, pg_body(sample_db_url, pg_secret))["id"]
+    activate(h.client, h, pg)
+    tool_spec = {
+        "executor": "connection.sql",
+        "binding": {"connection_id": pg, "sql_template": "SELECT name FROM employees"},
+        "input_schema": {"type": "object", "properties": {}},
+        "output_schema": {"type": "object", "required": ["columns", "rows"]},
+        "side_effect_class": "read",
+        "required_permissions": [],
+        "invocation_policy": {},
+        "timeout_s": 10,
+        "retry": {"max_attempts": 1, "backoff_s": 0},
+        "audit_level": "metadata",
+        "idempotency": "none",
+    }
+    tool = art(h.client, h, "tools", "private-sql", tool_spec, scope, visibility="private")
+    tool_v1 = publish(h.client, h, "tools", tool["id"])["id"]
+    spec = agent_spec(f"latest:{s.prompt}", model, tool_version_ids=[tool_v1])
+    agent = art(h.client, h, "agents", "private-agent", spec, scope, visibility="private")
+    agent_v1 = publish(h.client, h, "agents", agent["id"])["id"]
+    node = {
+        "id": "agt",
+        "type": "agent",
+        "config": {"agent_version_id": agent_v1},
+        "inputs": {"input": "$params.term"},
+    }
+    pipe = _pipeline(h, s, "open-pipe", [node])
+    inner = databricks_connection(
+        h.client, h, "inner", scope={"workspace": "main", "project": "sample"}
+    )
+    body = version_body(pipe, kind="pipeline", dataset=s.dataset)
+    body["data_reads"] = [
+        {"connection_id": s.connection, "tables": ["main.sales.orders"]},
+        {"connection_id": inner, "tables": ["main.sales.customers"]},
+    ]
+    vid = new_version(h.client, h, sid, body)["id"]
+    lake = databricks_connection(h.client, h)
+    return _Hidden(h, s, sid, vid, agent_v1, tool_v1, model, pg, inner, lake)
+
+
+def _project_developer(client: TestClient, world: World, owner: Session, project: str) -> Hdr:
+    """A developer bound only at the project: it cannot read organization-wide connections."""
+    email = "proj-dev@demo-a.local"
+    login(client, world.passwords, ADMIN)
+    user = new_user(client, {}, "demo-a", email, PASSWORD)
+    world.passwords[email] = PASSWORD
+    admin = user_session(client, world.passwords, ADMIN)
+    binding = {
+        "subject_type": "user",
+        "subject_id": user,
+        "role_id": str(system_role(owner, "developer")),
+        "scope": {"type": "project", "id": project},
+    }
+    post(admin.client, f"{A}/role-bindings", admin, binding)
+    owner.rollback()
+    return user_session(client, world.passwords, email)
+
+
+def test_hidden_models_and_connections_are_redacted_for_a_reader(
+    client: TestClient, world: World, owner_session: Session, sample_db_url: str
+) -> None:
+    x = _hidden(client, world, sample_db_url)
+    h, s = x.h, x.s
+    full = bindings({x.model: s.provider}, {x.pg: x.lake, s.connection: x.lake, x.inner: x.lake})
+    sealed = seal(h.client, h, x.sid, x.vid, full)
+    assert sealed.status_code == 201, sealed.text
+    rid = sealed.json()["id"]
+
+    # the administrator sees every id and path, as stored
+    admin = h.client.get(f"{A}/releases/{rid}", headers=h)
+    assert admin.status_code == 200, admin.text
+    paths = {d["path"] for d in admin.json()["compatibility"]}
+    assert {f"models.{x.model}", f"connections.{x.pg}", f"tools.{x.tool}"} <= paths
+    assert {f"connections.{s.connection}", f"connections.{x.inner}"} <= paths
+    stored_manifest, stored_compatibility = owner_session.execute(
+        text("SELECT manifest, compatibility FROM shifde.releases WHERE id = :r"), {"r": rid}
+    ).one()
+    owner_session.rollback()
+    assert admin.json()["manifest"] == stored_manifest == sealed.json()["manifest"]
+    assert admin.json()["compatibility"] == stored_compatibility
+    assert stored_manifest["bindings"]["model_bindings"] == {
+        x.model: {"provider_id": s.provider, "model": "served-chat"}
+    }
+    assert stored_manifest["bindings"]["connection_bindings"] == {
+        x.pg: x.lake,
+        s.connection: x.lake,
+        x.inner: x.lake,
+    }
+    for value in (x.model, x.pg, x.tool, x.agent, s.connection, x.lake):
+        assert value in admin.text
+
+    # an organization-wide developer cannot see the private agent and tool
+    make_user(client, owner_session, h, DEVELOPER, "developer", world.passwords)
+    dev = user_session(client, world.passwords, DEVELOPER)
+    got = dev.client.get(f"{A}/releases/{rid}", headers=dev)
+    assert got.status_code == 200, got.text
+    for value in (x.model, x.pg, x.tool, x.agent):
+        assert value not in got.text
+    rel = got.json()
+    paths = {d["path"] for d in rel["compatibility"]}
+    assert {"models.hidden", "connections.hidden", "tools.hidden"} <= paths
+    assert {f"connections.{s.connection}", f"connections.{x.inner}"} <= paths
+    assert rel["manifest"]["bindings"] == {
+        "model_bindings": {},
+        "connection_bindings": {s.connection: x.lake, x.inner: x.lake},
+    }
+    assert rel["manifest"]["data_reads"] == stored_manifest["data_reads"]
+    assert rel["digest"] == admin.json()["digest"]
+
+    # a project developer cannot read the organization-wide connections either
+    proj = _project_developer(client, world, owner_session, s.project_id)
+    got = proj.client.get(f"{A}/releases/{rid}", headers=proj)
+    assert got.status_code == 200, got.text
+    for value in (x.model, x.pg, x.tool, x.agent, s.connection, x.lake):
+        assert value not in got.text
+    rel = got.json()
+    assert [r["connection_id"] for r in rel["manifest"]["data_reads"]] == [None, x.inner]
+    assert rel["manifest"]["bindings"] == {
+        "model_bindings": {},
+        "connection_bindings": {x.inner: None},
+    }
+    connection_paths = [d["path"] for d in rel["compatibility"] if d["path"].startswith("conn")]
+    assert sorted(connection_paths) == sorted(
+        ["connections.hidden", "connections.hidden", f"connections.{x.inner}"]
+    )
+
+    # sealing the same bindings again returns the release; the stored row is unchanged
+    again = seal(h.client, h, x.sid, x.vid, full)
+    assert again.status_code == 200 and again.json() == admin.json()
+    unchanged = owner_session.execute(
+        text("SELECT manifest FROM shifde.releases WHERE id = :r"), {"r": rid}
+    ).scalar_one()
+    owner_session.rollback()
+    assert unchanged == stored_manifest
+
+
+def test_a_hidden_binding_key_is_an_unknown_key_and_reports_read_hidden(
+    client: TestClient, world: World, owner_session: Session, sample_db_url: str
+) -> None:
+    x = _hidden(client, world, sample_db_url)
+    s = x.s
+    make_user(client, owner_session, x.h, DEVELOPER, "developer", world.passwords)
+    dev = user_session(client, world.passwords, DEVELOPER)
+    nobody = str(uuid7())
+
+    def answer(body: dict[str, Any], key: str) -> dict[str, Any]:  # Any: the problem body
+        r = seal(dev.client, dev, x.sid, x.vid, body)
+        assert r.status_code == 422, r.text
+        out = {k: r.json()[k] for k in ("code", "detail", "errors")}
+        for e in out["errors"]:
+            e["loc"] = ["<key>" if part == key else part for part in e["loc"]]
+        return out
+
+    lakes = {s.connection: x.lake, x.inner: x.lake}
+    for hidden_body, unknown_body, key in (
+        (bindings({x.model: s.provider}, lakes), bindings({nobody: s.provider}, lakes), x.model),
+        (bindings({}, {**lakes, x.pg: x.lake}), bindings({}, {**lakes, nobody: x.lake}), x.pg),
+    ):
+        hidden, unknown = answer(hidden_body, key), answer(unknown_body, nobody)
+        assert hidden == unknown and hidden["code"] == "validation_error"
+        assert [e["loc"][-1] for e in hidden["errors"]] == ["<key>"]
+    assert _count(owner_session) == 0
+
+    # without the hidden bindings the report names the hidden pins as hidden
+    r = seal(dev.client, dev, x.sid, x.vid, bindings({}, lakes))
+    for value in (x.model, x.pg, x.tool, x.agent):
+        assert value not in r.text
+    assert _unsupported(r) == {
+        "models.hidden": "no model binding",
+        "connections.hidden": "no connection binding",
+    }
+    shown = set(_diagnostics(r))
+    assert {"tools.hidden", f"connections.{s.connection}", f"connections.{x.inner}"} <= shown
+    [(outcome, _, details)] = _audits(owner_session, "packaging.release.refused")
+    assert outcome == "failure"
+    assert details["unsupported"] == ["models.hidden", "connections.hidden"]
+
+    # the administrator sees the pins and seals with the bindings the developer could not use
+    full = bindings({x.model: s.provider}, {**lakes, x.pg: x.lake})
+    assert seal(x.h.client, x.h, x.sid, x.vid, full).status_code == 201
+
+
+# ------------------------------------------------------------------ the retire guard, no client
+def test_the_retire_guard_for_the_owner_without_a_client_context(
+    client: TestClient, world: World, owner_session: Session
+) -> None:
+    """Issue #93: the schema owner, with no `app.tenant_id` set, retires a pinned version. The
+    owner is BYPASSRLS on the dev and test clusters, so the guard sees the release and refuses."""
+    h, s, sid = _setup(client, world)
+    vid = new_version(h.client, h, sid, version_body(s.agent_v1, dataset=s.dataset))["id"]
+    assert seal(h.client, h, sid, vid, _own_bindings(s)).status_code == 201
+    post(
+        h.client,
+        f"{A}/agents/{s.agent}/versions/{s.agent_v1}/state",
+        h,
+        {"state": "deprecated"},
+        200,
+    )
+    setting = owner_session.execute(text("SELECT current_setting('app.tenant_id', true)"))
+    assert setting.scalar_one() in (None, "")
+    with pytest.raises(DBAPIError) as err:
+        owner_session.execute(
+            text("UPDATE shifde.artifact_versions SET state = 'retired' WHERE id = :v"),
+            {"v": s.agent_v1},
+        )
+    owner_session.rollback()
+    assert _sqlstate(err.value) == "23514", err.value
+    assert "a sealed release pins this version" in str(err.value)
+    state = owner_session.execute(
+        text("SELECT state FROM shifde.artifact_versions WHERE id = :v"), {"v": s.agent_v1}
+    ).scalar_one()
+    owner_session.rollback()
+    assert state == "deprecated"

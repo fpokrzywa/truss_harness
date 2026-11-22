@@ -18,6 +18,14 @@ an incompatible one is refused with the whole report (`release_incompatible`). A
 is its solution's; it is reached under the organization (`/orgs/{org}/releases/{id}`) and gets
 the answer an unknown id gets when the caller cannot read its solution.
 
+A model or connection is hidden from the caller when only versions the caller cannot see name it
+(a version's own data reads always count as seen), and a connection also when the caller cannot
+read it. Its paths in the refused report, its audit row and a release's `compatibility` read
+`models.hidden` / `connections.hidden` (as a hidden tool's read `tools.hidden`); a release drops
+its binding entries and nulls each data-read or bound connection id the reader cannot read (the
+stored manifest and its digest are unchanged). A binding key that names a hidden model or
+connection is refused exactly like a key that names nothing (issue #93, B-2741).
+
 A version's evaluation contract names an evaluation dataset: it must be a dataset of this client,
 in the solution's workspace and project, that the caller may read (`evaluation:dataset:read`),
 when the version is created (else 422) and when it is sealed (else the `evaluation` diagnostic is
@@ -91,6 +99,9 @@ NO_EVALUATION = "a release needs an evaluation dataset"
 DATASET_REFUSED = "the evaluation dataset is not a dataset of this project you can read"
 DATASET_READ = "evaluation:dataset:read"
 HIDDEN_TOOL = "tools.hidden"
+HIDDEN_MODEL = "models.hidden"
+HIDDEN_CONNECTION = "connections.hidden"
+HIDDEN_PATHS = {"tools": HIDDEN_TOOL, "models": HIDDEN_MODEL, "connections": HIDDEN_CONNECTION}
 Report = list[dict[str, Any]]  # Any: diagnostics (JSON)
 
 
@@ -114,16 +125,26 @@ def in_scope(
 @dataclass
 class _Pinned:
     """What a solution version names, by pin name: tool versions (with their specs), models
-    (`own`, `shared` or `route`) and connections."""
+    (`own`, `shared` or `route`) and connections, and the models and connections a source the
+    caller can see names."""
 
     tools: dict[str, VersionAccess] = field(default_factory=dict)
     tool_specs: dict[str, dict[str, Any]] = field(default_factory=dict)
     models: dict[str, str] = field(default_factory=dict)
     connections: set[str] = field(default_factory=set)
+    seen_models: set[str] = field(default_factory=set)
+    seen_connections: set[str] = field(default_factory=set)
 
-    def model(self, name: str, kind: str) -> None:
+    def model(self, name: str, kind: str, *, seen: bool) -> None:
         if self.models.get(name) != "shared":  # one shared sighting makes it shared
             self.models[name] = kind
+        if seen:
+            self.seen_models.add(name)
+
+    def connection(self, name: str, *, seen: bool) -> None:
+        self.connections.add(name)
+        if seen:
+            self.seen_connections.add(name)
 
 
 def _diagnostic(path: str, reason: str | None) -> dict[str, Any]:
@@ -615,19 +636,21 @@ class SolutionService:
         """The tools, models and connections the version names: its data reads, and every tool,
         agent and pipeline among its entrypoint and transitive pins."""
         found = _Pinned()
-        found.connections.update(str(r["connection_id"]) for r in version["spec"]["data_reads"])
+        for read in version["spec"]["data_reads"]:
+            found.connection(str(read["connection_id"]), seen=True)
         for version_id in dict.fromkeys(
             [version["entrypoint_version_id"], *(p.version_id for p in pins)]
         ):
             access = self.artifacts.version_access(version_id)
             if access is None:
                 continue
+            seen = access.visible
             if access.kind == "pipelines":
                 for ref in self.artifacts.pipeline_resource_refs(version_id):
                     if ref.ref_type == "connection":
-                        found.connections.add(str(ref.ref_id))
+                        found.connection(str(ref.ref_id), seen=seen)
                     else:
-                        found.model(str(ref.ref_id), "own" if ref.own else "shared")
+                        found.model(str(ref.ref_id), "own" if ref.own else "shared", seen=seen)
                 continue
             spec = self.artifacts.version_spec(version_id) or {}
             if access.kind == "tools":
@@ -638,23 +661,52 @@ class SolutionService:
                     _uuid(binding.get("connection_id")) if isinstance(binding, dict) else None
                 )
                 if connection_id is not None:
-                    found.connections.add(str(connection_id))
+                    found.connection(str(connection_id), seen=seen)
             elif access.kind == "agents":
                 model = spec.get("model")
                 if not isinstance(model, dict):
                     continue
                 if "route_id" in model:
-                    found.model(f"route-{model['route_id']}", "route")
+                    found.model(f"route-{model['route_id']}", "route", seen=seen)
                     continue
                 for value in [model.get("model_id"), *(model.get("fallback_model_ids") or [])]:
                     model_id = _uuid(value)
                     if model_id is not None:
                         own = self.models.own_model(model_id)
-                        found.model(str(model_id), "own" if own else "shared")
+                        found.model(str(model_id), "own" if own else "shared", seen=seen)
         return found
 
-    @staticmethod
-    def _check_binding_keys(bindings: s.EnvironmentBindings, found: _Pinned) -> None:
+    def _readable(self, connection: str) -> bool:
+        """Whether the caller may read the connection `connection` (an id string)."""
+        connection_id = _uuid(connection)
+        return connection_id is not None and self.conns.placement(connection_id) is not None
+
+    def _hidden(self, found: _Pinned) -> Callable[[str, str], bool]:
+        """Whether pin `name` of group `kind` (`tools`, `models`, `connections`) is hidden from
+        the caller: a tool version the caller cannot see, a model no seen source names, and a
+        connection no seen source names or the caller cannot read."""
+        readable: dict[str, bool] = {}
+
+        def hidden(kind: str, name: str) -> bool:
+            if kind == "tools":
+                access = found.tools.get(name)
+                return access is None or not access.visible
+            if kind == "models":
+                return name not in found.seen_models
+            if kind == "connections":
+                if name not in found.seen_connections:
+                    return True
+                if name not in readable:
+                    readable[name] = self._readable(name)
+                return not readable[name]
+            return False
+
+        return hidden
+
+    def _check_binding_keys(self, bindings: s.EnvironmentBindings, found: _Pinned) -> None:
+        """A key that names no pin and a key that names a hidden model or connection get one
+        answer, so a sealer cannot learn what a pin it cannot see names."""
+        hidden = self._hidden(found)
         errors = [
             {
                 "loc": ["body", "environment_bindings", "model_bindings", key],
@@ -662,7 +714,7 @@ class SolutionService:
                 "type": "binding",
             }
             for key in bindings.model_bindings
-            if key not in found.models
+            if key not in found.models or hidden("models", key)
         ] + [
             {
                 "loc": ["body", "environment_bindings", "connection_bindings", key],
@@ -670,7 +722,7 @@ class SolutionService:
                 "type": "binding",
             }
             for key in bindings.connection_bindings
-            if key not in found.connections
+            if key not in found.connections or hidden("connections", key)
         ]
         if errors:
             raise ValidationFailed(UNKNOWN_BINDING, errors=errors)
@@ -748,14 +800,12 @@ class SolutionService:
         return None
 
     @staticmethod
-    def _shown_path(path: str, hidden: Callable[[str], bool]) -> str:
-        """`tools.<pin>` of a tool version the caller cannot see is `tools.hidden`."""
+    def _shown_path(path: str, hidden: Callable[[str, str], bool]) -> str:
+        """`tools.<pin>` of a tool version the caller cannot see is `tools.hidden`; `models.<pin>`
+        and `connections.<pin>` of a hidden model or connection (`_hidden`) are `models.hidden`
+        and `connections.hidden`."""
         kind, _, name = path.partition(".")
-        return HIDDEN_TOOL if kind == "tools" and hidden(name) else path
-
-    def _hidden_tool(self, name: str) -> bool:
-        version_id = _uuid(name)
-        return version_id is None or not self._seen(version_id)
+        return HIDDEN_PATHS[kind] if kind in HIDDEN_PATHS and hidden(kind, name) else path
 
     def _manifest(
         self,
@@ -805,15 +855,41 @@ class SolutionService:
         }
 
     def _release_out(self, row: Mapping[str, Any]) -> s.ReleaseOut:
-        """The release; the manifest's entrypoint and pins of versions the caller cannot see lose
-        their version id and hash, and their hidden tool paths read `tools.hidden`."""
+        """The release, redacted for the caller (the stored row is not): the manifest's
+        entrypoint and pins of versions the caller cannot see lose their version id and hash;
+        hidden tool, model and connection paths read `tools.hidden`, `models.hidden` and
+        `connections.hidden` (`_shown_path`); binding entries of hidden models and connections
+        are dropped; and a data-read or bound connection id the caller cannot read is null."""
+        version = repository.get_version(
+            self.sc.session, row["solution_version_id"], tenant_id=self.sc.tenant_id
+        )
+        assert version is not None  # a release's version is never deleted (restrict key)
+        pins = [
+            PinnedVersion(
+                role=p["role"], version_id=UUID(p["version_id"]), spec_hash=p["spec_hash"]
+            )
+            for p in row["manifest"]["pins"]
+        ]
+        hidden = self._hidden(self._pinned(version, pins))
         manifest = json.loads(json.dumps(row["manifest"]))
         for item in [manifest["entrypoint"], *manifest["pins"]]:
             version_id = _uuid(item["version_id"])
             if version_id is None or not self._seen(version_id):
                 item["version_id"] = item["spec_hash"] = None
+        for read in manifest["data_reads"]:
+            if not self._readable(read["connection_id"]):
+                read["connection_id"] = None
+        bound = manifest["bindings"]
+        bound["model_bindings"] = {
+            k: v for k, v in bound["model_bindings"].items() if not hidden("models", k)
+        }
+        bound["connection_bindings"] = {
+            k: v if self._readable(v) else None
+            for k, v in bound["connection_bindings"].items()
+            if not hidden("connections", k)
+        }
         compatibility = [
-            s.Diagnostic(**{**d, "path": self._shown_path(d["path"], self._hidden_tool)})
+            s.Diagnostic(**{**d, "path": self._shown_path(d["path"], hidden)})
             for d in row["compatibility"]
         ]
         workspaces, projects = tenancy.scope_slug_map(
@@ -860,10 +936,10 @@ class SolutionService:
         report = self._report(row, version, entry, found, bindings)
         session = self.sc.session
         if any(d["status"] == "unsupported" for d in report):
-            hidden = {name for name, access in found.tools.items() if not access.visible}
+            hidden = self._hidden(found)
 
             def shown(path: str) -> str:
-                return self._shown_path(path, hidden.__contains__)
+                return self._shown_path(path, hidden)
 
             self._audit(
                 "packaging.release.refused",
