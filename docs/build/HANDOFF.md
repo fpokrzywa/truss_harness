@@ -2,7 +2,7 @@
 
 Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` ("Charter 7 progress"), then this file.
 
-**State:** main = origin/main after this commit. Cluster on 55450 running. `concurrency` 2 (S-021). No agent of this session is running at handoff. A `scripts/gates.py --ref fb38b0e5189e9978e8bb789c48cfe9a1cbd3ddf6 --name 050-merge-r3` process started 19:03 local by this lead may still be running: its summary goes to `.worktrees/_gate-logs/lead-050-merge-r3.out` (logs in `.worktrees/_gate-logs/050-merge-r3/`). Wait for it (check the file / running `python` processes) before starting another heavy gate.
+**State:** main = origin/main after this commit. Cluster on 55450 running. `concurrency` 2 (S-021). No agent of this session is running at handoff. A `scripts/gates.py --ref fb38b0e5189e9978e8bb789c48cfe9a1cbd3ddf6 --name 050-merge-r3` process started 19:03 local by this lead finished 12/13 (see the 050 row): its summary is in `.worktrees/_gate-logs/lead-050-merge-r3.out` (logs in `.worktrees/_gate-logs/050-merge-r3/`). No gate is running.
 
 ## Finished this session
 - Merged #60 job 055 (PR #136, `job merge`, `1618133`). The `job merge` worktree removal failed (folder in use) after the merge; rerunning `job merge` showed the job already `merged`. The leftover `.worktrees/055-f-10-follow-up` can be removed.
@@ -16,13 +16,15 @@ Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` ("
 ## Jobs and their stages (first action: `PYTHONUTF8=1 factory/bin/job queue`)
 | Job | Issue | PR | Stage | Next |
 |---|---|---|---|---|
-| 050-arch-m2-rest-move | #47 | #122 | needs-human | Read `lead-050-merge-r3.out`. 13/13 (treat failures as real until shown to pass alone and be outside the diff) -> `gh pr ready 122; gh pr merge 122 --merge --match-head-commit fb38b0e5189e9978e8bb789c48cfe9a1cbd3ddf6`; STATUS row ARCH M2, log as B-2720 addendum. If main moved, sync again first. |
+| 050-arch-m2-rest-move | #47 | #122 | build round 3 (lead feedback-2) | `gates.py --name 050-merge-r3` on `fb38b0e`: 12/13, 4171 passed, 1 real failure of the diff: `tests/app/test_routes.py::test_the_mounted_route_table_is_sethss_minus_branding` (its two new GET `.../discovery-jobs/{job_id}` and `.../health-check-jobs/{job_id}` routes are not in `UNIFIED_ONLY`). feedback-2.md filed. Next: spawn `builder-050-arch-m2-rest-move` (resuming) for round 3, then factory gate, then `gates.py --name 050-merge-r4` 13/13 and hand merge (S-020). |
 | 053-arch-m11-rest-data | #56 | #119 | needs-human | Sync with main (head `55007c0`), `gates.py --name 053-merge-r2` 13/13, hand merge; close ARCH M11 rows in STATUS and findings.md (both halves done). |
 | 056-oidc-expire-the-cached | #62 | #137 | needs-human | Sync, `gates.py --name 056-merge` 13/13, hand merge. Review file already written. |
 | 057-sp2-gateway-hardening-cross | #64 | #138 | needs-human | Sync, `gates.py --name 057-merge` 13/13 (approver asked for the full suite: builder's tests/app run timed out), hand merge. |
-| 058-sp2-4-follow-up | #66 | #143 | gate round 1 (builder READY, docs-only diff) | After the 050 gates.py run ends: `factory/bin/gate 058-sp2-4-follow-up`, reviewer code (sonnet), approver. |
+| 058-sp2-4-follow-up | #66 | #143 | gate round 1 (builder READY, docs-only diff) | `factory/bin/gate 058-sp2-4-follow-up`, reviewer code (sonnet), approver. |
 
 Gates strictly one at a time (chain them with `until grep -q ...; do sleep 30; done`). Then the `hold` issues: #68, #69, #71, #72, #74, #91, #93, #108, #109, #115, #123-#135, #139-#142. SP4: #126 (protected migration, hand merge under B-2705 with isolation review) before #127/#128; #141 likewise needs a lead-written migration.
+
+S-022 (supervisor, commit `89c75da`): owner approval on 056 and 057 is recorded; they still need their 13-gate runs before the hand merge.
 
 ## Traps learned this session
 - Don't leave your shell's cwd inside a job worktree: `job merge` then cannot delete it (WinError 32) after merging.
