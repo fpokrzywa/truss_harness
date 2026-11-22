@@ -1,8 +1,8 @@
 {
-  "session_id": "e05940fb-b685-4c5d-bc14-f19f3606900d",
-  "head_sha": "34a5370b4067156bbd114d286db0500057e01114",
+  "session_id": "0017d47c-7e30-411c-8ea6-681a79a8238e",
+  "head_sha": "a3264fb34871765c1cc14d1628fd2bc933f19a76",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "PYTHONUTF8=1 factory/bin/job queue; check 071/075 build.md before respawning builders; job create 177 (main regression) first; then per docs/build/HANDOFF.md",
-  "written_at": "2026-11-22T14:56:01Z"
+  "next_step": "PYTHONUTF8=1 factory/bin/job queue; check 073 gates.py log, hand merge 073, then gates+hand merge 080, 083, 084, 076 per docs/build/HANDOFF.md; job for #188",
+  "written_at": "2026-11-22T16:30:17Z"
 }
