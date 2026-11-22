@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import signal
 import socket
 import subprocess
 import sys
@@ -414,7 +415,9 @@ def _holds_listener_windows(pid: int, port: int) -> bool | None:
     return pid in pids
 
 
-def _start_api(database_url: str, port: int) -> tuple[subprocess.Popen[str], int]:
+def _start_api(
+    database_url: str, port: int, *, creationflags: int = 0
+) -> tuple[subprocess.Popen[str], int]:
     """Start the API and return it with the PID of the interpreter that runs `shifde.main`."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("SHIFDE_")}
     env.update(
@@ -429,6 +432,7 @@ def _start_api(database_url: str, port: int) -> tuple[subprocess.Popen[str], int
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        creationflags=creationflags,
     )
     assert proc.stdout is not None
     first = proc.stdout.readline()
@@ -524,6 +528,49 @@ def test_api_serves_under_application_role(app_url: str) -> None:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.communicate()
+
+
+@pytest.mark.parametrize(
+    "stop",
+    [
+        pytest.param(
+            "ctrl_break",
+            marks=pytest.mark.skipif(sys.platform != "win32", reason="Windows only"),
+        ),
+        pytest.param(
+            "sigterm", marks=pytest.mark.skipif(sys.platform == "win32", reason="POSIX only")
+        ),
+    ],
+)
+def test_api_exits_0_after_a_stop_signal(app_url: str, stop: str) -> None:
+    """A graceful stop exits 0, never 3 (the unsafe-role code): uvicorn re-raises the signal after
+    draining, and on Windows the default CTRL_BREAK action is exit 3 (issue #185)."""
+    port = _free_port()
+    flags = subprocess.CREATE_NEW_PROCESS_GROUP if stop == "ctrl_break" else 0
+    proc, _pid = _start_api(app_url, port, creationflags=flags)
+    try:
+        deadline = time.monotonic() + 180
+        while True:
+            if proc.poll() is not None:
+                stdout, stderr = proc.communicate()
+                pytest.fail(f"the API exited with {proc.returncode}: {stdout!r} {stderr!r}")
+            try:
+                if httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=2).status_code == 200:
+                    break
+            except httpx.TransportError:
+                pass
+            assert time.monotonic() < deadline, "the API did not start"
+            time.sleep(0.1)
+        if stop == "ctrl_break":
+            os.kill(proc.pid, signal.CTRL_BREAK_EVENT)
+        else:
+            proc.send_signal(signal.SIGTERM)
+        stdout, stderr = proc.communicate(timeout=60)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+    assert proc.returncode == 0, (proc.returncode, stdout, stderr)
 
 
 # --------------------------------------------------------------------------- every entrypoint

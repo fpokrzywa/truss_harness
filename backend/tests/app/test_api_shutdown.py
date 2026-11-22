@@ -3,6 +3,8 @@ to uvicorn as `timeout_graceful_shutdown` and keeps every other argument."""
 
 from __future__ import annotations
 
+import signal
+import sys
 from typing import Any
 
 import pytest
@@ -55,3 +57,26 @@ def test_run_passes_the_shutdown_grace_to_uvicorn(
 def test_a_shutdown_grace_below_one_second_is_refused() -> None:
     with pytest.raises(ValueError, match="api_shutdown_grace_seconds"):
         _settings(api_shutdown_grace_seconds=0)
+
+
+_RERAISED = [signal.SIGTERM]
+if sys.platform == "win32":
+    _RERAISED.append(signal.SIGBREAK)
+
+
+@pytest.mark.parametrize("sig", _RERAISED, ids=lambda sig: signal.Signals(sig).name)
+def test_a_stop_signal_reraised_after_the_graceful_shutdown_exits_0(
+    monkeypatch: pytest.MonkeyPatch, sig: int
+) -> None:
+    """uvicorn re-raises the stop signal it caught once it has drained; under the default handler
+    that ends the process with 3 on Windows (SIGBREAK), the unsafe-role code (issue #185)."""
+    monkeypatch.setattr(main, "settings_or_exit", lambda: _settings())
+    monkeypatch.setattr(main, "refuse_unsafe_role", lambda settings: None)
+    monkeypatch.setattr(main, "create_app", lambda settings: APP)
+    monkeypatch.setattr(main.uvicorn, "run", lambda app, **kw: signal.raise_signal(sig))
+    before = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        main.run()
+    except SystemExit as exc:
+        assert exc.code in (0, None)
+    assert {s: signal.getsignal(s) for s in before} == before

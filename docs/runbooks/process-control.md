@@ -22,6 +22,9 @@ The same codes for all three processes:
 | 4 | schema revision mismatch (worker: database not at the code's head) | do not restart; run the migrations or deploy the matching code |
 | 5 | cannot authenticate (executor: `whoami` answered 401 or 403) | do not restart; issue a new executor credential |
 
+`shifde-api` exits 0 on SIGTERM, SIGINT or Windows `CTRL_BREAK_EVENT` once it has drained (a stop
+received during start-up exits 0 too); its 3 comes only from the start-up role check.
+
 Any other code (a signal, a hard kill: -9 on POSIX, 15 left by TerminateProcess on Windows) is a
 crash and is treated like 1.
 
