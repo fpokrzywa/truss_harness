@@ -275,7 +275,7 @@ def test_the_worker_exits_4_on_a_database_schema_below_head(
     ],
 )
 def test_out_of_range_worker_settings_are_refused(
-    update: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    update: dict[str, Any], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     def load() -> Settings:
         return Settings(_env_file=None, env="test", database_url="postgresql://x@h/d", **update)
@@ -285,4 +285,5 @@ def test_out_of_range_worker_settings_are_refused(
     monkeypatch.setattr(settings_mod, "get_settings", load)
     with pytest.raises(SystemExit) as exited:
         settings_mod.settings_or_exit()
-    assert f"SHIFDE_{next(iter(update)).upper()}" in str(exited.value.code)
+    assert exited.value.code == 2
+    assert f"SHIFDE_{next(iter(update)).upper()}" in capsys.readouterr().err
