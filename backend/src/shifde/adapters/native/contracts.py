@@ -419,6 +419,7 @@ class ContextPlan(Model):
     """The job's plan as the executor needs it; the sealed fields are `None` before sealing."""
 
     id: UUID
+    tenant_id: UUID
     application_key: str
     display_name: str
     artifact_id: UUID
@@ -435,6 +436,7 @@ class ContextPlan(Model):
 
 class ContextDeployment(Model):
     id: UUID
+    tenant_id: UUID
     status: str
     receipt: ApplyReceipt | None
 

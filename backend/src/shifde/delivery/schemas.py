@@ -97,6 +97,7 @@ class CredentialIssued(BaseModel):
 
 class ExecutorWhoami(BaseModel):
     executor_id: UUID
+    tenant_id: UUID
     name: str
     status: str
     version: str | None

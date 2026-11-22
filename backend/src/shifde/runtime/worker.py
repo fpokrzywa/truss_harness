@@ -15,8 +15,10 @@ Process control (SP4 design 6.2): exit 0 stopped on request, 1 crashed (or stopp
 abandoned cap, below: restart it), 2 configuration refused, 3 unsafe database role, 4 database
 schema not at the code's head (checked at startup, before anything is claimed). With
 `worker_health_port` set, `GET /healthz` is 200 while the heartbeat loop ticked within two of its
-intervals and `GET /readyz` while the database answers, a claim tick happened within three polls
-and no stop was requested (`shifde.core.healthserver`).
+intervals and `GET /readyz` while the database answers, a main-loop tick (a claim pass or a
+reaper sweep step) happened within three polls and no stop was requested
+(`shifde.core.healthserver`). A stop request ends a reaper sweep early, after the client in
+progress; the sweeps are idempotent, so the next reap finishes them.
 
 Client isolation (RT-12, B-2291..B-2294): the worker's database is the application role (refused
 at startup otherwise, like the API: `run` exits 3, and `Database` itself refuses a privileged role,
@@ -250,8 +252,11 @@ class Worker:
         self.closed.set()  # no more heartbeats: the leases of what still runs expire
         try:
             with self.db.session() as s:
+                s.execute(text("SET LOCAL statement_timeout = '2s'"))
                 repo.beat_worker(s, self.worker_id, "stopped")
                 s.commit()
+        except Exception:  # noqa: BLE001 - a missed beat is left to lease expiry
+            log.error("worker.stop_beat_failed", worker_id=self.worker_id, exc_info=True)
         finally:
             if self.health is not None:
                 self.health.stop()
@@ -282,7 +287,8 @@ class Worker:
         return tick is not None and time.monotonic() - tick <= 2 * self.beat_interval
 
     def ready(self) -> bool:
-        """`/readyz`: no stop requested, a claim tick within three polls, the database answers."""
+        """`/readyz`: no stop requested, a main-loop tick (a claim pass or a reaper sweep step)
+        within three polls, the database answers."""
         tick = self.claim_tick
         if self.stop.is_set() or tick is None or time.monotonic() - tick > 3 * self.poll:
             return False
@@ -558,11 +564,12 @@ class Worker:
         except Exception:  # noqa: BLE001
             log.error("worker.reap_failed", exc_info=True)
             return
+        self.claim_tick = time.monotonic()
         if rows:
             self.wake.set()
         for row in rows:
             self._audit_reaped(row["tenant_id"], row["run_id"], row["reason"])
-        if got:
+        if got and not self.stop.is_set():
             self._sweep_capture_off()
             self._sweep_invocation_holds()
 
@@ -601,10 +608,14 @@ class Worker:
         """Capture off (F-12): scrub the ended runs (run and root terminal) whose scrub never ran
         (a follow-up transaction failed, or a worker died first). Clients are listed under the
         platform-administrator context; each one is then swept in a transaction of its own with
-        only that client set, under a per-client advisory lock. Idempotent; writes no audit."""
+        only that client set, under a per-client advisory lock. Idempotent; writes no audit. Ends
+        early on a stop request; each client swept is a main-loop tick for readiness."""
         clients = self._clients("worker.capture_sweep_failed")
         for tenant_id in clients or []:
+            if self.stop.is_set():
+                return
             self._sweep_client(tenant_id)
+            self.claim_tick = time.monotonic()
 
     def _clients(self, event: str) -> list[UUID] | None:
         """Every client's id, listed under the platform-administrator context; None (logged as
@@ -621,9 +632,13 @@ class Worker:
 
     def _sweep_invocation_holds(self) -> None:
         """Settle every client's marked direct-invocation holds past their TTL (issue #91), each
-        client in a transaction of its own with only that client set. Idempotent."""
+        client in a transaction of its own with only that client set. Idempotent. Ends early on a
+        stop request; each client swept is a main-loop tick for readiness."""
         for tenant_id in self._clients("worker.invocation_sweep_failed") or []:
+            if self.stop.is_set():
+                return
             self._sweep_client_invocations(tenant_id)
+            self.claim_tick = time.monotonic()
 
     def _sweep_client_invocations(self, tenant_id: UUID) -> None:
         with self.db.session() as s:

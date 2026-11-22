@@ -1,7 +1,8 @@
 """`shifde-executor` process control (SP4 design 6.2) against the in-process gateway and the fake
 platform: a stop during an `apply` step lets the step and job finish and exits 0; a grace that
 passes while a write is in flight exits 1 and posts no result; `whoami` answering 401 / 403 exits
-5 without the token; other `whoami` failures are retried; the health endpoints follow the
+5 without the token; a credentials file of another organization than `whoami`'s exits 2
+before any lease; other `whoami` failures are retried; the health endpoints follow the
 runner's ticks; malformed process-control variables exit 2.
 
 OS signals are not sent (Windows cannot deliver SIGTERM in-process): the tests call the handler
@@ -21,6 +22,7 @@ import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any  # Any: JSON bodies, fake platform call arguments
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -208,6 +210,42 @@ def test_whoami_refused_exits_5_without_the_token(
     assert f"shifde-executor: refusing to start: the gateway answered {status} to whoami" in err
     for text in (out, err, caplog.text):
         assert wrong not in text and flow.token not in text and CREDENTIAL_TOKEN not in text
+
+
+def test_a_credentials_file_of_another_organization_exits_2_before_any_lease(
+    flow: Flow,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    creds = credentials_file(tmp_path, "https://adb-1.cloud.databricks.com", tenant=flow.tenant)
+    _wire(monkeypatch, flow, creds, fake_platform())
+    whoami = GatewayClient.whoami
+    other = uuid4()
+    monkeypatch.setattr(
+        GatewayClient, "whoami", lambda self: whoami(self).model_copy(update={"tenant_id": other})
+    )
+    leases: list[object] = []
+    runners: list[object] = []
+
+    def no_runner(self: Runner, *args: object, **kwargs: object) -> None:
+        runners.append(self)
+        raise RuntimeError("no runner is built for a mismatched organization")
+
+    monkeypatch.setattr(GatewayClient, "lease", lambda self, kinds: leases.append(kinds))
+    monkeypatch.setattr(Runner, "__init__", no_runner)
+    assert main.run(["--fake-platform"]) == main.EXIT_CONFIG == 2
+    out, err = capsys.readouterr()
+    assert (
+        "shifde-executor: refusing to start: the credentials file belongs to another "
+        "organization than this executor"
+    ) in err
+    assert leases == [] and runners == []
+    for text in (out, err, caplog.text):
+        assert flow.token not in text and CREDENTIAL_TOKEN not in text
+    assert str(other) not in err and str(flow.tenant) not in err
 
 
 def test_other_whoami_failures_are_retried_until_the_executor_runs(

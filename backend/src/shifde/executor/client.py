@@ -63,6 +63,7 @@ class ArtifactDigestMismatch(ValueError):
 class Whoami(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
     executor_id: UUID
+    tenant_id: UUID
     name: str
     status: str
 
