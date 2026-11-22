@@ -340,31 +340,37 @@ def test_a_long_health_detail_is_truncated_in_the_audit_event(
     ) == [("x" * 500,)]
 
 
-def test_a_result_dated_slightly_before_the_job_is_still_found(
+def test_a_result_dated_long_before_the_job_is_still_found(
     client: TestClient,
     world: World,
     people: People,
     owner_db: Database,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A worker whose clock runs behind the database dates its event before the job's
-    `created_at`: the lookup's margin (`RESULT_CLOCK_SKEW`) still finds it, never
-    `worker_lost`."""
+    """A worker whose clock runs days behind the database dates its event long before the job's
+    `created_at`: the lookup has no time bound (issue #133), so the job reads `done`, never
+    `worker_lost`, and a second run of it finds that result and records nothing more."""
     A, h = org(world.a.slug), as_user(client, people.owner_a)
     pid = fake_model_stack(client, h, A)["provider"]
+    app: Any = client.app  # Any: the FastAPI app behind the test client
     for kind in (HEALTH, DISCOVER):
         job = post_job(client, h, A, pid, kind)
         [(created,)] = _q(owner_db, "SELECT created_at FROM shifde.jobs WHERE id = :j", j=job["id"])
-        early = created - timedelta(seconds=30)
+        early = created - timedelta(days=2)
         with monkeypatch.context() as m:
             m.setattr(audit_service, "utcnow", lambda early=early: early)
             assert execute(client, A, kind, job["id"])
+            again = models_admin.run_provider_job(
+                app.state.db, app.state.integration, world.a.tenant, UUID(job["id"])
+            )
+        assert again is None
         [(occurred,)] = _q(
             owner_db,
             "SELECT occurred_at FROM shifde.audit_events WHERE correlation_id = :c",
             c=f"{models_admin.JOB_PREFIX[kind]}-{job['id']}",
         )
-        assert occurred < created
+        assert occurred < created - timedelta(minutes=5)
+        assert len(_events(owner_db, pid, models_admin.JOB_ACTION[kind])) == 1
         out = job_status(client, h, A, pid, kind, job["id"])
         assert out["status"] == "done" and out["error"] is None and out["result"] is not None
 
