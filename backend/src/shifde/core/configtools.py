@@ -1,7 +1,7 @@
 """Configuration tooling: environment JSON Schema, redacted validation of an env file / environment.
 
-Used by `shifde-admin config schema|validate`. Nothing here prints a secret value: reports carry
-variable names and messages only.
+Used by `shifde-admin config schema|validate|preflight`. Nothing here prints a secret value:
+reports carry variable names and messages only.
 """
 
 from __future__ import annotations
@@ -75,7 +75,14 @@ def env_schema() -> dict[str, Any]:  # Any: JSON Schema document
                         "required": [f"{PREFIX}ENV"],
                     }
                 },
-                "then": {"allOf": [present("api_key_pepper"), present("secret_keys")]},
+                "then": {
+                    "allOf": [
+                        present("api_key_pepper"),
+                        present("secret_keys"),
+                        present("metrics_token"),
+                        present("public_base_url"),
+                    ]
+                },
             },
         ],
     }
@@ -87,6 +94,7 @@ class ValidationReport:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     env: str | None = None
+    settings: Settings | None = None  # the validated settings (`config preflight` reads them)
 
     def render(self) -> str:
         lines = [f"config OK (env={self.env})" if self.ok else "config INVALID"]
@@ -141,6 +149,7 @@ def validate_environment(environ: Mapping[str, str]) -> ValidationReport:
             return report
     report.ok = True
     report.env = settings.env
+    report.settings = settings
     if settings.env != "production":
         report.warnings.append(f"SHIFDE_ENV={settings.env}: production guards are not enforced")
     return report

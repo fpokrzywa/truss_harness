@@ -177,7 +177,7 @@ def test_advance_leaves_a_run_alone_that_runs_under_another_jobs_live_lease(
         outcome = lifecycle.advance(
             database,
             settings,
-            IntegrationRuntime(settings=settings, registry=AdapterRegistry.load()),
+            IntegrationRuntime(settings=settings, registry=AdapterRegistry.load(include_fake=True)),
             TokenBudgetHooks(),
             tenant,
             UUID(rid),
@@ -648,7 +648,7 @@ def test_a_run_whose_deadline_passed_before_it_started_is_timed_out_and_audited(
         outcome = lifecycle.advance(
             database,
             settings,
-            IntegrationRuntime(settings=settings, registry=AdapterRegistry.load()),
+            IntegrationRuntime(settings=settings, registry=AdapterRegistry.load(include_fake=True)),
             TokenBudgetHooks(),
             tenant_id(owner_session, "demo-a"),
             UUID(rid),

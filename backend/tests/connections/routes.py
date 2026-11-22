@@ -37,7 +37,7 @@ from tests._support.tenants import bind_user
 from tests.identity import harness
 from tests.tenancy.conftest import app_session, owner_member
 
-REGISTRY = AdapterRegistry.load()
+REGISTRY = AdapterRegistry.load(include_fake=True)
 SECRET_PREFIX = "conn-test-"  # every secret these tests write; removed after each test
 REST_TOKEN = "rest-secret-token-0001"
 
