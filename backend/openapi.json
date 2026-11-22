@@ -2614,10 +2614,16 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "tenant_id": {
+            "format": "uuid",
+            "title": "Tenant Id",
+            "type": "string"
           }
         },
         "required": [
           "id",
+          "tenant_id",
           "status",
           "receipt"
         ],
@@ -2718,6 +2724,11 @@
             "title": "Target Revision",
             "type": "integer"
           },
+          "tenant_id": {
+            "format": "uuid",
+            "title": "Tenant Id",
+            "type": "string"
+          },
           "toolchain_digest": {
             "anyOf": [
               {
@@ -2733,6 +2744,7 @@
         },
         "required": [
           "id",
+          "tenant_id",
           "application_key",
           "display_name",
           "artifact_id",
@@ -4869,6 +4881,11 @@
             "title": "Status",
             "type": "string"
           },
+          "tenant_id": {
+            "format": "uuid",
+            "title": "Tenant Id",
+            "type": "string"
+          },
           "version": {
             "anyOf": [
               {
@@ -4883,6 +4900,7 @@
         },
         "required": [
           "executor_id",
+          "tenant_id",
           "name",
           "status",
           "version",

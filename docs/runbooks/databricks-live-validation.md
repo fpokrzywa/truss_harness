@@ -88,6 +88,8 @@ executor (API running):
    to exactly one organization: `tenant_id` is that organization's id, `memberships[].org.id` in
    `GET /api/auth/session` while signed in to it. An entry of another organization is refused
    (`credential_unavailable`), and an entry without `tenant_id` makes the executor refuse the file.
+   A file whose entries name more than one organization is refused too, and the executor refuses
+   to start (exit 2) when the file's organization is not its own (the `tenant_id` of `whoami`).
 4. Set `SHIFDE_EXECUTOR_API_URL`, `SHIFDE_EXECUTOR_TOKEN` and `SHIFDE_EXECUTOR_CREDENTIALS_FILE`.
    The executor refuses an `http` API URL unless `SHIFDE_ENV` is `development` (or `test`): for
    a local API such as `http://127.0.0.1:8710`, also set `SHIFDE_ENV=development`; otherwise the

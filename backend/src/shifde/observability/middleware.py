@@ -9,7 +9,12 @@ import structlog
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from shifde.core.context import current_log_context, init_log_context, reset_log_context
+from shifde.core.context import (
+    WORKER_REQUEST_ID_PREFIXES,
+    current_log_context,
+    init_log_context,
+    reset_log_context,
+)
 from shifde.core.ids import uuid7
 from shifde.observability import metrics, tracing
 
@@ -19,7 +24,8 @@ log = structlog.get_logger("shifde.access")
 
 
 class RequestIdMiddleware:
-    """Echo a valid inbound X-Request-ID (else generate one), expose it as
+    """Echo a valid inbound X-Request-ID (else generate one; an id with a worker-reserved prefix
+    counts as invalid, #134), expose it as
     `scope['state']['request_id']`, and log one structured line per request. Query strings, headers,
     cookies and bodies are never logged."""
 
@@ -33,7 +39,12 @@ class RequestIdMiddleware:
 
         headers_in = Headers(scope=scope)
         inbound = headers_in.get(REQUEST_ID_HEADER)
-        request_id = inbound if inbound and _VALID_REQUEST_ID.match(inbound) else str(uuid7())
+        valid = (
+            inbound is not None
+            and _VALID_REQUEST_ID.match(inbound) is not None
+            and not inbound.startswith(WORKER_REQUEST_ID_PREFIXES)
+        )
+        request_id = inbound if inbound is not None and valid else str(uuid7())
         scope.setdefault("state", {})["request_id"] = request_id
         token = init_log_context(request_id)
         remote = tracing.parse_traceparent(headers_in.get("traceparent"))

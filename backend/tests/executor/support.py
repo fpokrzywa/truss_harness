@@ -59,11 +59,13 @@ def make_runner(
 ) -> Runner:
     """A runner of the executor holding `token`, against `fake`, over the in-process gateway."""
     gateway = GatewayClient("https://testserver", token, http=client)
+    me = gateway.whoami()
     return Runner(
         gateway,
         CredentialBroker.from_file(credentials),
-        gateway.whoami().executor_id,
+        me.executor_id,
         FakePlatform(fake),
+        tenant_id=me.tenant_id,
     )
 
 

@@ -575,6 +575,54 @@ def test_an_unrelated_service_account_can_approve(
     assert _denials(owner_db, world.a.tenant) == []
 
 
+def test_a_sibling_service_account_cannot_decide(
+    world: World, owner_db: Database, app_db: Database, sealed: Sealed
+) -> None:
+    """Two service accounts with the same owner (B-2911)."""
+    owner = _user_id(owner_db, sealed.approver)
+    requester = _service_account(owner_db, world.a.tenant, owner)
+    sibling = _service_account(owner_db, world.a.tenant, owner)
+    plan_id = _requested_by(owner_db, sealed.plan, requester)
+    digest = sealed.plan["digest"]
+    for decision in ("approve", "reject"):
+        out = _decide_as_service_account(app_db, world, sibling, plan_id, decision, digest)
+        assert isinstance(out, AppError) and out.code == "self_approval_forbidden", out
+        assert out.status == 403
+    assert _approvals(owner_db, plan_id) == []
+    assert plan_row(owner_db, plan_id)["status"] == "sealed"
+    rows = _denials(owner_db, world.a.tenant)
+    assert [(r.action, r.outcome, r.target_id, r.actor_id) for r in rows] == [
+        ("delivery.plan.approve", "denied", str(plan_id), sibling),
+        ("delivery.plan.reject", "denied", str(plan_id), sibling),
+    ]
+    for row in rows:
+        assert row.details["plan_id"] == str(plan_id)
+        assert row.details["reason"] == "sibling_service_accounts"
+        assert row.details["target_id"] == sealed.plan["target_id"]
+        assert row.details["application_key"] == sealed.plan["application_key"]
+    assert [r.details["decision"] for r in rows] == ["approve", "reject"]
+
+
+@pytest.mark.parametrize("owned", [False, True])
+def test_a_service_account_that_is_no_sibling_can_approve(
+    world: World, owner_db: Database, app_db: Database, sealed: Sealed, owned: bool
+) -> None:
+    """Both owners NULL, or two different owners (B-2911)."""
+    first = _user_id(owner_db, sealed.approver) if owned else None
+    second = _user_id(owner_db, sealed.requester) if owned else None
+    requester = _service_account(owner_db, world.a.tenant, first)
+    decider = _service_account(owner_db, world.a.tenant, second)
+    plan_id = _requested_by(owner_db, sealed.plan, requester)
+    out = _decide_as_service_account(
+        app_db, world, decider, plan_id, "approve", sealed.plan["digest"]
+    )
+    assert isinstance(out, schemas.PlanOut), out
+    assert out.status == "approved" and out.approval is not None
+    assert out.approval.decided_by == decider
+    assert plan_row(owner_db, plan_id)["status"] == "approved"
+    assert _denials(owner_db, world.a.tenant) == []
+
+
 def test_a_refused_self_decision_is_audited_denied(
     client: TestClient, world: World, owner_db: Database, sealed: Sealed
 ) -> None:

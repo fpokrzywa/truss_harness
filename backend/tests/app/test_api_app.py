@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from shifde import __version__
 from shifde.app import create_app
+from shifde.core.context import WORKER_REQUEST_ID_PREFIXES
 from shifde.core.db import Database
 from shifde.core.settings import Settings
 from tests._support.fullapp import World
@@ -68,6 +69,14 @@ def test_request_id_is_echoed_or_generated(client: TestClient) -> None:
         "x-request-id"
     ]
     assert generated != "bad id!" and len(generated) >= 8
+    # worker-reserved prefixes (provider job results, #134) are never taken from a caller
+    seen: set[str] = set()
+    for prefix in WORKER_REQUEST_ID_PREFIXES:
+        forged = f"{prefix}0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"
+        got = client.get("/api/health", headers={"X-Request-ID": forged}).headers["x-request-id"]
+        assert got != forged and not got.startswith(prefix) and len(got) >= 8
+        seen.add(got)
+    assert len(seen) == len(WORKER_REQUEST_ID_PREFIXES) == 2
 
 
 def test_problem_json_shape_for_404_and_422(client: TestClient, world: World) -> None:
