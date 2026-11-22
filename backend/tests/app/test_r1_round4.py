@@ -24,6 +24,7 @@ from tests._support.fullapp import World
 from tests._support.p3util import A
 from tests._support.p5util import SubprocessWorker, get_run, start_run, thread_worker, wait_run
 from tests._support.p6util import World6, agent_node, mini
+from tests._support.runs import lose_rows
 from tests.app.test_p5_worker import HangServer
 from tests.app.test_r1_critic import build2, park_live
 from tests.app.test_r1_round2 import node_steps, pipeline_killed
@@ -247,6 +248,8 @@ def test_an_agent_node_reports_an_unknown_outcome_from_its_child_and_grandchild(
     settings: Settings,
     rest_server: Any,
     sample_db_url: str,
+    admin_url: str,
+    owner_url: str,
 ) -> None:
     w = World6(client, world, owner_session, rest_server, sample_db_url)
     nodes = [agent_node(w, "a", "$params.a"), agent_node(w, "b", "$params.b")]
@@ -294,7 +297,7 @@ def test_an_agent_node_reports_an_unknown_outcome_from_its_child_and_grandchild(
         ),
         {"g": grand, "c": kids["a"]},
     )
-    o.execute(text("DELETE FROM shifde.approvals WHERE run_id = :c"), {"c": kids["a"]})
+    lose_rows(admin_url, owner_url, "DELETE FROM shifde.approvals WHERE run_id = :c", c=kids["a"])
     o.execute(
         text(
             "INSERT INTO shifde.approvals (id, tenant_id, run_id, workspace_id, project_id, "

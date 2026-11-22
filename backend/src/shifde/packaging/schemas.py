@@ -156,7 +156,9 @@ class Diagnostic(BaseModel):
 
 
 class ReleaseOut(BaseModel):
-    """A release; pins and tool paths of versions the caller cannot see are redacted."""
+    """A release; pins and tool paths of versions the caller cannot see are redacted, as are
+    model and connection paths and bindings only those versions name, and connection ids the
+    caller cannot read (null)."""
 
     id: UUID
     solution_id: UUID

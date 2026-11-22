@@ -585,7 +585,7 @@ def test_every_adapter_declares_the_config_fields_that_pick_its_destination() ->
     field, or the host-change rule would not see it."""
     hostlike = {"base_url", "url", "host", "hostname", "endpoint", "account", "server", "address"}
     seen = 0
-    for desc in AdapterRegistry.load().descriptors():
+    for desc in AdapterRegistry.load(include_fake=True).descriptors():
         props = set((desc.config_schema.get("properties") or {}).keys())
         needed = props & hostlike
         if desc.connection_type is not None and needed:

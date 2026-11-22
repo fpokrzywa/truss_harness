@@ -1,8 +1,8 @@
 {
-  "session_id": "9cf5f6f9-095e-42e1-b2fb-9ea77e503951",
-  "head_sha": "aceb02665cd2e9ff9171fcf6e34f1e7a7d5266b1",
+  "session_id": "0017d47c-7e30-411c-8ea6-681a79a8238e",
+  "head_sha": "fbb3b09be02dfdef73e37614725f2b1e836621da",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "PYTHONUTF8=1 factory/bin/job queue; merge 063 (#74, PR #151) under S-024 after sync and gates.py 13/13; create and start jobs for new lines",
-  "written_at": "2026-11-22T08:32:57Z"
+  "next_step": "PYTHONUTF8=1 factory/bin/job queue; hand merge 073 (gates 12/13, only #188); gate 088; then gates+hand merge 080, 083, 084, 076 per docs/build/HANDOFF.md; job for #188",
+  "written_at": "2026-11-22T16:45:37Z"
 }

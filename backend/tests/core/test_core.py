@@ -72,6 +72,8 @@ def test_production_refuses_local_auth_unless_explicitly_allowed() -> None:
         "env": "production",
         "api_key_pepper": "p" * 40,
         "secret_keys": KeyRing.generate_entry("k1"),
+        "metrics_token": "m" * 32,
+        "public_base_url": "https://seth.example.com",
     }
     with pytest.raises(ValidationError, match="refused in production"):
         Settings(**base, auth_local_enabled=True)
@@ -100,14 +102,22 @@ def test_settings_read_bom_prefixed_env_file(tmp_path: Path) -> None:
         + b"x" * 40
         + b"\nSHIFDE_SECRET_KEYS="
         + KeyRing.generate_entry("k1").encode()
-        + b"\n"
+        + b"\nSHIFDE_METRICS_TOKEN="
+        + b"m" * 32
+        + b"\nSHIFDE_PUBLIC_BASE_URL=https://seth.example.com\n"
     )
     s = Settings(_env_file=f)
     assert s.database_url == "postgresql+psycopg://bom"
 
 
 def test_production_requires_pepper_and_secret_keys_but_dev_and_test_generate_them() -> None:
-    base = {"_env_file": None, "database_url": "postgresql+psycopg://x", "env": "production"}
+    base = {
+        "_env_file": None,
+        "database_url": "postgresql+psycopg://x",
+        "env": "production",
+        "metrics_token": "m" * 32,
+        "public_base_url": "https://seth.example.com",
+    }
     with pytest.raises(ValidationError, match="SHIFDE_API_KEY_PEPPER is required"):
         Settings(**base)
     with pytest.raises(ValidationError, match="SHIFDE_SECRET_KEYS is required"):

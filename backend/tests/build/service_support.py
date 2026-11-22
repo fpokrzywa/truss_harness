@@ -27,7 +27,7 @@ from shifde.tenancy.scope import TenantScope
 from tests._support.tenants import bind_user
 from tests.tenancy.conftest import owner_member, owner_person
 
-REGISTRY = AdapterRegistry.load()
+REGISTRY = AdapterRegistry.load(include_fake=True)
 
 
 def add_person(owner: Session, tenant: UUID, label: str, role_key: str | None) -> UUID:

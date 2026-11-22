@@ -18,6 +18,12 @@ broker) or the in-memory fake (`FakePlatform`, one per process). The toolchain d
 platform, so a plan made on the fake is never applied by a real executor, and the fake marks
 every `complete` receipt and the apply receipt's handles with `platform: fake`.
 
+Process control (SP4 design 6.2): `stop()` requests no new lease, while the job in flight runs to
+its normal end, result included. `last_tick` is the monotonic time of the last run-loop pass (or
+lease heartbeat while a job is in flight) and `live()` / `ready()` hold while it, and the client's
+last successful gateway call, are within `window()`. `abandon()` (the shutdown grace ran out)
+posts nothing more for the job in flight; `write_in_flight()` tells whether a platform write was.
+
 A plan's artifact is the SDK source plus a root `release.json`, the release it deploys (SP3-4).
 Its digest covers the whole archive; the adapter reads the source without `release.json`
 (`ReleaseArtifactStore`), so the record is checked but never deployed.
@@ -28,6 +34,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -202,6 +209,7 @@ class GatewayJournal:
         self.tenant_id, self.operation_id = tenant_id, operation_id
         self.sequence = 0
         self.steps: dict[str, JournalEntry] = {}
+        self.in_flight: str | None = None  # a step whose `intent` was accepted, not yet complete
 
     def _post(
         self, key: str, state: Literal["intent", "complete"], receipt: dict[str, Any] | None
@@ -226,11 +234,13 @@ class GatewayJournal:
         self.steps[key] = JournalEntry(step_key=key, input_digest=digest(inputs), state="intent")
         if self._post(key, "intent", None).state != "intent":
             raise NeedsAttention(f"step {key} is already complete; it is never replayed")
+        self.in_flight = key
         return True
 
     def complete(self, key: str, receipt: dict[str, Any]) -> None:
         sent = {**receipt, "platform": "fake"} if self.platform == "fake" else receipt
         self._post(key, "complete", sent)
+        self.in_flight = None
         self.steps[key] = self.steps[key].model_copy(
             update={"state": "complete", "receipt": receipt}
         )
@@ -259,13 +269,48 @@ class Runner:
         self.heartbeat_seconds, self.poll_seconds = heartbeat_seconds, poll_seconds
         self.toolchain_digest = toolchain_digest(platform.kind)
         self._stop = threading.Event()
+        self.last_tick = time.monotonic()
+        self._state: LeaseState | None = None  # the job in flight
+        self._journal: GatewayJournal | None = None  # its journal, for an apply
 
     def stop(self) -> None:
         self._stop.set()
 
+    def window(self) -> float:
+        """How old a tick may be: three polls, or three heartbeats while a job is in flight (the
+        run loop does not pass during a long step)."""
+        return 3 * (self.heartbeat_seconds if self._state is not None else self.poll_seconds)
+
+    def live(self) -> bool:
+        return time.monotonic() - self.last_tick <= self.window()
+
+    def ready(self) -> bool:
+        last = self.client.last_success
+        return (
+            not self._stop.is_set()
+            and last is not None
+            and time.monotonic() - last <= self.window()
+        )
+
+    def in_flight(self) -> bool:
+        return self._state is not None
+
+    def write_in_flight(self) -> bool:
+        """A platform write of the job in flight was accepted (`intent`) and not yet complete."""
+        journal = self._journal
+        return journal is not None and journal.in_flight is not None
+
+    def abandon(self) -> None:
+        """The shutdown grace ran out: post nothing more for the job in flight (no result, no
+        cancel); the server decides it once its lease expires."""
+        state = self._state
+        if state is not None:
+            state.lost = True
+
     def run_forever(self) -> None:
         """Lease and run jobs until `stop()`; sleeps `poll_seconds` when none is due."""
         while not self._stop.is_set():
+            self.last_tick = time.monotonic()
             try:
                 ran = self.run_once()
             except Exception as exc:
@@ -285,6 +330,7 @@ class Runner:
     # ------------------------------------------------------------------ one job
     def _heartbeat(self, state: LeaseState) -> None:
         while not state.done.wait(self.heartbeat_seconds):
+            self.last_tick = time.monotonic()  # a run-loop tick while the job is in flight
             try:
                 state.lease_until = self.client.heartbeat(state.lease).lease_until
             except LeaseLost:
@@ -294,8 +340,15 @@ class Runner:
                 log.warning("heartbeat failed (%s)", type(exc).__name__)
 
     def _run(self, lease: JobLease) -> None:
+        state = self._state = LeaseState(lease=lease, lease_until=lease.lease_until)
+        try:
+            self._run_leased(state)
+        finally:
+            self._state = self._journal = None
+
+    def _run_leased(self, state: LeaseState) -> None:
+        lease = state.lease
         job = lease.job
-        state = LeaseState(lease=lease, lease_until=lease.lease_until)
         beat = threading.Thread(target=self._heartbeat, args=(state,), daemon=True)
         beat.start()
         log.info("running %s job %s", job.kind, job.id)
@@ -411,6 +464,7 @@ class Runner:
                 operation_id=ctx.deployment.id,
                 platform=self.platform.kind,
             )
+            self._journal = journal
             deploy = DeployContext(
                 tenant_id=target.tenant_id,
                 target=target,

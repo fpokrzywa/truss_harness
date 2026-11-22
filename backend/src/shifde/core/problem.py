@@ -13,6 +13,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from shifde.core.errors import AppError
 from shifde.core.redaction import scrub, scrub_text
+from shifde.core.securityheaders import security_headers
 
 PROBLEM_MEDIA_TYPE = "application/problem+json"
 log = structlog.get_logger("shifde.api")
@@ -127,13 +128,16 @@ async def _http_error(request: Request, exc: Exception) -> JSONResponse:
 
 async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
     log.error("request.unhandled_exception", exc_info=exc)
-    return problem_response(
+    response = problem_response(
         request,
         status=500,
         code="internal_error",
         title="Internal Server Error",
         detail="an unexpected error occurred",
     )
+    # Starlette's ServerErrorMiddleware runs this outside every user middleware (B-2772)
+    response.headers.update(security_headers(request.app.state.settings))
+    return response
 
 
 def install_error_handlers(app: FastAPI) -> None:
