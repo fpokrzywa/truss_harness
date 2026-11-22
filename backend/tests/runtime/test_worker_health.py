@@ -2,10 +2,12 @@
 bounded shutdown grace and exit 4 when the database schema is not at the code's head.
 
 No socket is opened with the default settings (port 0). With a port, `/healthz` follows the
-heartbeat loop's ticks (two intervals) and `/readyz` the main loop's claim ticks (three polls)
-and the worker's own database; a stop request makes readiness 503 and any other path is 404. A
-job blocked past `worker_shutdown_grace_seconds` does not hold `Worker.run()` up. The predicates
-are driven through recorded tick times rather than real waits.
+heartbeat loop's ticks (two intervals) and `/readyz` the main-loop ticks (a claim pass or a
+reaper sweep step, three polls) and the worker's own database; a stop request makes readiness
+503 and any other path is 404. A job blocked past `worker_shutdown_grace_seconds` does not hold
+`Worker.run()` up, a stop request ends a slow reaper sweep early (issue #188) and a failing
+"stopped" beat does not fail the exit. The predicates are driven through recorded tick times
+rather than real waits.
 """
 
 from __future__ import annotations
@@ -134,6 +136,7 @@ def test_a_running_worker_is_live_and_ready_and_an_unknown_path_is_404(
 ) -> None:
     port = _free_port()
     w = _worker(settings, "w-health", worker_health_port=port)
+    w.poll = 2.0  # a readiness window (3 polls) longer than one probe round trip
     running(w)
     _until(lambda: w.health is not None and w.live() and w.ready())
     assert w.health is not None and w.health.port == port
@@ -225,6 +228,109 @@ def test_a_job_blocked_past_the_grace_does_not_hold_the_worker_up(
         assert len(expired) == 1 and expired[0]["active"] == 1
     finally:
         release.set()
+        loop.join(30)
+
+
+SWEPT_CLIENTS = 30
+SWEEP_STEP = 0.5  # seconds per client: 30 x 0.5 s = 15 s, past the 10 s stop bound
+
+
+@pytest.fixture
+def slow_sweep(monkeypatch: pytest.MonkeyPatch) -> tuple[list[UUID], list[UUID]]:
+    """The reaper's client sweeps under load: many clients, each capture-off step slow. Returns
+    the clients the capture-off and the invocation-hold sweeps reached, in order."""
+    captured: list[UUID] = []
+    invocations: list[UUID] = []
+    clients = [uuid7() for _ in range(SWEPT_CLIENTS)]
+
+    def sweep_client(self: Worker, tenant_id: UUID) -> None:
+        captured.append(tenant_id)
+        time.sleep(SWEEP_STEP)
+
+    monkeypatch.setattr(Worker, "_clients", lambda self, event: list(clients))
+    monkeypatch.setattr(Worker, "_sweep_client", sweep_client)
+    monkeypatch.setattr(
+        Worker, "_sweep_client_invocations", lambda self, tenant_id: invocations.append(tenant_id)
+    )
+    return captured, invocations
+
+
+def test_a_stop_during_a_slow_reaper_sweep_ends_the_sweep_early(
+    settings: Settings, slow_sweep: tuple[list[UUID], list[UUID]]
+) -> None:
+    captured, invocations = slow_sweep
+    w = _worker(settings, "w-slow-stop")
+    exits: list[int] = []
+    loop = threading.Thread(target=lambda: exits.append(w.run()), daemon=True, name="test-slow")
+    loop.start()
+    try:
+        _until(lambda: len(captured) >= 1)  # the first reap's sweep is in progress
+        stopped = time.monotonic()
+        w.request_stop()
+        loop.join(30)
+        waited = time.monotonic() - stopped
+        assert not loop.is_alive(), "the worker did not stop"
+        assert exits == [0]
+        assert waited < 10, waited
+        assert len(captured) <= 3, len(captured)
+        assert invocations == []
+    finally:
+        w.request_stop()
+        loop.join(30)
+
+
+def test_a_worker_in_a_slow_reaper_sweep_stays_ready(
+    settings: Settings,
+    running: Callable[[Worker], threading.Thread],
+    slow_sweep: tuple[list[UUID], list[UUID]],
+) -> None:
+    captured, _ = slow_sweep
+    w = _worker(settings, "w-slow-ready")
+    w.poll = 2.0
+    running(w)
+    _until(lambda: len(captured) >= 1)
+    began = time.monotonic()
+    while time.monotonic() - began <= 3 * w.poll + 1:  # sweep steps past one readiness window
+        assert w.ready(), len(captured)
+        time.sleep(0.2)
+    assert 3 * w.poll / SWEEP_STEP < len(captured) < SWEPT_CLIENTS
+
+
+def test_a_failing_stopped_beat_does_not_fail_the_exit(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    beat = worker_mod.repo.beat_worker
+
+    def failing(session: Any, worker_id: str, status: str = "running") -> None:  # Any: a Session
+        if status == "stopped":
+            raise RuntimeError("the stopped beat failed")
+        beat(session, worker_id, status)
+
+    monkeypatch.setattr(worker_mod.repo, "beat_worker", failing)
+    closed: list[object] = []
+    stop = worker_mod.HealthServer.stop
+
+    def recorded(self: worker_mod.HealthServer) -> None:
+        closed.append(self)
+        stop(self)
+
+    monkeypatch.setattr(worker_mod.HealthServer, "stop", recorded)
+    w = _worker(settings, "w-stop-beat", worker_health_port=_free_port())
+    exits: list[int] = []
+    loop = threading.Thread(target=lambda: exits.append(w.run()), daemon=True, name="test-beat")
+    loop.start()
+    try:
+        _until(lambda: w.claim_tick is not None)
+        with structlog.testing.capture_logs() as logs:
+            w.request_stop()
+            loop.join(30)
+        assert not loop.is_alive(), "the worker did not stop"
+        assert exits == [0]
+        failed = [e for e in logs if e["event"] == "worker.stop_beat_failed"]
+        assert len(failed) == 1 and failed[0]["exc_info"] is True
+        assert closed == [w.health]
+    finally:
+        w.request_stop()
         loop.join(30)
 
 
