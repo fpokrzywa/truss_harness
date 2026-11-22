@@ -42,6 +42,7 @@ __all__ = [
     "SecretMeta",
     "SecretProvider",
     "SecretValue",
+    "check_all",
     "create_secret",
     "disable_secret",
     "get_secret",
@@ -258,6 +259,31 @@ def rewrap_all(session: Session, keyring: KeyRing) -> tuple[int, int]:
     rows = repository.all_secrets(session)
     changed = sum(1 for sec in rows if rewrap_secret(session, keyring, sec))
     return changed, len(rows)
+
+
+def check_all(session: Session, keyring: KeyRing) -> tuple[int, list[UUID]]:
+    """Decrypt every ``db_encrypted`` envelope (any status) and discard the plaintext at once:
+    nothing is logged, audited or written. Returns (ok, ids that failed)."""
+    ok = 0
+    failed: list[UUID] = []
+    for sec in repository.all_secrets(session):
+        if sec.provider_key != "db_encrypted":
+            continue
+        if not (sec.ciphertext and sec.wrapped_dek and sec.nonce and sec.kek_id):
+            failed.append(sec.id)
+            continue
+        try:
+            keyring.decrypt(
+                Envelope(sec.ciphertext, sec.wrapped_dek, sec.nonce, sec.kek_id),
+                tenant_id=sec.tenant_id,
+                secret_id=sec.id,
+                version=sec.secret_version,
+            )
+        except CryptoError:
+            failed.append(sec.id)
+            continue
+        ok += 1
+    return ok, failed
 
 
 class SecretProvider:

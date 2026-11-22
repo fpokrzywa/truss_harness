@@ -6,6 +6,9 @@ and reads the per-table row counts, the stamped revisions and a catalog fingerpr
 snapshot. It writes `manifest.json` (sorted keys) beside the dump. `verify_backup` needs no
 database: it checks the manifest, both digests, that the revisions are known to this code and
 not newer than its heads, and that `pg_restore` exists.
+`restore_backup` (SP4-5) verifies first, refuses a target that is not an empty database owned
+by the schema owner on a cluster with both roles, runs `pg_restore --single-transaction`, and
+`restore_checks` then compares the target with the manifest (six checks, design 6.1).
 
 The digests detect corruption and edits, not a deliberate forger: the manifest is unsigned, so
 anyone who can edit it can recompute them. The KEK ring (`SHIFDE_SECRET_KEYS`, only its key ids
@@ -25,7 +28,7 @@ import shutil
 
 # the PostgreSQL tools run with fixed argv lists and no shell (_run_tool)
 import subprocess  # nosec B404
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any  # Any: the manifest is a JSON document
@@ -38,10 +41,14 @@ from sqlalchemy.exc import ArgumentError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from shifde import __version__
+from shifde.audit import service as audit
 from shifde.core.clock import utcnow
 from shifde.core.crypto import KeyRing
 from shifde.core.db import Database, read_db_revisions
+from shifde.core.dbrole import UnsafeDatabaseRole
+from shifde.core.health import migration_state
 from shifde.core.migrations import code_heads, migrations_dir
+from shifde.secrets import service as secrets_service
 
 MANIFEST = "manifest.json"
 DUMP_FILE = "shifde.dump"
@@ -103,13 +110,13 @@ def find_pg_tool(name: str) -> str:
     raise BackupError(f"{name} not found: put it on PATH or set {BIN_DIR_VAR} to its directory")
 
 
-def _parse_url(url: str) -> URL:
+def _parse_url(url: str, what: str = "the migration database URL") -> URL:
     try:
         parsed = make_url(url)
     except ArgumentError:
-        raise BackupError("the migration database URL is not valid") from None
+        raise BackupError(f"{what} is not valid") from None
     if not parsed.database:
-        raise BackupError("the migration database URL must name a database")
+        raise BackupError(f"{what} must name a database")
     unsupported = sorted(
         name
         for name, value in parsed.query.items()
@@ -117,7 +124,7 @@ def _parse_url(url: str) -> URL:
     )
     if unsupported:
         raise BackupError(
-            "the migration database URL has query parameters backup does not pass to pg_dump: "
+            f"{what} has query parameters backup does not pass to the PostgreSQL tools: "
             f"{', '.join(unsupported)} (supported: {', '.join(sorted(_SSL_VARS))})"
         )
     return parsed
@@ -492,3 +499,213 @@ def verify_backup(from_dir: Path) -> tuple[dict[str, Any], Path, str]:
             "install the matching or a newer release first"
         )
     return manifest, dump, find_pg_tool("pg_restore")
+
+
+# --------------------------------------------------------------------------- restore (SP4-5)
+RESTORE_CHECKS = (
+    "fingerprint",
+    "row counts",
+    "migration state",
+    "app role",
+    "audit chains",
+    "secrets",
+)
+_TARGET = "the target database URL"
+_CLIENTS = text("SELECT id, slug FROM shifde.tenants ORDER BY id")
+_NOT_EMPTY = text(
+    "SELECT n.nspname, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+    "WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') "
+    "AND n.nspname NOT LIKE 'pg\\_toast%' ORDER BY 1, 2 LIMIT 5"
+)
+
+
+@dataclass(frozen=True)
+class CheckResult:
+    name: str
+    ok: bool
+    detail: str = ""
+
+
+def target_url_from_env(name: str) -> str:
+    """The URL in environment variable `name`, or in the file named by `name_FILE` when `name`
+    is unset. Errors never carry the URL or the file's contents."""
+    value = os.environ.get(name)
+    if value is None:
+        path = os.environ.get(f"{name}_FILE")
+        if path is None:
+            raise BackupError(f"neither {name} nor {name}_FILE is set")
+        try:
+            value = Path(path).read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            raise BackupError(f"cannot read the file named by {name}_FILE") from None
+    if not value:
+        raise BackupError(f"{name} is empty")
+    return value
+
+
+def _check_target(session: Session, owner_role: str, app_role: str) -> None:
+    """Refuse a target not owned by `owner_role`, not empty, or on a cluster lacking a role."""
+    datdba = session.execute(
+        text("SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = current_database()")
+    ).scalar_one()
+    if datdba != owner_role:
+        raise BackupError(f"the target database is owned by {datdba}, not by {owner_role}")
+    if session.execute(
+        text("SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = :s)"), {"s": SCHEMA}
+    ).scalar_one():
+        raise BackupError(f"the target database is not empty: schema {SCHEMA} exists")
+    found = [f"{r[0]}.{r[1]}" for r in session.execute(_NOT_EMPTY)]
+    if found:
+        raise BackupError(f"the target database is not empty: {', '.join(found)}")
+    present = set(
+        session.execute(
+            text("SELECT rolname FROM pg_roles WHERE rolname = ANY(:names)"),
+            {"names": [owner_role, app_role]},
+        ).scalars()
+    )
+    missing = [role for role in (owner_role, app_role) if role not in present]
+    if missing:
+        raise BackupError(f"role(s) missing on the target cluster: {', '.join(missing)}")
+
+
+def restore_backup(
+    from_dir: Path, target_url: str, owner_role: str, app_role: str
+) -> dict[str, Any]:
+    """Verify `from_dir`, check the target's preconditions as its URL's user, then restore the
+    dump with `pg_restore --single-transaction --exit-on-error --no-owner`; returns the manifest.
+    Creates no role and no extension, and never cleans a target."""
+    manifest, dump, pg_restore = verify_backup(from_dir)
+    parsed = _parse_url(target_url, _TARGET)
+    if parsed.username != owner_role:
+        raise BackupError(f"the target URL's user is not the schema owner role {owner_role}")
+    database = Database(target_url, pool_size=1, max_overflow=0, verify_role=False)
+    try:
+        with database.session() as session:
+            _check_target(session, owner_role, app_role)
+    except SQLAlchemyError as exc:
+        raise BackupError(f"target database error: {exc.__class__.__name__}") from None
+    finally:
+        database.dispose()
+    _run_tool(
+        [
+            pg_restore,
+            "--single-transaction",
+            "--exit-on-error",
+            "--no-owner",
+            *_conn_args(parsed),
+            str(dump),
+        ],
+        _pg_env(parsed),
+        str(parsed.password) if parsed.password else None,
+        "pg_restore",
+    )
+    return manifest
+
+
+def _differences(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> list[str]:
+    """What differs between two catalog fingerprints, by table, policy, grant and function."""
+    e_tables, a_tables = expected.get("tables", {}), actual.get("tables", {})
+    found = [
+        f"table {name}"
+        for name in sorted(set(e_tables) | set(a_tables))
+        if e_tables.get(name) != a_tables.get(name)
+    ]
+    labels: tuple[tuple[str, str, Callable[[Mapping[str, Any]], str]], ...] = (
+        ("policies", "policy", lambda p: f"{p['table']}.{p['name']}"),
+        ("app_role_grants", "grant", lambda g: f"{g['privilege']} on {g['kind']} {g['object']}"),
+        ("security_definer_functions", "function", lambda f: str(f["signature"])),
+    )
+    for key, label, name_of in labels:
+        e_items = {json.dumps(i, sort_keys=True): i for i in expected.get(key, [])}
+        a_items = {json.dumps(i, sort_keys=True): i for i in actual.get(key, [])}
+        names = {name_of(i) for k, i in e_items.items() if k not in a_items}
+        names |= {name_of(i) for k, i in a_items.items() if k not in e_items}
+        found += [f"{label} {name}" for name in sorted(names)]
+    if expected.get("app_role") != actual.get("app_role"):
+        found.append("app role")
+    return found
+
+
+def _check_fingerprint(session: Session, manifest: Mapping[str, Any], app_role: str) -> str:
+    # through JSON, as the manifest went: tuples become lists
+    actual = json.loads(json.dumps(catalog_fingerprint(session, app_role)))
+    expected = manifest["catalog_fingerprint"]
+    if actual == expected:
+        return ""
+    return "differs: " + (", ".join(_differences(expected, actual)) or "other fields")
+
+
+def _check_row_counts(session: Session, manifest: Mapping[str, Any]) -> str:
+    volatile = set(manifest["volatile_tables"])
+    expected = {k: v for k, v in manifest["row_counts"].items() if k not in volatile}
+    actual = {k: v for k, v in row_counts(session).items() if k not in volatile}
+    differ = sorted(n for n in set(expected) | set(actual) if expected.get(n) != actual.get(n))
+    return f"differ: {', '.join(differ)}" if differ else ""
+
+
+def _check_migrations(session: Session) -> str:
+    state = migration_state(session).status
+    return "" if state == "ok" else f"migration state is {state}"
+
+
+def _check_app_role(app_url: str) -> str:
+    try:
+        database = Database(app_url, pool_size=1, max_overflow=0)  # runs check_app_role
+    except UnsafeDatabaseRole as exc:
+        return str(exc)
+    database.dispose()
+    return ""
+
+
+def _check_audit(session: Session) -> str:
+    broken = []
+    for tenant_id, slug in session.execute(_CLIENTS).all():
+        result = audit.verify_chain(session, tenant_id)
+        if not result.ok:
+            broken.append(f"{slug} at event {result.first_broken_id}")
+    return f"broken: {', '.join(broken)}" if broken else ""
+
+
+def _check_secrets(session: Session, keyring: KeyRing) -> str:
+    ok, failed = secrets_service.check_all(session, keyring)
+    if not failed:
+        return ""
+    return f"ok {ok}, failed {len(failed)}: {', '.join(str(i) for i in failed)}"
+
+
+def restore_checks(
+    manifest: Mapping[str, Any], target_url: str, app_url: str, app_role: str, keyring: KeyRing
+) -> list[CheckResult]:
+    """The six post-restore checks of design 6.1, in `RESTORE_CHECKS` order; each runs even when
+    an earlier one failed. `app_url` gives the app role's credentials; its host, port and
+    database become the target's. A detail never carries connection details or key material."""
+    target = make_url(target_url)
+    app_target = (
+        make_url(app_url)
+        .set(host=target.host, port=target.port, database=target.database)
+        .render_as_string(hide_password=False)
+    )
+    steps: dict[str, Callable[[Session], str]] = {
+        "fingerprint": lambda s: _check_fingerprint(s, manifest, app_role),
+        "row counts": lambda s: _check_row_counts(s, manifest),
+        "migration state": _check_migrations,
+        "audit chains": _check_audit,
+        "secrets": lambda s: _check_secrets(s, keyring),
+    }
+    database = Database(target_url, pool_size=1, max_overflow=0, verify_role=False)
+    results: list[CheckResult] = []
+    try:
+        for name in RESTORE_CHECKS:
+            try:
+                if name == "app role":
+                    detail = _check_app_role(app_target)
+                else:
+                    with database.session() as session:
+                        detail = steps[name](session)
+                        session.rollback()  # read only
+            except SQLAlchemyError as exc:
+                detail = f"database error: {exc.__class__.__name__}"
+            results.append(CheckResult(name, not detail, detail))
+    finally:
+        database.dispose()
+    return results

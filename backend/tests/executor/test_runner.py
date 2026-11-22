@@ -137,6 +137,78 @@ def test_a_context_naming_another_job_fails_before_any_credential_grant(
     assert fake.actions == []
 
 
+def _plan_job_fails_on(
+    flow: Flow, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, update: Any
+) -> FakeDatabricksPlatform:
+    """A plan job whose context `update(ctx)` rewrites ends `execution_failed` before any
+    credential grant; the fake platform."""
+    fake = fake_platform()
+    target = flow.target()
+    creds = credentials_file(tmp_path, target["address"], tenant=flow.tenant)
+    context = GatewayClient.context
+    grants: list[JobLease] = []
+    monkeypatch.setattr(GatewayClient, "context", lambda self, lease: update(context(self, lease)))
+    monkeypatch.setattr(GatewayClient, "credential_grant", lambda _, lease: grants.append(lease))
+    plan = ask_plan(flow, target["id"])
+    assert make_runner(flow.client, flow.token, creds, fake).run_once()
+    failed = flow.get_plan(plan["id"])
+    assert failed["status"] == "plan_failed", failed
+    assert failed["status_reason"] == "plan job failed: execution_failed"
+    assert grants == []
+    return fake
+
+
+def test_a_context_whose_plan_names_another_tenant_fails_before_any_credential_grant(
+    flow: Flow, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def other_plan_tenant(ctx: JobContext) -> JobContext:
+        assert ctx.plan is not None and ctx.plan.tenant_id == flow.tenant
+        return ctx.model_copy(update={"plan": ctx.plan.model_copy(update={"tenant_id": uuid4()})})
+
+    assert _plan_job_fails_on(flow, tmp_path, monkeypatch, other_plan_tenant).actions == []
+
+
+def test_a_context_whose_target_is_not_the_pinned_tenant_fails_before_any_credential_grant(
+    flow: Flow, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def other_tenant(ctx: JobContext) -> JobContext:
+        # target and plan agree with each other, but not with the executor's organization
+        other = uuid4()
+        assert ctx.plan is not None and ctx.target.tenant_id == flow.tenant
+        return ctx.model_copy(
+            update={
+                "target": ctx.target.model_copy(update={"tenant_id": other}),
+                "plan": ctx.plan.model_copy(update={"tenant_id": other}),
+            }
+        )
+
+    assert _plan_job_fails_on(flow, tmp_path, monkeypatch, other_tenant).actions == []
+
+
+def test_a_context_whose_deployment_names_another_tenant_fails_before_any_credential_grant(
+    flow: Flow, tmp_path: Path, owner_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = fake_platform()
+    _, deployment_id, creds = _approved(flow, tmp_path, fake)
+    context = GatewayClient.context
+    grants: list[JobLease] = []
+
+    def other_deployment_tenant(self: GatewayClient, lease: JobLease) -> JobContext:
+        ctx = context(self, lease)
+        assert ctx.deployment is not None and ctx.deployment.tenant_id == flow.tenant
+        deployment = ctx.deployment.model_copy(update={"tenant_id": uuid4()})
+        return ctx.model_copy(update={"deployment": deployment})
+
+    monkeypatch.setattr(GatewayClient, "context", other_deployment_tenant)
+    monkeypatch.setattr(GatewayClient, "credential_grant", lambda _, lease: grants.append(lease))
+    assert make_runner(flow.client, flow.token, creds, fake).run_once()
+    assert deployment_row(owner_db, deployment_id)["status"] == "failed"
+    jobs = [j for j in deployment_jobs(owner_db, deployment_id) if j["kind"] == "apply"]
+    assert jobs[0]["result"] == {"status": "failed", "error_code": "execution_failed"}
+    assert grants == []
+    assert fake.actions == []
+
+
 def test_an_artifact_that_is_not_the_plans_is_refused_before_the_adapter(
     flow: Flow, tmp_path: Path, owner_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
