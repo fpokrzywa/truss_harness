@@ -83,8 +83,11 @@ executor (API running):
 1. Register a target for the development workspace (Targets screen) with the warehouse binding
    and a `credential_ref`.
 2. Create an executor and issue its credential (Executors screen); the credential starts `shx_`.
-3. Write the executor's credentials file, JSON `credential_ref -> {host, token,
-   service_principal}`, outside the repository or under `.devdata/`.
+3. Write the executor's credentials file, JSON `credential_ref -> {tenant_id, host, token,
+   service_principal}`, outside the repository or under `.devdata/`. A credentials file belongs
+   to exactly one organization: `tenant_id` is that organization's id, `memberships[].org.id` in
+   `GET /api/auth/session` while signed in to it. An entry of another organization is refused
+   (`credential_unavailable`), and an entry without `tenant_id` makes the executor refuse the file.
 4. Set `SHIFDE_EXECUTOR_API_URL`, `SHIFDE_EXECUTOR_TOKEN` and `SHIFDE_EXECUTOR_CREDENTIALS_FILE`.
    The executor refuses an `http` API URL unless `SHIFDE_ENV` is `development` (or `test`): for
    a local API such as `http://127.0.0.1:8710`, also set `SHIFDE_ENV=development`; otherwise the

@@ -44,7 +44,7 @@ def _keys(value: Any) -> set[str]:
 def test_apply_and_observe_contexts(flow: Flow, tmp_path: Path, owner_db: Database) -> None:
     fake = fake_platform()
     target = flow.target()
-    creds = credentials_file(tmp_path, target["address"])
+    creds = credentials_file(tmp_path, target["address"], tenant=flow.tenant)
     runner = make_runner(flow.client, flow.token, creds, fake)
 
     # first deployment of sales-app: applied by the runner, so the app is owned
