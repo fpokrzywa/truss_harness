@@ -8,36 +8,60 @@ Mounted without `require_auth`: the only credential read here is `Authorization:
 (an executor token; cookies are never read), and a user API key or session gets the same 401
 `invalid_credentials` as any other refused token. User routes refuse executor tokens through
 `apikeys.authenticate_bearer`, which accepts only `shf_` keys.
+
+Every refused executor token writes one installation-level `delivery.executor.token.rejected`
+audit row (no token material), and failures are counted per source address in
+`app.state.executor_auth_failure_limiter` (`executor_auth_failures_per_minute`, skipped for
+loopback and trusted proxies). A source over its limit gets 429 `rate_limited` before any lookup,
+so a correct token cannot be told apart by the answer; successes and a bad `X-Executor-Version`
+(422) are not counted (B-2730, as B-919).
 """
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import Annotated, Any  # Any: a lease or an empty 204
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 
 from shifde.adapters.native import contracts as c
-from shifde.core.deps import SessionDep, SettingsDep
+from shifde.core.deps import RequestCtxDep, SessionDep, SettingsDep
+from shifde.core.errors import InvalidCredentials, RateLimited
+from shifde.core.ratelimit import SlidingWindowLimiter, ip_limit_applies, source_key
 from shifde.delivery import gateway
 from shifde.delivery import schemas as s
 from shifde.delivery.service import AuthenticatedExecutor, authenticate_executor
 
 router = APIRouter(prefix="/api/executor/v1")
+EXECUTOR_LIMIT_MESSAGE = "too many failed executor authentications; try again later"
 
 
 def require_executor(
-    request: Request, session: SessionDep, settings: SettingsDep
+    request: Request, session: SessionDep, settings: SettingsDep, ctx: RequestCtxDep
 ) -> AuthenticatedExecutor:
     """Authenticate the executor; the session then runs in its organization (no principal) and
-    `last_seen_at` / `version` (`X-Executor-Version`) are updated on every call."""
+    `last_seen_at` / `version` (`X-Executor-Version`) are updated on every call. Failed attempts
+    are limited per source; a source over its limit is refused before any lookup (B-2730)."""
+    limiter: SlidingWindowLimiter = request.app.state.executor_auth_failure_limiter
+    applies = ip_limit_applies(ctx.client_ip, settings.trusted_proxies, forwarded=ctx.forwarded)
+    key = source_key(ctx.client_ip) or "unknown"
+    if applies and limiter.exceeded(key):
+        raise RateLimited(EXECUTOR_LIMIT_MESSAGE)
     scheme, _, token = request.headers.get("authorization", "").partition(" ")
-    return authenticate_executor(
-        session,
-        settings.pepper_ring.values(),
-        token.strip() if scheme.lower() == "bearer" else None,
-        request.headers.get("x-executor-version"),
-    )
+    try:
+        return authenticate_executor(
+            session,
+            ctx,
+            settings.pepper_ring.values(),
+            token.strip() if scheme.lower() == "bearer" else None,
+            request.headers.get("x-executor-version"),
+        )
+    except InvalidCredentials:
+        if applies:
+            with suppress(RateLimited):  # this attempt has already failed with its own 401
+                limiter.check(key)
+        raise
 
 
 ExecutorDep = Annotated[AuthenticatedExecutor, Depends(require_executor)]

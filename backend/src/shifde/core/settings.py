@@ -175,6 +175,7 @@ class Settings(BaseSettings):
     api_key_pepper_id: str = "p1"
     api_key_retired_peppers: SecretStr | None = None
     api_key_failures_per_minute: int = 30  # failed bearer attempts per client address (Item 5b)
+    executor_auth_failures_per_minute: int = 30  # failed executor tokens per address (B-2730)
     secret_keys: SecretStr | None = None
     api_key_max_days: int = 365
     public_base_url: str | None = None  # OIDC redirect base; default: first allowed origin
