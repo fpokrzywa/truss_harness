@@ -26,6 +26,28 @@ CONNECTION_COLUMNS = (
     "config, auth_method, secret_ref_id, egress_policy_id, access_mode, status, health_status, "
     "last_tested_at, row_version, created_at, updated_at"
 )
+# a connection with the outcome of its latest test by `started_at` (null: never tested), one
+# index lookup per row through `ix_connection_tests__connection`, no per-row query
+CONNECTION_SELECT = (
+    "SELECT c.id, c.tenant_id, c.workspace_id, c.project_id, c.name, c.connection_type, "
+    "c.adapter_key, c.vendor_id, c.config, c.auth_method, c.secret_ref_id, c.egress_policy_id, "
+    "c.access_mode, c.status, c.health_status, c.last_tested_at, c.row_version, c.created_at, "
+    "c.updated_at, lt.outcome AS last_test_outcome FROM shifde.connections c "
+    "LEFT JOIN LATERAL (SELECT t.outcome FROM shifde.connection_tests t "
+    "WHERE t.tenant_id = c.tenant_id AND t.connection_id = c.id "
+    "ORDER BY t.started_at DESC LIMIT 1) lt ON true"
+)
+# `workspace`/`project` filter: that exact scope, or (`include_shared`) the project's own rows plus
+# the workspace-wide and client-wide ones it shares
+SCOPE_EXACT = (
+    "AND (CAST(:workspace AS uuid) IS NULL OR c.workspace_id = :workspace) "
+    "AND (CAST(:project AS uuid) IS NULL OR c.project_id = :project) "
+)
+SCOPE_SHARED = (
+    "AND ((CAST(:project AS uuid) IS NOT NULL AND c.project_id = :project) "
+    "     OR (c.workspace_id = :workspace AND c.project_id IS NULL) "
+    "     OR c.workspace_id IS NULL) "
+)
 CONNECTION_UPDATABLE = frozenset(
     {
         "name",
@@ -102,8 +124,8 @@ def get_connection(session: Session, connection_id: UUID, *, tenant_id: UUID) ->
         session.execute(
             text(
                 # columns are module constants; values are bound
-                f"SELECT {CONNECTION_COLUMNS} FROM shifde.connections "  # nosec B608
-                "WHERE id = :id AND tenant_id = :t"
+                f"{CONNECTION_SELECT} "  # nosec B608
+                "WHERE c.id = :id AND c.tenant_id = :t"
             ),
             {"id": connection_id, "t": tenant_id},
         )
@@ -120,6 +142,7 @@ def list_connections(
     status: str | None,
     workspace_id: UUID | None,
     project_id: UUID | None,
+    include_shared: bool,
     tenant_wide: bool,
     visible_workspaces: Sequence[UUID],
     visible_projects: Sequence[UUID],
@@ -128,15 +151,14 @@ def list_connections(
 ) -> list[Row]:
     sql = (
         # columns are module constants; values are bound
-        f"SELECT {CONNECTION_COLUMNS} FROM shifde.connections WHERE tenant_id = :t "  # nosec B608
-        "AND (CAST(:type AS text) IS NULL OR connection_type = :type) "
-        "AND (CAST(:status AS text) IS NULL OR status = :status) "
-        "AND (CAST(:workspace AS uuid) IS NULL OR workspace_id = :workspace) "
-        "AND (CAST(:project AS uuid) IS NULL OR project_id = :project) "
-        "AND (CAST(:after AS uuid) IS NULL OR id > :after) "
-        "AND (:wide OR workspace_id = ANY(CAST(:vws AS uuid[])) "
-        "     OR project_id = ANY(CAST(:vps AS uuid[]))) "
-        "ORDER BY id LIMIT :n"
+        f"{CONNECTION_SELECT} WHERE c.tenant_id = :t "  # nosec B608
+        "AND (CAST(:type AS text) IS NULL OR c.connection_type = :type) "
+        "AND (CAST(:status AS text) IS NULL OR c.status = :status) "
+        + (SCOPE_SHARED if include_shared else SCOPE_EXACT)
+        + "AND (CAST(:after AS uuid) IS NULL OR c.id > :after) "
+        "AND (:wide OR c.workspace_id = ANY(CAST(:vws AS uuid[])) "
+        "     OR c.project_id = ANY(CAST(:vps AS uuid[]))) "
+        "ORDER BY c.id LIMIT :n"
     )
     return list(
         session.execute(

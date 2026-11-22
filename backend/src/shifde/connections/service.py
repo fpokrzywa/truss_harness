@@ -56,6 +56,7 @@ from shifde.core.errors import (
     NotFound,
     RateLimited,
     ScopeArchived,
+    SecretScopeMismatch,
     UpstreamError,
     UseModelsEndpoint,
     ValidationFailed,
@@ -82,6 +83,20 @@ CONFIG_AFFECTING = frozenset(
 TEST_VALIDITY = timedelta(hours=24)
 TEST_JOB_KIND = "connection.test"  # `shifde.jobs.kind` of a queued connection test (B-2610)
 ERROR_CODE = re.compile(r"[a-z][a-z_]*")  # an `AppError.code` the worker stored as `last_error`
+SCOPE_MISMATCH = "the secret must have the connection's scope"
+
+
+def integrity_error(exc: IntegrityError) -> AppError | None:
+    """HTTP mapping of a database refusal by SQLSTATE (#156 rule 4.5, B-2745): a duplicate name
+    in one scope is 409, a `connections_guard` refusal is 422 with the guard's own message (the
+    RAISE text, never ids or values); None for anything else, which the caller re-raises."""
+    state = getattr(exc.orig, "sqlstate", None)
+    if state == "23505":
+        return Conflict("a connection with this name already exists in this scope")
+    if state == "23514":
+        diag = getattr(exc.orig, "diag", None)
+        return SecretScopeMismatch(getattr(diag, "message_primary", None) or SCOPE_MISMATCH)
+    return None
 
 
 def failure_to_error(exc: AdapterFailure) -> AppError:
@@ -196,7 +211,10 @@ class ConnectionService:
             self._session.commit()
         except IntegrityError as exc:
             self._session.rollback()
-            raise Conflict("connection conflicts with an existing resource") from exc
+            mapped = integrity_error(exc)
+            if mapped is None:
+                raise
+            raise mapped from exc
 
     def _out(
         self,
@@ -231,6 +249,7 @@ class ConnectionService:
             health_status=row["health_status"],
             health=row["health_status"],
             last_tested_at=row["last_tested_at"],
+            last_test_outcome=row["last_test_outcome"],
             row_version=row["row_version"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
@@ -301,9 +320,9 @@ class ConnectionService:
             return ResourceRef(self.sc.tenant_id, workspace_id=sec.scope_id)
         return tenancy.resolve_scope_ref(self.sc, "project", sec.scope_id)
 
-    def _check_secret(self, secret_id: UUID | None) -> None:
+    def _check_secret(self, secret_id: UUID | None) -> secrets_service.SecretMeta | None:
         if secret_id is None:
-            return
+            return None
         sec = secrets_service.get_secret(self._session, secret_id, tenant_id=self.sc.tenant_id)
         if sec is None or sec.tenant_id != self.sc.tenant_id or sec.status != "active":
             raise NotFound("secret not found")
@@ -311,6 +330,27 @@ class ConnectionService:
             self.sc.pdp.require("secret:use", self._secret_ref(sec), hide_unless="secret:read")
         except NotFound as exc:  # hidden: the same answer as an id that does not exist (B-1508)
             raise NotFound("secret not found") from exc
+        return sec
+
+    @staticmethod
+    def _check_secret_scope(
+        sec: secrets_service.SecretMeta | None,
+        workspace_id: UUID | None,
+        project_id: UUID | None,
+    ) -> None:
+        """#156 rule 4.4 (B-2746): a project connection takes only a secret of its project, a
+        workspace connection only one of its workspace, a client connection only a client one.
+        Runs after `_check_secret`, so its 404/403 answers come first."""
+        if sec is None:
+            return
+        if project_id is not None:
+            ok = sec.scope_type == "project" and sec.scope_id == project_id
+        elif workspace_id is not None:
+            ok = sec.scope_type == "workspace" and sec.scope_id == workspace_id
+        else:
+            ok = sec.scope_type == "tenant"
+        if not ok:
+            raise SecretScopeMismatch(SCOPE_MISMATCH)
 
     def _destination_changed(
         self,
@@ -392,6 +432,7 @@ class ConnectionService:
         status: str | None,
         workspace: str | None,
         project: str | None,
+        include_shared: bool,
         limit: int,
         cursor: str | None,
     ) -> Page[s.ConnectionOut]:
@@ -402,6 +443,8 @@ class ConnectionService:
         ws_id = pr_id = None
         if project and not workspace:
             raise ValidationFailed("`project` requires `workspace`")
+        if include_shared and not workspace:
+            raise ValidationFailed("`include_shared` requires `workspace`")
         if workspace:
             ref = tenancy.scope_ref_from_slugs(self.sc, workspace, project)
             ws_id, pr_id = ref.workspace_id, ref.project_id
@@ -412,6 +455,7 @@ class ConnectionService:
             status=status,
             workspace_id=ws_id,
             project_id=pr_id,
+            include_shared=include_shared,
             tenant_wide=flt.tenant_wide,
             visible_workspaces=sorted(flt.workspace_ids),
             visible_projects=sorted(flt.project_ids),
@@ -446,7 +490,8 @@ class ConnectionService:
             auth_method=body.auth_method,
             secret_id=body.secret_id,
         )
-        self._check_secret(body.secret_id)
+        sec = self._check_secret(body.secret_id)
+        self._check_secret_scope(sec, ref.workspace_id, ref.project_id)
         confirm = body.secret_id is not None and body.access_mode == "read"
         if confirm:
             self._require_read_only_confirmation(body.read_only_confirmed)
@@ -476,7 +521,10 @@ class ConnectionService:
             self._session.flush()
         except IntegrityError as exc:
             self._session.rollback()
-            raise Conflict("a connection with this name already exists") from exc
+            mapped = integrity_error(exc)
+            if mapped is None:
+                raise
+            raise mapped from exc
         row = self._get_row(connection_id)
         self._audit(
             "connection.created",
@@ -528,7 +576,8 @@ class ConnectionService:
             secret_id=merged_secret,
         )
         if "secret_ref_id" in values and values["secret_ref_id"] != row["secret_ref_id"]:
-            self._check_secret(values["secret_ref_id"])
+            sec = self._check_secret(values["secret_ref_id"])
+            self._check_secret_scope(sec, row["workspace_id"], row["project_id"])
         if (
             merged_secret is not None
             and merged_secret == row["secret_ref_id"]
@@ -570,7 +619,10 @@ class ConnectionService:
             self._session.flush()
         except IntegrityError as exc:
             self._session.rollback()
-            raise Conflict("a connection with this name already exists") from exc
+            mapped = integrity_error(exc)
+            if mapped is None:
+                raise
+            raise mapped from exc
         if updated is None:
             raise Conflict("row_version mismatch: the connection was modified; reload and retry")
         self._audit(
@@ -583,8 +635,9 @@ class ConnectionService:
                 **({"read_only_confirmed": True} if reconfirm else {}),
             },
         )
+        fresh = self._get_row(connection_id)  # RETURNING has no `last_test_outcome`
         self._commit()
-        return self._out(updated)
+        return self._out(fresh)
 
     def set_status(self, connection_id: UUID, body: s.ConnectionStatusChange) -> s.ConnectionOut:
         row = self._get_row(connection_id)
@@ -623,8 +676,9 @@ class ConnectionService:
         if updated is None:
             raise Conflict("row_version mismatch: the connection was modified; reload and retry")
         self._audit("connection.status_changed", updated, {"from": current, "to": target})
+        fresh = self._get_row(connection_id)  # RETURNING has no `last_test_outcome`
         self._commit()
-        return self._out(updated)
+        return self._out(fresh)
 
     # ================================================================== runtime plumbing
     def _credential(self, row: Mapping[str, Any], purpose: str) -> Credential | None:

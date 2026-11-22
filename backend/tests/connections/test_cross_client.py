@@ -87,6 +87,7 @@ def _list(s: Session, tenant: UUID) -> list[Any]:
         status=None,
         workspace_id=None,
         project_id=None,
+        include_shared=False,
         tenant_wide=True,
         visible_workspaces=[],
         visible_projects=[],
