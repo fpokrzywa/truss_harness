@@ -89,6 +89,12 @@ class PlatformAlreadyRegistered(AppError):
         super().__init__(PLATFORM_ALREADY_REGISTERED)
 
 
+class PlanJobTargetMismatch(AppError):
+    """A `plan` job's `target_id` is not its plan's target (B-2732)."""
+
+    status, code, title = 409, "plan_job_target_mismatch", "Conflict"
+
+
 class TargetService:
     def __init__(self, scope: TenantScope, host_suffixes: Iterable[str] = ()) -> None:
         self.sc = scope
@@ -793,7 +799,14 @@ def enqueue_job(
     run_after: datetime | None = None,
     deadline: datetime | None = None,
 ) -> UUID:
-    """Queue a job (the caller commits); `apply` gets one attempt, other kinds four."""
+    """Queue a job (the caller commits); `apply` gets one attempt, other kinds four. A `plan` job
+    naming a plan must name a plan of the same organization and that plan's target (B-2732)."""
+    if kind == "plan" and plan_id is not None:
+        plan = repository.get_plan(session, plan_id, tenant_id=tenant_id)
+        if plan is None:
+            raise NotFound("plan not found")
+        if plan["target_id"] != target_id:
+            raise PlanJobTargetMismatch("plan job target does not match its plan")
     job_id = uuid7()
     repository.insert_job(
         session,
