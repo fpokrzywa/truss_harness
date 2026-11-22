@@ -51,6 +51,8 @@ from shifde.core.errors import (
     AppError,
     Conflict,
     ConnectionDisabled,
+    ConnectionDiscoveryBusy,
+    ConnectionTestBusy,
     EgressDenied,
     Forbidden,
     NotFound,
@@ -81,6 +83,7 @@ CONFIG_AFFECTING = frozenset(
 )
 TEST_VALIDITY = timedelta(hours=24)
 TEST_JOB_KIND = "connection.test"  # `shifde.jobs.kind` of a queued connection test (B-2610)
+DISCOVER_JOB_KIND = "connection.discover"  # `shifde.jobs.kind` of a queued discovery (B-2971)
 ERROR_CODE = re.compile(r"[a-z][a-z_]*")  # an `AppError.code` the worker stored as `last_error`
 
 
@@ -689,24 +692,31 @@ class ConnectionService:
         """Queue the connection test on the worker (ARCH M2, B-2610): the API process never calls
         the adapter. An active test job of the connection is answered instead of a second one."""
         self._testable(connection_id)
-        p = self.sc.principal
         payload = {
             "connection_id": str(connection_id),
             "test_id": str(uuid7()),  # the result row's id, allocated now (payload is immutable)
-            "principal_id": str(p.principal_id),
-            "principal_type": p.principal_type,
-            "api_key_id": str(p.api_key_id) if p.api_key_id else None,
+            **self._requester_fields(),
         }
-        job = repository.enqueue_test_job(
+        job = repository.enqueue_job(
             self._session,
             tenant_id=self.sc.tenant_id,
             kind=TEST_JOB_KIND,
             job_id=uuid7(),
-            connection_id=connection_id,
+            dedupe_key=f"connection-test:{connection_id}",
             payload=payload,
+            busy=ConnectionTestBusy("a test of this connection is starting; retry the request"),
         )
         self._session.commit()
         return self._job_out(job)
+
+    def _requester_fields(self) -> dict[str, str | None]:
+        """Who queues a job, as its payload carries it (re-derived when the job runs)."""
+        p = self.sc.principal
+        return {
+            "principal_id": str(p.principal_id),
+            "principal_type": p.principal_type,
+            "api_key_id": str(p.api_key_id) if p.api_key_id else None,
+        }
 
     def test_job(self, connection_id: UUID, job_id: UUID) -> s.TestJobOut:
         row = self._get_row(connection_id)
@@ -849,9 +859,79 @@ class ConnectionService:
         )
 
     def discover(self, connection_id: UUID) -> s.DiscoveryOut:
+        """Discover inline (the ontology mapping check); the route queues `enqueue_discover`."""
+        return self._discover(connection_id, uuid7())
+
+    def enqueue_discover(self, connection_id: UUID) -> s.ConnectionDiscoveryJobOut:
+        """Queue the connection discovery on the worker (ARCH M2, B-2971): the API process never
+        calls the adapter. An active discover job of the connection is answered instead."""
+        self._testable(connection_id)
+        payload = {
+            "connection_id": str(connection_id),
+            "discovery_id": str(uuid7()),  # the result row's id, allocated now
+            **self._requester_fields(),
+        }
+        job = repository.enqueue_job(
+            self._session,
+            tenant_id=self.sc.tenant_id,
+            kind=DISCOVER_JOB_KIND,
+            job_id=uuid7(),
+            dedupe_key=f"connection-discover:{connection_id}",
+            payload=payload,
+            busy=ConnectionDiscoveryBusy(
+                "a discovery of this connection is starting; retry the request"
+            ),
+        )
+        self._session.commit()
+        return self._discover_job_out(job)
+
+    def discover_job(self, connection_id: UUID, job_id: UUID) -> s.ConnectionDiscoveryJobOut:
         row = self._get_row(connection_id)
-        self._require("connection:test", row)
-        adapter = self._adapter(row)
+        self._require("connection:read", row)
+        job = repository.get_test_job(
+            self._session,
+            job_id,
+            tenant_id=self.sc.tenant_id,
+            kind=DISCOVER_JOB_KIND,
+            connection_id=connection_id,
+        )
+        if job is None:
+            raise NotFound("discovery job not found")
+        return self._discover_job_out(job)
+
+    def _discover_job_out(self, job: Mapping[str, Any]) -> s.ConnectionDiscoveryJobOut:
+        payload = job["payload"]
+        found = repository.get_discovery(
+            self._session, UUID(payload["discovery_id"]), tenant_id=self.sc.tenant_id
+        )
+        status: Literal["queued", "running", "done", "failed"]
+        error: str | None = None
+        if found is not None:
+            status = "done"
+        elif job["status"] == "queued":
+            status = "queued"
+        elif job["status"] == "leased":
+            status = "running"
+        else:  # dead, or closed without a result (the reaper's `stale lease`)
+            status = "failed"
+            code = job["last_error"] or ""
+            error = code if ERROR_CODE.fullmatch(code) else "worker_lost"
+        return s.ConnectionDiscoveryJobOut(
+            id=job["id"],
+            connection_id=UUID(payload["connection_id"]),
+            status=status,
+            result=_discovery_out(found) if found is not None else None,
+            error=error,
+            created_at=job["created_at"],
+        )
+
+    def execute_discover(self, connection_id: UUID, discovery_id: UUID) -> s.DiscoveryOut:
+        """Run the adapter discovery and record it as `discovery_id` (the worker side of
+        `enqueue_discover`)."""
+        return self._discover(connection_id, discovery_id)
+
+    def _discover(self, connection_id: UUID, discovery_id: UUID) -> s.DiscoveryOut:
+        row, adapter = self._testable(connection_id)
         try:
             result = adapter.discover(self._exec_ctx(row), self._config(row, "discover"))
         except AdapterFailure as exc:
@@ -864,7 +944,6 @@ class ConnectionService:
             self._session.commit()
             raise failure_to_error(exc) from exc
         payload = json.loads(json.dumps(scrub(result.payload), default=str))
-        discovery_id = uuid7()
         now = utcnow()
         repository.insert_discovery(
             self._session,
@@ -893,12 +972,7 @@ class ConnectionService:
         )
         if found is None:
             raise NotFound("no discovery has been run for this connection")
-        return s.DiscoveryOut(
-            id=found["id"],
-            kind=found["kind"],
-            discovered_at=found["discovered_at"],
-            payload=found["payload"],
-        )
+        return _discovery_out(found)
 
     def discovery_of(self, connection_id: UUID) -> s.DiscoveryOut | None:
         """Latest discovery of a tenant's connection, or None; authorization is the caller's job
@@ -907,12 +981,7 @@ class ConnectionService:
         found = repository.latest_discovery(self._session, row["id"], tenant_id=self.sc.tenant_id)
         if found is None:
             return None
-        return s.DiscoveryOut(
-            id=found["id"],
-            kind=found["kind"],
-            discovered_at=found["discovered_at"],
-            payload=found["payload"],
-        )
+        return _discovery_out(found)
 
     # ================================================================== use
     @contextmanager
@@ -1123,9 +1192,15 @@ def _test_out(r: Mapping[str, Any]) -> s.TestResultOut:
     )
 
 
+def _discovery_out(r: Mapping[str, Any]) -> s.DiscoveryOut:
+    return s.DiscoveryOut(
+        id=r["id"], kind=r["kind"], discovered_at=r["discovered_at"], payload=r["payload"]
+    )
+
+
 @dataclass(frozen=True)
 class _Requester:
-    """Who queued a test job (`authz.execution.RunRef`): re-derived when the job runs."""
+    """Who queued a connection job (`authz.execution.RunRef`): re-derived when the job runs."""
 
     tenant_id: UUID
     initiated_by_principal_id: UUID
@@ -1154,28 +1229,7 @@ def run_test_job(
         if repository.get_test(session, test_id, tenant_id=tenant_id) is not None:
             return None
         try:
-            principal = authz.execution_principal(
-                session,
-                _Requester(
-                    tenant_id,
-                    UUID(payload["principal_id"]),
-                    payload["principal_type"],
-                    UUID(payload["api_key_id"]) if payload["api_key_id"] else None,
-                ),
-            )
-            header = tenancy.tenant_header(session, tenant_id)
-            if header is None:
-                raise authz.ExecutionDenied("the client is not available")
-            scope = TenantScope(
-                session=session,
-                ctx=RequestContext(request_id=request_id, principal=principal, tenant_id=tenant_id),
-                principal=principal,
-                tenant_id=tenant_id,
-                tenant_slug=header[0],
-                tenant_name=header[1],
-                tenant_status=header[2],
-                pdp=authz.new_pdp(session, principal, tenant_id),
-            )
+            scope = _job_scope(session, tenant_id, payload, request_id)
             ConnectionService(scope, runtime).execute_test(UUID(payload["connection_id"]), test_id)
         except (AppError, IntegrityError) as exc:
             session.rollback()
@@ -1189,6 +1243,72 @@ def run_test_job(
         return None
     finally:
         session.close()
+
+
+def run_discover_job(
+    database: Database, runtime: IntegrationRuntime, tenant_id: UUID, job_id: UUID
+) -> str | None:
+    """Execute the `connection.discover` job `job_id` of `tenant_id` (called by `shifde-worker`),
+    as `run_test_job` does (B-2971). Returns None once the discovery is recorded (now or by an
+    earlier run of the same job), else the error code of the refusal or the adapter failure; only
+    the failure's audit event is recorded then."""
+    request_id = f"connection-discover-{job_id}"
+    session = database.session()
+    db.init_context(session, request_id)
+    try:
+        db.set_tenant(session, tenant_id)
+        job = repository.get_test_job(session, job_id, tenant_id=tenant_id, kind=DISCOVER_JOB_KIND)
+        if job is None:
+            return NotFound.code
+        payload = job["payload"]
+        discovery_id = UUID(payload["discovery_id"])
+        if repository.get_discovery(session, discovery_id, tenant_id=tenant_id) is not None:
+            return None
+        try:
+            scope = _job_scope(session, tenant_id, payload, request_id)
+            ConnectionService(scope, runtime).execute_discover(
+                UUID(payload["connection_id"]), discovery_id
+            )
+        except (AppError, IntegrityError) as exc:
+            session.rollback()  # an adapter failure's audit event is already committed
+            # a unique violation on the pre-allocated id: another run of this job recorded it
+            if repository.get_discovery(session, discovery_id, tenant_id=tenant_id) is not None:
+                return None
+            if isinstance(exc, IntegrityError):
+                raise
+            return exc.code
+        return None
+    finally:
+        session.close()
+
+
+def _job_scope(
+    session: Session, tenant_id: UUID, payload: Mapping[str, Any], request_id: str
+) -> TenantScope:
+    """The scope a connection job runs in: its client, as its requester re-derived from the
+    database (`authz.ExecutionDenied` when either is no longer available)."""
+    principal = authz.execution_principal(
+        session,
+        _Requester(
+            tenant_id,
+            UUID(payload["principal_id"]),
+            payload["principal_type"],
+            UUID(payload["api_key_id"]) if payload["api_key_id"] else None,
+        ),
+    )
+    header = tenancy.tenant_header(session, tenant_id)
+    if header is None:
+        raise authz.ExecutionDenied("the client is not available")
+    return TenantScope(
+        session=session,
+        ctx=RequestContext(request_id=request_id, principal=principal, tenant_id=tenant_id),
+        principal=principal,
+        tenant_id=tenant_id,
+        tenant_slug=header[0],
+        tenant_name=header[1],
+        tenant_status=header[2],
+        pdp=authz.new_pdp(session, principal, tenant_id),
+    )
 
 
 def definition_fingerprint(row: Mapping[str, Any]) -> str:

@@ -17,7 +17,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from shifde.core.errors import ConnectionTestBusy
+from shifde.core.errors import AppError
 
 Row = Mapping[Any, Any]  # Any: SQLAlchemy RowMapping keys / column values
 
@@ -286,24 +286,24 @@ def get_test(session: Session, test_id: UUID, *, tenant_id: UUID) -> Row | None:
     )
 
 
-# ------------------------------------------------------------------ test jobs (ARCH M2)
+# ------------------------------------------------------------------ connection jobs (ARCH M2)
 JOB_COLUMNS = "id, kind, status, payload, last_error, created_at"
 TEST_JOB_ATTEMPTS = 3
 
 
-def enqueue_test_job(
+def enqueue_job(
     session: Session,
     *,
     tenant_id: UUID,
     kind: str,
     job_id: UUID,
-    connection_id: UUID,
+    dedupe_key: str,
     payload: Mapping[str, Any],
+    busy: AppError,
 ) -> Row:
-    """Queue the connection's test job in `tenant_id`, or return the one already active (queued or
-    leased): the conflict target is the client's own dedupe key (`uq_jobs__dedupe`). The active
-    job is looked for `TEST_JOB_ATTEMPTS` times at most; then `ConnectionTestBusy` (409)."""
-    dedupe_key = f"connection-test:{connection_id}"
+    """Queue a connection job (test or discover) in `tenant_id`, or return the one already active
+    (queued or leased): the conflict target is the client's own dedupe key (`uq_jobs__dedupe`).
+    The active job is looked for `TEST_JOB_ATTEMPTS` times at most; then `busy` (409) is raised."""
     for _ in range(TEST_JOB_ATTEMPTS):
         session.execute(
             text(
@@ -318,7 +318,7 @@ def enqueue_test_job(
         if row is not None:  # else the active job ended between the two statements: queue again
             session.execute(text("SELECT pg_notify('shifde_jobs', '')"))
             return row
-    raise ConnectionTestBusy("a test of this connection is starting; retry the request")
+    raise busy
 
 
 def _active_test_job(
@@ -377,6 +377,20 @@ def insert_discovery(session: Session, values: Mapping[str, Any]) -> None:
             ":discovered_by)"
         ),
         {**values, "payload": json.dumps(values["payload"])},
+    )
+
+
+def get_discovery(session: Session, discovery_id: UUID, *, tenant_id: UUID) -> Row | None:
+    return (
+        session.execute(
+            text(
+                "SELECT id, connection_id, discovered_at, kind, payload FROM "
+                "shifde.connection_discoveries WHERE id = :id AND tenant_id = :t"
+            ),
+            {"id": discovery_id, "t": tenant_id},
+        )
+        .mappings()
+        .first()
     )
 
 

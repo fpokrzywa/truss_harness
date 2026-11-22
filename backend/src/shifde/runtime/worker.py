@@ -55,8 +55,9 @@ amount with one unknown-usage row attributed from the budgets and quotas it name
 rolled back and logged, and the sweep moves on to the next client.
 
 Jobs are dispatched by `kind` (ARCH M2, B-2610, B-2720): `run.advance` advances its run;
-`connection.test` (no run) runs `connections.service.run_test_job`, and `model.health_check` and
-`model.discover` (no run) run `models_admin.service.run_provider_job`, in the job's own client as
+`connection.test` and `connection.discover` (no run) run `connections.service.run_test_job` and
+`run_discover_job` (B-2971), and `model.health_check` and `model.discover` (no run) run
+`models_admin.service.run_provider_job`, in the job's own client as
 its requester, re-derived from the database, and end `done`, or `dead` with the refusal's error
 code; any other kind ends `dead` without running.
 """
@@ -131,7 +132,7 @@ REASON_ACTION = {
 class _Job:
     id: UUID
     tenant_id: UUID
-    run_id: UUID | None  # None: a run-less job (`connection.test`, `model.*`, ARCH M2)
+    run_id: UUID | None  # None: a run-less job (`connection.*`, `model.*`, ARCH M2)
     kind: str = ADVANCE_KIND
     started: datetime = field(default_factory=utcnow)  # dispatched by this worker
     error: str | None = None  # `last_error` of a job finished `dead`
@@ -417,6 +418,9 @@ class Worker:
         if job.kind == connections.TEST_JOB_KIND:
             # in the job's own client, as its requester re-derived from the database (B-2610)
             job.error = connections.run_test_job(self.db, self.runtime, job.tenant_id, job.id)
+        elif job.kind == connections.DISCOVER_JOB_KIND:
+            # the same, for a connection discovery (B-2971)
+            job.error = connections.run_discover_job(self.db, self.runtime, job.tenant_id, job.id)
         elif job.kind in (models_admin.HEALTH_JOB_KIND, models_admin.DISCOVER_JOB_KIND):
             # the same, for a provider health check or model discovery (B-2720)
             job.error = models_admin.run_provider_job(self.db, self.runtime, job.tenant_id, job.id)
