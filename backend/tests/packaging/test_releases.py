@@ -1070,7 +1070,7 @@ def _db_pipeline(connection_id: str) -> dict[str, Any]:
     return mini(nodes, [{"from": "src", "to": "store"}])
 
 
-def _sql_tool(connection_id: str | None) -> dict[str, Any]:
+def _sql_tool_spec(connection_id: str | None) -> dict[str, Any]:
     return {
         "executor": "connection.sql",
         "binding": {"connection_id": connection_id, "sql_template": "SELECT name FROM employees"},
@@ -1110,7 +1110,7 @@ def test_a_draft_saved_unchanged_keeps_an_unreadable_connection(
     h, s = x.h, x.s
     scope = {"type": "project", "id": s.project_id}
     proj = _project_developer(client, world, owner_session, s.project_id)
-    for kind, spec_of in (("tools", _sql_tool), ("pipelines", _db_pipeline)):
+    for kind, spec_of in (("tools", _sql_tool_spec), ("pipelines", _db_pipeline)):
         made = art(h.client, h, kind, f"kept-{kind}", spec_of(x.pg), scope)
         draft_url = f"{A}/{kind}/{made['id']}/draft"
 
