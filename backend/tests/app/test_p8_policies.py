@@ -127,6 +127,139 @@ def test_an_approval_rule_adds_an_approval_with_its_own_approver_permission(
     assert audit and str(rule["id"]) in audit[0][0]["policy_ids"]
 
 
+def test_two_matching_rules_need_an_approver_holding_both_permissions(
+    client: TestClient, world: World, owner_session: Session, settings: Settings
+) -> None:
+    """Follow-up #60 (A3, B-2728): every matched rule's `approver_permission` is required, not
+    just the first; the row keeps the first sorted one and `context_summary` all of them."""
+    h = login(client, world.passwords, ADMIN)
+    stack = priced_stack(client, h, owner_session, script=[ECHO, FINAL])
+    for permission in ("usage:read", "governance:read"):
+        _policy(
+            client,
+            h,
+            "approval_rule",
+            {"when": {"side_effect_classes": ["none"]}, "approver_permission": permission},
+        )
+    for email, perms in (
+        ("gov1@demo-a.local", [*BASE_PERMS, "approval:decide", "governance:read"]),
+        ("use1@demo-a.local", [*BASE_PERMS, "approval:decide", "usage:read"]),
+        ("both@demo-a.local", [*BASE_PERMS, "approval:decide", "governance:read", "usage:read"]),
+    ):
+        h = login(client, world.passwords, ADMIN)
+        limited_user(client, owner_session, h, world.passwords, email, perms)
+    h = login(client, world.passwords, ADMIN)
+    run = start_run(client, h, stack.agent["id"], "what is the weather")
+    with thread_worker(settings):
+        waiting = wait_run(client, h, run["id"], {"waiting_for_approval", "completed", "failed"})
+        assert waiting["status"] == "waiting_for_approval", waiting
+        (appr,) = _approvals(client, h)
+        stored = _rows(
+            owner_session,
+            "SELECT required_permission, context_summary->'approver_permissions' "
+            "FROM shifde.approvals WHERE id = :i",
+            i=appr["id"],
+        )
+        assert stored == [("governance:read", ["governance:read", "usage:read"])]
+        # holding only one of the two permissions is refused, whichever one it is
+        for email in ("gov1@demo-a.local", "use1@demo-a.local"):
+            one = user_session(client, world.passwords, email)
+            no = one.client.post(
+                f"{A}/approvals/{appr['id']}/decide", json={"decision": "approve"}, headers=one
+            )
+            assert no.status_code == 403, (email, no.text)
+        both = user_session(client, world.passwords, "both@demo-a.local")
+        yes = both.client.post(
+            f"{A}/approvals/{appr['id']}/decide", json={"decision": "approve"}, headers=both
+        )
+        assert yes.status_code == 200, yes.text
+        assert yes.json()["status"] == "approved"
+        done = wait_run(client, login(client, world.passwords, ADMIN), run["id"])
+    assert done["status"] == "completed"
+
+
+def test_a_malformed_approver_permission_list_is_refused_and_an_absent_one_keeps_the_old_check(
+    client: TestClient, world: World, owner_session: Session, settings: Settings
+) -> None:
+    """Follow-up #60 (B-2728): `context_summary.approver_permissions` that is not a non-empty list
+    of strings fails closed (403, nothing written) even for an approver holding every permission;
+    without the key (approvals pending before B-2728) only `required_permission` is checked."""
+    h = login(client, world.passwords, ADMIN)
+    stack = priced_stack(client, h, owner_session, script=[ECHO, FINAL])
+    for permission in ("usage:read", "governance:read"):
+        _policy(
+            client,
+            h,
+            "approval_rule",
+            {"when": {"side_effect_classes": ["none"]}, "approver_permission": permission},
+        )
+    for email, perms in (
+        ("gov2@demo-a.local", [*BASE_PERMS, "approval:decide", "governance:read"]),
+        ("all2@demo-a.local", [*BASE_PERMS, "approval:decide", "governance:read", "usage:read"]),
+    ):
+        h = login(client, world.passwords, ADMIN)
+        limited_user(client, owner_session, h, world.passwords, email, perms)
+    h = login(client, world.passwords, ADMIN)
+    run = start_run(client, h, stack.agent["id"], "what is the weather")
+    with thread_worker(settings):
+        waiting = wait_run(client, h, run["id"], {"waiting_for_approval", "completed", "failed"})
+        assert waiting["status"] == "waiting_for_approval", waiting
+        (appr,) = _approvals(client, h)
+
+        def state() -> list[Any]:
+            return [
+                *_rows(
+                    owner_session,
+                    "SELECT status, decision, decided_by FROM shifde.approvals WHERE id = :i",
+                    i=appr["id"],
+                ),
+                *_rows(
+                    owner_session,
+                    "SELECT count(*) FROM shifde.run_events WHERE run_id = :r",
+                    r=run["id"],
+                ),
+                *_rows(
+                    owner_session,
+                    "SELECT count(*) FROM shifde.audit_events WHERE action = 'approval.decided'",
+                ),
+            ]
+
+        before = state()
+        assert before[0] == ("pending", None, None)
+        every = user_session(client, world.passwords, "all2@demo-a.local")
+        for bad in ('"usage:read"', '["usage:read", 7]', "[]"):
+            owner_session.execute(
+                text(
+                    "UPDATE shifde.approvals SET context_summary = jsonb_set(context_summary, "
+                    "'{approver_permissions}', CAST(:v AS jsonb)) WHERE id = :i"
+                ),
+                {"v": bad, "i": appr["id"]},
+            )
+            owner_session.commit()
+            no = every.client.post(
+                f"{A}/approvals/{appr['id']}/decide", json={"decision": "approve"}, headers=every
+            )
+            assert no.status_code == 403, (bad, no.text)
+            assert state() == before, bad
+        # the key absent: only `required_permission` (the first sorted one) is checked
+        owner_session.execute(
+            text(
+                "UPDATE shifde.approvals SET context_summary = "
+                "context_summary - 'approver_permissions' WHERE id = :i"
+            ),
+            {"i": appr["id"]},
+        )
+        owner_session.commit()
+        gov = user_session(client, world.passwords, "gov2@demo-a.local")
+        yes = gov.client.post(
+            f"{A}/approvals/{appr['id']}/decide", json={"decision": "approve"}, headers=gov
+        )
+        assert yes.status_code == 200, yes.text
+        assert yes.json()["status"] == "approved"
+        done = wait_run(client, login(client, world.passwords, ADMIN), run["id"])
+    assert done["status"] == "completed"
+
+
 def test_a_disabled_or_non_matching_rule_adds_no_approval_and_none_can_waive_one(
     client: TestClient, world: World, owner_session: Session, settings: Settings
 ) -> None:

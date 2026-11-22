@@ -1,13 +1,16 @@
 """F-10 (#17, closes the F-10 part of B-2196): pipeline write nodes consult `approval_rule` policies.
 
-Behaviour: a write node (api_request with a write method, connection sink) is a
-`write_non_idempotent` data export with the node's optional `target_environment`; a matching rule
+Behaviour: a write node (api_request with a write method, connection sink) is a data export
+classed by its method (DELETE `destructive`, PUT `write_idempotent`, POST / PATCH
+`write_non_idempotent`) with the node's optional `target_environment`, matched ignoring case and
+surrounding spaces (no label matches every environment rule; #60, B-2728); a matching rule
 of the run's client opens one `approval_rule` approval (an `approval` step, an event, an audit
 with the policy ids and a decision record, in one fenced transaction) BEFORE the write-ahead step,
 and the run waits. Approved: the write is sent once; rejected: nothing is sent and the run fails
 with APPROVAL_REJECTED. A rule only adds an approval: a granted upstream approval node does not
 waive it, a GET node never consults rules, a tool call is never a data export and has no target
-environment. C1 holds when the lease is lost around the write or while the approval is pending.
+environment. Several matching rules give one approval that needs every rule's approver permission
+(`context_summary.approver_permissions`). C1 holds when the lease is lost around the write or while the approval is pending.
 
 Isolation, as `shifde_app` and as the schema owner: client B's identical rules (tenant-wide, or
 forged to name A's client or A's workspace) never pause A's write.
@@ -151,7 +154,7 @@ def test_a_matching_rule_pauses_a_write_node_before_anything_is_written_ahead_or
         "reason": "approval_rule", "call_ref": "node:w", "epoch": 0, "status": "pending",
         "required_permission": "governance:manage", "side_effect_class": WRITE,
         "arguments": {"node": "w", "type": "api_request", "method": "POST",
-                      "target_environment": None},
+                      "side_effect_class": WRITE, "target_environment": None},
     }  # fmt: skip
     assert _steps(owner_db, run, "approval") == [
         {"node_id": "w", "status": "running", "error_class": None, "idempotency_key": None}
@@ -245,8 +248,8 @@ def test_a_data_export_rule_pauses_every_write_node(
     assert sent == [("w", "POST")]
 
 
-@pytest.mark.parametrize(("env", "pauses"), [("prod", True), ("staging", False), (None, False)])
-def test_a_target_environment_rule_pauses_only_a_write_to_a_named_environment(
+@pytest.mark.parametrize(("env", "pauses"), [("prod", True), ("staging", False), (None, True)])
+def test_a_target_environment_rule_pauses_a_write_to_a_named_or_unnamed_environment(
     env: str | None,
     pauses: bool,
     pair: tuple[Client, Client],
@@ -255,6 +258,8 @@ def test_a_target_environment_rule_pauses_only_a_write_to_a_named_environment(
     settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A write node without a label may write anywhere, so it pauses too; its approval records
+    the label as written (None)."""
     a, _ = pair
     _rule(owner_db, a.tenant, {"target_environments": ["prod"]})
     run = _pipe(owner_db, a, [_write("w", a.conn, env), _sink("s", a.conn, target_environment=env)
@@ -263,7 +268,7 @@ def test_a_target_environment_rule_pauses_only_a_write_to_a_named_environment(
     if pauses:
         assert _waits(opened, settings, a, run) == "approval"
         assert sent == []
-        assert {r["arguments"]["target_environment"] for r in _approvals(owner_db, run)} == {"prod"}
+        assert {r["arguments"]["target_environment"] for r in _approvals(owner_db, run)} == {env}
         assert {r["call_ref"] for r in _approvals(owner_db, run)} == {"node:w", "node:s"}
     else:
         _advance(opened, settings, a, run)
@@ -288,6 +293,159 @@ def test_an_empty_target_environment_does_not_validate(
     assert failed.value.error_class == state.VALIDATION
     assert "no longer validates" in failed.value.message
     assert sent == []
+
+
+# ------------------------------------------------------------------ 3b. follow-up #60 (B-2728)
+@pytest.mark.parametrize(
+    ("rule_envs", "env", "pauses"),
+    [
+        (["prod"], "Prod", True),
+        (["prod"], "PROD", True),
+        (["prod"], " prod ", True),
+        (["Prod"], "prod", True),
+        (["prod"], None, True),
+        (["prod"], "prodd", False),
+        (["prod"], "staging", False),
+    ],
+)
+def test_an_environment_rule_ignores_case_and_spaces_and_matches_an_unlabelled_write(
+    rule_envs: list[str],
+    env: str | None,
+    pauses: bool,
+    pair: tuple[Client, Client],
+    opened: Any,
+    owner_db: Database,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A1: a misspelt label is not guessed; the approval keeps the label as written."""
+    a, _ = pair
+    _rule(owner_db, a.tenant, {"target_environments": rule_envs})
+    run = _pipe(owner_db, a, [_write("w", a.conn, env)])
+    sent = _spy(monkeypatch)
+    if pauses:
+        assert _waits(opened, settings, a, run) == "approval"
+        assert sent == []
+        [appr] = _approvals(owner_db, run)
+        assert appr["arguments"]["target_environment"] == env
+    else:
+        _advance(opened, settings, a, run)
+        assert sent == [("w", "POST")]
+        assert _approvals(owner_db, run) == []
+
+
+def test_an_environment_rule_still_never_matches_a_tool_call_in_any_case(
+    pair: tuple[Client, Client], opened: Any, owner_db: Database, settings: Settings
+) -> None:
+    a, _ = pair
+    _rule(owner_db, a.tenant, {"target_environments": ["prod", "Prod", " "]})
+    run = _pipe(owner_db, a, [_write("w", a.conn)])
+    with opened(a.tenant) as s:
+        ctx = _ctx(s, settings, a, run)
+        for side in (WRITE, "destructive", "write_idempotent", "none"):
+            assert policies.tool_approval(ctx, None, side) is None  # type: ignore[arg-type]
+        assert policies.write_node_approval(ctx, None) is not None  # control: an unlabelled write
+
+
+@pytest.mark.parametrize(
+    ("classes", "node", "method", "pauses"),
+    [
+        (["destructive"], "api_request", "DELETE", True),
+        (["destructive"], "api_request", "POST", False),
+        (["write_idempotent"], "api_request", "PUT", True),
+        (["write_idempotent"], "sink", "PUT", True),
+        (["write_idempotent"], "api_request", "POST", False),
+        (["write_idempotent"], "sink", "POST", False),
+        ([WRITE], "api_request", "POST", True),
+        ([WRITE], "api_request", "PATCH", True),
+        ([WRITE], "sink", "POST", True),
+        ([WRITE], "api_request", "DELETE", False),
+        ([WRITE], "api_request", "PUT", False),
+        ([WRITE], "sink", "PUT", False),
+    ],
+)
+def test_a_write_node_is_classed_by_its_method(
+    classes: list[str],
+    node: str,
+    method: str,
+    pauses: bool,
+    pair: tuple[Client, Client],
+    opened: Any,
+    owner_db: Database,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A2: DELETE `destructive`, PUT `write_idempotent`, POST / PATCH `write_non_idempotent`; the
+    approval row, its arguments and the `approval.requested` audit carry that class."""
+    a, _ = pair
+    _rule(owner_db, a.tenant, {"side_effect_classes": classes})
+    n = _api("w", a.conn, method) if node == "api_request" else _sink("w", a.conn, method=method)
+    run = _pipe(owner_db, a, [n], params=DOC)
+    sent = _spy(monkeypatch)
+    if not pauses:
+        _advance(opened, settings, a, run)
+        assert sent == [("w", method)]
+        assert _approvals(owner_db, run) == []
+        return
+    assert _waits(opened, settings, a, run) == "approval"
+    assert sent == []
+    [appr] = _approvals(owner_db, run)
+    assert appr["side_effect_class"] == classes[0]
+    assert appr["arguments"]["side_effect_class"] == classes[0]
+    assert appr["arguments"]["method"] == method
+    [audit] = _rows(owner_db, "SELECT details FROM shifde.audit_events WHERE tenant_id = :t "
+                    "AND action = 'approval.requested'", t=a.tenant)  # fmt: skip
+    assert audit["details"]["side_effect_class"] == classes[0]
+
+
+def _summary(owner_db: Database, run: UUID) -> list[dict[str, Any]]:  # Any: rows
+    return _rows(owner_db, "SELECT call_ref, required_permission, context_summary FROM "
+                 "shifde.approvals WHERE run_id = :r ORDER BY id", r=run)  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("permissions", "required", "summary"),
+    [
+        (
+            ["governance:read", "governance:manage"],
+            "governance:manage",
+            {"node": "w", "approver_permissions": ["governance:manage", "governance:read"]},
+        ),
+        (
+            ["governance:read", None],
+            "governance:read",
+            {"node": "w", "approver_permissions": ["governance:read"]},
+        ),
+        (
+            ["governance:read", "governance:read"],
+            "governance:read",
+            {"node": "w", "approver_permissions": ["governance:read"]},
+        ),
+        ([None, None], "approval:decide", {"node": "w"}),
+    ],
+)
+def test_every_matched_rules_approver_permission_is_recorded(
+    permissions: list[str | None],
+    required: str,
+    summary: dict[str, Any],  # Any: JSON
+    pair: tuple[Client, Client],
+    opened: Any,
+    owner_db: Database,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A3: one approval per node; `required_permission` is the first sorted permission and
+    `context_summary.approver_permissions` all of them (sorted, distinct)."""
+    a, _ = pair
+    _rule(owner_db, a.tenant, {"side_effect_classes": [WRITE]}, permissions[0])
+    _rule(owner_db, a.tenant, {"data_export": True}, permissions[1])
+    run = _pipe(owner_db, a, [_write("w", a.conn)])
+    sent = _spy(monkeypatch)
+    assert _waits(opened, settings, a, run) == "approval"
+    assert sent == []
+    assert _summary(owner_db, run) == [
+        {"call_ref": "node:w", "required_permission": required, "context_summary": summary}
+    ]
 
 
 # ------------------------------------------------------------------ 4. non-matches and scoping
@@ -423,9 +581,9 @@ def test_a_lease_lost_while_the_rule_approval_is_requested_or_pending_writes_not
     sent = _spy(monkeypatch)
     real = policies.write_node_approval
 
-    def lose_first(ctx: RunContext, env: str | None) -> policies.ApprovalRule | None:
+    def lose_first(ctx: RunContext, env: str | None, side: str) -> policies.ApprovalRule | None:
         ctx.lease_lost.set()  # lost between the rule check and the approval's transaction
-        return real(ctx, env)
+        return real(ctx, env, side)
 
     monkeypatch.setattr(policies, "write_node_approval", lose_first)
     with pytest.raises(state.LeaseLost):
