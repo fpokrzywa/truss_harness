@@ -21,7 +21,7 @@ from sqlalchemy import text
 
 from shifde.adapters.testservers import RestTestServer
 from shifde.connections import api as connections_api
-from shifde.core.db import Database
+from shifde.core.db import Database, set_tenant
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from tests.connections.routes import (
@@ -166,6 +166,9 @@ ROUTE_TESTS = {
     ("POST", "/api/v1/orgs/{org}/connections/{connection_id}/status"): (
         "test_a_cannot_reach_bs_connection"
     ),
+    ("PUT", "/api/v1/orgs/{org}/connections/{connection_id}/credential"): (
+        "test_b_cannot_set_rotate_or_archive_as_credential"
+    ),
     ("POST", "/api/v1/orgs/{org}/connections/{connection_id}/test"): (
         "test_a_cannot_reach_bs_connection"
     ),
@@ -296,6 +299,71 @@ def test_a_cannot_read_bs_test_job(client: TestClient, owner_db: Database, two: 
         client.get(f"{two.b.base}{path}", headers=h), client.get(f"{unknown}{path}", headers=h)
     )
     assert _b_state(owner_db, two) == before
+
+
+def _a_credential_state(owner_db: Database, two: Two, ids: list[str]) -> tuple[Any, ...]:
+    """A's connection rows and every secret row of A, all columns (ciphertext included)."""
+    with owner_db.session() as o:
+        set_tenant(o, two.a.tenant)
+        conns = o.execute(
+            text("SELECT * FROM shifde.connections WHERE id = ANY(CAST(:i AS uuid[])) ORDER BY id"),
+            {"i": ids},
+        ).all()
+        secrets = o.execute(
+            text("SELECT * FROM shifde.secrets WHERE tenant_id = :t ORDER BY id"),
+            {"t": two.a.tenant},
+        ).all()
+    return ([tuple(c) for c in conns], [tuple(s) for s in secrets])
+
+
+def test_b_cannot_set_rotate_or_archive_as_credential(
+    client: TestClient, owner_db: Database, two: Two, rest_server: RestTestServer
+) -> None:
+    """CM-2 (B-2749, B-2751): B's `PUT .../credential` on A's connection with no secret (set)
+    and with one (rotate), and B's archive of A's connection with an owned secret, get exactly
+    the answer an unknown id gets; A's connection and secret rows stay byte-identical."""
+    A, h = two.a.base, as_user(client, two.a.email)
+    bearer = {"auth_method": "bearer", "access_mode": "read_write"}
+    unbound = connection(client, h, {**rest_body(rest_server, None, name="a-unbound"), **bearer}, A)
+    owned = connection(
+        client,
+        h,
+        {
+            **rest_body(rest_server, None, name="a-owned"),
+            **bearer,
+            "credential": {"value": REST_TOKEN},
+        },
+        A,
+    )
+    ids = [two.a.connection, unbound["id"], owned["id"]]
+    before = _a_credential_state(owner_db, two, ids)
+    B, hb = two.b.base, as_user(client, two.b.email)
+    own = client.get(f"{B}/connections/{two.b.connection}", headers=hb).json()
+    rotated = client.put(
+        f"{B}/connections/{two.b.connection}/credential",
+        headers=hb,
+        json={"value": REST_TOKEN, "row_version": own["row_version"], "read_only_confirmed": True},
+    )
+    assert rotated.status_code == 200, rotated.text  # B's own connection first
+    put = {"value": "b-planted-token", "row_version": 1, "read_only_confirmed": True}
+    retire = {"status": "retired", "row_version": 1}
+    unknown = org(f"no-such-{uuid7().hex[-12:]}")
+    for cid, method, suffix, payload in (
+        (two.a.connection, "PUT", "/credential", put),  # rotate
+        (unbound["id"], "PUT", "/credential", put),  # set
+        (owned["id"], "POST", "/status", retire),  # archive
+    ):
+        _same_404(
+            client.request(method, f"{B}/connections/{cid}{suffix}", headers=hb, json=payload),
+            client.request(method, f"{B}/connections/{uuid7()}{suffix}", headers=hb, json=payload),
+        )
+        _same_404(  # under A's organization: B is no member of it
+            client.request(method, f"{A}/connections/{cid}{suffix}", headers=hb, json=payload),
+            client.request(
+                method, f"{unknown}/connections/{cid}{suffix}", headers=hb, json=payload
+            ),
+        )
+    assert _a_credential_state(owner_db, two, ids) == before
 
 
 def test_a_lists_only_its_own_rows(client: TestClient, two: Two) -> None:

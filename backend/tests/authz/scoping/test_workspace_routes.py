@@ -448,6 +448,7 @@ ROUTES: dict[Op, tuple[str, str]] = {
     ),
     ("POST", "/api/v1/orgs/{org}/connections/{connection_id}/invoke"): (SCOPED, "connections"),
     ("POST", "/api/v1/orgs/{org}/connections/{connection_id}/status"): (SCOPED, "connections"),
+    ("PUT", "/api/v1/orgs/{org}/connections/{connection_id}/credential"): (SCOPED, "connections"),
     ("POST", "/api/v1/orgs/{org}/connections/{connection_id}/test"): (SCOPED, "connections"),
     ("GET", "/api/v1/orgs/{org}/connections/{connection_id}/test-jobs/{job_id}"): (
         SCOPED,
@@ -833,6 +834,10 @@ RUNS = (
     "SELECT * FROM shifde.runs WHERE workspace_id = :w ORDER BY id",
     "SELECT * FROM shifde.approvals WHERE workspace_id = :w ORDER BY id",
     "SELECT count(*) FROM shifde.usage_events WHERE workspace_id = :w",
+)
+CONN_SECRETS = (  # W2's connections' secrets, all columns (CM-2: set and rotate)
+    "SELECT s.* FROM shifde.secrets s JOIN shifde.connections c ON c.secret_ref_id = s.id "
+    "WHERE c.workspace_id = :w ORDER BY s.id"
 )
 CONNS = (
     "SELECT * FROM shifde.connections WHERE workspace_id = :w ORDER BY id",
@@ -1286,6 +1291,21 @@ _register(
             lambda n: _conn(w, n, "/status"),
             body=lambda n: {"status": "disabled"},
             state=w.snap(*CONNS),
+        ),
+        ("PUT", ORG + "/connections/{connection_id}/credential"): lambda w: _case(
+            WRITE,
+            "PUT",
+            lambda n: _conn(w, n, "/credential"),
+            body=lambda n: {
+                "value": REST_TOKEN,
+                "row_version": int(
+                    w.rows(
+                        "SELECT row_version FROM shifde.connections WHERE id = :c", c=w("conn", n)
+                    )[0][0]
+                ),
+                "read_only_confirmed": True,
+            },
+            state=w.snap(*CONNS, CONN_SECRETS),
         ),
     },
 )
