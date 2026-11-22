@@ -43,6 +43,20 @@ export function isApiPath(pathname: string): boolean {
   return c === null || c === '/api' || c.startsWith('/api/');
 }
 
+/** True when `pathname` may be forwarded as it is: spelled `/api` or `/api/...` exactly, and
+ * already canonical apart from one level of percent-encoding and letter case (no dot segments,
+ * backslashes, repeated or trailing slashes, or double encoding). */
+export function isForwardablePath(pathname: string): boolean {
+  if (pathname !== '/api' && !pathname.startsWith('/api/')) return false;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return false;
+  }
+  return canonicalPath(pathname) === decoded.toLowerCase();
+}
+
 /** `SHIFDE_WEB_API_PROXY`, read per request: unset, empty or `on` is on; `off` and any other value
  * is off (fail closed: production requires `off` behind the edge proxy, so a typo must not open it). */
 export function apiProxyEnabled(): boolean {
@@ -96,6 +110,11 @@ export function proxy(request: NextRequest) {
       { status: 404, headers: { 'content-type': 'application/problem+json' } },
     );
   }
+  // Any other spelling of an API path (`/%61pi/x`, `//host/%252e%252e/api/x`, ...) is refused, so
+  // the raw path forwarded below is exactly the path the checks above saw.
+  if (!isForwardablePath(request.nextUrl.pathname)) {
+    return NextResponse.json({ detail: 'not found' }, { status: 404 });
+  }
   const headers = new Headers(request.headers);
   headers.set(VIA_HEADER, 'web');
   // The client chooses its own X-Forwarded-For, and Next copies it unchanged onto the rewritten
@@ -126,12 +145,21 @@ export function proxy(request: NextRequest) {
       { status: 500, headers: { 'content-type': 'application/problem+json' } },
     );
   }
-  const target = new URL(`${request.nextUrl.pathname}${request.nextUrl.search}`, origin);
+  // Built from the configured origin, never by resolving the path against it: a path starting
+  // with `//` would otherwise be read as a host (isolation review of #125).
+  const target = new URL(origin);
+  target.pathname = request.nextUrl.pathname;
+  target.search = request.nextUrl.search;
+  if (target.origin !== new URL(origin).origin) {
+    return NextResponse.json({ detail: 'not found' }, { status: 404 });
+  }
   return NextResponse.rewrite(target, { request: { headers } });
 }
 
-// Pages and /api/*; static assets skip the proxy (no CSP on them, go-live design section 5).
+// Pages and /api/*; static assets skip the proxy (no CSP on them, go-live design section 5). The
+// asset-extension rule does not apply under the app's route trees, so a page such as
+// /o/<slug>/runs/x.js still gets its headers (#175).
 export const config = {
   matcher:
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|gif|svg|ico|webp|css|js|map|txt|woff2?)$).*)',
+    '/((?!_next/static|_next/image|favicon.ico|(?!(?:o|platform|api|login|setup)(?:/|$)).*\\.(?:png|jpg|jpeg|gif|svg|ico|webp|css|js|map|txt|woff2?)$).*)',
 };

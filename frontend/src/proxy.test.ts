@@ -284,3 +284,95 @@ describe('proxy matcher', () => {
     expect(doesMatch(url)).toBe(true);
   });
 });
+
+describe('proxy() never forwards to another origin', () => {
+  afterEach(() => vi.unstubAllEnvs());
+  const API = 'https://api.example.test:8443';
+
+  function rewrites(path: string) {
+    vi.stubEnv('SHIFDE_API_ORIGIN', API);
+    const res = proxy(
+      new NextRequest(`http://127.0.0.1:3710${path}`, { headers: { cookie: 's=1' } }),
+    );
+    const target = res.headers.get('x-middleware-rewrite');
+    if (target !== null) expect(new URL(target).origin).toBe(API);
+    return { res, target };
+  }
+
+  it.each([
+    '//evil.example/%252e%252e/api/v1/me',
+    '//evil.example/api/v1/me',
+    '/%2F%2Fevil.example/%2e%2e/api/x',
+    '/%2F%2Fevil.example/../api/x',
+    '/\evil.example/api/x',
+    '/\\evil.example/%252e%252e/api/x',
+    '/%5C%5Cevil.example/%2e%2e/api/x',
+    '/%61pi/x',
+    '/%61pi/health',
+    '/x/%252e%252e/api/v1/me',
+    '/API/health',
+    '/api/x/%2e%2e/health',
+    '/api//health',
+    '/api/health/',
+    '/api/%252e%252e/health',
+  ])('%s is not rewritten to any origin but the API origin', (p) => {
+    rewrites(p);
+  });
+
+  // The URL parser resolves single-encoded dot segments before proxy() runs: these arrive as
+  // /api/... and go to the API origin only.
+  it.each([
+    ['/%2F%2Fevil.example/%2e%2e/api/x', '/api/x'],
+    ['/api/x/%2e%2e/health', '/api/health'],
+  ])('%s reaches the API origin as %s', (p, path) => {
+    expect(rewrites(p).target).toBe(`${API}${path}`);
+  });
+
+  it.each([
+    '//evil.example/%252e%252e/api/v1/me',
+    '/%2F%2Fevil.example/%252e%252e/api/x',
+    '/%61pi/x',
+    '/x/%252e%252e/api/v1/me',
+    '/api/x/%252e%252e/health',
+    '/api//health',
+  ])('refuses the non-canonical API spelling %s with 404', async (p) => {
+    const { res, target } = rewrites(p);
+    expect(target).toBeNull();
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('{"detail":"not found"}');
+  });
+
+  it('forwards exactly the raw path for a canonical API path', () => {
+    expect(rewrites('/api/v1/orgs/demo-a/x?q=1').target).toBe(`${API}/api/v1/orgs/demo-a/x?q=1`);
+    expect(rewrites('/api').target).toBe(`${API}/api`);
+    // One level of encoding and letter case in a path value (an object key) still pass.
+    expect(rewrites('/api/v1/objects/Customer/ACME%20Corp').target).toBe(
+      `${API}/api/v1/objects/Customer/ACME%20Corp`,
+    );
+  });
+});
+
+describe('proxy matcher on page routes ending in an asset extension (#175)', () => {
+  let doesMatch: (url: string) => boolean;
+  beforeAll(async () => {
+    const { unstable_doesMiddlewareMatch } = await import('next/experimental/testing/server');
+    doesMatch = (url) => unstable_doesMiddlewareMatch({ config, url });
+  });
+
+  it.each(['/o/demo-a/runs/x.js', '/o/demo-a/build/tools/a.css', '/platform/x.txt', '/api/x.js'])(
+    'matches %s',
+    (url) => {
+      expect(doesMatch(url)).toBe(true);
+    },
+  );
+
+  it('gives /o/<slug>/runs/x.js the CSP and X-Frame-Options', () => {
+    const res = proxy(new NextRequest('http://127.0.0.1:3710/o/demo-a/runs/x.js'));
+    expect(res.headers.get('content-security-policy')).toContain("'nonce-");
+    expect(res.headers.get('x-frame-options')).toBe('DENY');
+  });
+
+  it.each(['/icon.svg', '/x.js', '/_next/static/chunks/o/x.js'])('still skips %s', (url) => {
+    expect(doesMatch(url)).toBe(false);
+  });
+});
