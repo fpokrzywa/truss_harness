@@ -181,6 +181,8 @@ class Settings(BaseSettings):
     public_base_url: str | None = None  # OIDC redirect base; default: first allowed origin
     oidc_state_ttl_seconds: int = 600
     oidc_jwks_min_refresh_seconds: int = 30
+    oidc_jwks_cache_seconds: int = 3600  # JWKS lifetime when the IdP sends no usable max-age
+    oidc_jwks_max_cache_seconds: int = 3600  # cap on any JWKS lifetime, max-age included
     oidc_http_timeout_seconds: float = 5.0
     # OIDC sign-in starts and callbacks per client address and minute (findings Item 5b)
     oidc_rate_per_minute: int = 20
