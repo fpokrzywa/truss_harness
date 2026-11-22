@@ -39,6 +39,7 @@ export interface Adapter {
   key: string;
   kind: string;
   version: string;
+  display_name?: string | null;
   capabilities: AdapterCapability[];
   config_schema: JsonSchema;
   secret_fields: string[];
@@ -247,6 +248,8 @@ export interface Connection {
   status: ConnectionStatus;
   health?: string | null;
   last_tested_at?: string | null;
+  /** CM-1/CM-2: absent until the backend sends it. */
+  last_test_outcome?: string | null;
   row_version: number;
 }
 
