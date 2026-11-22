@@ -131,6 +131,28 @@ export interface DiscoveredModel {
   capabilities?: ModelCapability[];
 }
 
+/** A queued provider health check (ARCH M2): `result` once the worker has recorded it. */
+export interface HealthCheckJob {
+  id: string;
+  provider_id: string;
+  status: 'queued' | 'running' | 'done' | 'failed';
+  result: HealthResult | null;
+  /** Error code of a failed job (e.g. `forbidden`, `worker_lost`). */
+  error: string | null;
+  created_at: string;
+}
+
+/** A queued provider model discovery (ARCH M2): `result` once the worker has recorded it. */
+export interface DiscoveryJob {
+  id: string;
+  provider_id: string;
+  status: 'queued' | 'running' | 'done' | 'failed';
+  result: DiscoveredModel[] | null;
+  /** Error code of a failed job (e.g. `upstream_error`, `worker_lost`). */
+  error: string | null;
+  created_at: string;
+}
+
 export interface RateLimits {
   rpm?: number;
   tpm?: number;

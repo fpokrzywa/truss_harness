@@ -105,6 +105,10 @@ def make_app(
     app.state.api_key_failure_limiter = SlidingWindowLimiter(
         settings.api_key_failures_per_minute, message="too many failed API key attempts"
     )
+    app.state.executor_auth_failure_limiter = SlidingWindowLimiter(
+        settings.executor_auth_failures_per_minute,
+        message="too many failed executor authentications",
+    )
     app.state.features = FeatureRegistry()
     # SETH 3ba0e06 app.py: the OIDC client over the SSRF-guarded HTTP client (a test passes the
     # fake IdP's transport, `tests/_support/fake_oidc.py`)

@@ -93,6 +93,13 @@ class ConnectionTestBusy(AppError):
     status, code, title = 409, "connection_test_busy", "Conflict"
 
 
+class ProviderJobBusy(AppError):
+    """No active provider health check or discovery job could be queued or read back (ARCH M2):
+    retryable."""
+
+    status, code, title = 409, "provider_job_busy", "Conflict"
+
+
 class ModelUnavailable(AppError):
     status, code, title = 409, "model_unavailable", "Conflict"
 

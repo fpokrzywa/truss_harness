@@ -82,6 +82,10 @@ PRE_TENANT_ACTIONS: frozenset[str] = frozenset(
         # an Entra sign-in refused for group overage (SP3-6, B-2711): filed by `record_failure`
         # like `identity.login.failed`, installation-level for an installation IdP
         "identity.oidc.groups_overage",
+        # a refused executor token (B-2730): the resolver answers nothing for every reason (unknown,
+        # wrong secret, revoked, expired, disabled, suspended) and cannot tell them apart without a
+        # migration, so no organization is proven and no reason is given
+        "delivery.executor.token.rejected",
     }
 )
 # A person's own sign-in events: filed globally only with the acting person as the actor, read
@@ -433,6 +437,28 @@ def list_events(
         project_ids=project_ids,
     )
     return [_event_row(r) for r in rows]
+
+
+def find_details(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    action: str,
+    target_id: UUID,
+    correlation_id: str,
+    occurred_from: datetime,
+) -> dict[str, Any] | None:
+    """The stored (scrubbed) details of the `action` event of `tenant_id` on `target_id` written
+    under `correlation_id` at or after `occurred_from`; None when there is none."""
+    row = repository.find_event(
+        session,
+        tenant_id=tenant_id,
+        action=action,
+        target_id=str(target_id),
+        correlation_id=correlation_id,
+        occurred_from=occurred_from,
+    )
+    return dict(row.details) if row is not None else None
 
 
 def _event_row(r: AuditEvent) -> EventRow:

@@ -47,6 +47,9 @@ UNIFIED_ONLY = {
     ("GET", "/api/v1/orgs/{org}/connections/{connection_id}/test-jobs/{job_id}"),
     # ARCH M11 (issue #56, B-2722): ontology export gated by data:export
     ("POST", "/api/v1/orgs/{org}/ontologies/{ontology_id}/export"),
+    # ARCH M2 (issue #47, B-2720): discovery and health check run on the worker; their job status
+    ("GET", "/api/v1/orgs/{org}/model-providers/{provider_id}/discovery-jobs/{job_id}"),
+    ("GET", "/api/v1/orgs/{org}/model-providers/{provider_id}/health-check-jobs/{job_id}"),
 }
 # native delivery (design 2026-11-17 section 9 item 2, B-2501): not a SETH module
 EXECUTOR_CREDENTIAL = (
@@ -182,7 +185,12 @@ class _Any(dict[str, str]):
 def test_limiters_and_body_cap_are_wired(settings: Settings, world: World) -> None:
     with full_client(settings.model_copy(update={"max_request_body_bytes": 100})) as c:
         state = c.app.state  # type: ignore[attr-defined]  # reason: TestClient.app is typed ASGI
-        for name in ("login_ip_limiter", "login_account_limiter", "api_key_failure_limiter"):
+        for name in (
+            "login_ip_limiter",
+            "login_account_limiter",
+            "api_key_failure_limiter",
+            "executor_auth_failure_limiter",
+        ):
             assert hasattr(state, name), name
         assert hasattr(state, "oidc_limiter") and hasattr(state, "oidc") and state.features.keys()
         r = c.post("/api/auth/local/login", content=b"x" * 500)

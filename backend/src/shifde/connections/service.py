@@ -1102,6 +1102,12 @@ class ConnectionService:
         self._session.commit()  # secret-access rows are written; never held across the call
         return adapter, self._exec_ctx(row, deadline), cfg
 
+    def require_implemented(self, row: Mapping[str, Any]) -> None:
+        """`prepare_call`'s first gates only (own row, adapter implemented: 422
+        adapter_not_implemented when planned), for a caller that queues the call instead."""
+        self._own(row)
+        self._adapter(row)
+
 
 def _test_out(r: Mapping[str, Any]) -> s.TestResultOut:
     return s.TestResultOut(

@@ -61,6 +61,28 @@ class DiscoveredModelOut(BaseModel):
     capabilities: list[str]
 
 
+class HealthCheckJobOut(BaseModel):
+    """A queued provider health check (ARCH M2): `result` once the worker has recorded it."""
+
+    id: UUID
+    provider_id: UUID
+    status: Literal["queued", "running", "done", "failed"]
+    result: HealthOut | None
+    error: str | None
+    created_at: datetime
+
+
+class DiscoveryJobOut(BaseModel):
+    """A queued provider model discovery (ARCH M2): `result` once the worker has recorded it."""
+
+    id: UUID
+    provider_id: UUID
+    status: Literal["queued", "running", "done", "failed"]
+    result: list[DiscoveredModelOut] | None
+    error: str | None
+    created_at: datetime
+
+
 # ------------------------------------------------------------------ models
 class RateLimits(BaseModel):
     model_config = Strict

@@ -94,6 +94,10 @@ def create_app(
     app.state.api_key_failure_limiter = SlidingWindowLimiter(
         settings.api_key_failures_per_minute, message="too many failed API key attempts"
     )
+    app.state.executor_auth_failure_limiter = SlidingWindowLimiter(
+        settings.executor_auth_failures_per_minute,
+        message="too many failed executor authentications",
+    )
     app.state.oidc_limiter = SlidingWindowLimiter(
         settings.oidc_rate_per_minute, message="too many sign-in attempts; try again later"
     )

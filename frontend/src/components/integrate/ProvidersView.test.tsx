@@ -54,21 +54,31 @@ describe('ProviderDetailView', () => {
   const routes = {
     'GET /api/v1/orgs/acme/model-providers/p-1': () => jsonResponse(PROVIDER),
   };
+  const QUEUED = {
+    id: 'j-1',
+    provider_id: 'p-1',
+    status: 'queued',
+    result: null,
+    error: null,
+    created_at: '2026-05-02T10:00:00Z',
+  };
+  const queued = () => jsonResponse(QUEUED, { status: 202 });
+  const done = (result: unknown) => () => jsonResponse({ ...QUEUED, status: 'done', result });
 
   it('runs a health check and shows status, latency and detail', async () => {
     stubInt({
       ...routes,
-      'POST /api/v1/orgs/acme/model-providers/p-1/health-check': () =>
-        jsonResponse({
-          status: 'degraded',
-          latency_ms: 950,
-          checked_at: '2026-05-02T10:00:00Z',
-          detail: 'slow responses',
-        }),
+      'POST /api/v1/orgs/acme/model-providers/p-1/health-check': queued,
+      'GET /api/v1/orgs/acme/model-providers/p-1/health-check-jobs/j-1': done({
+        status: 'degraded',
+        latency_ms: 950,
+        checked_at: '2026-05-02T10:00:00Z',
+        detail: 'slow responses',
+      }),
     });
     renderWithClient(<ProviderDetailView id="p-1" />);
     await userEvent.click(await screen.findByRole('button', { name: 'Run health check' }));
-    const status = await screen.findByRole('status');
+    const status = await screen.findByRole('status', undefined, { timeout: 5000 });
     expect(status).toHaveTextContent('degraded');
     expect(status).toHaveTextContent('950 ms');
     expect(status).toHaveTextContent('slow responses');
@@ -77,19 +87,19 @@ describe('ProviderDetailView', () => {
   it('lists discovered models with a Register link that pre-fills the model form', async () => {
     stubInt({
       ...routes,
-      'POST /api/v1/orgs/acme/model-providers/p-1/discover-models': () =>
-        jsonResponse([
-          {
-            model_key: 'gpt-x',
-            display_name: 'GPT X',
-            context_window: 32000,
-            capabilities: ['chat'],
-          },
-        ]),
+      'POST /api/v1/orgs/acme/model-providers/p-1/discover-models': queued,
+      'GET /api/v1/orgs/acme/model-providers/p-1/discovery-jobs/j-1': done([
+        {
+          model_key: 'gpt-x',
+          display_name: 'GPT X',
+          context_window: 32000,
+          capabilities: ['chat'],
+        },
+      ]),
     });
     renderWithClient(<ProviderDetailView id="p-1" />);
     await userEvent.click(await screen.findByRole('button', { name: 'Discover models' }));
-    const link = await screen.findByRole('link', { name: /Register/ });
+    const link = await screen.findByRole('link', { name: /Register/ }, { timeout: 5000 });
     const href = link.getAttribute('href') ?? '';
     expect(href).toContain('/o/acme/integrate/models?');
     const q = new URLSearchParams(href.split('?')[1]);
@@ -106,12 +116,33 @@ describe('ProviderDetailView', () => {
   it('does not auto-register discovered models (no POST to /models)', async () => {
     const fetchMock = stubInt({
       ...routes,
-      'POST /api/v1/orgs/acme/model-providers/p-1/discover-models': () => jsonResponse([]),
+      'POST /api/v1/orgs/acme/model-providers/p-1/discover-models': queued,
+      'GET /api/v1/orgs/acme/model-providers/p-1/discovery-jobs/j-1': done([]),
     });
     renderWithClient(<ProviderDetailView id="p-1" />);
     await userEvent.click(await screen.findByRole('button', { name: 'Discover models' }));
-    expect(await screen.findByText('The provider reported no models.')).toBeInTheDocument();
+    expect(
+      await screen.findByText('The provider reported no models.', undefined, { timeout: 5000 }),
+    ).toBeInTheDocument();
     expect(fetchMock.calls.some((c) => c.key === 'POST /api/v1/orgs/acme/models')).toBe(false);
+  });
+
+  it('shows why a queued discovery failed', async () => {
+    stubInt({
+      ...routes,
+      'POST /api/v1/orgs/acme/model-providers/p-1/discover-models': queued,
+      'GET /api/v1/orgs/acme/model-providers/p-1/discovery-jobs/j-1': () =>
+        jsonResponse({ ...QUEUED, status: 'failed', error: 'upstream_error' }),
+    });
+    renderWithClient(<ProviderDetailView id="p-1" />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Discover models' }));
+    expect(
+      await screen.findByText('Discovery failed', undefined, { timeout: 5000 }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/The model discovery did not run \(upstream_error\)/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Register/ })).toBeNull();
   });
 
   it('disables health check and discovery for a planned adapter', async () => {
