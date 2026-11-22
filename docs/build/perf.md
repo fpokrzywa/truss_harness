@@ -63,3 +63,33 @@ Without the variable, `uv run pytest tests/perf -q` runs the same test with 20 i
 - Pipeline or worker throughput, run completion time and model-call time (no worker runs).
 - Concurrency, load and multiple clients (calls are sequential from one client).
 - Percentiles other than p50 and p95, and network overhead (the client is in-process).
+
+# Dashboards over a million events (NFR-PERF-003)
+
+Issue #109. Decision B-2770.
+
+## Method
+
+- The test is `backend/tests/app/test_p8_perf.py::test_dashboards_respond_within_three_seconds_over_a_million_events`, ported from SETH 3ba0e06.
+- It bulk-loads 1,000,000 `usage_events` for `demo-a` (30 days, 20 agents, 5 models, 5 users, 20,000 runs), builds the rollups with the production `ledger.rebuild`, and runs `ANALYZE` on the events and rollup tables.
+- Each of 9 dashboard URLs (6 `usage/summary` groupings, 2 `usage/events` pages, `governance/overview`) gets one cold call, recorded but not judged, then one warm call. Each warm call must finish in under 3 s (`LIMIT_SECONDS`). The test also checks status 200, reconciliation of every summary, and the model totals (`calls == 1,000,000`, calculated cost above 0).
+- Each run appends a timestamped block to `.devdata/p8-perf.txt` at the repository root, with the warm and cold time of every dashboard.
+
+## Running alone under xdist
+
+- The timed calls and the totals check run inside `running_alone` from `backend/tests/conftest.py`.
+- Every test marks its xdist worker busy while it runs. `running_alone` takes the run's lock, so no other worker can start a test, and it waits until the tests other workers are already running have finished. Only then does it time the calls. The bulk load and the rebuild still run next to the other workers.
+- Why: a wall-clock budget measured next to seven other workers on the shared cluster measured their load, not the dashboards. In the `041-merge` full suite the warm calls took about 1.3 s on the server side, but one warm `summary by project` measured 4.89 s and failed the test. The budget, the data volume and what the test asserts are the same as before. A dashboard that really is slow still fails.
+- Cost: the other workers sit idle while the test waits and times its calls (about 30 s, plus the rest of the longest test that is running at that moment). Without xdist, `running_alone` does nothing.
+
+## Measurement command
+
+Cluster running:
+
+```bash
+cd backend && uv run pytest tests/app/test_p8_perf.py -q
+```
+
+## Measured
+
+2026-11-22, `-n 8 tests/adapters tests/app` on the job 067 branch: every warm call took between 0.035 s and 1.6 s, the summaries about 1.25-1.6 s.
