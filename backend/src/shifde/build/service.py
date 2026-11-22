@@ -352,16 +352,43 @@ class ArtifactService:
             name="",
         )
 
+    def _readable_connection(self, value: Any) -> bool:  # Any: JSON value
+        connection_id = _as_uuid(str(value))
+        return connection_id is not None and self.conns.placement(connection_id) is not None
+
     def _shown_spec(self, kind: str, spec: Mapping[str, Any]) -> dict[str, Any]:
-        """A copy of `spec` with a tool's bound connection id null when the caller cannot read
-        that connection (isolation review 065, finding 2)."""
+        """A copy of `spec` with a tool's bound connection id and a pipeline node's connection id
+        null when the caller cannot read that connection (isolation review 065, finding 2;
+        issue #167)."""
         shown: dict[str, Any] = json.loads(json.dumps(spec))
-        binding = shown.get("binding") if kind == "tools" else None
-        if isinstance(binding, dict) and binding.get("connection_id") is not None:
-            connection_id = _as_uuid(str(binding["connection_id"]))
-            if connection_id is None or self.conns.placement(connection_id) is None:
-                binding["connection_id"] = None
+        for _, slot in _connection_slots(kind, shown):
+            if slot.get("connection_id") is not None and not self._readable_connection(
+                slot["connection_id"]
+            ):
+                slot["connection_id"] = None
         return shown
+
+    def _kept_connections(
+        self, kind: str, spec: dict[str, Any], stored: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """`spec` with each explicitly null connection id slot set back to the stored draft's id
+        when the caller cannot read that stored connection: the caller was shown `null`, so an
+        unchanged save keeps the binding (issue #167)."""
+        kept: dict[str, Any] = {}  # Any: JSON value
+        for key, slot in _connection_slots(kind, json.loads(json.dumps(stored))):
+            if key is not None:
+                kept.setdefault(key, slot.get("connection_id"))
+        merged: dict[str, Any] = json.loads(json.dumps(spec))
+        for key, slot in _connection_slots(kind, merged):
+            old = kept.get(key) if key is not None else None
+            if (
+                "connection_id" in slot
+                and slot["connection_id"] is None
+                and old is not None
+                and not self._readable_connection(old)
+            ):
+                slot["connection_id"] = old
+        return merged
 
     def _version_out(
         self, row: Mapping[str, Any], *, with_spec: bool, with_pins: bool = False
@@ -380,7 +407,10 @@ class ArtifactService:
                     {
                         "node_id": r["node_id"],
                         "ref_type": r["ref_type"],
-                        "ref_id": str(r["ref_id"]),
+                        "ref_id": None
+                        if r["ref_type"] == "connection"
+                        and not self._readable_connection(r["ref_id"])
+                        else str(r["ref_id"]),
                     }
                     for r in repository.list_pipeline_refs(
                         self.session, self.sc.tenant_id, row["id"]
@@ -610,8 +640,11 @@ class ArtifactService:
         art = self.artifact(kind, artifact_id, "update")
         if art["status"] == "retired":
             raise InvalidTransition("a retired artifact cannot be edited")
-        self._check_spec_size(body.spec)
         draft = repository.get_draft(self.session, self.sc.tenant_id, art["id"], lock=True)
+        spec = (
+            body.spec if draft is None else self._kept_connections(kind, body.spec, draft["spec"])
+        )
+        self._check_spec_size(spec)
         if draft is None:
             if body.row_version != 0:
                 raise Conflict("row_version mismatch: there is no draft (use row_version 0)")
@@ -627,7 +660,7 @@ class ArtifactService:
                         "version_no": repository.next_version_no(
                             self.session, self.sc.tenant_id, art["id"]
                         ),
-                        "spec": body.spec,
+                        "spec": spec,
                         "created_by": self.sc.principal.principal_id,
                         "based_on_version_id": art["latest_published_version_id"],
                     },
@@ -653,7 +686,7 @@ class ArtifactService:
             ):
                 raise PublishPending("the draft is frozen while its publish request is pending")
             saved = repository.update_version(
-                self.session, self.sc.tenant_id, draft["id"], body.row_version, {"spec": body.spec}
+                self.session, self.sc.tenant_id, draft["id"], body.row_version, {"spec": spec}
             )
             if saved is None:
                 raise Conflict("row_version mismatch: the draft was modified; reload and retry")
@@ -1396,6 +1429,21 @@ class ArtifactService:
         if self._maturity is None:
             self._maturity = catalog.maturity_map(self.session, self.runtime.registry)
         return self._maturity
+
+
+def _connection_slots(kind: str, spec: dict[str, Any]) -> list[tuple[str | None, dict[str, Any]]]:
+    """The dicts of `spec` that hold a connection id, each with its key for matching across
+    specs: a tool's `binding`, and each pipeline node's `config` with the node id."""
+    if kind == "tools":
+        binding = spec.get("binding")
+        return [("binding", binding)] if isinstance(binding, dict) else []
+    if kind != "pipelines" or not isinstance(spec.get("nodes"), list):
+        return []
+    return [
+        (node["id"] if isinstance(node.get("id"), str) else None, node["config"])
+        for node in spec["nodes"]
+        if isinstance(node, dict) and isinstance(node.get("config"), dict)
+    ]
 
 
 def _as_uuid(value: Any) -> UUID | None:  # Any: JSON value

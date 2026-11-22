@@ -1,0 +1,48 @@
+# SETH API (shifde-api) on 127.0.0.1:${SHIFDE_API_PORT}, behind the nginx edge.
+# Exit and health contract: SP4 design 6.2 (docs/runbooks/ubuntu-host.md).
+[Unit]
+Description=SETH API (shifde-api)
+Documentation=file:///opt/seth/docs/runbooks/ubuntu-host.md
+After=network-online.target
+Wants=network-online.target
+# exit 1 restarts forever with backoff; 2 to 5 never restart (RestartPreventExitStatus)
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=seth
+Group=seth
+EnvironmentFile=/etc/seth/seth.env
+WorkingDirectory=/opt/seth/backend
+ExecStart=/opt/seth/backend/.venv/bin/shifde-api
+ExecStartPost=/usr/bin/curl --fail --silent --show-error --output /dev/null --max-time 2 --retry 30 --retry-delay 1 --retry-connrefused --retry-max-time 40 http://127.0.0.1:${SHIFDE_API_PORT}/healthz
+TimeoutStartSec=60
+Restart=on-failure
+RestartPreventExitStatus=2 3 4 5
+RestartSec=1s
+RestartSteps=6
+RestartMaxDelaySec=60s
+KillSignal=SIGTERM
+# SHIFDE_API_SHUTDOWN_GRACE_SECONDS (default 30) + 10 s
+TimeoutStopSec=40
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=seth-api
+UMask=0077
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target
