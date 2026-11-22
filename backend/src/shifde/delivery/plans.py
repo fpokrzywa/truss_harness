@@ -7,8 +7,10 @@ or fails it (`service.on_plan_result`). A sealed plan is decided once, by a pers
 requester who holds `delivery:plan:approve` on the target's scope, before `expires_at`; approve
 quotes the sealed digest. Related principals count as the requester (B-2733): a service account
 the requester owns (`service_accounts.owner_principal_id`) and the owner of a requesting service
-account are refused too, 403 `self_approval_forbidden`, and that refusal is audited
-(`delivery.plan.approve` or `delivery.plan.reject`, outcome `denied`, committed before the 403).
+account are refused too, and so is a service account with the same owner as a requesting service
+account (sibling service accounts, B-2911; an unowned account has no siblings): 403
+`self_approval_forbidden`, and that refusal is audited (`delivery.plan.approve` or
+`delivery.plan.reject`, outcome `denied`, committed before the 403).
 The `delivery_approvals` insert trigger enforces only the same-principal case.
 Approval creates the plan's deployment (`queued`) and its one-attempt `apply` job, due until the
 plan's `expires_at`, in the approval's transaction (B-2684). A target with an unresolved unknown
@@ -369,25 +371,27 @@ class PlanService:
 
     def _related(self, requested_by: UUID) -> str | None:
         """Why the caller may not decide a plan `requested_by` requested (None: they may): the
-        same principal, a service account the requester owns, or the owner of the requesting
-        service account."""
+        same principal, a service account the requester owns, the owner of the requesting
+        service account, or a sibling service account (both owned by the same principal; an
+        unowned account has no siblings)."""
         principal = self.sc.principal
         if requested_by == principal.principal_id:
             return "same_principal"
         session, tenant_id = self.sc.session, self.sc.tenant_id
-        if (
-            principal.principal_type == "service_account"
-            and repository.service_account_owner(
-                session, principal.principal_id, tenant_id=tenant_id
-            )
-            == requested_by
-        ):
+        decider_owner = (
+            repository.service_account_owner(session, principal.principal_id, tenant_id=tenant_id)
+            if principal.principal_type == "service_account"
+            else None
+        )
+        if decider_owner == requested_by:
             return "decider_owned_by_requester"
-        if (
-            repository.service_account_owner(session, requested_by, tenant_id=tenant_id)
-            == principal.principal_id
-        ):
+        requester_owner = repository.service_account_owner(
+            session, requested_by, tenant_id=tenant_id
+        )
+        if requester_owner == principal.principal_id:
             return "requester_owned_by_decider"
+        if decider_owner is not None and requester_owner == decider_owner:
+            return "sibling_service_accounts"
         return None
 
     def approve(self, plan_id: UUID, body: s.PlanApprove) -> s.PlanOut:
