@@ -1,8 +1,8 @@
 {
-  "session_id": "54dad67b-b4bb-44fa-b7fa-28e28aaa1754",
-  "head_sha": "3725c04486270fcc7cd83b26ab538d7289250c2d",
+  "session_id": "9cf5f6f9-095e-42e1-b2fb-9ea77e503951",
+  "head_sha": "aceb02665cd2e9ff9171fcf6e34f1e7a7d5266b1",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "PYTHONUTF8=1 factory/bin/job queue; create and start jobs for #71 and #72 at intake; 060 (#69, PR #146) waits on supervisor acceptance then gates.py 13/13 and hand merge",
-  "written_at": "2026-11-22T05:47:16Z"
+  "next_step": "PYTHONUTF8=1 factory/bin/job queue; merge 063 (#74, PR #151) under S-024 after sync and gates.py 13/13; create and start jobs for new lines",
+  "written_at": "2026-11-22T08:32:57Z"
 }
