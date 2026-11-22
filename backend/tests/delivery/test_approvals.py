@@ -2,6 +2,10 @@
 B-2675..B-2679): approve quotes the sealed digest, the requester is refused at the route and by
 the `delivery_approvals` trigger, an expired plan stays `expired`, a plan is decided once, reject
 is final, a `developer` cannot decide, and every request and decision is audited.
+
+Related principals (B-2733): a service account the requester owns and the owner of a requesting
+service account are refused as the requester is, each such refusal is audited `denied`, and the
+permission is checked before the settle commit.
 """
 
 from __future__ import annotations
@@ -15,8 +19,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
-from shifde.core.db import Database
+from shifde.authz.service import new_pdp
+from shifde.core.context import Principal, RequestContext
+from shifde.core.db import Database, set_principal, set_tenant
+from shifde.core.errors import AppError
 from shifde.core.ids import uuid7
+from shifde.delivery import schemas
+from shifde.delivery.plans import PlanService
+from shifde.tenancy.scope import TenantScope
 from tests.connections.routes import as_user, system_role_user
 from tests.delivery.conftest import ExecutorSide
 from tests.delivery.releases import release_for_target
@@ -392,3 +402,226 @@ def test_request_approve_and_reject_are_audited(
     assert approved.details["target_id"] == sealed.plan["target_id"]
     assert rejected.details["digest"] is not None
     assert rows[0].details["artifact_digest"] == sealed.plan["artifact_digest"]
+
+
+def test_an_unknown_plan_is_not_found(client: TestClient, world: World, sealed: Sealed) -> None:
+    unknown = uuid7()
+    body = {"plan_digest": sealed.plan["digest"]}
+    for action, b in (("approve", body), ("reject", {})):
+        r = _decide(client, world, sealed.approver, unknown, action, b)
+        assert r.status_code == 404 and r.json()["detail"] == "plan not found", r.text
+
+
+# ------------------------------------------------------------------ related principals (B-2733)
+def _service_account(owner_db: Database, tenant: UUID, owner: UUID | None) -> UUID:
+    """An active service account of `tenant` owned by `owner`, bound to `tenant_administrator`
+    at organization scope (so it holds `delivery:plan:approve`)."""
+    sa = uuid7()
+    with owner_db.session() as o:
+        o.execute(
+            text(
+                "INSERT INTO shifde.service_accounts (id, tenant_id, name, owner_principal_id) "
+                "VALUES (:i, :t, :n, :o)"
+            ),
+            {"i": sa, "t": tenant, "n": f"sa-{sa.hex[-12:]}", "o": owner},
+        )
+        o.execute(text("SELECT set_config('app.platform_admin', 'on', true)"))
+        o.execute(
+            text(
+                "INSERT INTO shifde.role_bindings (id, tenant_id, subject_type, subject_id, "
+                "role_id, scope_type, scope_id) SELECT :i, :t, 'service_account', :s, r.id, "
+                "'tenant', :t FROM shifde.roles r WHERE r.tenant_id IS NULL "
+                "AND r.key = 'tenant_administrator'"
+            ),
+            {"i": uuid7(), "t": tenant, "s": sa},
+        )
+        o.commit()
+    return sa
+
+
+def _decide_as_service_account(
+    app_db: Database, world: World, sa: UUID, plan_id: object, decision: str, digest: str
+) -> Any:  # Any: a PlanOut, or the AppError raised
+    """`PlanService` approve or reject in A as the service account `sa` (an API key caller)."""
+    with app_db.session() as session:
+        set_tenant(session, world.a.tenant)
+        set_principal(session, sa)
+        principal = Principal(
+            user_id=sa,
+            email=f"{sa.hex}@sa.test",
+            display_name="sa",
+            principal_type="service_account",
+            credential="api_key",
+            tenant_id=world.a.tenant,
+        )
+        scope = TenantScope(
+            session=session,
+            ctx=RequestContext(request_id="r-sa", principal=principal, tenant_id=world.a.tenant),
+            principal=principal,
+            tenant_id=world.a.tenant,
+            tenant_slug=world.a.slug,
+            tenant_name="A",
+            tenant_status="active",
+            pdp=new_pdp(session, principal, world.a.tenant),
+        )
+        service = PlanService(scope)
+        pid = UUID(str(plan_id))
+        try:
+            if decision == "approve":
+                return service.approve(pid, schemas.PlanApprove(plan_digest=digest))
+            return service.reject(pid, schemas.PlanReject())
+        except AppError as exc:
+            return exc
+
+
+def _denials(owner_db: Database, tenant: UUID) -> list[Any]:
+    with owner_db.session() as o:
+        return list(
+            o.execute(
+                text(
+                    "SELECT action, outcome, target_id::text AS target_id, actor_id, details "
+                    "FROM shifde.audit_events WHERE tenant_id = :t "
+                    "AND action IN ('delivery.plan.approve', 'delivery.plan.reject') "
+                    "ORDER BY chain_seq"
+                ),
+                {"t": tenant},
+            ).all()
+        )
+
+
+def _requested_by(owner_db: Database, template: dict[str, Any], requester: UUID) -> UUID:
+    """A copy of the sealed plan `template`, still in its window, requested by `requester`
+    (inserted as the schema owner, as `_expired_plan` does)."""
+    plan_id = uuid7()
+    with owner_db.session() as o:
+        o.execute(
+            text(
+                "INSERT INTO shifde.delivery_plans (tenant_id, id, target_id, target_revision, "
+                "artifact_id, artifact_digest, application_key, display_name, status, "
+                "requested_by, steps, snapshot, adapter_version, toolchain_digest, digest, "
+                "sealed_at, expires_at, release_id, release_digest, evaluation_run_id) "
+                "SELECT tenant_id, :id, target_id, target_revision, artifact_id, artifact_digest, "
+                "application_key, display_name, 'sealed', :r, steps, snapshot, adapter_version, "
+                "toolchain_digest, digest, sealed_at, expires_at, release_id, release_digest, "
+                "evaluation_run_id FROM shifde.delivery_plans WHERE id = :p"
+            ),
+            {"id": plan_id, "r": requester, "p": template["id"]},
+        )
+        o.commit()
+    return plan_id
+
+
+def test_a_service_account_owned_by_the_requester_cannot_decide(
+    world: World, owner_db: Database, app_db: Database, sealed: Sealed
+) -> None:
+    plan = sealed.plan
+    requester = _user_id(owner_db, sealed.requester)
+    sa = _service_account(owner_db, world.a.tenant, requester)
+    for decision in ("approve", "reject"):
+        out = _decide_as_service_account(app_db, world, sa, plan["id"], decision, plan["digest"])
+        assert isinstance(out, AppError) and out.code == "self_approval_forbidden", out
+        assert out.status == 403
+    assert _approvals(owner_db, plan["id"]) == []
+    assert plan_row(owner_db, plan["id"])["status"] == "sealed"
+    rows = _denials(owner_db, world.a.tenant)
+    assert [(r.action, r.outcome, r.target_id, r.actor_id) for r in rows] == [
+        ("delivery.plan.approve", "denied", plan["id"], sa),
+        ("delivery.plan.reject", "denied", plan["id"], sa),
+    ]
+    for row in rows:
+        assert row.details["plan_id"] == plan["id"]
+        assert row.details["reason"] == "decider_owned_by_requester"
+        assert row.details["target_id"] == plan["target_id"]
+        assert row.details["application_key"] == plan["application_key"]
+    assert [r.details["decision"] for r in rows] == ["approve", "reject"]
+
+
+def test_the_owner_of_a_requesting_service_account_cannot_decide(
+    client: TestClient, world: World, owner_db: Database, sealed: Sealed
+) -> None:
+    owner = _user_id(owner_db, sealed.approver)
+    sa = _service_account(owner_db, world.a.tenant, owner)
+    plan_id = _requested_by(owner_db, sealed.plan, sa)
+    body = {"plan_digest": sealed.plan["digest"]}
+    for action, b in (("approve", body), ("reject", {})):
+        r = _decide(client, world, sealed.approver, plan_id, action, b)
+        _code(r, 403, "self_approval_forbidden")
+    assert _approvals(owner_db, plan_id) == []
+    assert plan_row(owner_db, plan_id)["status"] == "sealed"
+    rows = _denials(owner_db, world.a.tenant)
+    assert [(r.action, r.outcome, r.target_id, r.actor_id) for r in rows] == [
+        ("delivery.plan.approve", "denied", str(plan_id), owner),
+        ("delivery.plan.reject", "denied", str(plan_id), owner),
+    ]
+    assert {r.details["reason"] for r in rows} == {"requester_owned_by_decider"}
+    assert {r.details["plan_id"] for r in rows} == {str(plan_id)}
+    # a person unrelated to the service account decides it
+    r = _decide(client, world, sealed.requester, plan_id, "approve", body)
+    assert r.status_code == 200 and r.json()["status"] == "approved", r.text
+
+
+@pytest.mark.parametrize("owned", [False, True])
+def test_an_unrelated_service_account_can_approve(
+    world: World, owner_db: Database, app_db: Database, sealed: Sealed, owned: bool
+) -> None:
+    """Owner NULL, or a person other than the requester."""
+    other = _user_id(owner_db, sealed.approver) if owned else None
+    sa = _service_account(owner_db, world.a.tenant, other)
+    plan = sealed.plan
+    out = _decide_as_service_account(app_db, world, sa, plan["id"], "approve", plan["digest"])
+    assert isinstance(out, schemas.PlanOut), out
+    assert out.status == "approved" and out.approval is not None and out.approval.decided_by == sa
+    assert plan_row(owner_db, plan["id"])["status"] == "approved"
+    assert _denials(owner_db, world.a.tenant) == []
+
+
+def test_a_refused_self_decision_is_audited_denied(
+    client: TestClient, world: World, owner_db: Database, sealed: Sealed
+) -> None:
+    plan = sealed.plan
+    requester = _user_id(owner_db, sealed.requester)
+    body = {"plan_digest": plan["digest"]}
+    r = _decide(client, world, sealed.requester, plan["id"], "approve", body)
+    _code(r, 403, "self_approval_forbidden")
+    assert len(_denials(owner_db, world.a.tenant)) == 1
+    r = _decide(client, world, sealed.requester, plan["id"], "reject")
+    _code(r, 403, "self_approval_forbidden")
+    rows = _denials(owner_db, world.a.tenant)
+    assert [(r.action, r.outcome, r.target_id, r.actor_id) for r in rows] == [
+        ("delivery.plan.approve", "denied", plan["id"], requester),
+        ("delivery.plan.reject", "denied", plan["id"], requester),
+    ]
+    for row in rows:
+        assert row.details["plan_id"] == plan["id"]
+        assert row.details["reason"] == "same_principal"
+    assert _approvals(owner_db, plan["id"]) == []
+    assert plan_row(owner_db, plan["id"])["status"] == "sealed"
+
+
+def test_other_refusals_write_no_denial(
+    client: TestClient, world: World, owner_db: Database, sealed: Sealed
+) -> None:
+    plan = sealed.plan
+    body = {"plan_digest": plan["digest"]}
+    developer = system_role_user(owner_db, world.a.tenant, "developer")
+    assert _decide(client, world, developer, plan["id"], "approve", body).status_code == 403
+    assert _decide(client, world, developer, plan["id"], "reject").status_code == 403
+    expired = _expired_plan(owner_db, world, plan)
+    _code(_decide(client, world, sealed.approver, expired, "approve", body), 409, "plan_expired")
+    _code(_decide(client, world, sealed.approver, expired, "reject"), 409, "plan_expired")
+    r = _decide(client, world, sealed.approver, plan["id"], "approve", {"plan_digest": "e" * 64})
+    _code(r, 409, "plan_digest_mismatch")
+    assert _denials(owner_db, world.a.tenant) == []
+
+
+def test_the_permission_is_checked_before_the_settle(
+    client: TestClient, world: World, owner_db: Database, sealed: Sealed
+) -> None:
+    plan_id = _expired_plan(owner_db, world, sealed.plan)
+    body = {"plan_digest": sealed.plan["digest"]}
+    developer = system_role_user(owner_db, world.a.tenant, "developer")
+    for action, b in (("approve", body), ("reject", {})):
+        assert _decide(client, world, developer, plan_id, action, b).status_code == 403
+        assert plan_row(owner_db, plan_id)["status"] == "sealed"  # no settle ran
+    _code(_decide(client, world, sealed.approver, plan_id, "approve", body), 409, "plan_expired")
+    assert plan_row(owner_db, plan_id)["status"] == "expired"

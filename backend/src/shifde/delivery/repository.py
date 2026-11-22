@@ -594,6 +594,19 @@ def get_plan(
     )
 
 
+def service_account_owner(session: Session, principal_id: UUID, *, tenant_id: UUID) -> UUID | None:
+    """The `owner_principal_id` of the organization's service account `principal_id` (None when
+    it has none or `principal_id` is not one of its service accounts)."""
+    owner: UUID | None = session.execute(
+        text(
+            "SELECT owner_principal_id FROM shifde.service_accounts "
+            "WHERE id = :p AND tenant_id = :t"
+        ),
+        {"p": principal_id, "t": tenant_id},
+    ).scalar_one_or_none()
+    return owner
+
+
 def list_plans(
     session: Session,
     *,
