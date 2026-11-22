@@ -352,6 +352,17 @@ class ArtifactService:
             name="",
         )
 
+    def _shown_spec(self, kind: str, spec: Mapping[str, Any]) -> dict[str, Any]:
+        """A copy of `spec` with a tool's bound connection id null when the caller cannot read
+        that connection (isolation review 065, finding 2)."""
+        shown: dict[str, Any] = json.loads(json.dumps(spec))
+        binding = shown.get("binding") if kind == "tools" else None
+        if isinstance(binding, dict) and binding.get("connection_id") is not None:
+            connection_id = _as_uuid(str(binding["connection_id"]))
+            if connection_id is None or self.conns.placement(connection_id) is None:
+                binding["connection_id"] = None
+        return shown
+
     def _version_out(
         self, row: Mapping[str, Any], *, with_spec: bool, with_pins: bool = False
     ) -> s.VersionOut:
@@ -384,7 +395,7 @@ class ArtifactService:
             id=row["id"],
             version_no=row["version_no"],
             state=row["state"],
-            spec=row["spec"] if with_spec else None,
+            spec=self._shown_spec(row["kind"], row["spec"]) if with_spec else None,
             spec_schema_version=row["spec_schema_version"],
             spec_hash=row["spec_hash"],
             change_note=row["change_note"],
@@ -1081,9 +1092,17 @@ class ArtifactService:
             )
         try:
             updated = repository.set_state(self.session, self.sc.tenant_id, version_id, body.state)
-        except IntegrityError as exc:  # packaging's retire guard: a sealed release pins it
+        except IntegrityError as exc:
             self.session.rollback()
-            raise Conflict(RELEASE_PINNED) from exc
+            # only packaging's retire guard (a sealed release pins it) is a 409: the build
+            # trigger raises check_violation on this table too
+            diag = getattr(exc.orig, "diag", None)
+            if (
+                getattr(exc.orig, "sqlstate", None) == "23514"
+                and getattr(diag, "message_primary", None) == RELEASE_PINNED
+            ):
+                raise Conflict(RELEASE_PINNED) from exc
+            raise
         assert updated is not None
         repository.refresh_latest_published(self.session, self.sc.tenant_id, art["id"])
         self._audit(
@@ -1108,11 +1127,11 @@ class ArtifactService:
             draft = repository.get_draft(self.session, self.sc.tenant_id, art["id"])
             if draft is None:
                 raise NotFound("this artifact has no draft")
-            return dict(draft["spec"])
+            return self._shown_spec(art["kind"], draft["spec"])
         vid = _as_uuid(ref)
         if vid is None:
             raise ValidationFailed("a version id (or 'draft') is required")
-        return dict(self.version_of(art, vid)["spec"])
+        return self._shown_spec(art["kind"], self.version_of(art, vid)["spec"])
 
     def diff(self, kind: str, artifact_id: UUID, from_: str, to: str) -> s.DiffOut:
         art = self.artifact(kind, artifact_id)

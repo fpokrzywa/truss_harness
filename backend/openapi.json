@@ -11886,7 +11886,7 @@
         "type": "object"
       },
       "ReleaseOut": {
-        "description": "A release; pins and tool paths of versions the caller cannot see are redacted.",
+        "description": "A release; pins and tool paths of versions the caller cannot see are redacted, as are\nmodel and connection paths and bindings only those versions name, and connection ids the\ncaller cannot read (null).",
         "properties": {
           "compatibility": {
             "items": {
