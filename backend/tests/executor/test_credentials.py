@@ -1,7 +1,8 @@
 """The credential broker (design 5, settled call 14; B-2689, B-2737): a token only for a grant that
 names this job, executor and target, has not expired, whose audience is the normalized host of the
 file's entry, and whose target belongs to the entry's organization. Every refusal is the same
-`CredentialUnavailable`, naming nothing."""
+`CredentialUnavailable`, naming nothing. A file of more than one organization is refused
+(issue #155)."""
 
 from __future__ import annotations
 
@@ -154,6 +155,45 @@ def test_a_malformed_file_is_refused_without_echoing_it(tmp_path: Path, content:
         CredentialBroker.from_file(path)
     assert CREDENTIAL_TOKEN not in str(raised.value)
     assert raised.value.__cause__ is None
+
+
+def _two_entries(tmp_path: Path, second_tenant: UUID) -> Path:
+    path = tmp_path / "credentials.json"
+    entry = {"host": HOST, "token": CREDENTIAL_TOKEN, "service_principal": DEPLOYER}
+    path.write_text(
+        json.dumps(
+            {
+                "databricks-dev": {**entry, "tenant_id": str(TENANT)},
+                "databricks-prod": {**entry, "tenant_id": str(second_tenant)},
+            }
+        ),
+        encoding="utf-8",
+    )
+    os.chmod(path, 0o600)
+    return path
+
+
+def test_a_file_of_two_organizations_is_refused_without_echoing_it(tmp_path: Path) -> None:
+    other = uuid4()
+    with pytest.raises(CredentialFileRefused) as raised:
+        CredentialBroker.from_file(_two_entries(tmp_path, other))
+    message = str(raised.value)
+    assert message == "the credentials file must belong to one organization"
+    for leaked in (CREDENTIAL_TOKEN, str(TENANT), str(other), HOST):
+        assert leaked not in message
+
+
+def test_a_file_of_two_entries_of_one_organization_loads(tmp_path: Path) -> None:
+    broker = CredentialBroker.from_file(_two_entries(tmp_path, TENANT))
+    assert broker.tenant_id == TENANT
+    assert _token(broker, _grant(credential_ref="databricks-prod")) == CREDENTIAL_TOKEN
+
+
+def test_a_file_with_no_entries_has_no_organization(tmp_path: Path) -> None:
+    path = tmp_path / "credentials.json"
+    path.write_text("{}", encoding="utf-8")
+    os.chmod(path, 0o600)
+    assert CredentialBroker.from_file(path).tenant_id is None
 
 
 def test_a_missing_file_is_refused(tmp_path: Path) -> None:

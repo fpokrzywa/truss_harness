@@ -282,6 +282,7 @@ def test_whoami_answers_for_each_organizations_executor(client: TestClient, two:
     for side in (two.a, two.b):
         r = client.get(WHOAMI, headers=bearer(side.token))
         assert r.status_code == 200 and r.json()["executor_id"] == side.executor_id, r.text
+        assert r.json()["tenant_id"] == str(side.tenant)
 
 
 def _native_rows(owner_db: Database, tenant: UUID) -> list[tuple[Any, ...]]:

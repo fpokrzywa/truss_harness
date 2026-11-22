@@ -68,8 +68,9 @@ def test_whoami_with_a_live_token(
     r = client.get(WHOAMI, headers={**bearer(token), "X-Executor-Version": "1.2.3+fake"})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert set(body) == {"executor_id", "name", "status", "version", "last_seen_at"}
+    assert set(body) == {"executor_id", "name", "status", "version", "last_seen_at", "tenant_id"}
     assert body["executor_id"] == made["id"] and body["name"] == made["name"]
+    assert body["tenant_id"] == str(world.a.tenant)
     assert body["status"] == "active" and body["version"] == "1.2.3+fake"
     with owner_db.session() as o:
         row = o.execute(
