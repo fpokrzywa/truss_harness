@@ -13,6 +13,7 @@ import {
   useRefreshInt,
 } from '@/lib/integrate-hooks';
 import { normalizeDiscovery } from '@/lib/discovery';
+import { connectionHref, connectionsHref } from '@/lib/scope';
 import { adapterMaturity, isPlannedAdapter, PLANNED_EXPLANATION } from '@/lib/maturity';
 import { useSecrets } from '@/lib/security-hooks';
 import { ConfirmDialog } from '../ConfirmDialog';
@@ -58,10 +59,7 @@ export function ConnectionDetailView({ id }: { id: string }) {
   return (
     <div className="space-y-6">
       <p className="text-sm">
-        <Link
-          className="text-blue-800 underline"
-          href={`/o/${encodeURIComponent(org)}/integrate/connections`}
-        >
+        <Link className="text-blue-800 underline" href={connectionsHref(org)}>
           Back to connections
         </Link>
       </p>
@@ -88,10 +86,7 @@ export function ConnectionDetailView({ id }: { id: string }) {
               <PageHeader
                 title={c.name}
                 actions={
-                  <Link
-                    className="btn"
-                    href={`/o/${encodeURIComponent(org)}/integrate/connections/${encodeURIComponent(id)}/tests`}
-                  >
+                  <Link className="btn" href={connectionHref(org, id, 'tests')}>
                     Test history
                   </Link>
                 }

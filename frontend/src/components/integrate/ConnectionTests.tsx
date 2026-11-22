@@ -11,6 +11,7 @@ import {
   useRefreshInt,
 } from '@/lib/integrate-hooks';
 import { isPlannedAdapter, PLANNED_EXPLANATION } from '@/lib/maturity';
+import { connectionHref } from '@/lib/scope';
 import { ActionError, EmptyState, formatDate, PageHeader, QueryGate, useAction } from '../admin/ui';
 import { useOrgParam } from '../security/useOrg';
 import { StatusBadge } from './Maturity';
@@ -77,10 +78,7 @@ export function ConnectionTestsView({ id }: { id: string }) {
   return (
     <div className="space-y-6">
       <p className="text-sm">
-        <Link
-          className="text-blue-800 underline"
-          href={`/o/${encodeURIComponent(org)}/integrate/connections/${encodeURIComponent(id)}`}
-        >
+        <Link className="text-blue-800 underline" href={connectionHref(org, id)}>
           Back to connection
         </Link>
       </p>

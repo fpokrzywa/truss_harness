@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { NAV_ITEMS, currentNavGroup, visibleNav as rawVisibleNav } from './nav';
-import { parseScope, scopeChangeTarget } from './scope';
+import { connectionHref, connectionsHref, parseScope, scopeChangeTarget } from './scope';
 
 const ALL_FEATURES = ['tenancy', 'security', 'integrate', 'build', 'operate', 'governance'];
 /** Existing expectations assume every feature is enabled; feature gating is tested separately. */
@@ -418,7 +418,7 @@ describe('permission-aware navigation (FR-UI-004)', () => {
 
     it('gates each item on its read permission', () => {
       expect(labels(['vendor:read'])).toEqual(['Vendors', 'Adapters']);
-      expect(labels(['model:read'])).toEqual(['Models', 'Model Providers']);
+      expect(labels(['model:read'])).toEqual(['Connections', 'Models', 'Model Providers']);
       expect(labels(['connection:read'])).toEqual(['Connections']);
       expect(labels(['egress:manage'])).toEqual(['Egress Policies']);
     });
@@ -434,6 +434,55 @@ describe('permission-aware navigation (FR-UI-004)', () => {
         permissions: new Set(['model:read']),
       });
       expect(items.find((i) => i.label === 'Models')?.href).toBe('/o/acme/integrate/models');
+    });
+  });
+
+  describe('Connections space (CM-6)', () => {
+    const integrateItems = (perms: string[]) =>
+      visibleNav(parseScope('/o/acme'), {
+        isPlatformAdmin: false,
+        permissions: new Set(perms),
+      }).filter((i) => i.group === 'Integrate');
+
+    it.each(['connection:read', 'model:read', 'delivery:target:read'])(
+      'shows Connections first in Integrate with %s alone',
+      (perm) => {
+        const items = integrateItems([perm]);
+        expect(items[0]).toEqual({
+          id: 'integrate-connections',
+          label: 'Connections',
+          group: 'Integrate',
+          href: '/o/acme/connections',
+        });
+        expect(items.filter((i) => i.label === 'Connections')).toHaveLength(1);
+      },
+    );
+
+    it('is the first Integrate item with every Integrate permission', () => {
+      const items = integrateItems([
+        'vendor:read',
+        'model:read',
+        'connection:read',
+        'egress:manage',
+      ]);
+      expect(items[0]?.id).toBe('integrate-connections');
+    });
+
+    it('parses /o/{org}/connections as an organization-level area', () => {
+      expect(parseScope('/o/acme/connections')).toEqual({ org: 'acme', area: 'other' });
+      expect(parseScope('/o/acme/connections/c1/tests')).toEqual({ org: 'acme', area: 'other' });
+    });
+
+    it('puts connection detail pages under the Integrate group', () => {
+      const items = integrateItems(['connection:read', 'model:read']);
+      expect(currentNavGroup(items, '/o/acme/connections/c1')).toBe('Integrate');
+    });
+
+    it('builds the space and connection hrefs', () => {
+      expect(connectionsHref('acme')).toBe('/o/acme/connections');
+      expect(connectionsHref('acme', 'eng', 'api')).toBe('/o/acme/connections?ws=eng&proj=api');
+      expect(connectionHref('acme', 'c1')).toBe('/o/acme/connections/c1');
+      expect(connectionHref('acme', 'c 1', 'tests')).toBe('/o/acme/connections/c%201/tests');
     });
   });
 });
