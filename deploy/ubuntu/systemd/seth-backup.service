@@ -1,0 +1,40 @@
+# Nightly SETH backup (started by seth-backup.timer): `shifde-admin backup create` into a new
+# /var/backups/seth/<UTC timestamp>, then `backup verify` of the same directory. Runs as the
+# schema owner through admin.env, which PID 1 reads (root:root 0600), under user seth-ops, which
+# no long-running service uses: the API and worker uid (seth) can read neither this process's
+# environment nor the dumps (/var/backups/seth is 0700 seth-ops).
+[Unit]
+Description=SETH database backup (shifde-admin backup create and verify)
+Documentation=file:///opt/seth/docs/runbooks/ubuntu-host.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=seth-ops
+Group=seth-ops
+EnvironmentFile=/etc/seth/seth.env
+EnvironmentFile=/etc/seth/admin.env
+WorkingDirectory=/opt/seth/backend
+# $$ and %% are systemd's escapes for the shell's $ and date's %
+ExecStart=/bin/sh -c 'dir=/var/backups/seth/$$(date -u +%%Y%%m%%dT%%H%%M%%SZ) && /opt/seth/backend/.venv/bin/shifde-admin backup create --out "$$dir" && /opt/seth/backend/.venv/bin/shifde-admin backup verify --from "$$dir"'
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=seth-backup
+UMask=0077
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+# the only writable path
+ReadWritePaths=/var/backups/seth
