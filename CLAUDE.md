@@ -42,6 +42,7 @@ One application (SETH) merging SETH, the FDE SDK and Agent Factory into one code
 - Go-live preflight: `cd backend; uv run shifde-admin config preflight [--env-file F] [--register PATH]` validates the configuration, then prints one `ok:`/`refused:` line per go-live check (trusted proxies, HSTS, API docs, local login, metrics token, database role, migrations, register) and `pending: <id>` per `pending-owner` row of `docs/build/golive-register.md`, never a value; exit 0 only when no line is `refused:`.
 - Retention purge (content scrub of old, ended runs, as the app role): `cd backend; uv run shifde-admin maintenance purge --older-than <days> [--dry-run]`.
 - Retention delete (old, ended run families and their rows, as the app role; usage, policy and audit rows stay): `cd backend; uv run shifde-admin maintenance delete --older-than <days> [--dry-run]`.
+- Backup (as the schema owner, `SHIFDE_MIGRATION_DATABASE_URL`): `cd backend; uv run shifde-admin backup create --out <dir>` writes `shifde.dump` and `manifest.json` into a new or empty directory; `uv run shifde-admin backup verify --from <dir>` checks it without a database. `pg_dump`/`pg_restore` are found in `SHIFDE_PG_BIN_DIR` when set, otherwise on `PATH`. The KEK ring and the pepper are not in the backup.
 - SETH schema snapshot (only if SETH's reference commit changes): `cd backend; uv run python ../scripts/make_seth_schema_snapshot.py` (cluster running) rewrites `backend/tests/schema/seth_3ba0e06.json`.
 
 ## Fresh checkout or worktree
