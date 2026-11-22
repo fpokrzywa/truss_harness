@@ -40,6 +40,7 @@ One application (SETH) merging SETH, the FDE SDK and Agent Factory into one code
 - Token usage: `python scripts/usage_report.py`.
 - Traceability matrix (design 5.3 -> tests): `python scripts/traceability.py` writes `docs/requirements/TRACEABILITY.md`; `python scripts/traceability.py --check` fails on a missing test file or a stale matrix.
 - Retention purge (content scrub of old, ended runs, as the app role): `cd backend; uv run shifde-admin maintenance purge --older-than <days> [--dry-run]`.
+- Retention delete (old, ended run families and their rows, as the app role; usage, policy and audit rows stay): `cd backend; uv run shifde-admin maintenance delete --older-than <days> [--dry-run]`.
 - SETH schema snapshot (only if SETH's reference commit changes): `cd backend; uv run python ../scripts/make_seth_schema_snapshot.py` (cluster running) rewrites `backend/tests/schema/seth_3ba0e06.json`.
 
 ## Fresh checkout or worktree
