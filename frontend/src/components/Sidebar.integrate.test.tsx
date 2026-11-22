@@ -21,7 +21,11 @@ describe('Sidebar Integrate group', () => {
       '/o/acme/integrate/egress',
     );
     expect(screen.getByRole('heading', { name: 'Integrate' })).toBeInTheDocument();
-    for (const hidden of ['Vendors', 'Connections', 'Adapters', 'Global Vendors']) {
+    expect(screen.getByRole('link', { name: 'Connections', hidden: true })).toHaveAttribute(
+      'href',
+      '/o/acme/connections',
+    );
+    for (const hidden of ['Vendors', 'Adapters', 'Global Vendors']) {
       expect(screen.queryByRole('link', { name: hidden, hidden: true })).not.toBeInTheDocument();
     }
   });

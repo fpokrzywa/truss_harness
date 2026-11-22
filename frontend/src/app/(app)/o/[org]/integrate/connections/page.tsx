@@ -1,8 +1,8 @@
-import type { Metadata } from 'next';
-import { ConnectionsView } from '@/components/integrate/ConnectionsView';
+import { redirect } from 'next/navigation';
+import { connectionsHref } from '@/lib/scope';
 
-export const metadata: Metadata = { title: 'Connections' };
-
-export default function Page() {
-  return <ConnectionsView />;
+/** CM-6: the list moved to the Connections space. */
+export default async function Page({ params }: { params: Promise<{ org: string }> }) {
+  const { org } = await params;
+  redirect(connectionsHref(decodeURIComponent(org)));
 }
