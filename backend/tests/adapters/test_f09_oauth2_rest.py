@@ -92,6 +92,9 @@ class OAuth2FakeServer(_LocalHttpServer):
                 _send_json(self, 200, doc)
 
             def _api(self) -> None:
+                # read the body before answering: on Windows, closing a socket with unread input
+                # sends a reset that can discard the response (WinError 10053, #109)
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
                 got = self.headers.get("Authorization", "").removeprefix("Bearer ")
                 outer.api_tokens.append(got)
                 if got not in outer.valid:
