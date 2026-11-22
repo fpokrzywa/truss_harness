@@ -1,26 +1,25 @@
-# Handoff — 2026-11-22 ~05:50 UTC, charter 7 factory run (lead session 54dad67b)
+# Handoff — 2026-11-22 ~08:30 UTC, charter 7 factory run (lead session 9cf5f6f9)
 
 Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` ("Charter 7 progress"), then this file.
 
-**State:** main = origin/main after this commit. Cluster on 55450 running. `concurrency` 2 (S-021). No agent and no gate of this session is running at handoff. Lead context reached 168k (limit 200k), so this session stops between jobs.
+**State:** main = origin/main after this commit. Cluster on 55450 running. `concurrency` 2 (S-021). No agent and no gate of this session is running at handoff. Lead context reached ~180k (limit 200k).
 
 ## Finished this session
-- Merged: #66 job 058 (PR #143, `job merge`, `dccf25a`); #62 job 056 (PR #137, hand `f4e0dc7`); #64 job 057 (PR #138, hand `220cb6d`); #47 job 050 (PR #122, hand `526081e`); #56 job 053 (PR #119, hand `963a795`); #68 job 059 (PR #145, `job merge`, `86f9b39`). Hand-merge evidence in B-2731.
-- ARCH M11 closed (STATUS and findings.md). Item 21 (ARCH M2) still narrowed; remaining families filed as **#144** (factory label).
-- Job 060 (#69, PR #146): gate PASS, code+security PASS, approver ESCALATE by rule (changes who may approve a plan; no defect). Isolation review 1 APPROVED (`docs/build/reviews/060-isolation-review-1.md`). Gaps filed as **#147**. Stage needs-human.
-- Decision ids: next free for the lead is **B-2734**.
+- Merged: #69 job 060 (PR #146, hand merge `87208f3`, owner approval S-023); #71 job 061 (PR #149, `job merge`); #72 job 062 (PR #150, hand merge `28deb39` after a DECISIONS conflict); #91 job 064 (PR #152, `job merge`, `6bc4a6a`). Evidence in B-2734, B-2735.
+- Filed #148 (final-deployment immutability in the status-guard trigger; #72 point 2; needs a lead-written migration, hand merge under B-2705 with isolation review).
+- Decision ids: B-2736 (job 062), B-2737 (job 063, on its branch), B-2738 (job 064) are used. Next free for the lead is **B-2739**.
 
 ## Jobs and their stages (first action: `PYTHONUTF8=1 factory/bin/job queue`)
 | Job | Issue | PR | Stage | Next |
 |---|---|---|---|---|
-| 060-sp2-5-follow-up | #69 | #146 | needs-human | Needs the supervisor's (owner) acceptance of the related-principal rule (requester, service account owned by requester, owner of requesting service account; gaps in #147). Then sync with main, `gates.py --name 060-merge` 13/13, hand merge, record. |
-| (new) | #71, #72 | - | queue shows `new` | `factory/bin/job create 71` and `72`, start at intake. |
+| 063-sp2-7-follow-up | #74 | #151 | needs-human | **Owner approval S-024 already given** (on main). Sync the branch with main (DECISIONS append conflict likely: keep both rows), `gates.py --name 063-merge` 13/13 in an agent (a failure outside the diff that passes alone on rerun does not block, S-023), hand merge `gh pr merge 151 --merge --match-head-commit <sha>`, record B-2739. |
+| (new) | #93 and onward | - | queue | `factory/bin/job create <n>` for each `new` line, start at intake. |
 
-Then the `hold` issues in queue order: #74, #91, #93, #108, #109, #115, #123-#135, #139-#142, #144, #147. SP4: #126 (protected migration, hand merge under B-2705 with isolation review) before #127/#128; #141 needs a lead-written migration.
+Then the `hold` issues in queue order: #108, #109, #115, #123-#135, #139-#142, #144, #147, #148. SP4: #126 (protected migration, hand merge under B-2705 with isolation review) before #127/#128; #141 and #148 need a lead-written migration.
 
 ## Traps learned this session
-- Postgres checkpoints stall under parallel load: every `DROP DATABASE ... WITH (FORCE)` waits on a checkpoint (`IPC CheckpointDone`, checkpointer in `IO DataFileSync`). A full-suite `gates.py` run plus a `job merge` (which runs `jobdb drop`) or `job queue` (it drops merged jobs' databases) at the same time made the drops wait 10-25 min, `job queue` hang >10 min, and one test hit `psycopg ConnectionTimeout` at setup. It is not a deadlock; it drains. Run gates strictly one at a time and don't run `job queue` while a full suite runs.
-- The Bash tool's background limit kills only the bash wrapper; the Windows python child (`job merge`) keeps running. Check with `Get-CimInstance Win32_Process` before restarting anything.
-- `gates.py` writes its summary to the redirected file only at the end; progress is the newest file in `.worktrees/_gate-logs/<name>/`.
-- After a hand merge, a branch synced with main conflicts on `docs/build/DECISIONS.md` (append-only: keep both rows) and on `UNIFIED_ONLY` in `backend/tests/app/test_routes.py` (keep both entries). After a sync, run `bash factory/checks.sh` in the job worktree (~5-17 min) rather than a second full `gates.py`, and check the OpenAPI snapshot when `openapi.json` auto-merged.
-- isolation-reviewer is read-only: it returns the review text; the lead saves it to `docs/build/reviews/`.
+- Two gates at once (or a gate plus a builder's test run) overload the cluster: `checks.sh` then fails with psycopg `ConnectionTimeout` in tests outside the diff (063 round 1; 062 post-sync). Chain gates one after another (`until grep -q '^GATE:' <other log>; do sleep 20; done; factory/bin/gate ...`).
+- `job queue` hung ~10 min dropping a merged job's database while a gate ran (known checkpoint stall; it drains).
+- The lead shell has `VIRTUAL_ENV` set to main's `backend/.venv`; `unset VIRTUAL_ENV` before `factory/bin/gate` and `job merge`, or demos/tests load main's code (builder 063 found this).
+- `job merge` stops at `needs-human` on a DECISIONS.md append conflict; resolve in the job worktree (keep both rows in id order), push, run `bash factory/checks.sh` there, then hand merge.
+- A builder's "Agent stalled" failure notice may arrive after its READY hand-back; the work is already pushed, so check `build.md` before redoing anything.
