@@ -1,0 +1,45 @@
+# SETH front end (Next) on 127.0.0.1:${SHIFDE_WEB_PORT}, behind the nginx edge, which sends
+# /api/* straight to seth-api (SHIFDE_WEB_API_PROXY=off). Needs `pnpm build` in /opt/seth/frontend.
+[Unit]
+Description=SETH front end (Next)
+Documentation=file:///opt/seth/docs/runbooks/ubuntu-host.md
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=seth-web
+Group=seth-web
+EnvironmentFile=/etc/seth/web.env
+WorkingDirectory=/opt/seth/frontend
+ExecStart=/usr/bin/node /opt/seth/frontend/node_modules/next/dist/bin/next start -p ${SHIFDE_WEB_PORT} -H 127.0.0.1
+ExecStartPost=/usr/bin/curl --fail --silent --show-error --output /dev/null --max-time 2 --retry 30 --retry-delay 1 --retry-connrefused --retry-max-time 40 http://127.0.0.1:${SHIFDE_WEB_PORT}/
+TimeoutStartSec=60
+Restart=on-failure
+RestartSec=1s
+RestartSteps=6
+RestartMaxDelaySec=60s
+KillSignal=SIGTERM
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=seth-web
+UMask=0077
+
+# no MemoryDenyWriteExecute: it breaks the V8 JIT
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

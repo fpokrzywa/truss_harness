@@ -1,0 +1,49 @@
+# SETH executor (shifde-executor) for one organization: the instance is the organization slug,
+# e.g. seth-executor@demo-a. Each instance has its own env and credentials file in /etc/seth/executor/.
+# Exit and health contract: SP4 design 6.2 (docs/runbooks/ubuntu-host.md).
+[Unit]
+Description=SETH executor for organization %i (shifde-executor)
+Documentation=file:///opt/seth/docs/runbooks/ubuntu-host.md
+After=network-online.target
+Wants=network-online.target
+# exit 1 restarts forever with backoff; 2 to 5 never restart (RestartPreventExitStatus)
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=seth-executor
+Group=seth-executor
+EnvironmentFile=/etc/seth/executor/%i.env
+WorkingDirectory=/opt/seth/backend
+# never --fake-platform on a host
+ExecStart=/opt/seth/backend/.venv/bin/shifde-executor
+ExecStartPost=/usr/bin/curl --fail --silent --show-error --output /dev/null --max-time 2 --retry 30 --retry-delay 1 --retry-connrefused --retry-max-time 40 http://127.0.0.1:${SHIFDE_EXECUTOR_HEALTH_PORT}/healthz
+TimeoutStartSec=60
+Restart=on-failure
+RestartPreventExitStatus=2 3 4 5
+RestartSec=1s
+RestartSteps=6
+RestartMaxDelaySec=60s
+KillSignal=SIGTERM
+# SHIFDE_EXECUTOR_SHUTDOWN_GRACE_SECONDS (default 60) + 10 s
+TimeoutStopSec=70
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=seth-executor-%i
+UMask=0077
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target
