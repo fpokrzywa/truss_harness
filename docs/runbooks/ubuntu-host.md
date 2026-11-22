@@ -347,12 +347,55 @@ sudo seth-admin backup create --out /var/backups/seth/manual-<date>
 sudo seth-admin backup verify --from /var/backups/seth/manual-<date>
 ```
 
-Restore: SP4-5 (issue #128) adds `shifde-admin backup restore`, which takes the backup directory
-(`--from`) and the name of an environment variable holding the target database URL
-(`--target-url-env`), restores into an empty database owned by `shifde_owner` and checks it, and
-`shifde-admin secrets check`, which decrypts every stored secret with the current key ring. Both
-are not on the main branch yet; once they are, run the restore through `sudo seth-admin` and then
-the secrets check, and follow the backup and restore runbook that comes with them.
+Restore (SP4-5, issue #128). `backup restore --from DIR --target-url-env NAME` restores a verified
+backup into an **empty** database owned by `shifde_owner`, on a cluster where `shifde_owner` and
+`shifde_app` already exist (roles are cluster-level, never in the dump). It reads the target's
+owner URL from the variable `NAME` (or from the file named by `NAME_FILE`) and never prints it.
+It then runs its checks (catalog fingerprint, row counts, migration state, the app role's startup
+check, every organization's audit chain, and every stored secret against the key ring) and prints
+`RESTORE VERIFIED` only when all pass; otherwise it exits 1 and leaves the target for inspection.
+The services keep running on the current database throughout.
+
+1. As the database administrator, on the database host, create the empty target (`seth_restore`
+   here) owned by `shifde_owner`, the same grants `scripts/hosted_db.py setup` gives:
+
+   ```bash
+   sudo -u postgres psql -v ON_ERROR_STOP=1 -c "create database seth_restore owner shifde_owner template template0"
+   sudo -u postgres psql -v ON_ERROR_STOP=1 -c "revoke all on database seth_restore from public"
+   sudo -u postgres psql -v ON_ERROR_STOP=1 -c "grant connect, temporary on database seth_restore to shifde_app"
+   ```
+
+2. `seth-admin` passes no variables from your shell (PID 1 builds the environment from the env
+   files), so put the target's owner URL into the root-only `admin.env` for the restore: add a
+   line `SETH_RESTORE_TARGET_URL=` followed by the `SHIFDE_MIGRATION_DATABASE_URL` value with the
+   database name changed to `seth_restore`. Then restore and remove the line again:
+
+   ```bash
+   sudo editor /etc/seth/admin.env
+   sudo seth-admin backup verify --from /var/backups/seth/<backup>
+   sudo seth-admin backup restore --from /var/backups/seth/<backup> --target-url-env SETH_RESTORE_TARGET_URL
+   sudo editor /etc/seth/admin.env
+   ```
+
+3. To switch to the restored database: stop the services as in section (f), change the database
+   name in `SHIFDE_DATABASE_URL` (`seth.env`) and `SHIFDE_MIGRATION_DATABASE_URL` (`admin.env`) to
+   `seth_restore`, then check that the configured key ring decrypts every stored secret, check the
+   revision, start the services and run the readiness checks of section (d):
+
+   ```bash
+   sudo systemctl stop seth-worker
+   sudo systemctl stop 'seth-executor@*'
+   sudo systemctl stop seth-api
+   sudo editor /etc/seth/seth.env /etc/seth/admin.env
+   sudo seth-admin secrets check
+   sudo seth-admin db check
+   sudo systemctl start seth-api seth-worker
+   sudo systemctl start seth-executor@<org>
+   ```
+
+   `secrets check` prints `ok <n>, failed <m>` and the ids of failed secrets, and exits 1 if any
+   failed: a failure means the key ring in `seth.env` is not the one the backup's secrets were
+   encrypted with.
 
 The key ring (`SHIFDE_SECRET_KEYS`) and the API-key pepper are **not** in the backup. Keep a copy
 of both apart from the backups (for example in the owner's password vault): without the ring the

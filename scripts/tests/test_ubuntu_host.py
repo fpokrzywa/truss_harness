@@ -332,6 +332,10 @@ class RunbookCommandTests(unittest.TestCase):
             self.scripts, {"shifde-api", "shifde-worker", "shifde-admin", "shifde-executor"}
         )
         self.assertEqual(self.commands[("backup", "verify")], {"--from", "--help"})
+        self.assertEqual(
+            self.commands[("backup", "restore")], {"--from", "--target-url-env", "--help"}
+        )
+        self.assertIn(("secrets", "check"), self.commands)
         self.assertIn("--env-file", self.commands[("config", "preflight")])
         self.assertIn(("db", "upgrade"), self.commands)
         self.assertIn(("version",), self.commands)
@@ -346,10 +350,10 @@ class RunbookCommandTests(unittest.TestCase):
     def test_an_unknown_subcommand_and_an_unknown_option_are_reported(self) -> None:
         sample = "\n".join(
             [
-                "Prose mentions `shifde-admin backup restore`, which is not checked.",
+                "Prose mentions `shifde-admin backup prune`, which is not checked.",
                 "```bash",
                 "sudo seth-admin db upgrade",
-                "sudo seth-admin backup restore --from /var/backups/seth/x",
+                "sudo seth-admin backup prune --from /var/backups/seth/x",
                 "sudo seth-admin backup verify \\",
                 "  --frm /var/backups/seth/x",
                 "/opt/seth/backend/.venv/bin/shifde-admin version --json",
@@ -360,7 +364,7 @@ class RunbookCommandTests(unittest.TestCase):
         )
         problems = self.check(sample)
         self.assertEqual(len(problems), 3, problems)
-        self.assertIn("unknown command 'shifde-admin backup restore'", problems[0])
+        self.assertIn("unknown command 'shifde-admin backup prune'", problems[0])
         self.assertIn("unknown option '--frm' of 'shifde-admin backup verify'", problems[1])
         self.assertIn("unknown command 'shifde-agent'", problems[2])
 
@@ -534,7 +538,7 @@ class EnvAndEdgeTests(unittest.TestCase):
         assert timeout
         self.assertGreaterEqual(int(timeout.group(1)), 180)
 
-    def test_the_admin_wrapper_runs_as_seth_with_both_env_files(self) -> None:
+    def test_the_admin_wrapper_runs_as_seth_ops_with_both_env_files(self) -> None:
         wrapper = (DEPLOY / "seth-admin").read_text(encoding="utf-8")
         self.assertTrue(wrapper.startswith("#!/usr/bin/env bash\n"))
         self.assertIn(
