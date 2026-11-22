@@ -56,6 +56,14 @@ def test_the_new_conditions_are_accepted_and_normalized(
     assert _rule(when) == {"when": stored}
 
 
+def test_mixed_case_environments_validate_and_are_stored_as_written() -> None:
+    """Follow-up #60 (B-2728): matching ignores case and surrounding spaces at run time, so
+    validation keeps the names as written (only de-duplicated and sorted)."""
+    assert _rule({"target_environments": ["Prod", "prod", "STAGING", " Dev ", "Prod"]}) == {
+        "when": {"target_environments": [" Dev ", "Prod", "STAGING", "prod"]}
+    }
+
+
 @pytest.mark.parametrize(
     "when",
     [

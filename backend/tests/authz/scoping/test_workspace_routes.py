@@ -15,6 +15,11 @@ A route added to the app fails `test_every_mounted_operation_is_classified` unti
 here by hand. Every `SCOPED` operation has one case (`CASES`): U, a member of demo-a whose only
 role binding holds every client permission at workspace W1, is refused on W2's resource and
 allowed on W1's. Each family test collects every failing case and asserts once.
+
+The `CLIENT` operations that hold workspace data (secrets, models and model routes, governance
+decisions and overview, audit and usage exports) also have run-time checks, `CLIENT_CASES`: U is
+refused on each, the client administrator's same request succeeds, and a refused secret write
+leaves the secret's row unchanged.
 """
 
 from __future__ import annotations
@@ -2378,3 +2383,115 @@ def test_budgets_quotas_and_policies(
         )
         w.set("gov_policy", n, policy["id"])
     _check(w, "governance")
+
+
+# ====================================================================== client routes, workspace data
+@dataclass(frozen=True)
+class ClientCase:
+    """One CLIENT operation sent by U (refused) and then by the client administrator (2xx).
+
+    `state`: for a write, a schema-owner snapshot of the target's rows, equal before and after
+    U's request. `control`: the administrator's request when it differs from U's (a current
+    `row_version`), built after that comparison."""
+
+    req: Req
+    state: Callable[[], list[tuple[str, ...]]] | None = None
+    control: Callable[[], Req] | None = None
+
+
+SECRET_W1 = "SELECT * FROM shifde.secrets WHERE id = :s"
+
+
+def _secret_rv(w: W) -> int:
+    rows = w.rows("SELECT row_version FROM shifde.secrets WHERE id = :s", s=w("secret", 1))
+    return int(rows[0][0])
+
+
+def _secret_write(
+    w: W,
+    method: str,
+    tail: str,
+    body: Callable[[int], dict[str, Any]],  # Any: JSON body
+) -> ClientCase:
+    """A write to W1's secret: U sends the current `row_version`, the administrator the one
+    current after U's refused call."""
+    url = _url(f"/secrets/{w('secret', 1)}{tail}")
+    return ClientCase(
+        Req(method, url, body(_secret_rv(w))),
+        state=w.snap(SECRET_W1, s=w("secret", 1)),
+        control=lambda: Req(method, url, body(_secret_rv(w))),
+    )
+
+
+ClientBuilder = Callable[[W], ClientCase]
+# CLIENT operations that hold workspace data: U, bound only at W1, is refused on each.
+CLIENT_CASES: dict[Op, ClientBuilder] = {
+    ("GET", ORG + "/secrets"): lambda w: ClientCase(Req("GET", _url("/secrets"))),
+    ("POST", ORG + "/secrets/{secret_id}/rotate"): lambda w: _secret_write(
+        w, "POST", "/rotate", lambda rv: {"value": "rotated-not-a-secret", "row_version": rv}
+    ),
+    ("PATCH", ORG + "/secrets/{secret_id}"): lambda w: _secret_write(
+        w, "PATCH", "", lambda rv: {"status": "disabled", "row_version": rv}
+    ),
+    ("GET", ORG + "/model-routes"): lambda w: ClientCase(Req("GET", _url("/model-routes"))),
+    ("GET", ORG + "/model-routes/{route_id}"): lambda w: ClientCase(
+        Req("GET", _url(f"/model-routes/{w('route', 1)}"))
+    ),
+    ("GET", ORG + "/models"): lambda w: ClientCase(Req("GET", _url("/models"))),
+    ("GET", ORG + "/models/{model_id}"): lambda w: ClientCase(
+        Req("GET", _url(f"/models/{w('model', 1)}"))
+    ),
+    ("GET", ORG + "/governance/decisions"): lambda w: ClientCase(
+        Req("GET", _url("/governance/decisions"))
+    ),
+    ("GET", ORG + "/governance/overview"): lambda w: ClientCase(
+        Req("GET", _url("/governance/overview"))
+    ),
+    ("GET", ORG + "/audit-events/export"): lambda w: ClientCase(
+        Req("GET", _url("/audit-events/export"), params={"format": "csv"})
+    ),
+    ("GET", ORG + "/usage/export"): lambda w: ClientCase(
+        Req("GET", _url("/usage/export"), params={"format": "csv"})
+    ),
+}
+
+
+def _run_client_case(w: W, op: Op, case: ClientCase) -> list[str]:
+    name = f"{op[0]} {op[1]}"
+    out: list[str] = []
+    before = case.state() if case.state else None
+    if case.state and not before:
+        out.append(f"{name}: no rows to protect")
+    got = _send(w.user, case.req)
+    if got.status_code not in REFUSED:
+        out.append(f"{name}: U refused: {got.status_code} {got.text[:300]}")
+    if case.state and case.state() != before:
+        out.append(f"{name}: U refused: its rows changed")
+    control = _send(w.admin, case.control() if case.control else case.req)
+    if control.status_code >= 300:
+        out.append(f"{name}: control as the administrator: {control.status_code} {control.text}")
+    return out
+
+
+def test_every_client_case_is_a_client_operation() -> None:
+    bad = [f"{op[0]} {op[1]}" for op in CLIENT_CASES if ROUTES.get(op, ("",))[0] != CLIENT]
+    assert not bad, f"not classed CLIENT in ROUTES (or missing): {bad}"
+
+
+def test_client_operations_holding_workspace_data_refuse_u(
+    client: TestClient, world: World, owner_session: Session
+) -> None:
+    w = _world(client, owner_session, world.passwords)
+    w.set("model", 1, fake_model_stack(w.admin.client, w.admin)["model"])
+    for n in (1, 2):
+        made = w.post("/secrets", {"name": f"s{n}", "value": "not-a-secret", "scope": w.scope(n)})
+        w.set("secret", n, made["id"])
+        route = w.post(
+            "/model-routes",
+            {"name": f"route-{n}", "scope": w.scope(n), "primary_model_id": w("model", 1)},
+        )
+        w.set("route", n, route["id"])
+    failures: list[str] = []
+    for op, build in CLIENT_CASES.items():
+        failures += _run_client_case(w, op, build(w))
+    assert not failures, "\n".join(failures)
