@@ -98,13 +98,11 @@ def find_event(
     action: str,
     target_id: str,
     correlation_id: str,
-    occurred_from: datetime,
 ) -> AuditEvent | None:
-    """The latest `action` event of `tenant_id` on `target_id` written under `correlation_id` at
-    or after `occurred_from` (the `(tenant_id, occurred_at)` index bounds the scan)."""
+    """The latest `action` event of `tenant_id` on `target_id` written under `correlation_id`
+    (no time bound: the caller's correlation id is unique, B-2861)."""
     stmt = select(AuditEvent).where(
         AuditEvent.tenant_id == tenant_id,
-        AuditEvent.occurred_at >= occurred_from,
         AuditEvent.action == action,
         AuditEvent.target_id == target_id,
         AuditEvent.correlation_id == correlation_id,

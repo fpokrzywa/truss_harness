@@ -446,17 +446,15 @@ def find_details(
     action: str,
     target_id: UUID,
     correlation_id: str,
-    occurred_from: datetime,
 ) -> dict[str, Any] | None:
-    """The stored (scrubbed) details of the `action` event of `tenant_id` on `target_id` written
-    under `correlation_id` at or after `occurred_from`; None when there is none."""
+    """The stored (scrubbed) details of the latest `action` event of `tenant_id` on `target_id`
+    written under `correlation_id`; None when there is none."""
     row = repository.find_event(
         session,
         tenant_id=tenant_id,
         action=action,
         target_id=str(target_id),
         correlation_id=correlation_id,
-        occurred_from=occurred_from,
     )
     return dict(row.details) if row is not None else None
 
