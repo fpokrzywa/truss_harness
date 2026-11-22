@@ -1428,6 +1428,11 @@ class ModelService:
             raise ModelUnavailable("the model provider is disabled")
         if provider["health_status"] == "unavailable":
             raise ModelUnavailable("the model provider is unavailable (last health check failed)")
+        if self.runtime.registry.descriptor(provider["adapter_key"]) is None:
+            # e.g. a stored `fake` provider in production, where the registry leaves `fake` out
+            raise ModelUnavailable(
+                "the model provider's adapter is not available in this environment"
+            )
         allowed = self.allowed_model_ids(ref)
         if allowed is not None and model_id not in allowed:
             self._invoked(model, ref, run_id, {"reason": "not_in_allowlist"}, outcome="denied")

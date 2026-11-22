@@ -53,11 +53,17 @@ class AdapterRegistry:
             self._classes[descriptor.key] = cls
 
     @classmethod
-    def load(cls) -> AdapterRegistry:
+    def load(cls, include_fake: bool) -> AdapterRegistry:
+        """Entry points plus `BUILTIN`. `include_fake=False` (production, design SP4 4) leaves the
+        `fake` model provider out, whichever source declares it."""
         found: dict[str, Any] = {}
         for ep in entry_points(group=ENTRY_POINT_GROUP):
+            if ep.name == "fake" and not include_fake:
+                continue
             found[ep.name] = ep.load()
         for name, spec in BUILTIN.items():
+            if name == "fake" and not include_fake:
+                continue
             found.setdefault(name, _load_object(spec))
         return cls(list(found.values()))
 

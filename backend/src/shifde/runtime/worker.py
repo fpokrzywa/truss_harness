@@ -171,7 +171,9 @@ class Worker:
         )
         self.exit_code = 0
         self.runtime = runtime or IntegrationRuntime(
-            settings=settings, registry=AdapterRegistry.load(), resolver=default_resolver
+            settings=settings,
+            registry=AdapterRegistry.load(include_fake=settings.env != "production"),
+            resolver=default_resolver,
         )
         self.hooks = hooks or TokenBudgetHooks()
         self.stop = threading.Event()

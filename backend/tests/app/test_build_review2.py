@@ -174,7 +174,8 @@ def _service(app_db: Database, settings: Settings, owner: Session, uid: Any) -> 
         pdp=authz.new_pdp(session, principal, tid),
     )
     return ArtifactService(
-        scope, IntegrationRuntime(settings=settings, registry=AdapterRegistry.load())
+        scope,
+        IntegrationRuntime(settings=settings, registry=AdapterRegistry.load(include_fake=True)),
     )
 
 
