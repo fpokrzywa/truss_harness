@@ -62,7 +62,10 @@ CASES: dict[tuple[str, str], tuple[Any, int]] = {
     ("POST", f"{_ONE}/invoke"): ({"method": "GET", "path": "/health"}, 200),
     ("POST", f"{_ONE}/test"): (None, 202),
     # `row_version` is the own connection's current one, read just before the call
-    ("PUT", f"{_ONE}/credential"): ({"value": REST_TOKEN, "read_only_confirmed": True}, 200),
+    ("PUT", "/api/v1/orgs/{org}/connections/{connection_id}/credential"): (
+        {"value": REST_TOKEN, "read_only_confirmed": True},
+        200,
+    ),
     ("PATCH", _ONE): ({"name": "renamed"}, 200),
     ("POST", f"{_ONE}/status"): ({"status": "disabled"}, 200),
 }
