@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { Lora, Roboto, Roboto_Mono } from 'next/font/google';
+import { connection } from 'next/server';
 import type { ReactNode } from 'react';
 import { Providers } from '@/components/Providers';
 import { DEFAULT_PRODUCT_NAME } from '@/lib/product';
@@ -24,7 +25,10 @@ export const metadata: Metadata = {
   description: 'Deploy, monitor and configure enterprise AI system buildouts',
 };
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default async function RootLayout({ children }: { children: ReactNode }) {
+  // Every page renders per request, so Next can put the proxy's CSP nonce on its scripts
+  // (a prerendered page has no nonce and its scripts would be blocked).
+  await connection();
   return (
     <html lang="en" className={`${lora.variable} ${roboto.variable} ${robotoMono.variable}`}>
       <body>
