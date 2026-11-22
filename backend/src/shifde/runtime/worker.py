@@ -7,9 +7,16 @@ by polling. The API never executes model or tool calls.
 
 Shutdown (SIGINT / SIGTERM / CTRL_BREAK): stop claiming; running runs notice at their next
 checkpoint and are handed back (running -> pending, job released) so another worker continues
-them; whatever does not finish within the grace period is left to lease expiry + the reaper.
-Each job runs on its own daemon thread, so a thread abandoned as wedged is never waited for at
-shutdown and never holds up process exit.
+them; whatever does not finish within `worker_shutdown_grace_seconds` is left to lease expiry +
+the reaper, and the worker still exits 0. Each job runs on its own daemon thread, so a thread
+abandoned as wedged (or still running when the grace ends) never holds up process exit.
+
+Process control (SP4 design 6.2): exit 0 stopped on request, 1 crashed (or stopped at the
+abandoned cap, below: restart it), 2 configuration refused, 3 unsafe database role, 4 database
+schema not at the code's head (checked at startup, before anything is claimed). With
+`worker_health_port` set, `GET /healthz` is 200 while the heartbeat loop ticked within two of its
+intervals and `GET /readyz` while the database answers, a claim tick happened within three polls
+and no stop was requested (`shifde.core.healthserver`).
 
 Client isolation (RT-12, B-2291..B-2294): the worker's database is the application role (refused
 at startup otherwise, like the API: `run` exits 3, and `Database` itself refuses a privileged role,
@@ -28,7 +35,7 @@ Abandoned threads are capped (issue #44): a client with `worker_max_abandoned_pe
 back (released, one lease of backoff), while other clients' jobs run as usual; once the worker
 holds `worker_max_abandoned` abandoned jobs it claims nothing more, hands back what it had just
 claimed, stops (running jobs are handed back at their next checkpoint, abandoned threads are not
-waited for) and `shifde-worker` exits 4, so a supervisor is expected to restart it with a fresh
+waited for) and `shifde-worker` exits 1, so a supervisor is expected to restart it with a fresh
 pool and fresh threads. The caps only gate claiming and dispatch: a wedged run is still settled
 by lease expiry and the reaper (C1), never cancelled.
 
@@ -86,6 +93,8 @@ from shifde.core.context import RequestContext
 from shifde.core.db import Database
 from shifde.core.dbrole import UnsafeDatabaseRole, check_database_url
 from shifde.core.egress import default_resolver
+from shifde.core.health import database_reachable, migration_state
+from shifde.core.healthserver import HealthServer
 from shifde.core.settings import Settings, settings_or_exit
 from shifde.models_admin import service as models_admin
 from shifde.observability import tracing
@@ -99,8 +108,10 @@ log = structlog.get_logger("shifde.worker")
 REAPER_LOCK = "shifde:reaper"
 CAPTURE_SWEEP_LOCK = "shifde:capture-sweep:{}"  # per client
 _CLIENTS = text("SELECT id FROM shifde.tenants ORDER BY id")
+EXIT_CONFIG = 2  # as `settings_or_exit`: a configuration a restart cannot fix
 EXIT_UNSAFE_ROLE = 3  # as `shifde-api` (shifde.main)
-EXIT_ABANDONED_CAP = 4  # stopped at `worker_max_abandoned` abandoned threads: restart the worker
+EXIT_SCHEMA_MISMATCH = 4  # the database schema is not at the code's head
+EXIT_ABANDONED_CAP = 1  # stopped at `worker_max_abandoned` abandoned threads: restart the worker
 ADVANCE_KIND = "run.advance"
 UNKNOWN_KIND = "unknown job kind"
 REASON_ACTION = {
@@ -170,11 +181,19 @@ class Worker:
             settings.worker_max_abandoned_per_client, self.max_abandoned
         )
         self.exit_code = 0
+        self.grace = settings.worker_shutdown_grace_seconds
+        self.health: HealthServer | None = None
+        # monotonic times of the last heartbeat-loop tick and main-loop claim tick (`/healthz`,
+        # `/readyz`)
+        self.beat_interval = max(self.lease / 4, 0.2)
+        self.heartbeat_tick: float | None = None
+        self.claim_tick: float | None = None
         self.runtime = runtime or IntegrationRuntime(
             settings=settings, registry=AdapterRegistry.load(), resolver=default_resolver
         )
         self.hooks = hooks or TokenBudgetHooks()
         self.stop = threading.Event()
+        self.closed = threading.Event()  # shut down: the heartbeat loop ends
         self.wake = threading.Event()
         self._inflight: dict[UUID, _Job] = {}
         self._lock = threading.Lock()
@@ -183,18 +202,21 @@ class Worker:
     # ------------------------------------------------------------------ lifecycle
     def run(self) -> int:
         """Run until stopped; return the process exit code (`EXIT_ABANDONED_CAP` after the cap
-        stop, else 0)."""
+        stop, else 0, also when the shutdown grace ran out). A health port that cannot be bound
+        exits `EXIT_CONFIG`."""
         with self.db.session() as s:
             repo.upsert_worker(
                 s, self.worker_id, socket.gethostname(), os.getpid(), __version__, self.concurrency
             )
             s.commit()
-        log.info("worker.started", worker_id=self.worker_id, concurrency=self.concurrency)
-        for target in (self._heartbeat_loop, self._listen_loop):
-            threading.Thread(target=target, daemon=True, name=target.__name__).start()
         next_reap = 0.0
         try:
+            self._start_health()
+            log.info("worker.started", worker_id=self.worker_id, concurrency=self.concurrency)
+            for target in (self._heartbeat_loop, self._listen_loop):
+                threading.Thread(target=target, daemon=True, name=target.__name__).start()
             while not self.stop.is_set():
+                self.claim_tick = time.monotonic()
                 self._claim_and_dispatch()
                 if time.monotonic() >= next_reap:
                     self._reap()
@@ -210,16 +232,60 @@ class Worker:
         self.wake.set()
 
     def _shutdown(self) -> None:
+        """Wait up to the grace for the running jobs, then mark the worker stopped: a job still
+        running is left to lease expiry and the reaper (its thread is a daemon)."""
         log.info("worker.stopping", worker_id=self.worker_id)
         with self._idle:
-            self._idle.wait_for(lambda: not self._active())
+            drained = self._idle.wait_for(lambda: not self._active(), timeout=self.grace)
+            active = len(self._active())
+        if not drained:
+            log.warning(
+                "worker.shutdown_grace_expired",
+                worker_id=self.worker_id,
+                grace_seconds=self.grace,
+                active=active,
+            )
+        self.closed.set()  # no more heartbeats: the leases of what still runs expire
         try:
             with self.db.session() as s:
                 repo.beat_worker(s, self.worker_id, "stopped")
                 s.commit()
         finally:
+            if self.health is not None:
+                self.health.stop()
             self.db.dispose()
         log.info("worker.stopped", worker_id=self.worker_id)
+
+    # ------------------------------------------------------------------ health port
+    def _start_health(self) -> None:
+        port = self.settings.worker_health_port
+        if port == 0:
+            return
+        try:
+            self.health = HealthServer(
+                self.settings.worker_health_host, port, live=self.live, ready=self.ready
+            ).start()
+        except OSError as exc:
+            print(
+                f"shifde-worker: refusing to start: cannot bind the health port {port} "
+                f"({exc.__class__.__name__})",
+                file=sys.stderr,
+                flush=True,
+            )
+            raise SystemExit(EXIT_CONFIG) from None
+
+    def live(self) -> bool:
+        """`/healthz`: the heartbeat loop ticked within two of its intervals."""
+        tick = self.heartbeat_tick
+        return tick is not None and time.monotonic() - tick <= 2 * self.beat_interval
+
+    def ready(self) -> bool:
+        """`/readyz`: no stop requested, a claim tick within three polls, the database answers."""
+        tick = self.claim_tick
+        if self.stop.is_set() or tick is None or time.monotonic() - tick > 3 * self.poll:
+            return False
+        with self.db.session() as s:
+            return database_reachable(s)
 
     # ------------------------------------------------------------------ claiming
     def _claim_and_dispatch(self) -> None:
@@ -401,9 +467,10 @@ class Worker:
 
     # ------------------------------------------------------------------ heartbeat
     def _heartbeat_loop(self) -> None:
-        interval = max(self.lease / 4, 0.2)
-        while not self.stop.is_set() or self._has_active():
+        interval = self.beat_interval
+        while (not self.stop.is_set() or self._has_active()) and not self.closed.is_set():
             self._beat()
+            self.heartbeat_tick = time.monotonic()
             if self.stop.wait(interval) and not self._has_active():
                 return
 
@@ -642,6 +709,35 @@ def refuse_unsafe_role(settings: Settings) -> None:
         raise SystemExit(EXIT_UNSAFE_ROLE) from None
 
 
+def refuse_schema_mismatch(settings: Settings) -> None:
+    """Exit 4 with one line on stderr unless the database schema is at the code's head, read on a
+    short-lived application-role connection before a `Worker` is built (SP4 design 6.2). The line
+    names revision ids only; a driver error, its class only."""
+    try:
+        database = Database(settings.database_url, pool_size=1, max_overflow=0)
+        try:
+            with database.session() as s:
+                state = migration_state(s)
+        finally:
+            database.dispose()
+    except SQLAlchemyError as exc:
+        print(
+            "shifde-worker: refusing to start: cannot read the database schema revision "
+            f"({exc.__class__.__name__})",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise SystemExit(EXIT_SCHEMA_MISMATCH) from None
+    if state.status != "ok":
+        print(
+            f"shifde-worker: refusing to start: database schema is {state.status} "
+            f"(revision {state.revision}, code head {state.head})",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise SystemExit(EXIT_SCHEMA_MISMATCH)
+
+
 def run(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="shifde-worker", description="SHIFDE execution worker")
     parser.add_argument("--concurrency", type=int, default=None)
@@ -652,6 +748,7 @@ def run(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     settings = settings_or_exit()
     refuse_unsafe_role(settings)
+    refuse_schema_mismatch(settings)
     configure_logging(settings.log_level, settings.log_format)
     tracing.configure_from_settings(settings, "shifde-worker")
     worker = Worker(

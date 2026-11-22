@@ -144,6 +144,8 @@ class Settings(BaseSettings):
     migration_database_url: str | None = None
     api_host: str = "127.0.0.1"
     api_port: int = 8710
+    # seconds uvicorn waits for open requests after a stop signal (SP4 design 6.2)
+    api_shutdown_grace_seconds: int = Field(default=30, ge=1)
     auth_local_enabled: bool = False
     auth_local_allow_in_production: bool = False
     login_rate_per_minute: int = 20  # per client IP (skipped for loopback / trusted proxies)
@@ -208,10 +210,15 @@ class Settings(BaseSettings):
     worker_lease_seconds: int = 60
     worker_concurrency: int = 4
     queue_tenant_max_inflight: int = 0  # 0 = no per-tenant cap on leased jobs
-    # abandoned (wedged) run threads a worker keeps before it stops claiming and exits 4, and
-    # per client before that client's claimed jobs are handed back (ARCH M3)
+    # abandoned (wedged) run threads a worker keeps before it stops claiming and exits 1 (to be
+    # restarted), and per client before that client's claimed jobs are handed back (ARCH M3)
     worker_max_abandoned: int = Field(default=4, ge=1)
     worker_max_abandoned_per_client: int = Field(default=2, ge=1)
+    # the worker's `/healthz` + `/readyz` port (0 = off) and how long a stop waits for running
+    # jobs before leaving them to lease expiry and the reaper (SP4 design 6.2)
+    worker_health_host: str = "127.0.0.1"
+    worker_health_port: int = Field(default=0, ge=0, le=65535)
+    worker_shutdown_grace_seconds: int = Field(default=30, ge=1)
     run_default_deadline_seconds: int = 3600
     approval_expiry_hours: int = 24
     runtime_output_reserve_tokens: int = 256  # budget hold for the completion side of a call

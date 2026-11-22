@@ -30,7 +30,7 @@ abandoned the worker hands A's next claimed job back (its `run_after` pushed out
 while it still completes a client-B run, the abandoned thread holds no pooled connection while it
 blocks, and A's wedged run still ends `timed_out` with `indeterminate_side_effect` after one
 delivery; with a per-worker cap of 1 the worker stops claiming once the write is abandoned (a B
-job made claimable then stays queued), `Worker.run()` returns 4 while the thread is still
+job made claimable then stays queued), `Worker.run()` returns 1 while the thread is still
 blocked, and the wedged run is settled `timed_out` with `indeterminate_side_effect` by a reaper,
 never cancelled; `shifde-worker` (`run`) exits with the worker's exit code.
 
@@ -757,7 +757,7 @@ def test_a_client_at_its_abandoned_share_has_its_claimed_jobs_handed_back(
     assert len(deliveries) == 1, "the write was resent"
 
 
-def test_a_worker_at_its_abandoned_cap_stops_claiming_and_exits_4(
+def test_a_worker_at_its_abandoned_cap_stops_claiming_and_exits_1(
     two: tuple[C, C],
     people: People,
     owner_db: Database,
@@ -785,7 +785,7 @@ def test_a_worker_at_its_abandoned_cap_stops_claiming_and_exits_4(
         _claimable(owner_db, b_job)  # claimable once the cap is reached: never run here
         loop.join(60)
         assert not loop.is_alive(), "the worker waited for the wedged thread"
-        assert exits == [worker_mod.EXIT_ABANDONED_CAP] == [4]
+        assert exits == [worker_mod.EXIT_ABANDONED_CAP] == [1]
         assert wedged.is_alive() and not release.is_set()
         assert _q(owner_db, "SELECT status, lease_owner FROM shifde.jobs WHERE id = :j",
                   j=b_job) == [("queued", None)]  # fmt: skip
@@ -824,7 +824,7 @@ def test_shifde_worker_exits_with_the_workers_exit_code(
     monkeypatch.setattr(worker_mod, "configure_logging", lambda *a: None)
     monkeypatch.setattr(worker_mod.tracing, "configure_from_settings", lambda *a: None)
     monkeypatch.setattr(worker_mod, "_install_signals", lambda worker: None)
-    assert worker_mod.run(["--concurrency", "2"]) == worker_mod.EXIT_ABANDONED_CAP == 4
+    assert worker_mod.run(["--concurrency", "2"]) == worker_mod.EXIT_ABANDONED_CAP == 1
     assert built[0]["concurrency"] == 2
 
 
