@@ -94,10 +94,18 @@ def test_a_connection_in_an_unreadable_workspace_answers_like_an_unknown_id(
 ) -> None:
     a, A = world.a, org(world.a.slug)
     owner = as_user(client, people.owner_a)
-    sid = secret(app_db, settings, a.tenant, REST_TOKEN)
+    # a workspace connection takes a secret of its own workspace (connections_0002, #156)
+    sids = {
+        ws_slug(a): secret(
+            app_db, settings, a.tenant, REST_TOKEN, scope_type="workspace", scope_id=a.ws
+        ),
+        ws2_slug(a): secret(
+            app_db, settings, a.tenant, REST_TOKEN, scope_type="workspace", scope_id=a.ws2
+        ),
+    }
 
     def made(server: RestTestServer, name: str, workspace: str) -> str:
-        body = {**rest_body(server, sid, name=name), "scope": {"workspace": workspace}}
+        body = {**rest_body(server, sids[workspace], name=name), "scope": {"workspace": workspace}}
         cid = str(connection(client, owner, body, A)["id"])
         activate(client, owner, cid, A)
         found = client.post(f"{A}/connections/{cid}/discover", headers=owner)

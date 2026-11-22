@@ -1,8 +1,8 @@
 {
-  "session_id": "0017d47c-7e30-411c-8ea6-681a79a8238e",
-  "head_sha": "fbb3b09be02dfdef73e37614725f2b1e836621da",
+  "session_id": "5e01de8e-7a1a-4aa7-bcd9-7cf52de746fa",
+  "head_sha": "1ebd00d53b142a82f89695b346c9609d4823efdc",
   "branch": "main",
-  "unit_in_progress": "none",
-  "next_step": "PYTHONUTF8=1 factory/bin/job queue; hand merge 073 (gates 12/13, only #188); gate 088; then gates+hand merge 080, 083, 084, 076 per docs/build/HANDOFF.md; job for #188",
-  "written_at": "2026-11-22T16:45:37Z"
+  "unit_in_progress": "charter7-factory-run",
+  "next_step": "PYTHONUTF8=1 factory/bin/job queue; 093 gate rerun, 087 sync (test_worker.py conflict), 095 build, 096 CM-1 spec; see HANDOFF.md",
+  "written_at": "2026-11-22T19:58:42Z"
 }
