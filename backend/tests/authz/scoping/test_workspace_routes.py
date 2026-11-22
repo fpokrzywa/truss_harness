@@ -50,7 +50,6 @@ from tests._support.p3util import (
     activate,
     fake_model_stack,
     invoke_body,
-    secret,
 )
 from tests._support.p4util import (
     agent_spec,
@@ -2098,13 +2097,19 @@ def _rest(w: W, n: int, base_url: str, secret_id: str) -> str:
     return str(made["id"])
 
 
+def _project_token(w: W, n: int) -> str:
+    """Side n's REST token as a secret of project p{n}: a project connection takes only a secret
+    of its own project (connections_0002, #156)."""
+    body = {"name": f"rest-token-{n}", "value": REST_TOKEN, "scope": w.scope(n, "project")}
+    return str(w.post("/secrets", body)["id"])
+
+
 def test_ontologies(
     client: TestClient, world: World, owner_session: Session, rest_server: RestTestServer
 ) -> None:
     w = _world(client, owner_session, world.passwords)
-    token = secret(w.admin.client, w.admin, "rest-token", REST_TOKEN)
     for n in (1, 2):
-        w.set("conn", n, _rest(w, n, rest_server.base_url, token))
+        w.set("conn", n, _rest(w, n, rest_server.base_url, _project_token(w, n)))
         tool = art(w.admin.client, w.admin, "tools", "act", builtin_tool_spec(), w.scope(n))
         tool_v = publish(w.admin.client, w.admin, "tools", tool["id"])["id"]
         _artifact(w, "ontologies", n, _ontology_spec(tool_v), by_api=False, project=True)
@@ -2138,11 +2143,10 @@ def test_connections_and_delivery_targets(
 ) -> None:
     w = _world(client, owner_session, world.passwords)
     w.set("rest", 1, rest_server.base_url)
-    token = secret(w.admin.client, w.admin, "rest-token", REST_TOKEN)
     _solutions_world(w)  # each side's sealed release, in the side's project
     for n in (1, 2):
         _passed_evaluation(w, owner_session, n)
-        cid = _rest(w, n, rest_server.base_url, token)
+        cid = _rest(w, n, rest_server.base_url, _project_token(w, n))
         w.set("conn", n, cid)
         tested = run_test(w.admin.client, w.admin, A, cid)
         w.set("job", n, tested["id"])
