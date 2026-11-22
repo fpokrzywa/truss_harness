@@ -5,6 +5,14 @@ Configured from the environment only (never `shifde.core.settings`, which reache
 `SHIFDE_EXECUTOR_API_URL`, `SHIFDE_EXECUTOR_TOKEN`, `SHIFDE_EXECUTOR_CREDENTIALS_FILE` and
 `SHIFDE_ENV` (`development`, `test` or, when unset, `production`). Outside development and test
 the API URL must be https and `--fake-platform` is refused. No message ever echoes the token.
+
+Process control (SP4 design 6.2): SIGTERM, SIGINT and CTRL_BREAK stop the runner (no new lease;
+the job in flight runs to its normal end) and the process waits up to
+`SHIFDE_EXECUTOR_SHUTDOWN_GRACE_SECONDS` for it: exit 0 when drained, 1 when a job was still in
+flight (nothing more is posted for it; the server's unknown-outcome path decides it) or on a
+crash, 2 configuration refused, 5 when `whoami` answers 401 or 403. Any other `whoami` failure is
+retried every `POLL_SECONDS`. With `SHIFDE_EXECUTOR_HEALTH_PORT` set, `GET /healthz` and
+`GET /readyz` answer from the runner's ticks (`Runner.live`, `Runner.ready`).
 """
 
 from __future__ import annotations
@@ -12,20 +20,35 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import signal
+import sys
+import threading
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from shifde.executor.client import GatewayClient
+import httpx
+
+from shifde.core.healthserver import HealthServer
+from shifde.executor.client import GatewayClient, GatewayError, Whoami
 from shifde.executor.credentials import CredentialBroker, CredentialFileRefused
-from shifde.executor.runner import FakePlatform, Platform, RealPlatform, Runner
+from shifde.executor.runner import POLL_SECONDS, FakePlatform, Platform, RealPlatform, Runner
 
 API_URL = "SHIFDE_EXECUTOR_API_URL"
 TOKEN = "SHIFDE_EXECUTOR_TOKEN"
 CREDENTIALS_FILE = "SHIFDE_EXECUTOR_CREDENTIALS_FILE"
+HEALTH_HOST = "SHIFDE_EXECUTOR_HEALTH_HOST"
+HEALTH_PORT = "SHIFDE_EXECUTOR_HEALTH_PORT"
+SHUTDOWN_GRACE = "SHIFDE_EXECUTOR_SHUTDOWN_GRACE_SECONDS"
 REQUIRED = (API_URL, TOKEN, CREDENTIALS_FILE)
 DEV_ENVS = ("development", "test")
+EXIT_STOPPED = 0  # stopped on request and drained
+EXIT_CRASHED = 1  # crashed, or the shutdown grace passed with a job in flight: restart it
+EXIT_CONFIG = 2  # as `parser.error`
+EXIT_AUTH = 5  # `whoami` answered 401 / 403: a restart cannot fix the credential
+RUNNER_THREAD = "shifde-executor-runner"
 
 EPILOG = f"""environment:
   {API_URL}           the SETH API origin (https outside development and test)
@@ -33,6 +56,10 @@ EPILOG = f"""environment:
   {CREDENTIALS_FILE}  JSON: credential_ref -> {{tenant_id, host, token, service_principal}},
                                     one organization per file
   SHIFDE_ENV                        development | test | production (default production)
+  {HEALTH_HOST}       the /healthz and /readyz host (default 127.0.0.1)
+  {HEALTH_PORT}       their port, 0..65535 (default 0: off)
+  {SHUTDOWN_GRACE}
+                                    seconds a stop waits for the job in flight (default 60)
 """
 
 
@@ -42,6 +69,9 @@ class Config:
     token: str
     broker: CredentialBroker
     platform: Platform
+    health_host: str = "127.0.0.1"
+    health_port: int = 0
+    shutdown_grace_seconds: int = 60
 
     def __repr__(self) -> str:
         return f"Config(api_url={self.api_url!r}, platform={self.platform.kind!r})"
@@ -62,6 +92,29 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _integer(
+    parser: argparse.ArgumentParser,
+    environ: Mapping[str, str],
+    name: str,
+    default: int,
+    low: int,
+    high: int | None = None,
+) -> int:
+    """`environ[name]` as an integer in `low..high`, `default` when unset; exit 2 naming the
+    variable (never its value) otherwise."""
+    raw = environ.get(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        parser.error(f"{name} must be an integer")
+    if value < low or (high is not None and value > high):
+        bounds = f"between {low} and {high}" if high is not None else f"at least {low}"
+        parser.error(f"{name} must be {bounds}")
+    return value
+
+
 def configure(argv: Sequence[str] | None, environ: Mapping[str, str]) -> Config:
     """The validated configuration, or exit 2 with a message (never the token)."""
     parser = _parser()
@@ -76,28 +129,156 @@ def configure(argv: Sequence[str] | None, environ: Mapping[str, str]) -> Config:
         parser.error(f"{API_URL} must be an https URL outside development and test")
     if args.fake_platform and not dev:
         parser.error("--fake-platform is refused unless SHIFDE_ENV is development or test")
+    health_port = _integer(parser, environ, HEALTH_PORT, 0, 0, 65535)
+    grace = _integer(parser, environ, SHUTDOWN_GRACE, 60, 1)
     try:
         broker = CredentialBroker.from_file(Path(environ[CREDENTIALS_FILE]))
     except CredentialFileRefused as exc:
         parser.error(str(exc))
     platform: Platform = FakePlatform() if args.fake_platform else RealPlatform()
-    return Config(api_url=api_url, token=environ[TOKEN], broker=broker, platform=platform)
+    return Config(
+        api_url=api_url,
+        token=environ[TOKEN],
+        broker=broker,
+        platform=platform,
+        health_host=environ.get(HEALTH_HOST) or "127.0.0.1",
+        health_port=health_port,
+        shutdown_grace_seconds=grace,
+    )
 
 
-def run(argv: Sequence[str] | None = None) -> None:
+class Process:
+    """One executor process: the health port, the start (`whoami`, retried) and the runner on a
+    thread of its own, so the main thread can enforce the shutdown grace."""
+
+    def __init__(self, config: Config, client: GatewayClient) -> None:
+        self.config, self.client = config, client
+        self.stopping = threading.Event()
+        self.runner: Runner | None = None
+        self.start_tick = time.monotonic()  # the start loop's last pass, until the runner runs
+
+    def request_stop(self) -> None:
+        """The signal handler: no new lease; the job in flight runs to its normal end."""
+        self.stopping.set()
+        runner = self.runner
+        if runner is not None:
+            runner.stop()
+
+    def live(self) -> bool:
+        runner = self.runner
+        if runner is None:
+            return time.monotonic() - self.start_tick <= 3 * POLL_SECONDS
+        return runner.live()
+
+    def ready(self) -> bool:
+        runner = self.runner
+        return runner is not None and not self.stopping.is_set() and runner.ready()
+
+    def serve(self) -> int:
+        """Run until stopped; the process exit code."""
+        server: HealthServer | None = None
+        if self.config.health_port:
+            try:
+                server = HealthServer(
+                    self.config.health_host,
+                    self.config.health_port,
+                    live=self.live,
+                    ready=self.ready,
+                ).start()
+            except OSError as exc:
+                print(
+                    f"shifde-executor: refusing to start: cannot bind {HEALTH_PORT} "
+                    f"({exc.__class__.__name__})",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return EXIT_CONFIG
+        try:
+            return self._serve()
+        finally:
+            if server is not None:
+                server.stop()
+
+    def _start(self) -> Whoami | int:
+        """`whoami`, retried every `POLL_SECONDS` until it answers or a stop is requested (an exit
+        code then); 401 / 403 exit `EXIT_AUTH`."""
+        log = logging.getLogger(__name__)
+        while not self.stopping.is_set():
+            self.start_tick = time.monotonic()
+            failure: Exception
+            try:
+                return self.client.whoami()
+            except GatewayError as exc:
+                if exc.status in (401, 403):
+                    print(
+                        f"shifde-executor: refusing to start: the gateway answered {exc.status} "
+                        "to whoami (check the executor credential)",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    return EXIT_AUTH
+                failure = exc
+            except httpx.HTTPError as exc:
+                failure = exc
+            log.warning("whoami failed (%s); retrying", type(failure).__name__)
+            self.stopping.wait(POLL_SECONDS)
+        return EXIT_STOPPED
+
+    def _serve(self) -> int:
+        log = logging.getLogger(__name__)
+        me = self._start()
+        if isinstance(me, int):
+            return me
+        log.info(
+            "executor %s running against the %s platform", me.executor_id, self.config.platform.kind
+        )
+        runner = Runner(self.client, self.config.broker, me.executor_id, self.config.platform)
+        self.runner = runner
+        if self.stopping.is_set():
+            runner.stop()
+        thread = threading.Thread(target=runner.run_forever, daemon=True, name=RUNNER_THREAD)
+        thread.start()
+        while not self.stopping.wait(0.2):
+            if not thread.is_alive():
+                log.error("the runner stopped unexpectedly")
+                return EXIT_CRASHED
+        grace = self.config.shutdown_grace_seconds
+        thread.join(grace)
+        if not thread.is_alive():
+            log.info("executor stopped")
+            return EXIT_STOPPED
+        write = runner.write_in_flight()
+        runner.abandon()
+        log.warning(
+            "shutdown grace of %d s passed with a job in flight (%s); no result is posted",
+            grace,
+            "a platform write was in flight" if write else "no platform write was in flight",
+        )
+        return EXIT_CRASHED
+
+
+def _install_signals(process: Process) -> None:
+    def handler(_signum: int, _frame: object) -> None:
+        process.request_stop()
+
+    for name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, handler)
+            except (ValueError, OSError):  # not the main thread / unsupported here
+                logging.getLogger(__name__).warning("signal %s unavailable", name)
+
+
+def run(argv: Sequence[str] | None = None) -> int:
+    """The process exit code (`EXIT_*`); an unhandled exception is a crash (exit 1)."""
     config = configure(argv, os.environ)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     with GatewayClient(config.api_url, config.token) as client:
-        me = client.whoami()
-        logging.getLogger(__name__).info(
-            "executor %s running against the %s platform", me.executor_id, config.platform.kind
-        )
-        runner = Runner(client, config.broker, me.executor_id, config.platform)
-        try:
-            runner.run_forever()
-        except KeyboardInterrupt:
-            runner.stop()
+        process = Process(config, client)
+        _install_signals(process)
+        return process.serve()
 
 
 if __name__ == "__main__":  # pragma: no cover
-    run()
+    sys.exit(run())

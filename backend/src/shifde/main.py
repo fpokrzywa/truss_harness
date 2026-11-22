@@ -44,6 +44,8 @@ def run() -> None:
         proxy_headers=False,  # X-Forwarded-For is handled in-app, only from SHIFDE_TRUSTED_PROXIES
         log_config=None,  # logging is configured by the app (observability port, as SETH)
         access_log=False,  # the request middleware emits the access log (observability port)
+        # open requests get this long after a stop signal (SP4 design 6.2)
+        timeout_graceful_shutdown=settings.api_shutdown_grace_seconds,
     )
 
 
