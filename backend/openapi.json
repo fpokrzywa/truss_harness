@@ -541,7 +541,12 @@
           },
           "operation_handles": {
             "additionalProperties": {
+              "maxLength": 512,
               "type": "string"
+            },
+            "maxProperties": 32,
+            "propertyNames": {
+              "maxLength": 128
             },
             "title": "Operation Handles",
             "type": "object"
@@ -550,6 +555,7 @@
             "items": {
               "$ref": "#/components/schemas/ResourceBinding"
             },
+            "maxItems": 200,
             "title": "Resources",
             "type": "array"
           },
@@ -4514,6 +4520,7 @@
             "items": {
               "$ref": "#/components/schemas/ResourceBinding"
             },
+            "maxItems": 200,
             "title": "Resources",
             "type": "array"
           }
@@ -10026,10 +10033,12 @@
             "type": "string"
           },
           "key": {
+            "maxLength": 128,
             "title": "Key",
             "type": "string"
           },
           "resource_key": {
+            "maxLength": 128,
             "title": "Resource Key",
             "type": "string"
           },
@@ -12195,14 +12204,17 @@
             "type": "string"
           },
           "key": {
+            "maxLength": 128,
             "title": "Key",
             "type": "string"
           },
           "native_id": {
+            "maxLength": 512,
             "title": "Native Id",
             "type": "string"
           },
           "resource_type": {
+            "maxLength": 128,
             "title": "Resource Type",
             "type": "string"
           },

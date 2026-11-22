@@ -21,7 +21,11 @@ lost and expires sealed plans past `expires_at`. The plan routes are `delivery.p
 Deployments (design 4, section 9 items 5, 6, 8, 10, 11 and 18; B-2681..B-2687): the `apply`,
 `observe`, `verify` and `reconcile` result hooks drive a deployment from `leased` to `verified`,
 `failed` or `unknown_outcome` in the result's transaction, and `settle_deployments` applies the
-settle rules after the lost-job sweep. The deployment routes are `delivery.deployments`.
+settle rules after the lost-job sweep. Every move to `unknown_outcome` (a failed apply after a
+journal step, a succeeded apply with an open intent, settle rule (a) for a lost apply) writes one
+`delivery.deployment.unknown_outcome` audit row in the same transaction, under the fixed system
+context `UNKNOWN_OUTCOME_CONTEXT` (no actor; B-2736). The deployment routes are
+`delivery.deployments`.
 
 Every row is read and written for the caller's resolved client only (`TenantScope.tenant_id`).
 """
@@ -77,6 +81,9 @@ from shifde.tenancy import service as tenancy
 from shifde.tenancy.scope import TenantScope
 
 EXECUTOR_TOKEN_REJECTED = "delivery.executor.token.rejected"
+DEPLOYMENT_UNKNOWN_OUTCOME = "delivery.deployment.unknown_outcome"
+# A system event: it may happen inside an unrelated request, so it never names that caller
+UNKNOWN_OUTCOME_CONTEXT = RequestContext(request_id="delivery-unknown-outcome")
 PLATFORM_ALREADY_REGISTERED = "This platform address is already registered as a deployment target."
 
 
@@ -829,8 +836,13 @@ def settle_deployments(session: Session, tenant_id: UUID) -> None:
     """The deployment settle step (B-2683), run after the lost-job sweep: lost applies become
     `unknown_outcome` or `failed`, unleased applies past the plan's expiry `expired`, lost or
     overdue observe/verify work `failed`, and the queued applies of a target with an unresolved
-    unknown outcome are held."""
-    repository.settle_deployments(session, tenant_id=tenant_id)
+    unknown outcome are held. Each lost apply's move to `unknown_outcome` is audited."""
+    for moved in repository.settle_deployments(session, tenant_id=tenant_id):
+        row = repository.get_deployment(session, moved["id"], tenant_id=tenant_id)
+        if row is not None:
+            _audit_unknown_outcome(
+                session, row, moved["status_reason"], "executor_lost", moved["job_id"]
+            )
 
 
 def start_deployment(session: Session, job: Mapping[str, Any]) -> None:
@@ -875,6 +887,40 @@ def _fail(session: Session, row: Mapping[str, Any], reason: str, *, status: str 
     repository.set_deployment_status(
         session, row["id"], status, reason, expected=(row["status"],), tenant_id=row["tenant_id"]
     )
+
+
+def _audit_unknown_outcome(
+    session: Session, row: Mapping[str, Any], reason: str, source: str, job_id: UUID
+) -> None:
+    """One `delivery.deployment.unknown_outcome` row for the deployment's move (B-2736)."""
+    audit.record(
+        session,
+        UNKNOWN_OUTCOME_CONTEXT,
+        action=DEPLOYMENT_UNKNOWN_OUTCOME,
+        tenant_id=row["tenant_id"],
+        target_type="delivery_deployment",
+        target_id=row["id"],
+        target_label=f"delivery_deployment:{row['application_key']}",
+        workspace_id=row["workspace_id"],
+        project_id=row["project_id"],
+        details={
+            "deployment_id": str(row["id"]),
+            "plan_id": str(row["plan_id"]),
+            "target_id": str(row["target_id"]),
+            "application_key": row["application_key"],
+            "reason": reason,
+            "source": source,
+            "job_id": str(job_id),
+        },
+    )
+
+
+def _unknown_outcome(
+    session: Session, job: Mapping[str, Any], row: Mapping[str, Any], reason: str
+) -> None:
+    """Move the locked deployment to `unknown_outcome` and audit it."""
+    _fail(session, row, reason, status="unknown_outcome")
+    _audit_unknown_outcome(session, row, reason, "apply_result", job["id"])
 
 
 def _poll(
@@ -928,17 +974,17 @@ def on_apply_result(session: Session, job: Mapping[str, Any], body: JobResultSub
     any_step, open_intent = repository.journal_state(session, row["id"], tenant_id=tenant_id)
     if receipt is None:
         if any_step:
-            _fail(
+            _unknown_outcome(
                 session,
+                job,
                 row,
                 f"apply failed after a platform write may have happened: {body.error_code}",
-                status="unknown_outcome",
             )
         else:
             _fail(session, row, "no platform write was attempted")
         return
     if open_intent:
-        _fail(session, row, "a platform write did not complete", status="unknown_outcome")
+        _unknown_outcome(session, job, row, "a platform write did not complete")
         return
     for resource in receipt.resources:
         owner = repository.native_owner(
