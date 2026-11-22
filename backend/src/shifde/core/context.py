@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
+# Request ids only `shifde-worker` writes: provider job results are found by them (B-2720, #134)
+WORKER_REQUEST_ID_PREFIXES: tuple[str, ...] = ("model-health-check-", "model-discover-")
+
 
 @dataclass(frozen=True)
 class ResourceScope:
