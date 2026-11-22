@@ -831,7 +831,7 @@ def _insert_approval(
     side: str,
     *,
     step_kind: str = "approval",
-    required_permission: str | None = None,
+    approver_permissions: Sequence[str] = (),
     policy_ids: Sequence[UUID] = (),
 ) -> None:
     """Insert the approval, its step, event and audit in the CALLER's transaction."""
@@ -869,10 +869,13 @@ def _insert_approval(
             "tool_version_no": call.tool.version_no,
             "side_effect_class": side,
             "arguments": scrub(call.args),
-            "context_summary": {"executor": spec.get("executor")},
+            "context_summary": {
+                "executor": spec.get("executor"),
+                **policies.approver_summary(approver_permissions),
+            },
             "requested_by": ctx.run["initiated_by_principal_id"],
             "expires_at": utcnow() + timedelta(hours=ctx.settings.approval_expiry_hours),
-            "required_permission": required_permission,
+            "required_permission": policies.required_permission(approver_permissions),
         },
     )
     repo.add_event(
@@ -905,7 +908,7 @@ def _create_approval(
     side: str,
     *,
     step_kind: str = "approval",
-    required_permission: str | None = None,
+    approver_permissions: Sequence[str] = (),
     policy_ids: Sequence[UUID] = (),
 ) -> None:
     with ctx.txn():
@@ -916,7 +919,7 @@ def _create_approval(
             epoch,
             side,
             step_kind=step_kind,
-            required_permission=required_permission,
+            approver_permissions=approver_permissions,
             policy_ids=policy_ids,
         )
 
@@ -1037,7 +1040,7 @@ def run_tool(ctx: RunContext, call: ToolCall, policy: ToolPolicy) -> Any:  # Any
                     reason,
                     epoch,
                     side,
-                    required_permission=rule.approver_permission if rule else None,
+                    approver_permissions=rule.approver_permissions if rule else (),
                     policy_ids=rule.policy_ids if rule else (),
                 )
                 raise state.Waiting("approval")
