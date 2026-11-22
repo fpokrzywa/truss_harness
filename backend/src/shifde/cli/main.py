@@ -1,12 +1,14 @@
 """`shifde-admin` command line (Typer). Runs with owner (migration) credentials, except
 `maintenance purge` and `maintenance delete`, which run as the application role so row-level
 security confines each client's pass (B-2600, B-2783); `config preflight`, whose database checks
-connect through `SHIFDE_DATABASE_URL` (the application role) as the services would; and
-`backup verify`, which needs no database.
+connect through `SHIFDE_DATABASE_URL` (the application role) as the services would;
+`backup verify`, which needs no database; and `backup restore`, which connects to the target
+named by `--target-url-env` (as the owner, and as the app role for its role check).
 
 Not ported (DECISIONS B-1101, B-2221): `profile`, `demo`, `dev-sample-pipeline`,
 `dev-sample-ontology`, `dev-rest-sink` (carry_forward, app part 1). `dev-sample-data` is ported
-(app-2 B-2420); `backup create` and `backup verify` are ported (SP4-4, B-2791)."""
+(app-2 B-2420); `backup create` and `backup verify` are ported (SP4-4, B-2791), `backup
+restore` and `secrets check` added (SP4-5, B-2931)."""
 
 from __future__ import annotations
 
@@ -305,6 +307,23 @@ def secrets_rewrap() -> None:
     typer.echo(f"re-wrapped {changed} of {total} secret(s) under key {settings.keyring.active_id}")
 
 
+@secrets_app.command("check")
+def secrets_check() -> None:
+    """Decrypt every stored secret and discard it (key ring check; read only, no plaintext)."""
+    settings = _settings()
+    try:
+        with _owner_session(settings) as session:
+            ok, failed = secrets_service.check_all(session, settings.keyring)
+            session.rollback()
+    except SQLAlchemyError as exc:
+        raise _fail(f"database error: {exc.__class__.__name__}") from exc
+    typer.echo(f"ok {ok}, failed {len(failed)}")
+    for secret_id in failed:
+        typer.echo(f"failed {secret_id}")
+    if failed:
+        raise typer.Exit(code=1)
+
+
 @audit_app.command("verify")
 def audit_verify(org: Annotated[str, typer.Option(help="Organization slug")]) -> None:
     """Verify the tenant audit hash chain; exits non-zero if it is broken."""
@@ -465,6 +484,46 @@ def backup_verify(
         raise _fail(str(exc)) from None
     revisions = ", ".join(manifest["alembic_revisions"])
     typer.echo(f"backup verified: {from_dir} (revisions {revisions})")
+
+
+@backup_app.command("restore")
+def backup_restore(
+    from_dir: Annotated[Path, typer.Option("--from", help="Backup directory to restore")],
+    target_url_env: Annotated[
+        str,
+        typer.Option(
+            "--target-url-env",
+            help="Variable holding the empty target database's owner URL (or NAME_FILE a file)",
+        ),
+    ],
+) -> None:
+    """Restore a verified backup into an empty database owned by the schema owner, then check
+    fingerprint, row counts, migrations, app role, audit chains and secrets."""
+    settings = _settings()
+    try:
+        owner_role = make_url(settings.effective_migration_url).username or "shifde_owner"
+        app_role = make_url(settings.database_url).username or "shifde_app"
+        target_url = backup.target_url_from_env(target_url_env)
+        manifest = backup.restore_backup(from_dir, target_url, owner_role, app_role)
+    except (backup.BackupError, MigrationUrlMissing) as exc:
+        raise _fail(str(exc)) from None
+    typer.echo(f"restored {from_dir}; checking the target")
+    _report_restore_checks(
+        backup.restore_checks(
+            manifest, target_url, settings.database_url, app_role, settings.keyring
+        )
+    )
+
+
+def _report_restore_checks(results: list[backup.CheckResult]) -> None:
+    """One line per check; `RESTORE VERIFIED` only when all pass, otherwise exit 1."""
+    for r in results:
+        typer.echo(f"ok {r.name}" if r.ok else f"FAILED {r.name}: {r.detail}")
+    failed = [r.name for r in results if not r.ok]
+    if failed:
+        typer.echo(f"restore checks failed: {', '.join(failed)}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo("RESTORE VERIFIED")
 
 
 def _read_dev_users() -> dict[str, str]:
