@@ -1,8 +1,8 @@
 {
-  "session_id": "8b55f00e-6c82-4060-83d6-17c336de8e46",
-  "head_sha": "0735f1b66592673b4e95bb8b8496d3f49f01c624",
+  "session_id": "5018289e-bc82-483e-86f5-026bed40f7b5",
+  "head_sha": "c28c355b1bae164f2beb164c253f0bf1b7dd2187",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "PYTHONUTF8=1 factory/bin/job queue; hand-merge 050 (#47, PR #122) under S-020 after gates.py 13/13; gate+review 053, 055, 056, 057 one gate at a time (see HANDOFF.md)",
-  "written_at": "2026-11-21T23:22:36Z"
+  "next_step": "PYTHONUTF8=1 factory/bin/job queue; read .worktrees/_gate-logs/lead-050-merge-r3.out and hand-merge 050 (PR #122) if 13/13; then gate 058, and gates.py + hand merge 053, 056, 057 one at a time (see HANDOFF.md)",
+  "written_at": "2026-11-22T00:18:36Z"
 }
