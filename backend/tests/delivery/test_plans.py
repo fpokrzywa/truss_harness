@@ -18,8 +18,8 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
+from shifde.delivery import gateway, service
 from shifde.delivery import plans as plan_service
-from shifde.delivery import service
 from tests.connections.routes import as_user, system_role_user
 from tests.delivery.conftest import ExecutorSide
 from tests.delivery.releases import SealedRelease, make_release, release_for_target
@@ -226,6 +226,54 @@ def test_a_request_creates_the_plan_and_one_queued_plan_job(
     again = request_plan(client, h, world.a.slug, target["id"], rel.id)
     assert again["id"] != made["id"]
     assert client.get(f"{plans(world.a.slug)}/{made['id']}", headers=h).json() == made
+
+
+@pytest.mark.parametrize("other_target", [True, False], ids=["another_target", "no_target"])
+def test_a_plan_job_not_on_its_plans_target_is_refused(
+    client: TestClient,
+    world: World,
+    people: People,
+    app_db: Database,
+    owner_db: Database,
+    other_target: bool,
+) -> None:
+    """B-2732: a `plan` job naming another target than its plan's, or none, is not queued."""
+    plan1 = _plan(client, world, people, owner_db)
+    plan2 = _plan(client, world, people, owner_db)
+    assert plan1["target_id"] != plan2["target_id"]
+    target = UUID(plan2["target_id"]) if other_target else None
+    before = len(_plan_jobs(owner_db, plan1["id"]))
+    with app_session(app_db, world.a.tenant) as s:
+        with pytest.raises(service.PlanJobTargetMismatch) as exc:
+            gateway.enqueue_job(
+                s,
+                tenant_id=world.a.tenant,
+                kind="plan",
+                plan_id=UUID(plan1["id"]),
+                target_id=target,
+            )
+        s.commit()
+    assert exc.value.status == 409 and exc.value.code == "plan_job_target_mismatch"
+    assert str(exc.value) == "plan job target does not match its plan"
+    assert len(_plan_jobs(owner_db, plan1["id"])) == before
+
+
+def test_a_plan_job_on_its_plans_target_is_queued(
+    client: TestClient, world: World, people: People, app_db: Database, owner_db: Database
+) -> None:
+    plan1 = _plan(client, world, people, owner_db)
+    with app_session(app_db, world.a.tenant) as s:
+        job_id = gateway.enqueue_job(
+            s,
+            tenant_id=world.a.tenant,
+            kind="plan",
+            plan_id=UUID(plan1["id"]),
+            target_id=UUID(plan1["target_id"]),
+        )
+        s.commit()
+    job = next(j for j in _plan_jobs(owner_db, plan1["id"]) if j["id"] == job_id)
+    assert job["status"] == "queued" and job["kind"] == "plan"
+    assert str(job["target_id"]) == plan1["target_id"]
 
 
 def test_the_request_body_is_validated(
