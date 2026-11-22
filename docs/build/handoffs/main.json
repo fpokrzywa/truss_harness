@@ -1,8 +1,8 @@
 {
-  "session_id": "5018289e-bc82-483e-86f5-026bed40f7b5",
-  "head_sha": "0642ceba466f62b6dbd33ea837fdc1e6f40aef49",
+  "session_id": "54dad67b-b4bb-44fa-b7fa-28e28aaa1754",
+  "head_sha": "3725c04486270fcc7cd83b26ab538d7289250c2d",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "PYTHONUTF8=1 factory/bin/job queue; resume 050 build round 3 (feedback-2: two routes into UNIFIED_ONLY), gate 058; gates.py + hand merge 053, 056, 057 one at a time (see HANDOFF.md)",
-  "written_at": "2026-11-22T00:47:50Z"
+  "next_step": "PYTHONUTF8=1 factory/bin/job queue; create and start jobs for #71 and #72 at intake; 060 (#69, PR #146) waits on supervisor acceptance then gates.py 13/13 and hand merge",
+  "written_at": "2026-11-22T05:47:16Z"
 }
