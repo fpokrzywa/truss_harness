@@ -80,6 +80,7 @@ class ConnectionOut(BaseModel):
     health_status: str
     health: str  # alias of health_status (the UI reads `health`)
     last_tested_at: datetime | None
+    last_test_outcome: Literal["pass", "fail"] | None  # of the latest test by `started_at`
     row_version: int
     created_at: datetime
     updated_at: datetime | None
