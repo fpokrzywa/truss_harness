@@ -1,6 +1,7 @@
 """`shifde-admin` command line (Typer). Runs with owner (migration) credentials, except
 `maintenance purge` and `maintenance delete`, which run as the application role so row-level
-security confines each client's pass (B-2600, B-2783).
+security confines each client's pass (B-2600, B-2783), and `config preflight`, whose database
+checks connect through `SHIFDE_DATABASE_URL` (the application role) as the services would.
 
 Not ported (DECISIONS B-1101, B-2221): `profile`, `backup`, `demo`, `dev-sample-pipeline`,
 `dev-sample-ontology`, `dev-rest-sink` (carry_forward, app part 1). `dev-sample-data` is ported
@@ -34,7 +35,7 @@ from shifde.cli.maintenance import delete, purge
 from shifde.cli.sampledata import build_sample_database
 from shifde.cli.seeding import STAFF_USERS, seed_dev_data
 from shifde.cli.seeding import USERS as SEED_USERS
-from shifde.core import configtools
+from shifde.core import configtools, preflight
 from shifde.core.clock import utcnow
 from shifde.core.crypto import CryptoError
 from shifde.core.db import Database
@@ -199,6 +200,33 @@ def config_validate(
     report = configtools.validate_environment(environ)
     typer.echo(report.render(), err=not report.ok)
     if not report.ok:
+        raise typer.Exit(code=1)
+
+
+@config_app.command("preflight")
+def config_preflight(
+    env_file: Annotated[
+        Path | None,
+        typer.Option("--env-file", help="Check this env file (default: the process environment)"),
+    ] = None,
+    register: Annotated[
+        Path, typer.Option("--register", help="The go-live register (markdown table)")
+    ] = preflight.DEFAULT_REGISTER,
+) -> None:
+    """Go-live checks: one `ok:` / `refused:` / `pending:` line each, never a value; exit 0 only
+    when nothing is refused."""
+    try:
+        environ = (
+            configtools.read_env_file(env_file)
+            if env_file is not None
+            else {k: v for k, v in os.environ.items() if k.startswith(configtools.PREFIX)}
+        )
+    except OSError as exc:
+        raise _fail(f"cannot read env file: {exc.__class__.__name__}") from exc
+    result = preflight.run_preflight(environ, register)
+    for line in result.lines:
+        typer.echo(line)
+    if not result.ok:
         raise typer.Exit(code=1)
 
 
@@ -459,7 +487,7 @@ def adapters_verify(
     Suites whose target is unavailable (e.g. no sample database, no ANTHROPIC_API_KEY) are
     skipped and record nothing; planned adapters have no suite. Exit code 1 if a suite failed."""
     settings = _settings()
-    registry = AdapterRegistry.load()
+    registry = AdapterRegistry.load(include_fake=settings.env != "production")
     keys = [adapter] if adapter else registry.keys()
     unknown = [k for k in keys if registry.descriptor(k) is None]
     if unknown:

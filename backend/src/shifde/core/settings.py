@@ -12,6 +12,7 @@ import ipaddress
 import os
 import re
 import secrets
+import sys
 from collections.abc import Callable, Iterator, Mapping
 from functools import lru_cache
 from pathlib import Path
@@ -180,7 +181,8 @@ class Settings(BaseSettings):
     executor_auth_failures_per_minute: int = 30  # failed executor tokens per address (B-2730)
     secret_keys: SecretStr | None = None
     api_key_max_days: int = 365
-    public_base_url: str | None = None  # OIDC redirect base; default: first allowed origin
+    # OIDC redirect base; required in production, elsewhere the default is the first allowed origin
+    public_base_url: str | None = None
     oidc_state_ttl_seconds: int = 600
     oidc_jwks_min_refresh_seconds: int = 30
     oidc_jwks_cache_seconds: int = 3600  # JWKS lifetime when the IdP sends no usable max-age
@@ -227,7 +229,9 @@ class Settings(BaseSettings):
     # loopback clients only.
     otel_exporter: Literal["none", "console", "otlp"] = "none"
     otel_otlp_endpoint: str | None = None
-    metrics_token: SecretStr | None = None
+    metrics_token: SecretStr | None = None  # required in production
+    # `/api/docs` and `/api/openapi.json`; unset: off in production, on in development and test
+    api_docs_enabled: bool | None = None
 
     @field_validator("allowed_origins", mode="before")
     @classmethod
@@ -290,6 +294,12 @@ class Settings(BaseSettings):
                 "SHIFDE_AUTH_LOCAL_ALLOW_IN_PRODUCTION=true is also set (NFR-SEC-001)"
             )
         if self.env == "production":
+            if not self.metrics_token or not self.metrics_token.get_secret_value():
+                raise ValueError("SHIFDE_METRICS_TOKEN is required in production")
+            if self.log_format == "console":
+                raise ValueError("SHIFDE_LOG_FORMAT=console is refused in production (use json)")
+            if not self.public_base_url:
+                raise ValueError("SHIFDE_PUBLIC_BASE_URL is required in production")
             for origin in self.allowed_origins:
                 parts = urlsplit(origin)
                 scheme, host = parts.scheme, parts.hostname or ""
@@ -298,13 +308,12 @@ class Settings(BaseSettings):
                         "SHIFDE_ALLOWED_ORIGINS must be https:// origins in production "
                         "(plain http is accepted for loopback only)"
                     )
-            if self.public_base_url:
-                base = urlsplit(self.public_base_url)
-                if base.scheme != "https" and (base.hostname or "") not in _LOOPBACK_HOSTS:
-                    raise ValueError(
-                        "SHIFDE_PUBLIC_BASE_URL must be an https:// URL in production "
-                        "(plain http is accepted for loopback only)"
-                    )
+            base = urlsplit(self.public_base_url)
+            if base.scheme != "https" and (base.hostname or "") not in _LOOPBACK_HOSTS:
+                raise ValueError(
+                    "SHIFDE_PUBLIC_BASE_URL must be an https:// URL in production "
+                    "(plain http is accepted for loopback only)"
+                )
             for entry in self.trusted_proxies:
                 net = ipaddress.ip_network(entry, strict=False)
                 if net.prefixlen < _MIN_PROXY_PREFIX[net.version]:
@@ -313,6 +322,8 @@ class Settings(BaseSettings):
                         f"large share of the Internet (minimum /{_MIN_PROXY_PREFIX[net.version]} "
                         f"for IPv{net.version})"
                     )
+        if self.api_docs_enabled is None:
+            self.api_docs_enabled = self.env != "production"
         if self.session_idle_minutes < 1 or self.session_absolute_hours < 1:
             raise ValueError("session timeouts must be positive")
         generated = self.env in ("development", "test")
@@ -395,6 +406,7 @@ class Settings(BaseSettings):
 
     @property
     def oidc_base_url(self) -> str:
+        """`SHIFDE_PUBLIC_BASE_URL` (always set in production), else the first allowed origin."""
         return (self.public_base_url or self.allowed_origins[0]).rstrip("/")
 
     @property
@@ -451,7 +463,9 @@ def settings_or_exit() -> Settings:
     try:
         return get_settings()
     except ValueError as exc:  # pydantic ValidationError / SecretFileError subclass ValueError
-        raise SystemExit(f"shifde: invalid configuration: {format_validation_error(exc)}") from None
+        # `SystemExit(<str>)` would exit 1; configuration errors exit 2 (SP4 design 4)
+        print(f"shifde: invalid configuration: {format_validation_error(exc)}", file=sys.stderr)
+        raise SystemExit(2) from None
 
 
 @lru_cache

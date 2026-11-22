@@ -8,6 +8,11 @@ Design (DECISIONS B-006, ported from SETH 3ba0e06 `tests/conftest.py`):
   connections. Workers that come later find it ready.
 * Each worker then gets `shifdet_<run>_<worker>` with `CREATE DATABASE ... TEMPLATE`, dropped when
   the worker finishes. The controller drops the template and any leftover database of the run.
+* At session start the controller drops every `shifdet_*` database older than
+  `STALE_DATABASE_AGE_SECONDS`, never one of its own run, once, under a cross-run file lock taken
+  without waiting (so killed runs do not leave databases behind for ever). The age is the
+  modification time of the database's `PG_VERSION` file (`pg_stat_file`) against the server's
+  clock; a database whose age cannot be read is kept. Local (loopback) admin URLs only.
 * Credentials, host and port come from `SHIFDE_TEST_*_DATABASE_URL` (environment first, then
   `.devdata/dev.env`); their database names are never used. Tests never touch the hosted database.
 """
@@ -22,7 +27,7 @@ import shutil
 import tempfile
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -46,6 +51,10 @@ ORIGIN = "http://127.0.0.1:3710"
 DB_PREFIX = "shifdet_"
 _RUN_KEY = "shifde_test_run"
 DROP_THREADS = 8  # the run's databases are dropped side by side at the end (pytest_sessionfinish)
+# Another run's database older than this is a leftover of a killed run (pytest_sessionstart): well
+# over the longest gate run, about 30 minutes, so a live run's databases are never swept.
+STALE_DATABASE_AGE_SECONDS = 12 * 60 * 60
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 # Tables wiped (as owner, so row-level security does not apply) before every test that uses the
 # database. Module ports append their tenant-data tables here; seed catalogs stay.
@@ -91,6 +100,40 @@ def pytest_configure_node(node: Any) -> None:  # node: xdist WorkerController
     node.workerinput[_RUN_KEY] = node.config.stash[_RUN_STASH]
 
 
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Controller (or a run without xdist): drop other runs' stale databases (issue #115)."""
+    if getattr(session.config, "workerinput", None) is not None:
+        return
+    run = session.config.stash.get(_RUN_STASH, None)
+    admin_url = _env_or_none("SHIFDE_TEST_ADMIN_DATABASE_URL")
+    if run is None or admin_url is None:
+        return
+    with contextlib.suppress(Exception):  # best effort; a sweep never fails the session
+        if make_url(admin_url).host not in _LOOPBACK_HOSTS:
+            return
+        # One sweep at a time across concurrent runs; a run that finds the lock taken skips it.
+        with FileLock(str(Path(tempfile.gettempdir()) / "shifde-test-sweep.lock"), timeout=0):
+            # A stopped cluster's port can hang a connect here instead of refusing it.
+            admin = create_engine(
+                admin_url,
+                isolation_level="AUTOCOMMIT",
+                poolclass=NullPool,
+                connect_args={"connect_timeout": 5},
+            )
+            try:
+                with admin.connect() as c:
+                    names = _stale_databases(_database_ages(c), run, STALE_DATABASE_AGE_SECONDS)
+
+                def drop(name: str) -> None:
+                    with contextlib.suppress(Exception), admin.connect() as c:
+                        _drop_database(c, name)
+
+                with ThreadPoolExecutor(max_workers=DROP_THREADS) as pool:
+                    list(pool.map(drop, names))
+            finally:
+                admin.dispose()
+
+
 def pytest_sessionfinish(session: pytest.Session) -> None:
     """Controller (or a run without xdist): drop the template and anything the run left over."""
     if getattr(session.config, "workerinput", None) is not None:
@@ -128,6 +171,39 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
 
 
 # --------------------------------------------------------------------------- helpers
+def _stale_databases(
+    rows: Iterable[tuple[str, float | None]], run: str, max_age_seconds: float
+) -> list[str]:
+    """Names among `rows` (name, age in seconds or None) to drop: test databases of other runs
+    older than `max_age_seconds`. An unknown age keeps the database."""
+    own = f"{DB_PREFIX}{run}_"
+    return [
+        name
+        for name, age in rows
+        if name.startswith(DB_PREFIX)
+        and not name.startswith(own)
+        and age is not None
+        and age > max_age_seconds
+    ]
+
+
+def _database_ages(c: Connection) -> list[tuple[str, float | None]]:
+    """(name, age in seconds) of every `shifdet_*` database (superuser connection). The age is
+    the server's `now()` minus the modification time of `PG_VERSION`, which `CREATE DATABASE`
+    writes once; None when the file cannot be read (e.g. outside the default tablespace)."""
+    rows = c.execute(
+        text(
+            """SELECT datname,
+                      EXTRACT(EPOCH FROM now() - (pg_stat_file(
+                          'base/' || oid || '/PG_VERSION', true)).modification)
+                 FROM pg_database
+                WHERE datname LIKE :p"""
+        ),
+        {"p": "shifdet\\_%"},  # DB_PREFIX with `_` escaped
+    )
+    return [(name, None if age is None else float(age)) for name, age in rows]
+
+
 def _lock_path(run: str) -> Path:
     return Path(tempfile.gettempdir()) / f"shifde-test-{run}.lock"
 
@@ -204,8 +280,13 @@ def _quote(name: str) -> str:
 
 
 def _drop_database(c: Connection, name: str) -> None:
-    """Drop `name` (connection in AUTOCOMMIT); a template must be unmarked first."""
-    c.execute(text(f"ALTER DATABASE {_quote(name)} WITH IS_TEMPLATE false"))
+    """Drop `name` (connection in AUTOCOMMIT); a template must be unmarked first. A database left
+    invalid by an interrupted drop (`datconnlimit = -2`) refuses ALTER and is dropped as it is."""
+    valid = c.execute(
+        text("SELECT datconnlimit <> -2 FROM pg_database WHERE datname = :n"), {"n": name}
+    ).scalar()
+    if valid:
+        c.execute(text(f"ALTER DATABASE {_quote(name)} WITH IS_TEMPLATE false"))
     c.execute(text(f"DROP DATABASE IF EXISTS {_quote(name)} WITH (FORCE)"))
 
 

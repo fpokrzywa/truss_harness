@@ -79,8 +79,9 @@ def create_app(
     app = FastAPI(
         title="SHIFDE API",
         version=__version__,
-        openapi_url="/api/openapi.json",
-        docs_url="/api/docs",
+        # off by default in production (SHIFDE_API_DOCS_ENABLED): both paths then answer 404
+        openapi_url="/api/openapi.json" if settings.api_docs_enabled else None,
+        docs_url="/api/docs" if settings.api_docs_enabled else None,
         redoc_url=None,
         lifespan=lifespan,
         dependencies=[Depends(reject_basic_auth), Depends(check_origin)],
@@ -115,7 +116,7 @@ def create_app(
     )
     app.state.integration = IntegrationRuntime(
         settings=settings,
-        registry=AdapterRegistry.load(),
+        registry=AdapterRegistry.load(include_fake=settings.env != "production"),
         resolver=resolver or default_resolver,
         inner=egress_transport,
     )

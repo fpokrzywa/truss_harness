@@ -352,7 +352,7 @@ def test_the_catalog_is_installation_level_and_names_no_client(
     open_session: Callable[[UUID], AbstractContextManager[Session]],
 ) -> None:
     a, b = seed
-    registry = AdapterRegistry.load()
+    registry = AdapterRegistry.load(include_fake=True)
     outputs: dict[UUID, str] = {}
     for tenant in (a.tenant, b.tenant):
         with open_session(tenant) as s:

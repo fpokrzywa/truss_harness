@@ -48,7 +48,7 @@ for _table in (
     if _table not in CLEAN_TABLES:
         CLEAN_TABLES.append(_table)
 
-REGISTRY = AdapterRegistry.load()
+REGISTRY = AdapterRegistry.load(include_fake=True)
 
 
 @contextmanager
