@@ -184,6 +184,106 @@ def test_the_password_reaches_pg_dump_only_through_pgpassword(
     assert str(password) not in result.output
 
 
+def test_the_tools_get_no_shifde_variable(
+    cli: CliRunner, settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("SHIFDE_BACKUP_CANARY", "leak")
+    envs: list[dict[str, str]] = []
+    real = backup._run_tool
+
+    def recording(argv: list[str], env: Mapping[str, str], secret: str | None, what: str) -> str:
+        envs.append(dict(env))
+        return real(argv, env, secret, what)
+
+    monkeypatch.setattr(backup, "_run_tool", recording)
+    result = _create(cli, tmp_path / "out")
+    assert result.exit_code == 0, result.output
+    assert len(envs) == 2  # pg_dump --version, pg_dump -Fc
+    allowed = {"PATH", "SYSTEMROOT", "TEMP", "TMP", "PGPASSWORD", "PGSSLMODE"}
+    for env in envs:
+        assert not [name for name in env if name.upper().startswith("SHIFDE_")]
+        assert set(env) <= allowed
+
+
+def test_a_pg_dump_failure_shows_the_password_as_stars(
+    cli: CliRunner, settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    password = str(make_url(settings.effective_migration_url).password)
+    real = subprocess.run
+
+    def failing(argv: list[str], **kwargs: Any) -> Any:  # Any: subprocess.run's signature
+        if "-Fc" not in argv:
+            return real(argv, **kwargs)
+        Path(argv[argv.index("-f") + 1]).write_bytes(b"partial")
+        return subprocess.CompletedProcess(
+            argv, 1, "", f'FATAL: password "{password}" rejected for user\n'
+        )
+
+    monkeypatch.setattr(backup.subprocess, "run", failing)
+    out = tmp_path / "out"
+    result = _create(cli, out)
+    assert result.exit_code == 1
+    assert 'password "***" rejected' in result.output
+    assert password not in result.output
+    assert not (out / backup.DUMP_FILE).exists()
+    assert not (out / backup.MANIFEST).exists()
+
+
+def test_an_interrupted_pg_dump_leaves_no_partial_dump(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    real = backup._run_tool
+
+    def interrupted(argv: list[str], env: Mapping[str, str], secret: str | None, what: str) -> str:
+        if "-Fc" not in argv:
+            return real(argv, env, secret, what)
+        Path(argv[argv.index("-f") + 1]).write_bytes(b"partial")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(backup, "_run_tool", interrupted)
+    out = tmp_path / "out"
+    with pytest.raises(KeyboardInterrupt):
+        backup.create_backup(settings.effective_migration_url, "shifde_app", settings.keyring, out)
+    assert not (out / backup.DUMP_FILE).exists()
+
+
+def test_the_ssl_parameters_of_the_url_become_pg_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHIFDE_BACKUP_CANARY", "leak")
+    parsed = backup._parse_url(
+        "postgresql+psycopg://owner:pw@db.example:5432/shifde?sslmode=verify-full"
+        "&sslrootcert=/ca.pem&sslcert=/c.pem&sslkey=/c.key&sslcrl=/crl.pem"
+    )
+    env = backup._pg_env(parsed)
+    assert {k: v for k, v in env.items() if k.startswith("PG")} == {
+        "PGPASSWORD": "pw",
+        "PGSSLMODE": "verify-full",
+        "PGSSLROOTCERT": "/ca.pem",
+        "PGSSLCERT": "/c.pem",
+        "PGSSLKEY": "/c.key",
+        "PGSSLCRL": "/crl.pem",
+    }
+    assert "SHIFDE_BACKUP_CANARY" not in env
+    assert backup._conn_args(parsed) == [
+        "-h",
+        "db.example",
+        "-p",
+        "5432",
+        "-U",
+        "owner",
+        "-d",
+        "shifde",
+    ]
+
+
+def test_a_url_query_parameter_backup_does_not_pass_on_is_refused() -> None:
+    with pytest.raises(backup.BackupError, match="connect_timeout"):
+        backup._parse_url(
+            "postgresql+psycopg://owner:pw@db/shifde?sslmode=require&connect_timeout=5"
+        )
+
+
 def test_the_manifest_holds_key_ids_and_no_key_material(
     settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -11,7 +11,8 @@ The digests detect corruption and edits, not a deliberate forger: the manifest i
 anyone who can edit it can recompute them. The KEK ring (`SHIFDE_SECRET_KEYS`, only its key ids
 are recorded) and the API-key pepper are not in the backup; they stay in separate custody.
 Passwords reach the tools only through `PGPASSWORD` in the child's environment, never on a
-command line, and are scrubbed from any tool output in an error.
+command line, and are scrubbed from any tool output in an error. The child gets only PATH (and
+SYSTEMROOT, TEMP, TMP on Windows) and the PG* variables set here, never a `SHIFDE_*` variable.
 """
 
 from __future__ import annotations
@@ -67,6 +68,14 @@ REQUIRED_FIELDS = (
     "manifest_sha256",
 )
 _VERSION = re.compile(r"\(PostgreSQL\)\s+(\d+)(?:\.(\d+))?")
+# URL query parameters handed to the tools as libpq variables; any other parameter is refused
+_SSL_VARS = {
+    "sslmode": "PGSSLMODE",
+    "sslrootcert": "PGSSLROOTCERT",
+    "sslcert": "PGSSLCERT",
+    "sslkey": "PGSSLKEY",
+    "sslcrl": "PGSSLCRL",
+}
 _RELKINDS = {"r": "table", "p": "table", "f": "table", "v": "view", "m": "view", "S": "sequence"}
 
 
@@ -101,16 +110,34 @@ def _parse_url(url: str) -> URL:
         raise BackupError("the migration database URL is not valid") from None
     if not parsed.database:
         raise BackupError("the migration database URL must name a database")
+    unsupported = sorted(
+        name
+        for name, value in parsed.query.items()
+        if name not in _SSL_VARS or not isinstance(value, str)
+    )
+    if unsupported:
+        raise BackupError(
+            "the migration database URL has query parameters backup does not pass to pg_dump: "
+            f"{', '.join(unsupported)} (supported: {', '.join(sorted(_SSL_VARS))})"
+        )
     return parsed
 
 
+def _base_env() -> dict[str, str]:
+    """The only inherited variables a tool gets: PATH, and on Windows what sockets and temp
+    files need."""
+    names = ("PATH", "SYSTEMROOT", "TEMP", "TMP") if os.name == "nt" else ("PATH",)
+    return {name: os.environ[name] for name in names if name in os.environ}
+
+
 def _pg_env(parsed: URL) -> dict[str, str]:
-    env = dict(os.environ)
+    env = _base_env()
     if parsed.password:
         env["PGPASSWORD"] = str(parsed.password)
-    sslmode = parsed.query.get("sslmode")
-    if isinstance(sslmode, str):
-        env["PGSSLMODE"] = sslmode
+    for name, var in _SSL_VARS.items():
+        value = parsed.query.get(name)
+        if isinstance(value, str):
+            env[var] = value
     return env
 
 
@@ -131,7 +158,7 @@ def _run_tool(argv: list[str], env: Mapping[str, str], password: str | None, wha
     try:
         # argv starts with a binary from find_pg_tool; no shell, the password only in env
         proc = subprocess.run(  # nosec B603
-            argv, env=dict(env), capture_output=True, text=True, check=False
+            argv, env=dict(env), capture_output=True, text=True, errors="replace", check=False
         )
     except OSError as exc:
         raise BackupError(f"{what}: cannot run the tool ({exc.__class__.__name__})") from None
@@ -145,7 +172,7 @@ def _run_tool(argv: list[str], env: Mapping[str, str], password: str | None, wha
 
 def _pg_dump_version(pg_dump: str) -> str:
     """`pg_dump --version` output, e.g. `pg_dump (PostgreSQL) 17.2`."""
-    return _run_tool([pg_dump, "--version"], os.environ, None, "pg_dump --version")
+    return _run_tool([pg_dump, "--version"], _base_env(), None, "pg_dump --version")
 
 
 def _tool_version(output: str) -> tuple[int, str]:
@@ -354,8 +381,8 @@ def create_backup(owner_url: str, app_role: str, keyring: KeyRing, out_dir: Path
                     password,
                     "pg_dump",
                 )
-            except BackupError:
-                dump.unlink(missing_ok=True)
+            except BaseException:
+                dump.unlink(missing_ok=True)  # never leave a partial dump behind
                 raise
             session.rollback()  # read only; ends the snapshot's transaction
     except SQLAlchemyError as exc:
