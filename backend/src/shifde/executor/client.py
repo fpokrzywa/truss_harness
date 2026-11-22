@@ -4,14 +4,16 @@ without pools, JWT or replays; B-2688).
 Every call sends the executor token as `Authorization: Bearer` and the backend version as
 `X-Executor-Version`, follows no redirect and parses the body with the `contracts` wire models. A
 409 `lease_lost` raises `LeaseLost`; any other refusal raises `GatewayError` naming only the status
-and the error code. The token is held as a `SecretStr`: it never appears in a log, an exception or
-a `repr`.
+and the error code. The monotonic time of the last call answered below 300 is `last_success`
+(the executor's readiness). The token is held as a `SecretStr`: it never appears in a log, an
+exception or a `repr`.
 """
 
 from __future__ import annotations
 
 import hashlib
 import re
+import time
 from types import TracebackType
 from typing import Any, Literal  # Any: httpx request options, JSON values
 from uuid import UUID, uuid4
@@ -80,6 +82,7 @@ class GatewayClient:
     def __init__(self, base_url: str, token: str, *, http: httpx.Client | None = None) -> None:
         self._token = SecretStr(token)
         self._owned = http is None
+        self.last_success: float | None = None
         self._http = http or httpx.Client(
             base_url=base_url, timeout=TIMEOUT, follow_redirects=False, trust_env=False
         )
@@ -115,6 +118,7 @@ class GatewayClient:
             if response.status_code == 409 and code == "lease_lost":
                 raise LeaseLost
             raise GatewayError(response.status_code, code)
+        self.last_success = time.monotonic()
         return response
 
     @staticmethod
