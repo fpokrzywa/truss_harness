@@ -25,11 +25,14 @@ from sqlalchemy.exc import IntegrityError
 from shifde.adapters.base import AdapterFailure, ErrorClass, HealthResult
 from shifde.adapters.model_providers import FakeProvider
 from shifde.audit import service as audit_service
+from shifde.core.context import WORKER_REQUEST_ID_PREFIXES
 from shifde.core.db import Database
 from shifde.models_admin import repository
 from shifde.models_admin import service as models_admin
+from shifde.observability.middleware import RequestIdMiddleware
 from tests._support.modeljobs import execute, job_status, post_job, run_discovery, run_job
 from tests.connections.routes import as_user, connection, grant, limited_user, org
+from tests.identity import harness
 from tests.models_admin.conftest import provider_values
 from tests.models_admin.routes import fake_model_stack
 from tests.tenancy.conftest import World
@@ -340,31 +343,37 @@ def test_a_long_health_detail_is_truncated_in_the_audit_event(
     ) == [("x" * 500,)]
 
 
-def test_a_result_dated_slightly_before_the_job_is_still_found(
+def test_a_result_dated_long_before_the_job_is_still_found(
     client: TestClient,
     world: World,
     people: People,
     owner_db: Database,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A worker whose clock runs behind the database dates its event before the job's
-    `created_at`: the lookup's margin (`RESULT_CLOCK_SKEW`) still finds it, never
-    `worker_lost`."""
+    """A worker whose clock runs days behind the database dates its event long before the job's
+    `created_at`: the lookup has no time bound (issue #133), so the job reads `done`, never
+    `worker_lost`, and a second run of it finds that result and records nothing more."""
     A, h = org(world.a.slug), as_user(client, people.owner_a)
     pid = fake_model_stack(client, h, A)["provider"]
+    app: Any = client.app  # Any: the FastAPI app behind the test client
     for kind in (HEALTH, DISCOVER):
         job = post_job(client, h, A, pid, kind)
         [(created,)] = _q(owner_db, "SELECT created_at FROM shifde.jobs WHERE id = :j", j=job["id"])
-        early = created - timedelta(seconds=30)
+        early = created - timedelta(days=2)
         with monkeypatch.context() as m:
             m.setattr(audit_service, "utcnow", lambda early=early: early)
             assert execute(client, A, kind, job["id"])
+            again = models_admin.run_provider_job(
+                app.state.db, app.state.integration, world.a.tenant, UUID(job["id"])
+            )
+        assert again is None
         [(occurred,)] = _q(
             owner_db,
             "SELECT occurred_at FROM shifde.audit_events WHERE correlation_id = :c",
             c=f"{models_admin.JOB_PREFIX[kind]}-{job['id']}",
         )
-        assert occurred < created
+        assert occurred < created - timedelta(minutes=5)
+        assert len(_events(owner_db, pid, models_admin.JOB_ACTION[kind])) == 1
         out = job_status(client, h, A, pid, kind, job["id"])
         assert out["status"] == "done" and out["error"] is None and out["result"] is not None
 
@@ -455,3 +464,52 @@ def test_a_unique_violation_after_another_run_recorded_the_result_records_nothin
     with pytest.raises(IntegrityError):
         run(again["id"])
     assert len(_events(owner_db, pid, "model.provider.health_checked")) == 1
+
+
+def test_every_job_prefix_is_a_worker_reserved_request_id_prefix() -> None:
+    """A job's result is found by the request id `{JOB_PREFIX}-{job id}` (B-2720): the API
+    middleware never takes such an id from a caller (issue #134)."""
+    for kind in models_admin.JOB_PREFIX:
+        assert f"{models_admin.JOB_PREFIX[kind]}-" in WORKER_REQUEST_ID_PREFIXES
+
+
+def test_a_forged_request_id_cannot_make_a_job_show_a_result(
+    client: TestClient, world: World, people: People, owner_db: Database
+) -> None:
+    """An audited API write sent with `X-Request-ID: <prefix>-<job id>` gets a generated id, so no
+    event carries the job's correlation id until the worker runs the job (issue #134). The route
+    harness has no middleware: the write goes through the API's `RequestIdMiddleware`."""
+    A, h = org(world.a.slug), as_user(client, people.owner_a)
+    pid = fake_model_stack(client, h, A)["provider"]
+    fronted = TestClient(
+        RequestIdMiddleware(client.app),
+        base_url="https://testserver",
+        headers={"Origin": harness.ORIGIN},
+        cookies=client.cookies,
+    )
+    for kind in (HEALTH, DISCOVER):
+        job = post_job(client, h, A, pid, kind)
+        forged = f"{models_admin.JOB_PREFIX[kind]}-{job['id']}"
+        patched = fronted.patch(
+            f"{A}/model-providers/{pid}",
+            headers={**h, "X-Request-ID": forged},
+            json={"name": f"renamed-{kind}"},
+        )
+        assert patched.status_code == 200, patched.text
+        assert patched.headers["x-request-id"] != forged
+        assert _q(
+            owner_db,
+            "SELECT count(*) FROM shifde.audit_events WHERE correlation_id = :c",
+            c=patched.headers["x-request-id"],
+        ) != [(0,)]  # the write was audited, under the generated id
+        assert _q(
+            owner_db,
+            "SELECT count(*) FROM shifde.audit_events WHERE correlation_id = :c",
+            c=forged,
+        ) == [(0,)]
+        out = job_status(client, h, A, pid, kind, job["id"])
+        assert out["status"] == "queued" and out["result"] is None
+        assert execute(client, A, kind, job["id"])
+        out = job_status(client, h, A, pid, kind, job["id"])
+        assert out["status"] == "done" and out["result"] is not None
+        assert len(_events(owner_db, pid, models_admin.JOB_ACTION[kind])) == 1

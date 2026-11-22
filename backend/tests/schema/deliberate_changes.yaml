@@ -793,3 +793,108 @@
   path: [privileges, columns, arguments]
   reason: "Issue #33 (REQ F-12 follow-up, B-2715): shifde_app may UPDATE arguments, only to replace it by {\"scrubbed\": true} when an ended run of a capture-off client is scrubbed; shifde.approvals_guard() (runtime_0005) allows it only on a non-pending approval whose run (matched on the row's own tenant_id, run_id) is terminal, with every other column unchanged, and still refuses every other update of a decided approval and any change of arguments on a pending one (SETH: arguments not updatable)."
   migration: runtime_0005
+- table: run_artifacts
+  path: [privileges, table]
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): shifde_app may DELETE, only for maintenance delete of old ended run families; trg_run_artifacts_retention_delete (runtime_0006) refuses every delete unless the transaction set shifde.retention_delete_cutoff and the row's run is terminal and ended before it (SETH: no DELETE)."
+  migration: runtime_0006
+- table: run_artifacts
+  path: [triggers, trg_run_artifacts_retention_delete]
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it (SETH: no such trigger)."
+  migration: runtime_0006
+- table: run_events
+  path: [privileges, table]
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): shifde_app may DELETE, only for maintenance delete of old ended run families; trg_run_events_retention_delete (runtime_0006) refuses every delete unless the transaction set shifde.retention_delete_cutoff and the row's run is terminal and ended before it (SETH: no DELETE)."
+  migration: runtime_0006
+- table: run_events
+  path: [triggers, trg_run_events_retention_delete]
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it (SETH: no such trigger)."
+  migration: runtime_0006
+- table: approvals
+  path: [privileges, table]
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): shifde_app may DELETE, only for maintenance delete of old ended run families; trg_approvals_retention_delete (runtime_0006) refuses every delete unless the transaction set shifde.retention_delete_cutoff and the row's run is terminal and ended before it, and the approval is not pending (SETH: no DELETE)."
+  migration: runtime_0006
+- table: approvals
+  path: [triggers, trg_approvals_retention_delete]
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it, and the approval is not pending (SETH: no such trigger)."
+  migration: runtime_0006
+- table: run_steps
+  path: [privileges, table]
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): shifde_app may DELETE, only for maintenance delete of old ended run families; trg_run_steps_retention_delete (runtime_0006) refuses every delete unless the transaction set shifde.retention_delete_cutoff and the row's run is terminal and ended before it (SETH: no DELETE)."
+  migration: runtime_0006
+- table: run_steps
+  path: [triggers, trg_run_steps_retention_delete]
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it (SETH: no such trigger)."
+  migration: runtime_0006
+- table: tool_invocations
+  path: [privileges, table]
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): shifde_app may DELETE, only for maintenance delete of old ended run families; trg_tool_invocations_retention_delete (runtime_0006) refuses every delete unless the transaction set shifde.retention_delete_cutoff and the row's run is terminal and ended before it (SETH: no DELETE)."
+  migration: runtime_0006
+- table: tool_invocations
+  path: [triggers, trg_tool_invocations_retention_delete]
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it (SETH: no such trigger)."
+  migration: runtime_0006
+- table: jobs
+  path: [privileges, table]
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): shifde_app may DELETE, only for maintenance delete of old ended run families; trg_jobs_retention_delete (runtime_0006) refuses every delete unless the transaction set shifde.retention_delete_cutoff and the row's run is terminal and ended before it, and the job is done or dead (SETH: no DELETE)."
+  migration: runtime_0006
+- table: jobs
+  path: [triggers, trg_jobs_retention_delete]
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it, and the job is done or dead (SETH: no such trigger)."
+  migration: runtime_0006
+- table: ontology_query_lineage
+  path: [privileges, table]
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): shifde_app may DELETE, only for maintenance delete of old ended run families; trg_ontology_lineage_retention_delete (runtime_0006) refuses every delete unless the transaction set shifde.retention_delete_cutoff and the row's run is terminal and ended before it (SETH: no DELETE)."
+  migration: runtime_0006
+- table: ontology_query_lineage
+  path: [triggers, trg_ontology_lineage_retention_delete]
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it (SETH: no such trigger)."
+  migration: runtime_0006
+- table: budget_reservations
+  path: [privileges, table]
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): shifde_app may DELETE, only for maintenance delete of old ended run families; trg_budget_reservations_retention_delete (runtime_0006) refuses every delete unless the transaction set shifde.retention_delete_cutoff and the row's run is terminal and ended before it, and the reservation is not held (SETH: no DELETE)."
+  migration: runtime_0006
+- table: budget_reservations
+  path: [triggers, trg_budget_reservations_retention_delete]
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it, and the reservation is not held (SETH: no such trigger)."
+  migration: runtime_0006
+- table: runs
+  path: [privileges, table]
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): shifde_app may DELETE, only for maintenance delete of old ended run families; trg_runs_retention_delete (runtime_0006) refuses every delete unless the transaction set shifde.retention_delete_cutoff and the row's run is terminal and ended before it (SETH: no DELETE)."
+  migration: runtime_0006
+- table: runs
+  path: [triggers, trg_runs_retention_delete]
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run (the row itself) is terminal with finished_at before it (SETH: no such trigger)."
+  migration: runtime_0006
+- table: run_events
+  path: [triggers, trg_run_events_append_only]
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE UPDATE only, shifde.reject_mutation() unchanged, so every update is still refused; DELETE moved to trg_run_events_retention_delete, which admits only the rows of a run that ended before the retention cutoff (SETH: BEFORE UPDATE OR DELETE, append-only for every role)."
+  migration: runtime_0006
+- table: ontology_query_lineage
+  path: [triggers, trg_ontology_lineage_append_only]
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE UPDATE only, shifde.reject_mutation() unchanged, so every update is still refused; DELETE moved to trg_ontology_lineage_retention_delete, which admits only the rows of a run that ended before the retention cutoff (SETH: BEFORE UPDATE OR DELETE, append-only for every role)."
+  migration: runtime_0006
+
+- table: connections
+  path: [constraints, uq_connections__tenant_name]
+  reason: "names are unique per scope, not per client (#156): replaced by the unique index uq_connections__scope_name on (tenant_id, workspace or zero, project or zero, name)."
+  migration: connections_0002
+
+- table: connections
+  path: [indexes, uq_connections__tenant_name]
+  reason: "index of uq_connections__tenant_name, dropped with it; names are unique per scope (#156)."
+  migration: connections_0002
+
+- table: connections
+  path: [indexes, uq_connections__scope_name]
+  reason: "names are unique within a connection's scope (client, workspace or project) (#156)."
+  migration: connections_0002
+
+- table: connections
+  path: [triggers, trg_connections_guard]
+  reason: "connections_guard also requires the bound secret's scope to equal the connection's scope (#156); the trigger also fires on workspace_id and project_id (defense in depth: shifde_app cannot update them)."
+  migration: connections_0002
+
+- table: model_providers
+  path: [triggers, trg_model_providers_connection_scope]
+  reason: "a client-level model provider cannot carry a workspace's or project's credential: its connection must be client-wide (#156)."
+  migration: models_admin_0004

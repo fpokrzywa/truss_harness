@@ -88,7 +88,7 @@ def test_an_invocation_holds_once_per_client_and_settled_unknown_is_a_status(
     s.rollback()
 
 
-def test_the_app_role_may_set_the_marker_and_still_has_no_delete(
+def test_the_app_role_may_set_the_marker_and_delete_only_through_the_retention_guard(
     owner_session: Session,
 ) -> None:
     grants = owner_session.execute(
@@ -106,7 +106,9 @@ def test_the_app_role_may_set_the_marker_and_still_has_no_delete(
             "AND grantee = 'shifde_app' ORDER BY privilege_type"
         )
     ).all()
-    assert [g[0] for g in table] == ["INSERT", "SELECT"]  # still no DELETE
+    # DELETE since runtime_0006 (B-2783), refused by trg_budget_reservations_retention_delete
+    # unless the retention delete set its cutoff (tests/cli/test_maintenance_delete.py)
+    assert [g[0] for g in table] == ["DELETE", "INSERT", "SELECT"]
 
 
 # ------------------------------------------------------------------ expiry and counting

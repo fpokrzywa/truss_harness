@@ -2,7 +2,7 @@
 /api/executor/v1/whoami` with an `shx_` token, every refusal one identical 401, user and executor
 tokens kept apart, the resolver definer called directly as `shifde_app`, and pepper rotation. Every
 refusal writes one installation-level audit row with no token material, and failures are limited
-per source address (B-2730).
+per source address (B-2730), including a non-proxy peer that sends a forwarded header.
 """
 
 from __future__ import annotations
@@ -68,8 +68,9 @@ def test_whoami_with_a_live_token(
     r = client.get(WHOAMI, headers={**bearer(token), "X-Executor-Version": "1.2.3+fake"})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert set(body) == {"executor_id", "name", "status", "version", "last_seen_at"}
+    assert set(body) == {"executor_id", "name", "status", "version", "last_seen_at", "tenant_id"}
     assert body["executor_id"] == made["id"] and body["name"] == made["name"]
+    assert body["tenant_id"] == str(world.a.tenant)
     assert body["status"] == "active" and body["version"] == "1.2.3+fake"
     with owner_db.session() as o:
         row = o.execute(
@@ -372,6 +373,25 @@ def test_failed_executor_authentications_are_limited_per_source(
     ) as other:  # another source is not affected, and its successes are never counted
         for _ in range(10):
             assert other.get(WHOAMI, headers=bearer(token)).status_code == 200
+
+
+def test_spoofed_forwarded_loopback_is_still_limited(
+    settings: Settings, world: World, people: People, owner_db: Database
+) -> None:
+    limited = settings.model_copy(update={"executor_auth_failures_per_minute": 3})
+    spoof = {"X-Forwarded-For": "127.0.0.1"}
+    garbage = bearer("shx_ZZZZZZZZ_" + "a" * 43) | spoof
+    with delivery_client(limited, client=REMOTE) as c:
+        _, token = _setup(c, world, people)
+        for _ in range(3):
+            r = c.get(WHOAMI, headers=garbage)
+            assert r.status_code == 401 and r.json()["code"] == "invalid_credentials"
+        for headers in (garbage, bearer(token) | spoof):  # the header does not change the source
+            r = c.get(WHOAMI, headers=headers)
+            assert r.status_code == 429 and r.json()["code"] == "rate_limited", r.text
+    rows = _rejections(owner_db)
+    assert len(rows) == 3  # one per 401, none for a 429
+    assert {r.actor_ip for r in rows} == {REMOTE[0]}
 
 
 def test_loopback_is_not_limited(settings: Settings, world: World, people: People) -> None:

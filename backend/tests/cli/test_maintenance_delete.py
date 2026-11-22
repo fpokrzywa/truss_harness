@@ -1,0 +1,595 @@
+"""`shifde-admin maintenance delete` (issue #126, SP4-8, REQ F-11, B-2783): old, ended run families
+are deleted client by client as the application role, through the guards of migration
+`runtime_0006`.
+
+Behaviour: `--dry-run` reports the counts and changes nothing; a real run deletes an old ended
+family's rows from all nine run tables and keeps its usage events; running runs, recently ended
+runs, an ended child of a running root and an old family with a recent member are untouched; a
+stored `retain_days` longer than `--older-than` wins; a client on legal hold is skipped and still
+gets its event; each pin (held reservation, pending approval, queued or leased job, a case run of
+a passed evaluation a delivery plan uses, of a release that is not withdrawn) keeps the whole
+family; one audit event per client and every chain still verifies; a second run finds nothing
+left; invalid `--older-than` values and a privileged role are refused.
+
+Guards: as `shifde_app` in the client's own context and as the schema owner, a delete without a
+cutoff, of a run that is not terminal or ended after the cutoff, of a pending approval, a queued
+job or a held reservation is refused with 42501.
+
+Isolation: with A deleted and B on legal hold (or with a longer stored `retain_days`), every row of
+B in the nine tables, `usage_events` and `audit_events` is byte-for-byte unchanged apart from B's
+own new event, and A's rows are really gone (the check is not vacuous).
+
+Data is seeded and read as the schema owner; the command itself connects as `shifde_app`.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from dataclasses import dataclass
+from datetime import timedelta
+from typing import Any
+from uuid import UUID
+
+import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.orm import Session
+from typer.testing import CliRunner
+
+from shifde.audit import service as audit
+from shifde.cli import main as cli_main
+from shifde.cli.maintenance import DELETE_TABLES
+from shifde.core.clock import utcnow
+from shifde.core.context import RequestContext
+from shifde.core.db import Database, set_tenant
+from shifde.core.ids import uuid7
+from shifde.core.settings import Settings
+from shifde.runtime import repository as repo
+from tests._support.runs import add_run
+from tests._support.tenants import add_tenant
+from tests.build.env_support import add_published
+from tests.delivery.releases import make_release
+from tests.runtime.conftest import insert
+
+ACTION = "maintenance.retention.deleted"
+OLD, RECENT = 200, 1  # days since the run ended
+RUN_TABLES = (*DELETE_TABLES, "runs")
+CUTOFF = "SELECT set_config('shifde.retention_delete_cutoff', :c, true)"
+
+
+@dataclass(frozen=True)
+class Client:
+    tenant: UUID
+    slug: str
+
+
+@pytest.fixture
+def cli(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> CliRunner:
+    monkeypatch.setattr(cli_main, "_settings", lambda: settings)
+    return CliRunner()
+
+
+def _delete(runner: CliRunner, *args: str) -> Any:  # Any: click Result
+    return runner.invoke(cli_main.app, ["maintenance", "delete", *args])
+
+
+def _client(owner_db: Database) -> Client:
+    with owner_db.session() as o:
+        tenant = add_tenant(o)
+        slug = o.execute(text("SELECT slug FROM shifde.tenants WHERE id = :t"), {"t": tenant})
+        client = Client(tenant, slug.scalar_one())
+        o.commit()
+    return client
+
+
+def _retention(owner_db: Database, tenant: UUID, data_class: str, days: int, hold: bool) -> None:
+    with owner_db.session() as o:
+        o.execute(
+            text(
+                "INSERT INTO shifde.retention_policies (tenant_id, data_class, retain_days, "
+                "legal_hold) VALUES (:t, :c, :d, :h)"
+            ),
+            {"t": tenant, "c": data_class, "d": days, "h": hold},
+        )
+        o.commit()
+
+
+def _rows(o: Session, tenant: UUID, run: UUID, pins: dict[str, str]) -> None:
+    """One row of `run` in each of the eight tables that hang off it, plus a usage event. `pins`
+    overrides the status of the approval, job or reservation (decided, done and settled)."""
+    ws, project = o.execute(
+        text("SELECT workspace_id, project_id FROM shifde.runs WHERE id = :r"), {"r": run}
+    ).one()
+    _, tool_version = add_published(o, tenant, "tools", f"tool-{uuid7().hex}", {})
+    _, ontology_version = add_published(o, tenant, "ontologies", f"onto-{uuid7().hex}", {})
+    insert(o, "run_events", id=uuid7(), tenant_id=tenant, run_id=run, seq=1, type="note")
+    repo.insert_artifact(o, tenant, run, "input", {"input": f"in-{run.hex}"})
+    invocation = uuid7()
+    insert(o, "tool_invocations", id=invocation, tenant_id=tenant, run_id=run, call_ref="w1",
+           tool_version_id=tool_version, side_effect_class="write_non_idempotent",
+           idempotency_key=f"k-{invocation}", status="succeeded", request_hash="h",
+           arguments=f'{{"item": "arg-{run.hex}"}}')  # fmt: skip
+    # the step names the invocation: run_steps has to go first (fk_run_steps__tool_invocation)
+    insert(o, "run_steps", id=uuid7(), tenant_id=tenant, run_id=run, seq=1, kind="tool_call",
+           name="t", status="succeeded", tool_invocation_id=invocation)  # fmt: skip
+    approval = pins.get("approval", "approved")
+    decider = uuid7() if approval in ("approved", "rejected") else None
+    insert(o, "approvals", id=uuid7(), tenant_id=tenant, run_id=run, workspace_id=ws,
+           project_id=project, call_ref="w1", reason="tool_side_effect", requested_by=uuid7(),
+           expires_at=utcnow() + timedelta(hours=1), status=approval, decided_by=decider)  # fmt: skip
+    insert(o, "jobs", id=uuid7(), tenant_id=tenant, kind="run", run_id=run,
+           status=pins.get("job", "done"), dedupe_key=f"run-{run}")  # fmt: skip
+    insert(o, "ontology_query_lineage", id=uuid7(), tenant_id=tenant, principal_id=uuid7(),
+           principal_type="user", ontology_id=uuid7(), ontology_version_id=ontology_version,
+           run_id=run, channel="agent", object_types=["x"], connection_ids=[],
+           compiled_query_hashes=[], duration_ms=1, outcome="success")  # fmt: skip
+    insert(o, "budget_reservations", id=uuid7(), tenant_id=tenant, run_id=run, step_key="s1",
+           budget_ids=[], amount=1, status=pins.get("reservation", "settled"),
+           expires_at=utcnow() + timedelta(hours=1))  # fmt: skip
+    insert(o, "usage_events", id=uuid7(), tenant_id=tenant, event_key=f"run-{run}",
+           event_type="run", run_id=run, root_run_id=run)  # fmt: skip
+
+
+def _run(
+    owner_db: Database,
+    tenant: UUID,
+    *,
+    ended_days_ago: int | None,
+    root: UUID | None = None,
+    pins: dict[str, str] | None = None,
+) -> UUID:
+    """A run of `tenant` with a row in every run table: running when `ended_days_ago` is None,
+    else cancelled that many days ago. With `root` it is a child of that run."""
+    tree = {} if root is None else {"root_run_id": root, "parent_run_id": root, "depth": 1}
+    with owner_db.session() as o:
+        if ended_days_ago is None:
+            run = add_run(o, tenant, status="running", lease_token=uuid7(),
+                          started_at=utcnow(), **tree)  # fmt: skip
+            _rows(o, tenant, run, pins or {})
+        else:
+            run = add_run(o, tenant, status="pending", **tree)
+            _rows(o, tenant, run, pins or {})
+            o.execute(
+                text(
+                    "UPDATE shifde.runs SET status = 'cancelled', "
+                    "state_version = state_version + 1, finished_at = :f WHERE id = :r"
+                ),
+                {"f": utcnow() - timedelta(days=ended_days_ago), "r": run},
+            )
+        o.commit()
+    return run
+
+
+def _present(owner_db: Database, run: UUID) -> dict[str, int]:
+    """Rows of `run` per run table (and its usage events)."""
+    with owner_db.session() as o:
+        counts = {
+            t: o.execute(
+                text(
+                    f"SELECT count(*) FROM shifde.{t} WHERE {'id' if t == 'runs' else 'run_id'} = :r"
+                ),
+                {"r": run},
+            ).scalar_one()
+            for t in (*RUN_TABLES, "usage_events")
+        }
+    return counts
+
+
+FULL = {t: 1 for t in (*RUN_TABLES, "usage_events")}
+GONE = {**{t: 0 for t in RUN_TABLES}, "usage_events": 1}
+
+
+def _tenant_rows(owner_db: Database, tenant: UUID) -> dict[str, list[str]]:
+    """Every row of `tenant` in the run tables, usage_events and audit_events (apart from this
+    command's events), as `to_jsonb` text ordered by id."""
+    with owner_db.session() as o:
+        rows = {
+            t: list(
+                o.execute(
+                    text(
+                        f"SELECT to_jsonb(x)::text FROM shifde.{t} x WHERE x.tenant_id = :t "
+                        f"{'AND x.action <> :a ' if t == 'audit_events' else ''}ORDER BY x.id"
+                    ),
+                    {"t": tenant, "a": ACTION},
+                ).scalars()
+            )
+            for t in (*RUN_TABLES, "usage_events", "audit_events")
+        }
+    return rows
+
+
+def _events(owner_db: Database, tenant: UUID) -> list[Any]:  # Any: audit rows
+    with owner_db.session() as o:
+        return list(
+            o.execute(
+                text(
+                    "SELECT action, outcome, details FROM shifde.audit_events "
+                    "WHERE tenant_id = :t AND action = :a ORDER BY chain_seq"
+                ),
+                {"t": tenant, "a": ACTION},
+            ).all()
+        )
+
+
+def _line(output: str, slug: str) -> str:
+    lines = [ln for ln in output.splitlines() if ln.startswith(f"{slug}:")]
+    assert len(lines) == 1, output
+    return lines[0]
+
+
+def _counts(runs: int, kept: int, n: int) -> str:
+    """The start of a client's line: `runs` deleted, `kept` kept, `n` rows in each table."""
+    tables = ", ".join(f"{t} {n}" for t in DELETE_TABLES)
+    return f"runs {runs}, runs kept {kept}, {tables} (cutoff "
+
+
+def test_dry_run_reports_counts_and_changes_nothing(cli: CliRunner, owner_db: Database) -> None:
+    """(a)"""
+    c = _client(owner_db)
+    run = _run(owner_db, c.tenant, ended_days_ago=OLD)
+    before = _tenant_rows(owner_db, c.tenant)
+    result = _delete(cli, "--older-than", "30", "--dry-run")
+    assert result.exit_code == 0, result.output
+    line = _line(result.output, c.slug)
+    assert line.startswith(f"{c.slug}: {_counts(1, 0, 1)}")
+    assert result.output.rstrip().endswith("dry run: nothing changed")
+    assert _tenant_rows(owner_db, c.tenant) == before
+    assert _present(owner_db, run) == FULL
+    assert _events(owner_db, c.tenant) == []
+    # a real run right after reports the same counts
+    real = _delete(cli, "--older-than", "30")
+    assert real.exit_code == 0, real.output
+    assert _line(real.output, c.slug).split(" (cutoff")[0] == line.split(" (cutoff")[0]
+
+
+def test_a_real_run_deletes_an_old_family_from_all_nine_tables(
+    cli: CliRunner, owner_db: Database
+) -> None:
+    """(b)"""
+    c = _client(owner_db)
+    root = _run(owner_db, c.tenant, ended_days_ago=OLD)
+    child = _run(owner_db, c.tenant, ended_days_ago=OLD, root=root)
+    before = _tenant_rows(owner_db, c.tenant)
+    result = _delete(cli, "--older-than", "30")
+    assert result.exit_code == 0, result.output
+    assert "dry run" not in result.output
+    assert _line(result.output, c.slug).startswith(f"{c.slug}: {_counts(2, 0, 2)}")
+    assert _present(owner_db, root) == GONE
+    assert _present(owner_db, child) == GONE
+    after = _tenant_rows(owner_db, c.tenant)
+    assert all(after[t] == [] for t in RUN_TABLES)
+    # usage events keep their run id; audit events are untouched apart from the new event
+    assert after["usage_events"] == before["usage_events"]
+    assert {r for r in after["usage_events"] if str(root) in r or str(child) in r}
+    assert after["audit_events"] == before["audit_events"]
+    assert len(_events(owner_db, c.tenant)) == 1
+
+
+def test_running_recent_and_partly_recent_families_are_untouched(
+    cli: CliRunner, owner_db: Database
+) -> None:
+    """(c)"""
+    c = _client(owner_db)
+    running = _run(owner_db, c.tenant, ended_days_ago=None)
+    recent = _run(owner_db, c.tenant, ended_days_ago=RECENT)
+    child = _run(owner_db, c.tenant, ended_days_ago=OLD, root=running)
+    mixed_root = _run(owner_db, c.tenant, ended_days_ago=OLD)
+    mixed_child = _run(owner_db, c.tenant, ended_days_ago=RECENT, root=mixed_root)
+    old = _run(owner_db, c.tenant, ended_days_ago=OLD)
+    kept = (running, recent, child, mixed_root, mixed_child)
+    result = _delete(cli, "--older-than", "30")
+    assert result.exit_code == 0, result.output
+    # the old root of the mixed family is eligible on its own and kept with its family
+    assert _line(result.output, c.slug).startswith(f"{c.slug}: {_counts(1, 1, 1)}")
+    assert all(_present(owner_db, r) == FULL for r in kept)
+    assert _present(owner_db, old) == GONE
+
+
+def test_stored_retention_longer_than_older_than_keeps_the_run(
+    cli: CliRunner, owner_db: Database
+) -> None:
+    """(d)"""
+    c = _client(owner_db)
+    _retention(owner_db, c.tenant, "run_steps_content", 400, False)
+    run = _run(owner_db, c.tenant, ended_days_ago=OLD)
+    result = _delete(cli, "--older-than", "30")
+    assert result.exit_code == 0, result.output
+    assert _line(result.output, c.slug).startswith(f"{c.slug}: {_counts(0, 0, 0)}")
+    assert _present(owner_db, run) == FULL
+    (event,) = _events(owner_db, c.tenant)
+    assert event.details["effective_days"] == 400
+
+
+def test_a_client_on_legal_hold_is_skipped_and_gets_its_event(
+    cli: CliRunner, owner_db: Database
+) -> None:
+    """(e)"""
+    c = _client(owner_db)
+    _retention(owner_db, c.tenant, "usage_events", 395, True)  # a hold on any data class
+    run = _run(owner_db, c.tenant, ended_days_ago=OLD)
+    result = _delete(cli, "--older-than", "30")
+    assert result.exit_code == 0, result.output
+    assert _line(result.output, c.slug) == f"{c.slug}: skipped (legal hold)"
+    assert _present(owner_db, run) == FULL
+    (event,) = _events(owner_db, c.tenant)
+    assert (event.action, event.outcome) == (ACTION, "success")
+    assert event.details["legal_hold"] is True
+    assert event.details["runs"] == event.details["runs_kept"] == 0
+    assert all(event.details[t] == 0 for t in DELETE_TABLES)
+
+
+@pytest.mark.parametrize(
+    "pin", [{"reservation": "held"}, {"approval": "pending"}, {"job": "queued"}, {"job": "leased"}]
+)
+def test_a_pinned_child_keeps_its_whole_family(
+    cli: CliRunner, owner_db: Database, pin: dict[str, str]
+) -> None:
+    """(f) a held reservation, a pending approval, a queued or leased job"""
+    c = _client(owner_db)
+    root = _run(owner_db, c.tenant, ended_days_ago=OLD)
+    pinned = _run(owner_db, c.tenant, ended_days_ago=OLD, root=root, pins=pin)
+    old = _run(owner_db, c.tenant, ended_days_ago=OLD)
+    result = _delete(cli, "--older-than", "30")
+    assert result.exit_code == 0, result.output
+    assert _line(result.output, c.slug).startswith(f"{c.slug}: {_counts(1, 2, 1)}")
+    assert _present(owner_db, root) == FULL
+    assert _present(owner_db, pinned) == FULL
+    assert _present(owner_db, old) == GONE
+
+
+def _evaluation(
+    owner_db: Database, tenant: UUID, run: UUID, *, withdrawn: bool, plan: bool
+) -> None:
+    """A passed evaluation run whose case run is `run`, of a release in the run's workspace
+    (withdrawn if asked), named by a delivery plan if `plan`."""
+    with owner_db.session() as o:
+        ws = o.execute(text("SELECT workspace_id FROM shifde.runs WHERE id = :r"), {"r": run})
+        workspace = ws.scalar_one()
+    rel = make_release(owner_db, tenant, workspace, evaluation=None, withdrawn=withdrawn)
+    evaluation, target, artifact = uuid7(), uuid7(), uuid7()
+    with owner_db.session() as o:
+        set_tenant(o, tenant)
+        o.execute(
+            text(
+                "INSERT INTO shifde.evaluation_runs (tenant_id, id, release_id, release_digest, "
+                "dataset_id, dataset_digest, thresholds, case_runs, status, requested_by) VALUES "
+                "(:t, :i, :r, :rd, :d, :dd, '{}'::jsonb, CAST(:cr AS jsonb), 'passed', :t)"
+            ),
+            {"t": tenant, "i": evaluation, "r": rel.id, "rd": rel.digest, "d": rel.dataset_id,
+             "dd": rel.dataset_digest,
+             "cr": f'[{{"case_id": "c1", "run_id": "{run}"}}]'},
+        )  # fmt: skip
+        if plan:
+            insert(o, "delivery_targets", tenant_id=tenant, id=target, workspace_id=workspace,
+                   name="t", platform_kind="databricks", address="https://x", environment="dev",
+                   bindings="{}", credential_ref="cred", status="archived",
+                   created_by=uuid7())  # fmt: skip
+            insert(o, "delivery_artifacts", tenant_id=tenant, id=artifact,
+                   target_kind="databricks.app/v1", digest="a" * 64, size=1, content=b"x",
+                   created_by=uuid7())  # fmt: skip
+            insert(o, "delivery_plans", tenant_id=tenant, id=uuid7(), target_id=target,
+                   target_revision=1, artifact_id=artifact, artifact_digest="a" * 64,
+                   application_key="app", display_name="App", requested_by=uuid7(),
+                   release_id=rel.id, release_digest=rel.digest,
+                   evaluation_run_id=evaluation)  # fmt: skip
+        o.commit()
+
+
+@pytest.mark.parametrize(
+    ("withdrawn", "plan", "kept"), [(False, True, True), (True, True, False), (False, False, False)]
+)
+def test_a_case_run_of_a_passed_evaluation_a_plan_uses_keeps_its_family(
+    cli: CliRunner, owner_db: Database, withdrawn: bool, plan: bool, kept: bool
+) -> None:
+    """(f) the evaluation pin, and the same family deleted once the release is withdrawn or no
+    plan names the evaluation"""
+    c = _client(owner_db)
+    root = _run(owner_db, c.tenant, ended_days_ago=OLD)
+    case = _run(owner_db, c.tenant, ended_days_ago=OLD, root=root)
+    _evaluation(owner_db, c.tenant, case, withdrawn=withdrawn, plan=plan)
+    result = _delete(cli, "--older-than", "30")
+    assert result.exit_code == 0, result.output
+    line = _line(result.output, c.slug)
+    if kept:
+        assert line.startswith(f"{c.slug}: {_counts(0, 2, 0)}")
+        assert _present(owner_db, root) == _present(owner_db, case) == FULL
+    else:
+        assert line.startswith(f"{c.slug}: {_counts(2, 0, 2)}")
+        assert _present(owner_db, root) == _present(owner_db, case) == GONE
+
+
+# ------------------------------------------------------------------ guards (13 g)
+@pytest.fixture(params=["app", "owner"])
+def guard_session(
+    request: pytest.FixtureRequest, app_db: Database, owner_db: Database
+) -> Iterator[tuple[Session, Client]]:
+    """A session as `shifde_app` in the client's own context, or as the schema owner."""
+    c = _client(owner_db)
+    database = app_db if request.param == "app" else owner_db
+    with database.session() as s:
+        set_tenant(s, c.tenant)
+        yield s, c
+        s.rollback()
+
+
+def _refused(s: Session, sql: str, cutoff_days: int | None, **params: Any) -> None:
+    """`sql` in the session's open transaction (after the cutoff, if given) fails with 42501."""
+    if cutoff_days is not None:
+        s.execute(text(CUTOFF), {"c": (utcnow() - timedelta(days=cutoff_days)).isoformat()})
+    with pytest.raises(DBAPIError) as caught:
+        s.execute(text(sql), params)
+    assert getattr(caught.value.orig, "sqlstate", None) == "42501", caught.value
+    s.rollback()
+
+
+def test_guard_refuses_a_delete_without_a_cutoff(
+    guard_session: tuple[Session, Client], owner_db: Database
+) -> None:
+    s, c = guard_session
+    run = _run(owner_db, c.tenant, ended_days_ago=OLD)
+    set_tenant(s, c.tenant)
+    for table in RUN_TABLES:
+        column = "id" if table == "runs" else "run_id"
+        _refused(s, f"DELETE FROM shifde.{table} WHERE {column} = :r", None, r=run)
+        set_tenant(s, c.tenant)
+    assert _present(owner_db, run) == FULL
+
+
+def test_guard_refuses_a_run_that_is_not_terminal(
+    guard_session: tuple[Session, Client], owner_db: Database
+) -> None:
+    s, c = guard_session
+    run = _run(owner_db, c.tenant, ended_days_ago=None)
+    set_tenant(s, c.tenant)
+    _refused(s, "DELETE FROM shifde.run_events WHERE run_id = :r", 0, r=run)
+    set_tenant(s, c.tenant)
+    _refused(s, "DELETE FROM shifde.runs WHERE id = :r", 0, r=run)
+    assert _present(owner_db, run) == FULL
+
+
+def test_guard_refuses_a_run_that_ended_after_the_cutoff(
+    guard_session: tuple[Session, Client], owner_db: Database
+) -> None:
+    s, c = guard_session
+    run = _run(owner_db, c.tenant, ended_days_ago=RECENT)
+    set_tenant(s, c.tenant)
+    _refused(s, "DELETE FROM shifde.run_artifacts WHERE run_id = :r", 30, r=run)
+    assert _present(owner_db, run) == FULL
+
+
+@pytest.mark.parametrize(
+    ("table", "pin"),
+    [("approvals", {"approval": "pending"}), ("jobs", {"job": "queued"}),
+     ("budget_reservations", {"reservation": "held"})],
+)  # fmt: skip
+def test_guard_refuses_a_pending_approval_a_queued_job_and_a_held_reservation(
+    guard_session: tuple[Session, Client], owner_db: Database, table: str, pin: dict[str, str]
+) -> None:
+    s, c = guard_session
+    run = _run(owner_db, c.tenant, ended_days_ago=OLD, pins=pin)
+    set_tenant(s, c.tenant)
+    _refused(s, f"DELETE FROM shifde.{table} WHERE run_id = :r", 0, r=run)
+    assert _present(owner_db, run) == FULL
+
+
+def test_guard_admits_a_decided_approval_of_an_old_run_with_a_cutoff(
+    guard_session: tuple[Session, Client], owner_db: Database
+) -> None:
+    """The control for the refusals above: the same delete with every condition met succeeds."""
+    s, c = guard_session
+    run = _run(owner_db, c.tenant, ended_days_ago=OLD)
+    s.rollback()
+    set_tenant(s, c.tenant)
+    s.execute(text(CUTOFF), {"c": (utcnow() - timedelta(days=30)).isoformat()})
+    deleted = s.execute(text("DELETE FROM shifde.approvals WHERE run_id = :r"), {"r": run})
+    assert deleted.rowcount == 1  # type: ignore[attr-defined]
+    s.rollback()
+
+
+# ------------------------------------------------------------------ isolation (13 h)
+def _seed_audit(owner_db: Database, tenant: UUID) -> None:
+    with owner_db.session() as o:
+        set_tenant(o, tenant)
+        audit.record(o, RequestContext(request_id="seed"), action="test.seeded",
+                     tenant_id=tenant, actor_label="seed")  # fmt: skip
+        o.commit()
+
+
+@pytest.mark.parametrize("b_policy", ["legal_hold", "longer_retention"])
+def test_deleting_a_leaves_b_byte_for_byte_unchanged(
+    cli: CliRunner, owner_db: Database, b_policy: str
+) -> None:
+    """(h) B on legal hold, or with a stored retain_days longer than its runs' age"""
+    a, b = _client(owner_db), _client(owner_db)
+    if b_policy == "legal_hold":
+        _retention(owner_db, b.tenant, "run_artifacts", 90, True)
+    else:
+        _retention(owner_db, b.tenant, "run_artifacts", 400, False)
+    a_runs = [_run(owner_db, a.tenant, ended_days_ago=OLD) for _ in range(2)]
+    for _ in range(2):
+        _run(owner_db, b.tenant, ended_days_ago=OLD)
+    for c in (a, b):
+        _seed_audit(owner_db, c.tenant)
+    a_before, b_before = _tenant_rows(owner_db, a.tenant), _tenant_rows(owner_db, b.tenant)
+    assert all(len(b_before[t]) == 2 for t in RUN_TABLES)
+    result = _delete(cli, "--older-than", "30")
+    assert result.exit_code == 0, result.output
+    b_line = _line(result.output, b.slug)
+    if b_policy == "legal_hold":
+        assert b_line == f"{b.slug}: skipped (legal hold)"
+    else:
+        assert b_line.startswith(f"{b.slug}: {_counts(0, 0, 0)}")
+    assert _line(result.output, a.slug).startswith(f"{a.slug}: {_counts(2, 0, 2)}")
+    assert _tenant_rows(owner_db, b.tenant) == b_before
+    a_after = _tenant_rows(owner_db, a.tenant)
+    assert a_after != a_before  # not vacuous
+    assert all(a_after[t] == [] for t in RUN_TABLES)
+    assert all(_present(owner_db, r) == GONE for r in a_runs)
+    assert len(_events(owner_db, b.tenant)) == 1
+
+
+# ------------------------------------------------------------------ audit, reruns, refusals
+def test_one_audit_event_per_client_and_the_chains_verify(
+    cli: CliRunner, owner_db: Database
+) -> None:
+    """(i)"""
+    a, b = _client(owner_db), _client(owner_db)
+    _retention(owner_db, a.tenant, "audit_events", 365, True)
+    _run(owner_db, b.tenant, ended_days_ago=OLD)
+    result = _delete(cli, "--older-than", "30")
+    assert result.exit_code == 0, result.output
+    (a_event,) = _events(owner_db, a.tenant)
+    (b_event,) = _events(owner_db, b.tenant)
+    for event, hold, n in ((a_event, True, 0), (b_event, False, 1)):
+        assert (event.action, event.outcome) == (ACTION, "success")
+        details = event.details
+        assert details["older_than_days"] == 30
+        assert details["effective_days"] == 90  # the run_artifacts default
+        assert details["legal_hold"] is hold
+        assert (details["runs"], details["runs_kept"]) == (n, 0)
+        assert all(details[t] == n for t in DELETE_TABLES)
+        assert details["actor"].startswith("shifde-admin:")
+        assert details["cutoff"] in result.output or hold
+    for slug in (a.slug, b.slug):
+        verified = cli.invoke(cli_main.app, ["audit", "verify", "--org", slug])
+        assert verified.exit_code == 0, verified.output
+
+
+def test_a_second_run_reports_zero(cli: CliRunner, owner_db: Database) -> None:
+    """(j)"""
+    c = _client(owner_db)
+    _run(owner_db, c.tenant, ended_days_ago=OLD)
+    first = _delete(cli, "--older-than", "30")
+    assert first.exit_code == 0, first.output
+    assert _line(first.output, c.slug).startswith(f"{c.slug}: {_counts(1, 0, 1)}")
+    second = _delete(cli, "--older-than", "30")
+    assert second.exit_code == 0, second.output
+    assert _line(second.output, c.slug).startswith(f"{c.slug}: {_counts(0, 0, 0)}")
+
+
+@pytest.mark.parametrize("args", [["--older-than", "0"], ["--older-than", "-5"],
+                                  ["--older-than", "abc"], [], ["--older-than", "36501"]])  # fmt: skip
+def test_an_invalid_older_than_is_refused(
+    cli: CliRunner, owner_db: Database, args: list[str]
+) -> None:
+    """(k)"""
+    c = _client(owner_db)
+    run = _run(owner_db, c.tenant, ended_days_ago=OLD)
+    result = _delete(cli, *args)
+    assert result.exit_code != 0
+    assert _present(owner_db, run) == FULL
+    assert _events(owner_db, c.tenant) == []
+
+
+def test_a_privileged_role_is_refused(
+    settings: Settings, owner_url: str, monkeypatch: pytest.MonkeyPatch, owner_db: Database
+) -> None:
+    """(l) The command connects as the application role: given the owner's URL it refuses."""
+    c = _client(owner_db)
+    run = _run(owner_db, c.tenant, ended_days_ago=OLD)
+    owner_settings = settings.model_copy(update={"database_url": owner_url})
+    monkeypatch.setattr(cli_main, "_settings", lambda: owner_settings)
+    result = _delete(CliRunner(), "--older-than", "30")
+    assert result.exit_code == 1
+    assert "refusing to delete" in result.output
+    assert _present(owner_db, run) == FULL

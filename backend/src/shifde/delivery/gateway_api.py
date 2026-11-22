@@ -71,6 +71,7 @@ ExecutorDep = Annotated[AuthenticatedExecutor, Depends(require_executor)]
 def whoami(executor: ExecutorDep) -> s.ExecutorWhoami:
     return s.ExecutorWhoami(
         executor_id=executor.executor_id,
+        tenant_id=executor.tenant_id,
         name=executor.name,
         status=executor.status,
         version=executor.version,

@@ -26,7 +26,7 @@ from __future__ import annotations
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal  # Any: rows / provider JSON
 from uuid import UUID
@@ -108,9 +108,6 @@ JOB_ACTION = {
     DISCOVER_JOB_KIND: "model.provider.models_discovered",
 }
 JOB_NOT_FOUND = "provider job not found"
-# how far before the job's `created_at` (the database clock) its result event may be dated (the
-# worker host's clock): a worker running slightly behind still finds what it recorded
-RESULT_CLOCK_SKEW = timedelta(minutes=5)
 
 
 def _provider_out(r: Mapping[str, Any]) -> s.ProviderOut:
@@ -197,7 +194,9 @@ def _job_state(
 
 
 def _recorded(session: Session, tenant_id: UUID, job: Mapping[str, Any]) -> dict[str, Any] | None:
-    """The result a provider job recorded: its audit event's details (B-2720)."""
+    """The result a provider job recorded: its audit event's details (B-2720), found by its
+    job-unique correlation id with no time bound, so a worker clock behind the database's still
+    finds it (B-2861)."""
     kind = job["kind"]
     return audit.find_details(
         session,
@@ -205,7 +204,6 @@ def _recorded(session: Session, tenant_id: UUID, job: Mapping[str, Any]) -> dict
         action=JOB_ACTION[kind],
         target_id=UUID(job["payload"]["provider_id"]),
         correlation_id=f"{JOB_PREFIX[kind]}-{job['id']}",
-        occurred_from=job["created_at"] - RESULT_CLOCK_SKEW,
     )
 
 
