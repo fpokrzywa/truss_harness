@@ -5,7 +5,11 @@ A plan request builds the SDK template artifact here (offline: no credential, no
 request), stores it, and queues one `plan` job for the executor. The job's result seals the plan
 or fails it (`service.on_plan_result`). A sealed plan is decided once, by a person other than its
 requester who holds `delivery:plan:approve` on the target's scope, before `expires_at`; approve
-quotes the sealed digest. The `delivery_approvals` insert trigger enforces the same rule.
+quotes the sealed digest. Related principals count as the requester (B-2733): a service account
+the requester owns (`service_accounts.owner_principal_id`) and the owner of a requesting service
+account are refused too, 403 `self_approval_forbidden`, and that refusal is audited
+(`delivery.plan.approve` or `delivery.plan.reject`, outcome `denied`, committed before the 403).
+The `delivery_approvals` insert trigger enforces only the same-principal case.
 Approval creates the plan's deployment (`queued`) and its one-attempt `apply` job, due until the
 plan's `expires_at`, in the approval's transaction (B-2684). A target with an unresolved unknown
 outcome takes no new plan (409 `target_unresolved`, settled call 10).
@@ -21,9 +25,11 @@ lock; reject does not.
 A plan is scoped by its target's workspace/project; a plan or target the caller cannot read gets
 the answer an unknown id gets. Every plan route first settles the organization's plans (the lost
 job sweep, lost plan jobs, passed expiries, then the deployment settle step) and commits that, so
-a refused decision still leaves an expired plan `expired`. The artifact's content is never
-returned on a user route, and a plan's release fields (`release_id`, `release_digest`,
-`evaluation_run_id`) are returned only to a caller who can read that release (else null).
+a refused decision still leaves an expired plan `expired`. Approve and reject check
+`delivery:plan:approve` before that settle, so a caller without it causes no write, then re-read
+the plan under its row lock. The artifact's content is never returned on a user route, and a
+plan's release fields (`release_id`, `release_digest`, `evaluation_run_id`) are returned only to
+a caller who can read that release (else null).
 """
 
 from __future__ import annotations
@@ -149,11 +155,14 @@ class PlanService:
             # a plan the caller cannot read gets the answer an unknown id gets
             raise NotFound("plan not found") from exc
 
-    def _audit(self, action: str, row: Mapping[str, Any], **details: Any) -> None:
+    def _audit(
+        self, action: str, row: Mapping[str, Any], *, outcome: str = "success", **details: Any
+    ) -> None:
         audit.record(
             self.sc.session,
             self.sc.ctx,
             action=action,
+            outcome=outcome,
             tenant_id=self.sc.tenant_id,
             target_type="delivery_plan",
             target_id=row["id"],
@@ -358,6 +367,29 @@ class PlanService:
         if current["digest"] != row["release_digest"]:
             raise EvaluationRequired("This release has no passing evaluation.")
 
+    def _related(self, requested_by: UUID) -> str | None:
+        """Why the caller may not decide a plan `requested_by` requested (None: they may): the
+        same principal, a service account the requester owns, or the owner of the requesting
+        service account."""
+        principal = self.sc.principal
+        if requested_by == principal.principal_id:
+            return "same_principal"
+        session, tenant_id = self.sc.session, self.sc.tenant_id
+        if (
+            principal.principal_type == "service_account"
+            and repository.service_account_owner(
+                session, principal.principal_id, tenant_id=tenant_id
+            )
+            == requested_by
+        ):
+            return "decider_owned_by_requester"
+        if (
+            repository.service_account_owner(session, requested_by, tenant_id=tenant_id)
+            == principal.principal_id
+        ):
+            return "requester_owned_by_decider"
+        return None
+
     def approve(self, plan_id: UUID, body: s.PlanApprove) -> s.PlanOut:
         return self._decide(plan_id, "approve", body.note, body.plan_digest)
 
@@ -367,12 +399,18 @@ class PlanService:
     def _decide(
         self, plan_id: UUID, decision: str, note: str | None, quoted_digest: str | None
     ) -> s.PlanOut:
+        # the permission first: a caller who may not decide causes no settle commit
+        self._require("delivery:plan:approve", self._get_row(plan_id))
         self._settle()
         session = self.sc.session
         row = self._get_row(plan_id, for_update=True)
-        self._require("delivery:plan:approve", row)
         principal_id = self.sc.principal.principal_id
-        if row["requested_by"] == principal_id:
+        reason = self._related(row["requested_by"])
+        if reason is not None:
+            self._audit(
+                f"delivery.plan.{decision}", row, outcome="denied", decision=decision, reason=reason
+            )
+            session.commit()
             raise SelfApprovalForbidden("a plan is decided by a person other than its requester")
         if row["status"] == "sealed" and row["db_now"] >= row["expires_at"]:
             repository.decide_plan(session, plan_id, "expired", tenant_id=self.sc.tenant_id)
