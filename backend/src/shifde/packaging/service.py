@@ -9,7 +9,8 @@ depth cap 8), read through `shifde.build.service` and resolved again on every re
 build versions and their pins never change). Each version's `spec_hash` is the sha256 of the
 canonical JSON of its spec (`packaging.canonical`). The entrypoint and every data-read connection
 must be in the solution's scope (organization-wide, or the solution's workspace and, if any, its
-project); a pin of an artifact the caller cannot see is shown without its version id and hash.
+project); a pin of an artifact the caller cannot see is shown without its version id and hash, and
+a data-read connection the caller cannot read without its id (isolation review 065, finding 1).
 
 Sealing a version runs the `databricks.app/v1` compatibility check over its pinned tools, models,
 connections and evaluation contract; a compatible version becomes a release whose `digest` is the
@@ -334,6 +335,10 @@ class SolutionService:
         entry = self.artifacts.version_access(row["entrypoint_version_id"])
         pins = resolve_pins(row["entrypoint_version_id"], self.artifacts.direct_pins)
         shown = entry is not None and entry.visible
+        spec = json.loads(json.dumps(row["spec"]))
+        for read in spec["data_reads"]:
+            if not self._readable(read["connection_id"]):
+                read["connection_id"] = None
         return s.SolutionVersionOut(
             id=row["id"],
             solution_id=row["solution_id"],
@@ -343,7 +348,7 @@ class SolutionService:
                 version_id=row["entrypoint_version_id"] if shown else None,
                 spec_hash=entry.spec_hash if entry is not None and shown else None,
             ),
-            spec=dict(row["spec"]),
+            spec=spec,
             spec_hash=row["spec_hash"],
             pins=[
                 s.SolutionPinOut(role=p.role, version_id=p.version_id, spec_hash=p.spec_hash)

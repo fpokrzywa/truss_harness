@@ -42,6 +42,7 @@ from tests._support.p4util import (
     agent_spec,
     art,
     builtin_tool_spec,
+    edit,
     make_user,
     prompt_spec,
     publish,
@@ -939,6 +940,84 @@ def test_hidden_models_and_connections_are_redacted_for_a_reader(
     ).scalar_one()
     owner_session.rollback()
     assert unchanged == stored_manifest
+
+
+def test_unreadable_connection_ids_are_null_on_version_routes(
+    client: TestClient, world: World, owner_session: Session, sample_db_url: str
+) -> None:
+    """Isolation review 065: a solution version's data reads and a visible tool's bound
+    connection hide the ids of connections the reader cannot read (findings 1 and 2)."""
+    x = _hidden(client, world, sample_db_url)
+    h, s = x.h, x.s
+    scope = {"type": "project", "id": s.project_id}
+    tool_spec = {
+        "executor": "connection.sql",
+        "binding": {"connection_id": x.pg, "sql_template": "SELECT name FROM employees"},
+        "input_schema": {"type": "object", "properties": {}},
+        "output_schema": {"type": "object", "required": ["columns", "rows"]},
+        "side_effect_class": "read",
+        "required_permissions": [],
+        "invocation_policy": {},
+        "timeout_s": 10,
+        "retry": {"max_attempts": 1, "backoff_s": 0},
+        "audit_level": "metadata",
+        "idempotency": "none",
+    }
+    tool = art(h.client, h, "tools", "shared-sql", tool_spec, scope)
+    tool_v1 = publish(h.client, h, "tools", tool["id"])["id"]
+    version_url = f"{solutions()}/{x.sid}/versions/{x.vid}"
+    tool_url = f"{A}/tools/{tool['id']}/versions/{tool_v1}"
+
+    # the administrator reads every connection
+    admin = h.client.get(version_url, headers=h)
+    assert admin.status_code == 200, admin.text
+    reads = [r["connection_id"] for r in admin.json()["spec"]["data_reads"]]
+    assert reads == [s.connection, x.inner]
+    admin_tool = h.client.get(tool_url, headers=h)
+    assert admin_tool.status_code == 200, admin_tool.text
+    assert admin_tool.json()["spec"]["binding"]["connection_id"] == x.pg
+
+    # a project developer reads the solution and the tool, not the organization-wide connections
+    proj = _project_developer(client, world, owner_session, s.project_id)
+    got = proj.client.get(version_url, headers=proj)
+    assert got.status_code == 200, got.text
+    assert s.connection not in got.text
+    assert [r["connection_id"] for r in got.json()["spec"]["data_reads"]] == [None, x.inner]
+    listed = proj.client.get(f"{solutions()}/{x.sid}/versions", headers=proj)
+    assert listed.status_code == 200, listed.text
+    assert s.connection not in listed.text
+    [item] = [v for v in listed.json()["items"] if v["id"] == x.vid]
+    assert [r["connection_id"] for r in item["spec"]["data_reads"]] == [None, x.inner]
+    got_tool = proj.client.get(tool_url, headers=proj)
+    assert got_tool.status_code == 200, got_tool.text
+    assert x.pg not in got_tool.text
+    assert got_tool.json()["spec"]["binding"] == {
+        **tool_spec["binding"],
+        "connection_id": None,
+    }
+    assert got_tool.json()["spec_hash"] == admin_tool.json()["spec_hash"]
+
+    # the tool's diff hides the unreadable connection as well
+    edit(
+        h.client,
+        h,
+        "tools",
+        tool["id"],
+        {**tool_spec, "binding": {**tool_spec["binding"], "connection_id": x.inner}},
+    )
+    diff_url = f"{A}/tools/{tool['id']}/diff?from={tool_v1}&to=draft"
+    admin_diff = h.client.get(diff_url, headers=h)
+    assert admin_diff.status_code == 200, admin_diff.text
+    path = "binding.connection_id"
+    assert [c for c in admin_diff.json()["changes"] if c["path"] == path] == [
+        {"path": path, "op": "replace", "from": x.pg, "to": x.inner}
+    ]
+    got_diff = proj.client.get(diff_url, headers=proj)
+    assert got_diff.status_code == 200, got_diff.text
+    assert x.pg not in got_diff.text
+    assert [c for c in got_diff.json()["changes"] if c["path"] == path] == [
+        {"path": path, "op": "replace", "from": None, "to": x.inner}
+    ]
 
 
 def test_a_hidden_binding_key_is_an_unknown_key_and_reports_read_hidden(
