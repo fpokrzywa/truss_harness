@@ -1,8 +1,8 @@
 {
-  "session_id": "9cf5f6f9-095e-42e1-b2fb-9ea77e503951",
-  "head_sha": "aceb02665cd2e9ff9171fcf6e34f1e7a7d5266b1",
+  "session_id": "1174d2af-d7d2-4827-9298-665921c84e21",
+  "head_sha": "428e8832591c9927117c1e8b5802a1ec64579c1c",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "PYTHONUTF8=1 factory/bin/job queue; merge 063 (#74, PR #151) under S-024 after sync and gates.py 13/13; create and start jobs for new lines",
-  "written_at": "2026-11-22T08:32:57Z"
+  "next_step": "PYTHONUTF8=1 factory/bin/job queue; resume 068 (review), 069/071/072 (gate, one at a time; 072 needs the lead's 20 yaml entries from B-2783 first); then finish lead/cm-l1-l2 (rule on test_r1_critic setup, isolation review, gates.py 13/13, merge) so CM-1 #159 can start (S-025). See docs/build/HANDOFF.md.",
+  "written_at": "2026-11-22T14:04:17Z"
 }
