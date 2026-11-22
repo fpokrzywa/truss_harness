@@ -7,8 +7,10 @@ from datetime import timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import NullPool
 
 from shifde.core.clock import utcnow
 from shifde.core.ids import uuid7
@@ -53,3 +55,18 @@ def add_run(s: Session, tenant_id: UUID, **cols: Any) -> UUID:  # Any: column va
         {"id": run, "tenant_id": tenant_id, **values},
     )
     return run
+
+
+def lose_rows(admin_url: str, owner_url: str, sql: str, **params: Any) -> None:  # Any: binds
+    """Run one setup DELETE that simulates lost runtime rows, committed, as the superuser of
+    `admin_url` on the database of `owner_url`, with row triggers off (`session_replication_role
+    = replica`, as the per-test cleanup): the retention guards of runtime_0006 refuse such a
+    delete for every role (DECISIONS B-2783)."""
+    url = make_url(admin_url).set(database=make_url(owner_url).database)
+    engine = create_engine(url, poolclass=NullPool)
+    try:
+        with engine.begin() as c:
+            c.execute(text("SET LOCAL session_replication_role = replica"))
+            c.execute(text(sql), params)
+    finally:
+        engine.dispose()

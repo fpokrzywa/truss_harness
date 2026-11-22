@@ -1,11 +1,12 @@
 """`shifde-admin` command line (Typer). Runs with owner (migration) credentials, except
-`maintenance purge`, which runs as the application role so row-level security confines each
-client's pass (B-2600), and `config preflight`, whose database checks connect through
-`SHIFDE_DATABASE_URL` (the application role) as the services would.
+`maintenance purge` and `maintenance delete`, which run as the application role so row-level
+security confines each client's pass (B-2600, B-2783); `config preflight`, whose database checks
+connect through `SHIFDE_DATABASE_URL` (the application role) as the services would; and
+`backup verify`, which needs no database.
 
-Not ported (DECISIONS B-1101, B-2221): `profile`, `backup`, `demo`, `dev-sample-pipeline`,
+Not ported (DECISIONS B-1101, B-2221): `profile`, `demo`, `dev-sample-pipeline`,
 `dev-sample-ontology`, `dev-rest-sink` (carry_forward, app part 1). `dev-sample-data` is ported
-(app-2 B-2420)."""
+(app-2 B-2420); `backup create` and `backup verify` are ported (SP4-4, B-2791)."""
 
 from __future__ import annotations
 
@@ -31,7 +32,8 @@ from shifde.adapters.conformance import SuiteSkipped, run_suite
 from shifde.adapters.evidence import record_run
 from shifde.adapters.registry import AdapterRegistry
 from shifde.audit import service as audit
-from shifde.cli.maintenance import purge
+from shifde.cli import backup
+from shifde.cli.maintenance import delete, purge
 from shifde.cli.sampledata import build_sample_database
 from shifde.cli.seeding import STAFF_USERS, seed_dev_data
 from shifde.cli.seeding import USERS as SEED_USERS
@@ -46,6 +48,7 @@ from shifde.core.health import database_reachable, migration_state
 from shifde.core.migrations import alembic_config, code_head
 from shifde.core.settings import (
     DEV_USERS_FILE,
+    MigrationUrlMissing,
     Settings,
     format_validation_error,
     get_settings,
@@ -70,6 +73,8 @@ config_app = typer.Typer(help="Configuration schema and validation.", no_args_is
 app.add_typer(config_app, name="config")
 maintenance_app = typer.Typer(help="Retention and maintenance.", no_args_is_help=True)
 app.add_typer(maintenance_app, name="maintenance")
+backup_app = typer.Typer(help="Database backup (as the schema owner).", no_args_is_help=True)
+app.add_typer(backup_app, name="backup")
 
 
 def _fail(message: str) -> typer.Exit:
@@ -371,6 +376,95 @@ def maintenance_purge(
         database.dispose()
     if dry_run:
         typer.echo("dry run: nothing changed")
+
+
+@maintenance_app.command("delete")
+def maintenance_delete(
+    older_than: Annotated[
+        int,
+        typer.Option(
+            "--older-than",
+            min=1,
+            max=36500,
+            help="Delete runs that ended more than this many days ago (the client's retention "
+            "settings can only lengthen it)",
+        ),
+    ],
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Report the counts and change nothing")
+    ] = False,
+) -> None:
+    """Delete old, ended run families and their rows, client by client (as the application role).
+
+    A family is kept whole while any run of it is recent, running or pinned (a held reservation,
+    a pending approval, a live job, a passing evaluation a delivery plan uses). Usage, policy and
+    audit rows stay. A client on legal hold is skipped. A real run writes one audit event per
+    client."""
+    settings = _settings()
+    try:
+        database = Database(settings.database_url, pool_size=1, max_overflow=0)
+    except UnsafeDatabaseRole as exc:
+        raise _fail(f"refusing to delete: {exc}") from exc
+    except SQLAlchemyError as exc:
+        raise _fail(f"database error: {exc.__class__.__name__}") from exc
+    try:
+        for client in delete(
+            database,
+            older_than_days=older_than,
+            now=utcnow(),
+            dry_run=dry_run,
+            actor_label=f"shifde-admin:{getpass.getuser()}",
+        ):
+            if client.legal_hold:
+                typer.echo(f"{client.slug}: skipped (legal hold)")
+                continue
+            counts = ", ".join(f"{table} {n}" for table, n in client.counts)
+            typer.echo(
+                f"{client.slug}: runs {client.runs}, runs kept {client.runs_kept}, {counts} "
+                f"(cutoff {client.cutoff.isoformat()})"
+            )
+    except SQLAlchemyError as exc:
+        raise _fail(f"database error: {exc.__class__.__name__}") from exc
+    finally:
+        database.dispose()
+    if dry_run:
+        typer.echo("dry run: nothing changed")
+
+
+@backup_app.command("create")
+def backup_create(
+    out: Annotated[
+        Path, typer.Option("--out", help="New or empty directory for the dump and its manifest")
+    ],
+) -> None:
+    """Dump the database as the schema owner into DIR, with a manifest of versions, digests,
+    key ids, row counts and a catalog fingerprint (the KEK ring is not in the backup)."""
+    settings = _settings()
+    try:
+        result = backup.create_backup(
+            settings.effective_migration_url,
+            make_url(settings.database_url).username or "shifde_app",
+            settings.keyring,
+            out,
+        )
+    except (backup.BackupError, MigrationUrlMissing) as exc:
+        raise _fail(str(exc)) from None
+    typer.echo(
+        f"backup written to {result.directory} (dump sha256 {result.manifest['dump_sha256']})"
+    )
+
+
+@backup_app.command("verify")
+def backup_verify(
+    from_dir: Annotated[Path, typer.Option("--from", help="Backup directory to check")],
+) -> None:
+    """Check a backup's digests, revisions and pg_restore without a database."""
+    try:
+        manifest, _, _ = backup.verify_backup(from_dir)
+    except backup.BackupError as exc:
+        raise _fail(str(exc)) from None
+    revisions = ", ".join(manifest["alembic_revisions"])
+    typer.echo(f"backup verified: {from_dir} (revisions {revisions})")
 
 
 def _read_dev_users() -> dict[str, str]:

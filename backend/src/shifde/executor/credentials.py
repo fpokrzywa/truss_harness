@@ -5,9 +5,10 @@ The deployment credential never enters SETH: the target stores only `credential_
 executor's own file (`SHIFDE_EXECUTOR_CREDENTIALS_FILE`) maps it to
 `{"tenant_id": "<organization id>", "host": "<https url>", "token": "<secret>",
 "service_principal": "<workspace user name>"}`. A credentials file belongs to exactly one
-organization (B-2737). A token is handed out only for a grant that names this job, executor and
-target, has not expired, whose audience is the normalized host of the file's entry, and whose
-target belongs to the entry's `tenant_id`. Every refusal is the same
+organization (B-2737); a file whose entries name more than one is refused (issue #155). A token
+is handed out only for a grant that names this job, executor and target, has not expired, whose
+audience is the normalized host of the file's entry, and whose target belongs to the entry's
+`tenant_id`. Every refusal is the same
 `CredentialUnavailable`, which names no token, host or reference. On POSIX a file readable or
 writable by group or others is refused; Windows has no such mode bits and is not checked.
 """
@@ -54,6 +55,11 @@ class CredentialBroker:
     def __repr__(self) -> str:
         return f"CredentialBroker({len(self._entries)} credentials)"
 
+    @property
+    def tenant_id(self) -> UUID | None:
+        """The file's one organization (`None` for a file with no entries)."""
+        return next((e.tenant_id for e in self._entries.values()), None)
+
     @classmethod
     def from_file(cls, path: Path) -> CredentialBroker:
         try:
@@ -78,6 +84,8 @@ class CredentialBroker:
         except ValidationError:
             # the validation error would echo the values, tokens included
             raise CredentialFileRefused("a credentials file entry is invalid") from None
+        if len({e.tenant_id for e in entries.values()}) > 1:
+            raise CredentialFileRefused("the credentials file must belong to one organization")
         return cls(entries)
 
     def entry_for(

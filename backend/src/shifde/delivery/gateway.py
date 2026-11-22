@@ -286,6 +286,7 @@ def job_context(
         if plan is None
         else ContextPlan(
             id=plan["id"],
+            tenant_id=plan["tenant_id"],
             application_key=plan["application_key"],
             display_name=plan["display_name"],
             artifact_id=plan["artifact_id"],
@@ -302,7 +303,10 @@ def job_context(
         deployment=None
         if deployment is None
         else ContextDeployment(
-            id=deployment["id"], status=deployment["status"], receipt=deployment["receipt"]
+            id=deployment["id"],
+            tenant_id=deployment["tenant_id"],
+            status=deployment["status"],
+            receipt=deployment["receipt"],
         ),
         owned_resources=[
             OwnedResource(resource_type=r["resource_type"], native_id=r["native_id"]) for r in owned

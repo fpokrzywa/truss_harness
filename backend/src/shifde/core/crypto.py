@@ -69,6 +69,11 @@ class KeyRing:
             raise ValueError("SHIFDE_SECRET_KEYS is empty")
         return cls(keys, active)
 
+    @property
+    def key_ids(self) -> tuple[str, ...]:
+        """The key ids in ring order (the first is the active one); never key material."""
+        return tuple(self._keys)
+
     @staticmethod
     def generate_entry(kid: str = "dev1") -> str:
         return f"{kid}:{base64.b64encode(os.urandom(KEY_BYTES)).decode()}"

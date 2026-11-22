@@ -41,6 +41,7 @@ from tests._support.p5util import (
 )
 from tests._support.p6util import HangServer as PipelineHang
 from tests._support.p6util import World6, mini
+from tests._support.runs import lose_rows
 from tests.app.test_p5_worker import HangServer
 from tests.app.test_p6_exec2 import hang_pipeline
 from tests.app.test_r1_critic import build2, crash
@@ -321,7 +322,12 @@ def test_a_failed_approval_insert_after_delivery_still_opens_a_decision(
 
 
 def test_state_without_a_decision_gets_one_when_the_run_ends(
-    client: TestClient, world: World, owner_session: Session, settings: Settings
+    client: TestClient,
+    world: World,
+    owner_session: Session,
+    settings: Settings,
+    admin_url: str,
+    owner_url: str,
 ) -> None:
     """Defence in depth: whatever left an `indeterminate` invocation with no approval (a death
     between two commits in an older release, a lost row), the end of the run opens it."""
@@ -333,8 +339,8 @@ def test_state_without_a_decision_gets_one_when_the_run_ends(
         reap(settings)
         [appr] = pending_unknown(ah, run["id"])
         o = owner_session
-        o.execute(text("DELETE FROM shifde.approvals WHERE id = :a"), {"a": appr["id"]})
         o.commit()
+        lose_rows(admin_url, owner_url, "DELETE FROM shifde.approvals WHERE id = :a", a=appr["id"])
         assert pending_unknown(ah, run["id"]) == []
         o.execute(text("SELECT shifde.settle_ended_run(:r)"), {"r": run["id"]})
         o.commit()

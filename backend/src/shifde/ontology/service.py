@@ -12,7 +12,8 @@ Authorization is decided on the server, in this order, and every step fails clos
 
 An export (`export`) is that query behind two more checks between 1 and 2: tenant-level
 `data:export` and the client's `data_export` policies (403, audited as `ontology.export_denied`;
-`max_rows` caps the page size), and it is audited as `ontology.exported`.
+`max_rows` caps the total rows across pages, and a cursor at or past the cap is refused with 403,
+`row_cap_reached`), and it is audited as `ontology.exported`.
 
 The connection's own identity is the ceiling: SHIFDE never asks a source for more than its service
 identity may read. Ontology access is authorized by the ontology (permission + policy), not by
@@ -91,14 +92,19 @@ def encode_query_cursor(offset: int, fingerprint: str) -> str:
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
+def _parse_query_cursor(cursor: str) -> tuple[int, str]:
+    """The cursor's offset and fingerprint, unchecked; a malformed cursor is a 422."""
+    try:
+        doc = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+        return int(doc["o"]), str(doc["h"])
+    except (binascii.Error, ValueError, KeyError, TypeError) as exc:
+        raise ValidationFailed("invalid cursor") from exc
+
+
 def decode_query_cursor(cursor: str | None, fingerprint: str) -> int:
     if not cursor:
         return 0
-    try:
-        doc = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
-        offset, digest = int(doc["o"]), str(doc["h"])
-    except (binascii.Error, ValueError, KeyError, TypeError) as exc:
-        raise ValidationFailed("invalid cursor") from exc
+    offset, digest = _parse_query_cursor(cursor)
     if digest != fingerprint or offset < 0 or offset > 1_000_000:
         raise ValidationFailed("the cursor does not belong to this query")
     return offset
@@ -514,13 +520,19 @@ class OntologyService:
     def export(self, ontology_id: UUID, body: s.QueryIn) -> s.QueryOut:
         """The query results as JSON for an export (ARCH M11, B-2647): visibility (404), then
         tenant-level `data:export` and the `data_export` policies (403, audited), then the API
-        query with its own checks, lineage and audit; `max_rows` clamps the page size."""
+        query with its own checks, lineage and audit. `max_rows` caps the total rows across pages:
+        a page is clamped to the rows left under the cap, `next_cursor` is dropped once the cap is
+        reached, and a cursor at or past the cap is refused (403, audited, `row_cap_reached`)."""
         art = self._artifact(ontology_id, api=True)
         reason = "missing_permission"
         try:
             self.sc.pdp.require("data:export", self.sc.tenant_ref)
             reason = "data_export_policy"
             cap = export_row_cap(self.session, self.sc.tenant_id)
+            offset = _parse_query_cursor(body.cursor)[0] if cap is not None and body.cursor else 0
+            if cap is not None and offset >= cap:
+                reason = "row_cap_reached"
+                raise Forbidden("the export reached its row cap")
         except Forbidden:
             self.arts._audit(
                 "ontology.export_denied",
@@ -531,8 +543,11 @@ class OntologyService:
             )
             self.session.commit()
             raise
-        limit = body.limit if cap is None else min(body.limit, cap)
+        limit = body.limit if cap is None else min(body.limit, cap - offset)
         out = self.query(ontology_id, body.model_copy(update={"limit": limit}))
+        capped = cap is not None and out.next_cursor is not None and offset + limit >= cap
+        if capped:
+            out = out.model_copy(update={"next_cursor": None})
         self.arts._audit(
             "ontology.exported",
             art,
@@ -543,6 +558,7 @@ class OntologyService:
                 "more": out.next_cursor is not None,
                 "truncated": out.truncated,
                 "row_cap": cap,
+                "capped": capped,
                 "classification": self.read_classification,
             },
             target_type="ontology",
