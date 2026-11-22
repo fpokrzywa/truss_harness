@@ -28,7 +28,7 @@ DENY_ALL = EgressPolicy(allowed_schemes=frozenset({"__none__"}))
 
 
 def _runtime(settings: Settings) -> IntegrationRuntime:
-    return IntegrationRuntime(settings=settings, registry=AdapterRegistry.load())
+    return IntegrationRuntime(settings=settings, registry=AdapterRegistry.load(include_fake=True))
 
 
 def _row(app_db: Database, tenant: UUID, policy: UUID) -> EgressPolicy:

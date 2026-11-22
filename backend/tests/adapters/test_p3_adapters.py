@@ -36,7 +36,7 @@ from shifde.adapters.suites import SUITES, AnthropicLiveSmoke, PostgresSuite
 from shifde.core.clock import utcnow
 from shifde.core.db import Database
 
-REGISTRY = AdapterRegistry.load()
+REGISTRY = AdapterRegistry.load(include_fake=True)
 
 
 # ------------------------------------------------------------------ registry
