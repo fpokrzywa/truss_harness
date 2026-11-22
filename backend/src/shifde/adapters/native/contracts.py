@@ -1,4 +1,8 @@
-"""Databricks native delivery wire models and canonical hashing (FDE SDK `shifde_contracts`)."""
+"""Databricks native delivery wire models and canonical hashing (FDE SDK `shifde_contracts`).
+
+The values an executor reports back in a job result carry length and count limits (`NAME_MAX`,
+`NATIVE_ID_MAX`, `EVIDENCE_MAX`, `HANDLES_MAX`, `RESOURCES_MAX`, `ITEMS_MAX`; B-2736): a value
+over a limit is refused with 422 before anything is stored."""
 
 import hashlib
 import json
@@ -61,6 +65,20 @@ Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 Identifier = Annotated[str, Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")]
 Timestamp = AwareDatetime
 
+# Limits on executor-reported free text and collections (B-2736). The executor's names, native ids,
+# handles, evidence and diagnostics are untrusted executor input: screens must render them as
+# plain text only, never as HTML or markdown (issue #27).
+NAME_MAX = 128  # resource and step keys, resource types, check names, handle keys
+NATIVE_ID_MAX = 512  # platform ids and operation handle values
+EVIDENCE_MAX = 2000  # check and reconcile evidence, each observe diagnostic
+HANDLES_MAX = 32  # operation handles of one receipt
+RESOURCES_MAX = 200  # resources of one receipt, observation, reconciliation or snapshot
+ITEMS_MAX = 50  # checks of a verification, diagnostics of an observation, steps of a plan
+
+Name = Annotated[str, Field(max_length=NAME_MAX)]
+NativeId = Annotated[str, Field(max_length=NATIVE_ID_MAX)]
+Evidence = Annotated[str, Field(max_length=EVIDENCE_MAX)]
+
 
 class Model(BaseModel):
     model_config = ConfigDict(
@@ -105,9 +123,9 @@ class SourceArchive(Entity):
 
 
 class ResourceBinding(Model):
-    key: str
-    native_id: str
-    resource_type: str
+    key: Name
+    native_id: NativeId
+    resource_type: Name
     application_id: UUID
     target_id: UUID
 
@@ -124,14 +142,14 @@ class ValidationReport(Model):
 
 
 class Check(Model):
-    name: str
+    name: Name
     status: str = Field(pattern="^(passed|failed|skipped)$")
     required: bool = True
-    evidence: str = ""
+    evidence: Evidence = ""
 
 
 class VerificationReport(Model):
-    checks: list[Check]
+    checks: list[Check] = Field(max_length=ITEMS_MAX)
 
     @property
     def passed(self) -> bool:
@@ -180,15 +198,15 @@ class BuildRequest(ValidateRequest):
 
 # --------------------------------------------------------------------------- plans
 class EnvironmentSnapshot(Model):
-    resources: list[ResourceBinding] = Field(default_factory=list)
+    resources: list[ResourceBinding] = Field(default_factory=list, max_length=RESOURCES_MAX)
     fingerprint: Digest
     captured_at: Timestamp = Field(default_factory=utcnow)
 
 
 class PlanStep(Model):
-    key: str
+    key: Name
     action: Literal["create", "update", "start", "delete", "unknown"]
-    resource_key: str
+    resource_key: Name
     reversible: bool = False
 
 
@@ -230,8 +248,8 @@ class ApplyReceipt(Entity):
     application_id: UUID
     target_id: UUID
     artifact_digest: Digest
-    resources: list[ResourceBinding]
-    operation_handles: dict[str, str] = Field(default_factory=dict)
+    resources: list[ResourceBinding] = Field(max_length=RESOURCES_MAX)
+    operation_handles: dict[Name, NativeId] = Field(default_factory=dict, max_length=HANDLES_MAX)
 
 
 class ObserveRequest(Model):
@@ -250,14 +268,14 @@ class VerifyRequest(Model):
 
 class NativeObservation(Model):
     state: Literal["running", "succeeded", "failed", "unknown"]
-    resources: list[ResourceBinding] = Field(default_factory=list)
-    diagnostics: list[str] = Field(default_factory=list)
+    resources: list[ResourceBinding] = Field(default_factory=list, max_length=RESOURCES_MAX)
+    diagnostics: list[Evidence] = Field(default_factory=list, max_length=ITEMS_MAX)
 
 
 class ReconciliationResult(Model):
     state: Literal["applied", "not_applied", "in_progress", "ambiguous"]
-    evidence: str
-    resources: list[ResourceBinding] = Field(default_factory=list)
+    evidence: Evidence
+    resources: list[ResourceBinding] = Field(default_factory=list, max_length=RESOURCES_MAX)
 
 
 # --------------------------------------------------------------------------- capabilities
@@ -391,7 +409,7 @@ class JobResultAck(Model):
 class PlanJobResult(Model):
     """The value of a succeeded `plan` job: what the executor found and would change."""
 
-    steps: list[PlanStep]
+    steps: list[PlanStep] = Field(max_length=ITEMS_MAX)
     snapshot: EnvironmentSnapshot
     adapter_version: str = Field(min_length=1, max_length=64)
     toolchain_digest: Digest
