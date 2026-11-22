@@ -84,6 +84,16 @@ TEST_VALIDITY = timedelta(hours=24)
 TEST_JOB_KIND = "connection.test"  # `shifde.jobs.kind` of a queued connection test (B-2610)
 ERROR_CODE = re.compile(r"[a-z][a-z_]*")  # an `AppError.code` the worker stored as `last_error`
 SCOPE_MISMATCH = "the secret must have the connection's scope"
+# the kind of a connection's own secret (`connection-<id>`) per auth method (rule 4.7, B-2747)
+CREDENTIAL_KINDS: dict[str, str] = {
+    "bearer": "token",
+    "oauth2_client_credentials": "token",
+    "key_pair": "pem",
+    "mtls": "pem",
+    "api_key": "api_key",
+    "basic": "password",
+}
+NO_SECRET_FOR_NONE = "a secret cannot be attached when auth_method is 'none'"
 
 
 def integrity_error(exc: IntegrityError) -> AppError | None:
@@ -206,6 +216,28 @@ class ConnectionService:
             details=details,
         )
 
+    def _audit_secret(
+        self,
+        action: str,
+        sec: secrets_service.SecretMeta,
+        details: dict[str, object],
+        row: Mapping[str, Any],
+    ) -> None:
+        """A `secret.*` event of the connection `row`'s own credential (B-2752): the admin
+        route's target and details, with the connection's workspace and project."""
+        audit.record(
+            self._session,
+            self.sc.ctx,
+            action=action,
+            tenant_id=self.sc.tenant_id,
+            target_type="secret",
+            target_id=sec.id,
+            target_label=f"secret:{sec.name}",
+            workspace_id=row["workspace_id"],
+            project_id=row["project_id"],
+            details=details,
+        )
+
     def _commit(self) -> None:
         try:
             self._session.commit()
@@ -264,6 +296,7 @@ class ConnectionService:
         config: dict[str, Any],
         auth_method: str,
         secret_id: UUID | None,
+        credential: bool = False,
     ) -> AdapterDescriptor:
         desc = self._descriptor(adapter_key)
         if desc.connection_type != connection_type:
@@ -276,8 +309,8 @@ class ConnectionService:
                 f"auth_method {auth_method!r} is not supported by {adapter_key!r} "
                 f"(supported: {', '.join(desc.auth_methods)})"
             )
-        if auth_method == "none" and secret_id is not None:
-            raise ValidationFailed("a secret cannot be attached when auth_method is 'none'")
+        if auth_method == "none" and (secret_id is not None or credential):
+            raise ValidationFailed(NO_SECRET_FOR_NONE)
         misplaced = sorted(
             f
             for f, methods in desc.auth_only_fields.items()
@@ -418,6 +451,33 @@ class ConnectionService:
                 ],
             )
 
+    def _create_owned_secret(
+        self,
+        connection_id: UUID,
+        auth_method: str,
+        workspace_id: UUID | None,
+        project_id: UUID | None,
+        value: str,
+    ) -> secrets_service.SecretMeta:
+        """The connection's own secret `connection-<id>`, in the connection's scope (B-2747)."""
+        if project_id is not None:
+            scope_type, scope_id = "project", project_id
+        elif workspace_id is not None:
+            scope_type, scope_id = "workspace", workspace_id
+        else:
+            scope_type, scope_id = "tenant", None
+        return secrets_service.create_secret(
+            self._session,
+            self.runtime.settings.keyring,
+            tenant_id=self.sc.tenant_id,
+            name=f"connection-{connection_id}",
+            value=value,
+            kind=CREDENTIAL_KINDS[auth_method],
+            scope_type=scope_type,
+            scope_id=scope_id,
+            created_by=self.sc.principal.principal_id,
+        )
+
     def _check_vendor(self, vendor_id: UUID | None, *, current: UUID | None = None) -> None:
         """A connection may only NAME an active vendor. Keeping the vendor it already names is
         always allowed (existing objects keep working)."""
@@ -479,8 +539,12 @@ class ConnectionService:
         return self._out(row)
 
     def create(self, body: s.ConnectionCreate) -> s.ConnectionOut:
+        if body.credential is not None and body.secret_id is not None:
+            raise ValidationFailed("send either credential or secret_id, not both")
         ref = tenancy.scope_ref_from_slugs(self.sc, body.scope.workspace, body.scope.project)
         self.sc.pdp.require("connection:manage", ref)
+        if body.credential is not None:  # the connection's own secret is created (B-2748)
+            self.sc.pdp.require("secret:manage", ref)
         self._active_tenant()
         self._active_scope(body.scope.workspace, body.scope.project)
         self._validate_definition(
@@ -489,15 +553,26 @@ class ConnectionService:
             config=body.config,
             auth_method=body.auth_method,
             secret_id=body.secret_id,
+            credential=body.credential is not None,
         )
         sec = self._check_secret(body.secret_id)
         self._check_secret_scope(sec, ref.workspace_id, ref.project_id)
-        confirm = body.secret_id is not None and body.access_mode == "read"
+        bound = body.secret_id is not None or body.credential is not None
+        confirm = bound and body.access_mode == "read"
         if confirm:
             self._require_read_only_confirmation(body.read_only_confirmed)
         self._check_egress_policy(body.egress_policy_id)
         self._check_vendor(body.vendor_id)
         connection_id = uuid7()
+        owned = None
+        if body.credential is not None:
+            owned = self._create_owned_secret(
+                connection_id,
+                body.auth_method,
+                ref.workspace_id,
+                ref.project_id,
+                body.credential.value.get_secret_value(),
+            )
         try:
             repository.insert_connection(
                 self._session,
@@ -512,7 +587,7 @@ class ConnectionService:
                     "vendor_id": body.vendor_id,
                     "config": body.config,
                     "auth_method": body.auth_method,
-                    "secret_ref_id": body.secret_id,
+                    "secret_ref_id": owned.id if owned is not None else body.secret_id,
                     "egress_policy_id": body.egress_policy_id,
                     "access_mode": body.access_mode,
                     "created_by": self.sc.principal.principal_id,
@@ -538,6 +613,13 @@ class ConnectionService:
                 **({"read_only_confirmed": True} if confirm else {}),
             },
         )
+        if owned is not None:
+            self._audit_secret(
+                "secret.created",
+                owned,
+                {"name": owned.name, "kind": owned.kind, "scope_type": owned.scope_type},
+                row,
+            )
         self._commit()
         return self._out(row)
 
@@ -676,6 +758,103 @@ class ConnectionService:
         if updated is None:
             raise Conflict("row_version mismatch: the connection was modified; reload and retry")
         self._audit("connection.status_changed", updated, {"from": current, "to": target})
+        if target == "retired" and updated["secret_ref_id"] is not None:
+            self._disable_owned_secret(updated)
+        fresh = self._get_row(connection_id)  # RETURNING has no `last_test_outcome`
+        self._commit()
+        return self._out(fresh)
+
+    def _disable_owned_secret(self, row: Mapping[str, Any]) -> None:
+        """Archive (B-2751): the retired connection's own active secret is disabled unless
+        another connection that is not retired binds it; any other secret is left unchanged."""
+        sec = secrets_service.get_secret(
+            self._session, row["secret_ref_id"], tenant_id=self.sc.tenant_id
+        )
+        if sec is None or sec.name != f"connection-{row['id']}" or sec.status != "active":
+            return
+        if repository.count_live_bindings(
+            self._session, sec.id, tenant_id=self.sc.tenant_id, exclude=row["id"]
+        ):
+            return
+        disabled = secrets_service.disable_secret(
+            self._session, sec, expected_version=sec.row_version
+        )
+        self._audit_secret("secret.disabled", disabled, {}, row)
+
+    def set_credential(
+        self, connection_id: UUID, body: s.ConnectionCredentialSet
+    ) -> s.ConnectionOut:
+        """`PUT .../credential` (B-2749): with no secret bound, create and bind the connection's
+        own `connection-<id>`; with one bound, rotate it in place. Either way the health is
+        unknown again; status, last test and binding are otherwise unchanged."""
+        row = self._get_row(connection_id)
+        self._require("connection:manage", row)
+        ref = ResourceRef(self.sc.tenant_id, row["workspace_id"], row["project_id"])
+        self.sc.pdp.require("secret:manage", ref)
+        self._active_tenant()
+        if row["status"] == "retired":
+            raise Conflict("a retired connection cannot be modified")
+        if row["auth_method"] == "none":
+            raise ValidationFailed(NO_SECRET_FOR_NONE)
+        value = body.value.get_secret_value()
+        secrets_service.check_value(value)
+        expected = self._checked_version(body.row_version, row)
+        if row["access_mode"] == "read":
+            self._require_read_only_confirmation(body.read_only_confirmed)
+        values: dict[str, Any] = {"health_status": "unknown"}
+        bound = row["secret_ref_id"]
+        if bound is None:
+            sec = self._create_owned_secret(
+                connection_id, row["auth_method"], row["workspace_id"], row["project_id"], value
+            )
+            values["secret_ref_id"] = sec.id
+        else:
+            current = secrets_service.get_secret(self._session, bound, tenant_id=self.sc.tenant_id)
+            if current is None:
+                raise NotFound("secret not found")
+            sec = secrets_service.rotate_secret(
+                self._session,
+                self.runtime.settings.keyring,
+                current,
+                value=value,
+                expected_version=current.row_version,
+            )
+        try:
+            updated = repository.update_connection(
+                self._session, connection_id, expected, values, tenant_id=self.sc.tenant_id
+            )
+            self._session.flush()
+        except IntegrityError as exc:
+            self._session.rollback()
+            mapped = integrity_error(exc)
+            if mapped is None:
+                raise
+            raise mapped from exc
+        if updated is None:
+            self._session.rollback()  # neither the secret nor the connection changes
+            raise Conflict("row_version mismatch: the connection was modified; reload and retry")
+        if bound is None:
+            self._audit(
+                "connection.credential_set",
+                updated,
+                {"secret_id": str(sec.id), "version": sec.secret_version},
+            )
+            self._audit_secret(
+                "secret.created",
+                sec,
+                {"name": sec.name, "kind": sec.kind, "scope_type": sec.scope_type},
+                updated,
+            )
+        else:
+            shared = repository.count_live_bindings(
+                self._session, sec.id, tenant_id=self.sc.tenant_id, exclude=connection_id
+            )
+            self._audit(
+                "connection.credential_rotated",
+                updated,
+                {"secret_id": str(sec.id), "version": sec.secret_version, "shared_with": shared},
+            )
+            self._audit_secret("secret.rotated", sec, {"version": sec.secret_version}, updated)
         fresh = self._get_row(connection_id)  # RETURNING has no `last_test_outcome`
         self._commit()
         return self._out(fresh)
