@@ -183,7 +183,12 @@ class _Any(dict[str, str]):
 def test_limiters_and_body_cap_are_wired(settings: Settings, world: World) -> None:
     with full_client(settings.model_copy(update={"max_request_body_bytes": 100})) as c:
         state = c.app.state  # type: ignore[attr-defined]  # reason: TestClient.app is typed ASGI
-        for name in ("login_ip_limiter", "login_account_limiter", "api_key_failure_limiter"):
+        for name in (
+            "login_ip_limiter",
+            "login_account_limiter",
+            "api_key_failure_limiter",
+            "executor_auth_failure_limiter",
+        ):
             assert hasattr(state, name), name
         assert hasattr(state, "oidc_limiter") and hasattr(state, "oidc") and state.features.keys()
         r = c.post("/api/auth/local/login", content=b"x" * 500)

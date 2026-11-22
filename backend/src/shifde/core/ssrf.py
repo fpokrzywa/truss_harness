@@ -94,7 +94,7 @@ class OutboundHttp:
 
     def _request(
         self, method: str, url: str, *, data: dict[str, str] | None, auth: tuple[str, str] | None
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], httpx.Headers]:
         _check_http_scheme(url, allow_dev_loopback=self._allow_dev_loopback)
         body = b""
         try:
@@ -108,6 +108,7 @@ class OutboundHttp:
                     raise EgressViolation(f"unexpected status {response.status_code}")
                 for chunk in response.iter_bytes():
                     body += chunk
+                headers = response.headers
         except httpx.HTTPError as exc:
             raise EgressViolation(f"request failed: {exc.__class__.__name__}") from exc
         try:
@@ -116,12 +117,16 @@ class OutboundHttp:
             raise EgressViolation("response is not JSON") from exc
         if not isinstance(doc, dict):
             raise EgressViolation("response is not a JSON object")
-        return doc
+        return doc, headers
 
     def get_json(self, url: str) -> dict[str, Any]:
+        return self._request("GET", url, data=None, auth=None)[0]
+
+    def get_json_with_headers(self, url: str) -> tuple[dict[str, Any], httpx.Headers]:
+        """`get_json` plus the response headers (the JWKS `Cache-Control`)."""
         return self._request("GET", url, data=None, auth=None)
 
     def post_form(
         self, url: str, data: dict[str, str], auth: tuple[str, str] | None = None
     ) -> dict[str, Any]:
-        return self._request("POST", url, data=data, auth=auth)
+        return self._request("POST", url, data=data, auth=auth)[0]
