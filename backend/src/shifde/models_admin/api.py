@@ -63,14 +63,28 @@ def update_provider(svc: Models, provider_id: UUID, body: s.ProviderPatch) -> s.
     return svc.update_provider(provider_id, body)
 
 
-@router.post("/orgs/{org}/model-providers/{provider_id}/health-check", tags=["models"])
-def health_check(svc: Models, provider_id: UUID) -> s.HealthOut:
-    return svc.health_check(provider_id)
+@router.post(
+    "/orgs/{org}/model-providers/{provider_id}/health-check", status_code=202, tags=["models"]
+)
+def health_check(svc: Models, provider_id: UUID) -> s.HealthCheckJobOut:
+    return svc.enqueue_health_check(provider_id)
 
 
-@router.post("/orgs/{org}/model-providers/{provider_id}/discover-models", tags=["models"])
-def discover_models(svc: Models, provider_id: UUID) -> Page[s.DiscoveredModelOut]:
-    return svc.discover_models(provider_id)
+@router.get("/orgs/{org}/model-providers/{provider_id}/health-check-jobs/{job_id}", tags=["models"])
+def get_health_check_job(svc: Models, provider_id: UUID, job_id: UUID) -> s.HealthCheckJobOut:
+    return svc.health_check_job(provider_id, job_id)
+
+
+@router.post(
+    "/orgs/{org}/model-providers/{provider_id}/discover-models", status_code=202, tags=["models"]
+)
+def discover_models(svc: Models, provider_id: UUID) -> s.DiscoveryJobOut:
+    return svc.enqueue_discovery(provider_id)
+
+
+@router.get("/orgs/{org}/model-providers/{provider_id}/discovery-jobs/{job_id}", tags=["models"])
+def get_discovery_job(svc: Models, provider_id: UUID, job_id: UUID) -> s.DiscoveryJobOut:
+    return svc.discovery_job(provider_id, job_id)
 
 
 # ---------------------------------------------------------------- models

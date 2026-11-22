@@ -24,6 +24,7 @@ from shifde.adapters.testservers import OpenAIFakeServer
 from shifde.core.db import Database
 from shifde.core.settings import Settings
 from shifde.secrets import service as secrets_service
+from tests._support.modeljobs import run_discovery, run_health
 from tests.connections.routes import activate, as_user, connection, org, post, secret
 from tests.models_admin.conftest import start_of_window
 from tests.models_admin.routes import fake_model_stack, invoke_body
@@ -54,7 +55,7 @@ def test_register_a_model_and_invoke_it_through_the_fake_provider(
         "health_status",
         "row_version",
     }
-    health = post(client, f"{A}/model-providers/{ids['provider']}/health-check", h, {}, 200)
+    health = run_health(client, h, A, ids["provider"])
     assert health["status"] == "healthy" and set(health) == {
         "status",
         "latency_ms",
@@ -65,8 +66,8 @@ def test_register_a_model_and_invoke_it_through_the_fake_provider(
         client.get(f"{A}/model-providers/{ids['provider']}", headers=h).json()["health_status"]
         == "healthy"
     )
-    disc = post(client, f"{A}/model-providers/{ids['provider']}/discover-models", h, {}, 200)
-    assert [m["model_key"] for m in disc["items"]] == ["fake-chat"]
+    disc = run_discovery(client, h, A, ids["provider"])
+    assert [m["model_key"] for m in disc] == ["fake-chat"]
 
     out = post(client, f"{A}/models/{ids['model']}/invoke", h, invoke_body("ping me"), 200)
     assert out["output"] == "pong" and set(out["usage"]) == {"input_tokens", "output_tokens"}
@@ -231,7 +232,7 @@ def test_unhealthy_or_disabled_providers_block_invocation(
         h,
         {"name": "oai-prov", "adapter_key": "openai_compatible", "connection_id": conn["id"]},
     )
-    good = post(client, f"{A}/model-providers/{prov['id']}/health-check", h, {}, 200)
+    good = run_health(client, h, A, prov["id"])
     assert good["status"] == "healthy"
     model = post(
         client,
@@ -256,7 +257,7 @@ def test_unhealthy_or_disabled_providers_block_invocation(
             s, settings.keyring, meta, value="rotated-key-9999", expected_version=None
         )
         s.commit()
-    bad = post(client, f"{A}/model-providers/{prov['id']}/health-check", h, {}, 200)
+    bad = run_health(client, h, A, prov["id"])
     assert bad["status"] == "unavailable"
     blocked = client.post(f"{A}/models/{model['id']}/invoke", json=invoke_body(), headers=h)
     assert blocked.status_code == 409 and blocked.json()["code"] == "model_unavailable"

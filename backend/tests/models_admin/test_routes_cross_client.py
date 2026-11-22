@@ -24,6 +24,8 @@ from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.models_admin import api as models_api
 from shifde.models_admin import repository
+from shifde.models_admin import service as models_service
+from tests._support.modeljobs import run_job
 from tests.connections.conftest import owner_vendor
 from tests.connections.routes import as_user, org
 from tests.models_admin.routes import (
@@ -132,6 +134,12 @@ ROUTE_TESTS = {
     ("POST", "/api/v1/orgs/{org}/model-providers/{provider_id}/discover-models"): (
         "test_a_cannot_reach_bs_provider"
     ),
+    ("GET", "/api/v1/orgs/{org}/model-providers/{provider_id}/health-check-jobs/{job_id}"): (
+        "test_a_cannot_read_bs_provider_job"
+    ),
+    ("GET", "/api/v1/orgs/{org}/model-providers/{provider_id}/discovery-jobs/{job_id}"): (
+        "test_a_cannot_read_bs_provider_job"
+    ),
     ("GET", "/api/v1/orgs/{org}/models"): "test_a_lists_only_its_own_rows",
     ("POST", "/api/v1/orgs/{org}/models"): "test_a_cannot_build_on_bs_rows",
     ("GET", "/api/v1/orgs/{org}/models/{model_id}"): "test_a_cannot_reach_bs_model",
@@ -189,6 +197,8 @@ def test_bs_organization_is_unknown_to_a(client: TestClient, two: Two) -> None:
         ("PATCH", f"/model-providers/{two.b.provider}", {"name": "stolen"}),
         ("POST", f"/model-providers/{two.b.provider}/health-check", None),
         ("POST", f"/model-providers/{two.b.provider}/discover-models", None),
+        ("GET", f"/model-providers/{two.b.provider}/health-check-jobs/{uuid7()}", None),
+        ("GET", f"/model-providers/{two.b.provider}/discovery-jobs/{uuid7()}", None),
         ("GET", "/models", None),
         ("POST", "/models", model),
         ("GET", f"/models/{two.b.model}", None),
@@ -222,8 +232,8 @@ def test_a_cannot_reach_bs_provider(client: TestClient, owner_db: Database, two:
     h = as_user(client, two.a.email)
     own = f"{two.a.base}/model-providers/{two.a.provider}"
     assert client.get(own, headers=h).status_code == 200
-    assert client.post(f"{own}/health-check", headers=h).status_code == 200
-    assert client.post(f"{own}/discover-models", headers=h).status_code == 200
+    assert client.post(f"{own}/health-check", headers=h).status_code == 202
+    assert client.post(f"{own}/discover-models", headers=h).status_code == 202
     before = _rows(owner_db, two)
     for method, suffix, payload in (
         ("GET", "", None),
@@ -241,6 +251,43 @@ def test_a_cannot_reach_bs_provider(client: TestClient, owner_db: Database, two:
             json=payload,
         )
         _same(theirs, missing)
+    assert _rows(owner_db, two) == before
+
+
+def test_a_cannot_read_bs_provider_job(client: TestClient, owner_db: Database, two: Two) -> None:
+    """ARCH M2 (issue #47): B's health check and discovery jobs are unknown to A whichever
+    provider or organization A names them under: under A's own provider, B's provider or an
+    unknown provider, the 404 of an unknown job id; under B's organization, that of an unknown
+    organization. A's own job read through the other kind's route is unknown too."""
+    A, h = two.a.base, as_user(client, two.a.email)
+    kinds = {
+        models_service.HEALTH_JOB_KIND: "health-check-jobs",
+        models_service.DISCOVER_JOB_KIND: "discovery-jobs",
+    }
+    own_jobs = {k: run_job(client, h, A, two.a.provider, k)["id"] for k in kinds}
+    hb = as_user(client, two.b.email)
+    b_jobs = {k: run_job(client, hb, two.b.base, two.b.provider, k)["id"] for k in kinds}
+    h = as_user(client, two.a.email)
+    before = _rows(owner_db, two)
+    unknown = org(f"no-such-{uuid7().hex[-12:]}")
+    for kind, route in kinds.items():
+        own = client.get(
+            f"{A}/model-providers/{two.a.provider}/{route}/{own_jobs[kind]}", headers=h
+        )
+        assert own.status_code == 200 and own.json()["status"] == "done", own.text  # own first
+        missing = client.get(f"{A}/model-providers/{two.a.provider}/{route}/{uuid7()}", headers=h)
+        assert missing.json()["detail"] == "provider job not found"
+        b_job = b_jobs[kind]
+        for provider in (two.a.provider, two.b.provider, str(uuid7())):
+            _same(client.get(f"{A}/model-providers/{provider}/{route}/{b_job}", headers=h), missing)
+        other = next(j for k, j in own_jobs.items() if k != kind)  # A's job of the other kind
+        _same(
+            client.get(f"{A}/model-providers/{two.a.provider}/{route}/{other}", headers=h), missing
+        )
+        path = f"/model-providers/{two.b.provider}/{route}/{b_job}"
+        _same(
+            client.get(f"{two.b.base}{path}", headers=h), client.get(f"{unknown}{path}", headers=h)
+        )
     assert _rows(owner_db, two) == before
 
 

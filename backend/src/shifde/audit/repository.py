@@ -91,6 +91,27 @@ def iter_chain(session: Session, tenant_id: UUID) -> Iterator[AuditEvent]:
     yield from session.scalars(stmt)
 
 
+def find_event(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    action: str,
+    target_id: str,
+    correlation_id: str,
+    occurred_from: datetime,
+) -> AuditEvent | None:
+    """The latest `action` event of `tenant_id` on `target_id` written under `correlation_id` at
+    or after `occurred_from` (the `(tenant_id, occurred_at)` index bounds the scan)."""
+    stmt = select(AuditEvent).where(
+        AuditEvent.tenant_id == tenant_id,
+        AuditEvent.occurred_at >= occurred_from,
+        AuditEvent.action == action,
+        AuditEvent.target_id == target_id,
+        AuditEvent.correlation_id == correlation_id,
+    )
+    return session.scalars(stmt.order_by(AuditEvent.occurred_at.desc()).limit(1)).first()
+
+
 def list_events(
     session: Session,
     *,

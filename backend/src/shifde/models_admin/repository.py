@@ -18,6 +18,8 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from shifde.core.errors import ProviderJobBusy
+
 Row = Mapping[Any, Any]  # Any: SQLAlchemy RowMapping keys / column values
 
 # The one platform-level provider (tenant NULL); pinned by `ck_model_providers__platform`.
@@ -500,4 +502,86 @@ def set_shi_access(
         )
         .mappings()
         .first()
+    )
+
+
+# ------------------------------------------------------------------ provider jobs (ARCH M2)
+JOB_COLUMNS = "id, kind, status, payload, last_error, created_at"
+PROVIDER_JOB_ATTEMPTS = 3
+
+
+def enqueue_provider_job(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    kind: str,
+    job_id: UUID,
+    dedupe_key: str,
+    payload: Mapping[str, Any],
+) -> Row:
+    """Queue a provider health check or discovery job in `tenant_id`, or return the one already
+    active (queued or leased) under the same dedupe key (`uq_jobs__dedupe`). The active job is
+    looked for `PROVIDER_JOB_ATTEMPTS` times at most; then `ProviderJobBusy` (409)."""
+    for _ in range(PROVIDER_JOB_ATTEMPTS):
+        session.execute(
+            text(
+                "INSERT INTO shifde.jobs (id, tenant_id, kind, payload, dedupe_key, run_after) "
+                "VALUES (:id, :t, :k, CAST(:p AS jsonb), :dk, now()) "
+                "ON CONFLICT (tenant_id, kind, dedupe_key) WHERE status IN ('queued', 'leased') "
+                "DO NOTHING"
+            ),
+            {"id": job_id, "t": tenant_id, "k": kind, "p": json.dumps(payload), "dk": dedupe_key},
+        )
+        row = (
+            session.execute(
+                text(
+                    # columns are module constants; values are bound
+                    f"SELECT {JOB_COLUMNS} FROM shifde.jobs WHERE tenant_id = :t "  # nosec B608
+                    "AND kind = :k AND dedupe_key = :dk AND status IN ('queued', 'leased')"
+                ),
+                {"t": tenant_id, "k": kind, "dk": dedupe_key},
+            )
+            .mappings()
+            .first()
+        )
+        if row is not None:  # else the active job ended between the two statements: queue again
+            session.execute(text("SELECT pg_notify('shifde_jobs', '')"))
+            return row
+    raise ProviderJobBusy("a job of this provider is starting; retry the request")
+
+
+def get_provider_job(
+    session: Session,
+    job_id: UUID,
+    *,
+    tenant_id: UUID,
+    kinds: Sequence[str],
+    provider_id: UUID | None = None,
+) -> Row | None:
+    """The job `job_id` of `tenant_id` of one of `kinds` (and of `provider_id`, when given)."""
+    return (
+        session.execute(
+            text(
+                # columns are module constants; values are bound
+                f"SELECT {JOB_COLUMNS} FROM shifde.jobs WHERE id = :id AND "  # nosec B608
+                "tenant_id = :t AND kind = ANY(:k) "
+                "AND (CAST(:p AS text) IS NULL OR payload->>'provider_id' = :p)"
+            ),
+            {
+                "id": job_id,
+                "t": tenant_id,
+                "k": list(kinds),
+                "p": str(provider_id) if provider_id else None,
+            },
+        )
+        .mappings()
+        .first()
+    )
+
+
+def lock_provider_job(session: Session, job_id: UUID) -> None:
+    """Hold a transaction-level advisory lock on the job `job_id` (one run of it at a time)."""
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+        {"k": f"model-job:{job_id}"},
     )
