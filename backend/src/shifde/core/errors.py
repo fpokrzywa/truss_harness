@@ -87,6 +87,12 @@ class ConnectionDisabled(AppError):
     status, code, title = 409, "connection_disabled", "Conflict"
 
 
+class SecretScopeMismatch(AppError):
+    """A connection's secret must have exactly the connection's scope (#156 rule 4.4)."""
+
+    status, code, title = 422, "secret_scope_mismatch", "Unprocessable Entity"
+
+
 class ConnectionTestBusy(AppError):
     """No active test job could be queued or read back (ARCH M2): retryable."""
 
