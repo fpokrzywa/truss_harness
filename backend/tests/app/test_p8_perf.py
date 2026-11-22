@@ -4,7 +4,11 @@
 The test bulk-loads one million events (30 days, 20 agents, 5 models, 5 users, 20 000 runs) as the
 database owner, builds the rollups with the production `rebuild`, then times the dashboard queries
 through the API. The measured numbers are appended to `.devdata/p8-perf.txt` at the repository
-root (SETH's location; this file is one directory deeper, hence `parents[3]`)."""
+root (SETH's location; this file is one directory deeper, hence `parents[3]`).
+
+Under xdist the timed calls run while no other worker is inside a test (`running_alone`, #109,
+DECISIONS B-2770): a wall-clock budget measured next to seven other workers on the shared cluster
+judged their load, not the dashboards. See `docs/build/perf.md`."""
 
 from __future__ import annotations
 
@@ -13,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
@@ -23,7 +28,7 @@ from shifde.core.clock import utcnow
 from tests._support.fullapp import World
 from tests._support.p2util import login, tenant_id
 from tests._support.p3util import ADMIN, A
-from tests.conftest import _env, _with_db
+from tests.conftest import _env, _with_db, running_alone
 
 EVENTS = 1_000_000
 CHUNK = 125_000
@@ -101,7 +106,7 @@ def _timed(client: TestClient, h: dict[str, str], url: str) -> tuple[float, dict
 
 
 def test_dashboards_respond_within_three_seconds_over_a_million_events(
-    client: TestClient, world: World, owner_session: Session
+    client: TestClient, world: World, owner_session: Session, pytestconfig: pytest.Config
 ) -> None:
     tid = tenant_id(owner_session, "demo-a")
     ws, pj = owner_session.execute(
@@ -127,30 +132,31 @@ def test_dashboards_respond_within_three_seconds_over_a_million_events(
     h = login(client, world.passwords, ADMIN)
     results: dict[str, float] = {}
     colds: dict[str, float] = {}
-    for name, url in (
-        ("summary by agent", "/usage/summary?group_by=agent"),
-        ("summary by model", "/usage/summary?group_by=model"),
-        ("summary by user", "/usage/summary?group_by=user"),
-        ("summary by project", "/usage/summary?group_by=project"),
-        ("summary by run (top 500)", "/usage/summary?group_by=run"),
-        (
-            "summary by agent, cost_kind filter",
-            "/usage/summary?group_by=agent&cost_kind=calculated",
-        ),
-        ("events page (200)", "/usage/events?limit=200"),
-        ("events of one run", f"/usage/events?run_id={_run_id(owner_session, tid)}"),
-        ("governance overview", "/governance/overview"),
-    ):
-        # the first call is cold (plans, page cache); the 3 s target is judged on the second
-        # (warm) call, the first is recorded as well
-        cold, body = _timed(client, h, url)
-        warm, _ = _timed(client, h, url)
-        results[name] = warm
-        colds[name] = cold
-        if name.startswith("summary"):
-            assert body["reconciliation"]["consistent"] is True, name
-    totals = _timed(client, h, "/usage/summary?group_by=model")[1]["totals"]
-    assert totals["calls"] == EVENTS and totals["cost"]["calculated"] > 0
+    with running_alone(pytestconfig):
+        for name, url in (
+            ("summary by agent", "/usage/summary?group_by=agent"),
+            ("summary by model", "/usage/summary?group_by=model"),
+            ("summary by user", "/usage/summary?group_by=user"),
+            ("summary by project", "/usage/summary?group_by=project"),
+            ("summary by run (top 500)", "/usage/summary?group_by=run"),
+            (
+                "summary by agent, cost_kind filter",
+                "/usage/summary?group_by=agent&cost_kind=calculated",
+            ),
+            ("events page (200)", "/usage/events?limit=200"),
+            ("events of one run", f"/usage/events?run_id={_run_id(owner_session, tid)}"),
+            ("governance overview", "/governance/overview"),
+        ):
+            # the first call is cold (plans, page cache); the 3 s target is judged on the second
+            # (warm) call, the first is recorded as well
+            cold, body = _timed(client, h, url)
+            warm, _ = _timed(client, h, url)
+            results[name] = warm
+            colds[name] = cold
+            if name.startswith("summary"):
+                assert body["reconciliation"]["consistent"] is True, name
+        totals = _timed(client, h, "/usage/summary?group_by=model")[1]["totals"]
+        assert totals["calls"] == EVENTS and totals["cost"]["calculated"] > 0
 
     REPORT.parent.mkdir(parents=True, exist_ok=True)
     lines = [

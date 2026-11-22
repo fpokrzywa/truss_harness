@@ -1,25 +1,36 @@
-# Handoff — 2026-11-22 ~08:30 UTC, charter 7 factory run (lead session 9cf5f6f9)
+# Handoff — 2026-11-22 ~14:00 UTC, charter 7 factory run (lead session 1174d2af)
 
-Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` ("Charter 7 progress"), then this file.
+Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` (newest "Charter 7 progress"), then this file.
 
-**State:** main = origin/main after this commit. Cluster on 55450 running. `concurrency` 2 (S-021). No agent and no gate of this session is running at handoff. Lead context reached ~180k (limit 200k).
+**State:** main = origin/main after this commit. Cluster on 55450 running. `concurrency` 4 (S-028). No agent and no gate of this session is running. Handed off at the context limit (~240k).
 
 ## Finished this session
-- Merged: #69 job 060 (PR #146, hand merge `87208f3`, owner approval S-023); #71 job 061 (PR #149, `job merge`); #72 job 062 (PR #150, hand merge `28deb39` after a DECISIONS conflict); #91 job 064 (PR #152, `job merge`, `6bc4a6a`). Evidence in B-2734, B-2735.
-- Filed #148 (final-deployment immutability in the status-guard trigger; #72 point 2; needs a lead-written migration, hand merge under B-2705 with isolation review).
-- Decision ids: B-2736 (job 062), B-2737 (job 063, on its branch), B-2738 (job 064) are used. Next free for the lead is **B-2739**.
+- Merged: #108 job 066 (PR #153), #93 job 065 (PR #154, rounds 1-2, isolation reviews 1-2), #109 job 067 (PR #168), #124 job 070 (PR #169). Evidence in STATUS and B-2742.
+- #156 design written, builder-read, settled (B-2743..B-2759); issues #159 (CM-1) .. #166 (CM-8) filed, labels `factory` + `connections`.
+- Filed #158 (retire guard migration `packaging_0003`, lead-written) and #167 (065 follow-ups: pipeline node connection ids, draft round trip).
+- Decision ids used: up to B-2759 (lead), B-2770..B-2783 (jobs; 069 used B-2774..B-2778, 071 B-2780, 072 B-2783). **Next free for the lead: B-2784** (skip any id a job branch already holds: `git show origin/<branch>:docs/build/DECISIONS.md | grep -o '^| B-27[0-9][0-9]'`).
 
-## Jobs and their stages (first action: `PYTHONUTF8=1 factory/bin/job queue`)
+## Exact next step
+1. `PYTHONUTF8=1 factory/bin/job queue`, then resume each job below (gates one at a time, never two at once).
+2. **Owner priority S-025:** finish L1/L2 so CM-1 (#159) can start before other `new` lines.
+
+## Jobs and their stages
 | Job | Issue | PR | Stage | Next |
 |---|---|---|---|---|
-| 063-sp2-7-follow-up | #74 | #151 | needs-human | **Owner approval S-024 already given** (on main). Sync the branch with main (DECISIONS append conflict likely: keep both rows), `gates.py --name 063-merge` 13/13 in an agent (a failure outside the diff that passes alone on rerun does not block, S-023), hand merge `gh pr merge 151 --merge --match-head-commit <sha>`, record B-2739. |
-| (new) | #93 and onward | - | queue | `factory/bin/job create <n>` for each `new` line, start at intake. |
+| 068-test-fixtures-sweep-shifdet | #115 | #170 | review r1 (gate PASS) | spawn `reviewer-code` (opus), then approver |
+| 069-sp4-1-core-app | #123 | #171 | gate r1 | `factory/bin/gate`; reviewers code+security (opus) |
+| 071-sp4-3-front-end | #125 | #172 | gate r1 | `factory/bin/gate`; reviewers code, ux (opus), ui (sonnet), security (opus) |
+| 072-sp4-8-retention-delete | #126 | #173 | gate r1 | Gate FAILS until the lead commits the 20 `tests/schema/deliberate_changes.yaml` entries listed word for word in DECISIONS B-2783 on the branch (B-2530/B-2782). Commit them on `factory/072-sp4-8-retention-delete`, push, then gate. Review note: the branch changes `tests/ledger/test_reservations.py` to expect DELETE granted on `budget_reservations` (required by the issue; guarded by `retention_delete_guard`); the isolation review must rule on it. Protected migration `runtime_0006`: hand merge under B-2705 after `gates.py` 13/13 + isolation review. |
+| (new) | #127, #128 and onward | - | queue | `factory/bin/job create <n>`; but start CM-1 (#159) first once L1/L2 is merged. |
 
-Then the `hold` issues in queue order: #108, #109, #115, #123-#135, #139-#142, #144, #147, #148. SP4: #126 (protected migration, hand merge under B-2705 with isolation review) before #127/#128; #141 and #148 need a lead-written migration.
+## Branch `lead/cm-l1-l2` (worktree `.worktrees/cm-l1-l2`, DB `shifde_cm_l1_l2`)
+- Commits `17631d8` (L1 `connections_0002`, L2 `models_admin_0004`, five yaml entries, `tests/connections/test_scope_guard_db.py`) and `a4ff042` (fixtures bind secrets of the connection's scope; no assertion changed). Pushed, not merged.
+- Builder departures to accept or not (log as B-2784+): L1 restores the `search_path` pin of `connections_guard` (B-1714) in both directions; L2 uses `IF EXISTS (... workspace_id IS NOT NULL)` instead of `NOT EXISTS (... IS NULL)` so cross-client tests keep their 42501/23503; L2 guard also pins `search_path`.
+- Full suite: 4271 passed, 1 failed: `tests/app/test_r1_critic.py::test_a_workspace_administrator_cannot_repoint_a_connection_on_a_tenant_scoped_secret`. Its setup (workspace connection on a client-wide secret) is now impossible under L1. It is a security test: do not delete it or loosen its assertion. Decide how its setup reaches the same refusal (e.g. a workspace connection repointed to a secret of another scope the admin cannot use) and record the call.
+- Then: isolation review, `python scripts/gates.py --ref <sha> --name cm-l1-l2-merge` 13/13 in an agent, merge to main (fast-forward or PR, no force push). CM-1's 23514 -> 422 mapping (B-2745) is not in this branch.
 
 ## Traps learned this session
-- Two gates at once (or a gate plus a builder's test run) overload the cluster: `checks.sh` then fails with psycopg `ConnectionTimeout` in tests outside the diff (063 round 1; 062 post-sync). Chain gates one after another (`until grep -q '^GATE:' <other log>; do sleep 20; done; factory/bin/gate ...`).
-- `job queue` hung ~10 min dropping a merged job's database while a gate ran (known checkpoint stall; it drains).
-- The lead shell has `VIRTUAL_ENV` set to main's `backend/.venv`; `unset VIRTUAL_ENV` before `factory/bin/gate` and `job merge`, or demos/tests load main's code (builder 063 found this).
-- `job merge` stops at `needs-human` on a DECISIONS.md append conflict; resolve in the job worktree (keep both rows in id order), push, run `bash factory/checks.sh` there, then hand merge.
-- A builder's "Agent stalled" failure notice may arrive after its READY hand-back; the work is already pushed, so check `build.md` before redoing anything.
+- Every merge of a job branch hits a `docs/build/DECISIONS.md` append conflict. Before `job merge`, sync the branch: merge origin/main, keep both sides' rows sorted by id, push (`job merge` then syncs cleanly). After a `job merge` that stops at needs-human for this reason, sync, `bash factory/checks.sh` in the worktree, then `gh pr merge <n> --merge --match-head-commit <sha>`.
+- `pgrep` does not exist in Git Bash here.
+- The L1/L2 agent saw the local cluster's app-role password once in its own tool output (exporting `.devdata/dev.env` before a core test). It is in no file or commit. Do not export dev.env before `tests/core`.
+- 068's sweep dropped ~2,200 stale `shifdet_` databases from the shared cluster on its first runs; gates should be faster now.

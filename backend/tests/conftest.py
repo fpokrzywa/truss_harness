@@ -23,7 +23,9 @@ import contextlib
 import os
 import re
 import secrets
+import shutil
 import tempfile
+import time
 import uuid
 from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -140,6 +142,8 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
     if run is not None:
         with contextlib.suppress(OSError):
             _lock_path(run).unlink(missing_ok=True)
+            _alone_lock_path(run).unlink(missing_ok=True)
+        shutil.rmtree(_busy_dir(run), ignore_errors=True)
     admin_url = _env_or_none("SHIFDE_TEST_ADMIN_DATABASE_URL")
     if run is None or admin_url is None:
         return
@@ -202,6 +206,50 @@ def _database_ages(c: Connection) -> list[tuple[str, float | None]]:
 
 def _lock_path(run: str) -> Path:
     return Path(tempfile.gettempdir()) / f"shifde-test-{run}.lock"
+
+
+def _alone_lock_path(run: str) -> Path:
+    return Path(tempfile.gettempdir()) / f"shifde-test-{run}-alone.lock"
+
+
+def _busy_dir(run: str) -> Path:
+    return Path(tempfile.gettempdir()) / f"shifde-test-{run}-busy"
+
+
+# --------------------------------------------------------------------------- timing alone
+# Under xdist, a wall-clock budget is only meaningful while no other worker loads the shared
+# cluster (#109, DECISIONS B-2770). Every test marks its worker busy for its duration; a test that
+# times something enters `running_alone`, which stops other workers from starting a test and waits
+# until the tests they are running have finished. Without xdist there is nothing to wait for.
+@pytest.fixture(autouse=True)
+def _busy_marker(request: pytest.FixtureRequest) -> Iterator[None]:
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    if worker is None:
+        yield
+        return
+    run = request.config.stash[_RUN_STASH]
+    busy = _busy_dir(run) / f"{worker}.busy"
+    with FileLock(str(_alone_lock_path(run))):  # held by `running_alone` while it times
+        busy.parent.mkdir(exist_ok=True)
+        busy.touch()
+    try:
+        yield
+    finally:
+        busy.unlink(missing_ok=True)
+
+
+@contextlib.contextmanager
+def running_alone(config: pytest.Config) -> Iterator[None]:
+    """Run the block while no other xdist worker of this run is inside a test."""
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    if worker is None:
+        yield
+        return
+    run = config.stash[_RUN_STASH]
+    with FileLock(str(_alone_lock_path(run))):
+        while any(p.stem != worker for p in _busy_dir(run).glob("*.busy")):
+            time.sleep(0.1)
+        yield
 
 
 def _env_or_none(key: str) -> str | None:
