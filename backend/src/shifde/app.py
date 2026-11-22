@@ -28,6 +28,7 @@ from shifde.core.deps import check_origin, reject_basic_auth
 from shifde.core.features import FeatureRegistry
 from shifde.core.problem import PROBLEM_RESPONSES, install_error_handlers
 from shifde.core.ratelimit import SlidingWindowLimiter
+from shifde.core.securityheaders import SecurityHeadersMiddleware
 from shifde.core.settings import Settings, get_settings
 from shifde.core.ssrf import OutboundHttp, Resolver, default_resolver
 from shifde.delivery import api as delivery_api
@@ -121,7 +122,8 @@ def create_app(
     # the runtime's governance hooks (budgets, policies, alerts), as SETH's app sets them
     app.state.governance = TokenBudgetHooks()
     install_error_handlers(app)
-    # innermost first: the cap answers inside CORS and the request id, so a 413 carries both
+    # innermost first: the cap answers inside CORS, the security headers and the request id, so a
+    # 413 carries all three; the catch-all 500 sits outside them all and adds its headers itself
     app.add_middleware(MaxBodySizeMiddleware, max_bytes=settings.max_request_body_bytes)
     app.add_middleware(
         CORSMiddleware,
@@ -131,6 +133,7 @@ def create_app(
         allow_headers=["Content-Type", "X-CSRF-Token", "X-Request-ID"],
         expose_headers=["X-Request-ID"],
     )
+    app.add_middleware(SecurityHeadersMiddleware, settings=settings)
     app.add_middleware(RequestIdMiddleware)  # outermost: every response gets X-Request-ID
 
     features = FeatureRegistry()

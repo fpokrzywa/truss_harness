@@ -156,6 +156,8 @@ class Settings(BaseSettings):
     # loopback by any route could otherwise choose the address the limiters and audit use.
     trust_loopback_proxy: bool = False
     max_request_body_bytes: int = 8 * 1024 * 1024  # global request-body cap, 0 = off (Item 5b)
+    # Strict-Transport-Security max-age the API sends in production; 0 = off (SP4, B-2772)
+    hsts_max_age_seconds: int = Field(default=31536000, ge=0)
     db_connect_timeout_seconds: int = 10  # Item 18
     db_statement_timeout_ms: int = 60_000  # Item 18; 0 = none
     session_idle_minutes: int = 30
