@@ -294,7 +294,10 @@ def drive(app_url: str, owner_url: str, workdir: Path) -> None:
             runner = step(
                 "start the executor's runner against the fake platform",
                 lambda: make_runner(
-                    client, executor.token, credentials_file(workdir, target["address"]), fake
+                    client,
+                    executor.token,
+                    credentials_file(workdir, target["address"], tenant=org.tenant),
+                    fake,
                 ),
             )
 

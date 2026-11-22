@@ -343,7 +343,11 @@ class Runner:
             if audience != grant.audience:
                 raise CredentialUnavailable
             return self.broker.token_for(
-                grant, job_id=state.lease.job.id, executor_id=self.executor_id, target_id=target.id
+                grant,
+                job_id=state.lease.job.id,
+                executor_id=self.executor_id,
+                target_id=target.id,
+                tenant_id=target.tenant_id,
             )
 
         return token
@@ -354,9 +358,15 @@ class Runner:
         ctx = self.client.context(lease)
         if ctx.plan is None or job.target_id != ctx.target.id:
             raise ValueError("the job has no plan or names another target")
+        if ctx.job.id != job.id:
+            raise ValueError("the context names another job")
         state.grant = self.client.credential_grant(lease)
         entry = self.broker.entry_for(
-            state.grant, job_id=job.id, executor_id=self.executor_id, target_id=ctx.target.id
+            state.grant,
+            job_id=job.id,
+            executor_id=self.executor_id,
+            target_id=ctx.target.id,
+            tenant_id=ctx.target.tenant_id,
         )
         target = ctx.target.model_copy(
             update={"bindings": {**ctx.target.bindings, PRINCIPAL_BINDING: entry.service_principal}}

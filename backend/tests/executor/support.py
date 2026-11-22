@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any  # Any: JSON bodies
+from uuid import UUID
 
 from fastapi.testclient import TestClient
 
@@ -25,6 +26,7 @@ def credentials_file(
     directory: Path,
     host: str,
     *,
+    tenant: UUID,
     ref: str = "databricks-dev",
     token: str = CREDENTIAL_TOKEN,
     principal: str = DEPLOYER,
@@ -32,7 +34,16 @@ def credentials_file(
 ) -> Path:
     path = directory / name
     path.write_text(
-        json.dumps({ref: {"host": host, "token": token, "service_principal": principal}}),
+        json.dumps(
+            {
+                ref: {
+                    "tenant_id": str(tenant),
+                    "host": host,
+                    "token": token,
+                    "service_principal": principal,
+                }
+            }
+        ),
         encoding="utf-8",
     )
     os.chmod(path, 0o600)  # the broker refuses a file open to group or others on POSIX

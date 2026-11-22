@@ -1,6 +1,7 @@
-"""The credential broker (design 5, settled call 14; B-2689): a token only for a grant that names
-this job, executor and target, has not expired, and whose audience is the normalized host of the
-file's entry. Every refusal is the same `CredentialUnavailable`, naming nothing."""
+"""The credential broker (design 5, settled call 14; B-2689, B-2737): a token only for a grant that
+names this job, executor and target, has not expired, whose audience is the normalized host of the
+file's entry, and whose target belongs to the entry's organization. Every refusal is the same
+`CredentialUnavailable`, naming nothing."""
 
 from __future__ import annotations
 
@@ -17,13 +18,14 @@ from shifde.adapters.native.contracts import CredentialGrant, utcnow
 from shifde.executor import credentials
 from shifde.executor.credentials import (
     CredentialBroker,
+    CredentialEntry,
     CredentialFileRefused,
     CredentialUnavailable,
 )
 from tests.executor.support import CREDENTIAL_TOKEN, DEPLOYER, credentials_file
 
 HOST = "https://adb-1234567890.cloud.databricks.com"
-JOB, EXECUTOR, TARGET = uuid4(), uuid4(), uuid4()
+JOB, EXECUTOR, TARGET, TENANT = uuid4(), uuid4(), uuid4(), uuid4()
 
 
 def _grant(**overrides: Any) -> CredentialGrant:
@@ -40,18 +42,27 @@ def _grant(**overrides: Any) -> CredentialGrant:
 
 
 def _broker(tmp_path: Path, host: str = HOST) -> CredentialBroker:
-    return CredentialBroker.from_file(credentials_file(tmp_path, host))
+    return CredentialBroker.from_file(credentials_file(tmp_path, host, tenant=TENANT))
 
 
-def _token(broker: CredentialBroker, grant: CredentialGrant, target: UUID = TARGET) -> str:
-    return broker.token_for(grant, job_id=JOB, executor_id=EXECUTOR, target_id=target)
+def _token(broker: CredentialBroker, grant: CredentialGrant, tenant: UUID = TENANT) -> str:
+    return broker.token_for(
+        grant, job_id=JOB, executor_id=EXECUTOR, target_id=TARGET, tenant_id=tenant
+    )
+
+
+def _entry(broker: CredentialBroker) -> CredentialEntry:
+    return broker.entry_for(
+        _grant(), job_id=JOB, executor_id=EXECUTOR, target_id=TARGET, tenant_id=TENANT
+    )
 
 
 def test_a_matching_grant_gets_the_token_and_the_service_principal(tmp_path: Path) -> None:
     broker = _broker(tmp_path, HOST.upper().replace("HTTPS", "https") + ":443/")
     assert _token(broker, _grant()) == CREDENTIAL_TOKEN
-    entry = broker.entry_for(_grant(), job_id=JOB, executor_id=EXECUTOR, target_id=TARGET)
+    entry = _entry(broker)
     assert entry.service_principal == DEPLOYER
+    assert entry.tenant_id == TENANT
 
 
 @pytest.mark.parametrize(
@@ -78,6 +89,12 @@ def test_every_mismatch_is_refused_with_one_fixed_message(
         assert leaked not in message
 
 
+def test_a_target_of_another_tenant_is_refused_with_the_fixed_message(tmp_path: Path) -> None:
+    with pytest.raises(CredentialUnavailable) as raised:
+        _token(_broker(tmp_path), _grant(), tenant=uuid4())
+    assert str(raised.value) == "the deployment credential is unavailable for this job"
+
+
 def test_a_host_outside_the_allow_list_is_refused(tmp_path: Path) -> None:
     broker = _broker(tmp_path, "https://example.com")
     with pytest.raises(CredentialUnavailable):
@@ -86,7 +103,7 @@ def test_a_host_outside_the_allow_list_is_refused(tmp_path: Path) -> None:
 
 def test_the_token_is_never_in_a_repr(tmp_path: Path) -> None:
     broker = _broker(tmp_path)
-    entry = broker.entry_for(_grant(), job_id=JOB, executor_id=EXECUTOR, target_id=TARGET)
+    entry = _entry(broker)
     for text in (repr(broker), repr(entry), str(entry)):
         assert CREDENTIAL_TOKEN not in text
 
@@ -96,12 +113,38 @@ def test_the_token_is_never_in_a_repr(tmp_path: Path) -> None:
     [
         "not json",
         json.dumps([1, 2]),
-        json.dumps({"ref": {"host": HOST, "token": CREDENTIAL_TOKEN}}),
+        json.dumps({"ref": {"tenant_id": str(TENANT), "host": HOST, "token": CREDENTIAL_TOKEN}}),
         json.dumps(
-            {"ref": {"host": HOST, "token": CREDENTIAL_TOKEN, "service_principal": "a", "x": 1}}
+            {
+                "ref": {
+                    "tenant_id": str(TENANT),
+                    "host": HOST,
+                    "token": CREDENTIAL_TOKEN,
+                    "service_principal": "a",
+                    "x": 1,
+                }
+            }
+        ),
+        json.dumps({"ref": {"host": HOST, "token": CREDENTIAL_TOKEN, "service_principal": "a"}}),
+        json.dumps(
+            {
+                "ref": {
+                    "tenant_id": "not-a-uuid",
+                    "host": HOST,
+                    "token": CREDENTIAL_TOKEN,
+                    "service_principal": "a",
+                }
+            }
         ),
     ],
-    ids=["not-json", "not-a-map", "no-principal", "extra-field"],
+    ids=[
+        "not-json",
+        "not-a-map",
+        "no-principal",
+        "extra-field",
+        "no-tenant_id",
+        "tenant_id-not-uuid",
+    ],
 )
 def test_a_malformed_file_is_refused_without_echoing_it(tmp_path: Path, content: str) -> None:
     path = tmp_path / "credentials.json"
@@ -121,7 +164,7 @@ def test_a_missing_file_is_refused(tmp_path: Path) -> None:
 def test_posix_refuses_a_file_open_to_group_or_others(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    path = credentials_file(tmp_path, HOST)
+    path = credentials_file(tmp_path, HOST, tenant=TENANT)
     mode = 0o100644
 
     class Stat:
@@ -137,7 +180,7 @@ def test_posix_refuses_a_file_open_to_group_or_others(
 
 @pytest.mark.skipif(os.name != "posix", reason="file modes are checked on POSIX only")
 def test_posix_refuses_a_real_file_open_to_group_or_others(tmp_path: Path) -> None:
-    path = credentials_file(tmp_path, HOST)
+    path = credentials_file(tmp_path, HOST, tenant=TENANT)
     for mode in (0o640, 0o604):
         os.chmod(path, mode)
         with pytest.raises(CredentialFileRefused, match="group or others"):
