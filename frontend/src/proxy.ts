@@ -37,7 +37,59 @@ export function isMetricsPath(pathname: string): boolean {
   return c === null || c === '/api/metrics' || c.startsWith('/api/metrics/');
 }
 
+/** True for any spelling of an API path (`/api` or `/api/...`); an undecodable path counts too. */
+export function isApiPath(pathname: string): boolean {
+  const c = canonicalPath(pathname);
+  return c === null || c === '/api' || c.startsWith('/api/');
+}
+
+/** `SHIFDE_WEB_API_PROXY`, read per request: unset, empty or `on` is on; `off` and any other value
+ * is off (fail closed: production requires `off` behind the edge proxy, so a typo must not open it). */
+export function apiProxyEnabled(): boolean {
+  const value = (process.env.SHIFDE_WEB_API_PROXY ?? '').trim().toLowerCase();
+  return value === '' || value === 'on';
+}
+
+/** The page Content-Security-Policy for `nonce` (go-live design section 5). `next dev` also needs
+ * `'unsafe-eval'` (React's dev tooling); production never gets it. */
+export function contentSecurityPolicy(nonce: string): string {
+  const dev = process.env.NODE_ENV === 'development' ? " 'unsafe-eval'" : '';
+  return [
+    "default-src 'self'",
+    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${dev}`,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    "connect-src 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+  ].join('; ');
+}
+
+/** Page responses: a fresh nonce per request, handed to Next on the request CSP so it puts it on
+ * its own scripts (pages render per request, see app/layout.tsx), plus the other browser headers.
+ * HSTS is not set here: the edge proxy owns it (go-live design call 13). */
+function pageResponse(request: NextRequest) {
+  const nonce = btoa(crypto.randomUUID());
+  const csp = contentSecurityPolicy(nonce);
+  const headers = new Headers(request.headers);
+  headers.set('x-nonce', nonce);
+  headers.set('content-security-policy', csp);
+  const res = NextResponse.next({ request: { headers } });
+  res.headers.set('content-security-policy', csp);
+  res.headers.set('x-content-type-options', 'nosniff');
+  res.headers.set('referrer-policy', 'no-referrer');
+  res.headers.set('x-frame-options', 'DENY');
+  res.headers.set('cross-origin-opener-policy', 'same-origin');
+  return res;
+}
+
 export function proxy(request: NextRequest) {
+  if (!isApiPath(request.nextUrl.pathname)) return pageResponse(request);
+  if (!apiProxyEnabled()) {
+    // Off in production: the edge proxy routes /api to the API, and this server forwards nothing.
+    return NextResponse.json({ detail: 'not found' }, { status: 404 });
+  }
   if (isMetricsPath(request.nextUrl.pathname)) {
     return NextResponse.json(
       { status: 404, title: 'Not Found', detail: 'Not Found' },
@@ -78,6 +130,8 @@ export function proxy(request: NextRequest) {
   return NextResponse.rewrite(target, { request: { headers } });
 }
 
+// Pages and /api/*; static assets skip the proxy (no CSP on them, go-live design section 5).
 export const config = {
-  matcher: '/api/:path*',
+  matcher:
+    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|gif|svg|ico|webp|css|js|map|txt|woff2?)$).*)',
 };
