@@ -5,6 +5,7 @@ import type {
   ChatMessage,
   ConformanceRun,
   Connection,
+  ConnectionDiscoveryJob,
   ConnectionInput,
   ConnectionInvokeResult,
   ConnectionStatus,
@@ -38,8 +39,9 @@ const org$ = (org: string) => `/api/v1/orgs/${enc(org)}`;
 type Query = Record<string, string | number | undefined>;
 
 /**
- * Status poll of a queued connection test, provider health check or model discovery: the interval
- * of `POLL_MS` (operate-hooks imports these endpoints, so it is not imported here), capped at 60 s.
+ * Status poll of a queued connection test or discovery, provider health check or model discovery:
+ * the interval of `POLL_MS` (operate-hooks imports these endpoints, so it is not imported here),
+ * capped at 60 s.
  */
 const TEST_POLL_MS = 1000;
 const TEST_TIMEOUT_MS = 60_000;
@@ -227,8 +229,20 @@ export function createIntegrateEndpoints(client: ApiClient) {
       ),
     listConnectionTests: (org: string, id: string) =>
       list<ConnectionTestResult>(`${org$(org)}/connections/${enc(id)}/tests`),
-    discoverConnection: (org: string, id: string) =>
-      send<Discovery>('POST', `${org$(org)}/connections/${enc(id)}/discover`, {}),
+    /** Queue the connection discovery (202), then poll its job until the worker has recorded it. */
+    discoverConnection: async (org: string, id: string): Promise<Discovery> =>
+      awaitJob(
+        await send<ConnectionDiscoveryJob>(
+          'POST',
+          `${org$(org)}/connections/${enc(id)}/discover`,
+          {},
+        ),
+        (jobId) =>
+          client.request<ConnectionDiscoveryJob>(
+            `${org$(org)}/connections/${enc(id)}/discovery-jobs/${enc(jobId)}`,
+          ),
+        { code: 'discovery', title: 'Discovery', noun: 'connection discovery' },
+      ),
     latestDiscovery: (org: string, id: string) =>
       client.request<Discovery>(`${org$(org)}/connections/${enc(id)}/discoveries/latest`),
     invokeConnection: (org: string, id: string, body: Record<string, unknown>) =>
