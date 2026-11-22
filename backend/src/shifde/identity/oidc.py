@@ -13,7 +13,9 @@ ID-token validation: algorithm allow-list (no `none`, no HMAC), signature agains
 refetched after expiry and fail-closed if that fetch fails; within the lifetime refreshed once,
 rate-limited, on a `kid` miss), `iss` == discovery issuer == configured issuer, `aud` contains
 the client id (and `azp` == client id when several audiences), `exp`, `iat`, `nbf` with at most
-60 s skew, `nonce` bound to this request, non-empty `sub`.
+60 s skew, `nonce` bound to this request, non-empty `sub`. The IdP test (`run_checks`) fetches
+discovery and the JWKS live, validates them like sign-in does, and never reads or writes the
+sign-in caches (issue #189, B-3061).
 Identity mapping is by `(iss, sub)` only; e-mail is an attribute, never the key.
 
 Every failure path ends in a generic redirect; the specific reason is only audited and logged.
@@ -48,7 +50,7 @@ import json
 import re
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any  # Any: decoded JSON documents / JWT claims
 from urllib.parse import urlencode
@@ -177,6 +179,12 @@ class OidcClient:
             if cached[1].issuer != expected_issuer:  # another IdP row naming the same URL
                 raise OidcFailure("issuer_mismatch_discovery")
             return cached[1]
+        disc = self._fetch_discovery(url, expected_issuer)
+        self._discovery[url] = (self._clock(), disc)
+        return disc
+
+    def _fetch_discovery(self, url: str, expected_issuer: str) -> Discovery:
+        """Fetch and validate a discovery document; never reads or writes `_discovery`."""
         try:
             doc = self._http.get_json(url)
             disc = Discovery(
@@ -194,16 +202,20 @@ class OidcClient:
             raise OidcFailure("discovery_invalid") from exc
         except EgressViolation as exc:
             raise OidcFailure(f"discovery_unreachable:{exc}") from exc
-        self._discovery[url] = (self._clock(), disc)
         return disc
 
-    def _fetch_jwks(self, jwks_uri: str) -> KeySet:
+    def _load_jwks(self, jwks_uri: str) -> tuple[KeySet, Mapping[str, str]]:
+        """Fetch and parse a JWKS with its response headers; never touches `_jwks`."""
         try:
             doc, headers = self._http.get_json_with_headers(jwks_uri)
             # the document is dict[str, Any]; joserfc types the argument as its JWKS TypedDict
             keys = KeySet.import_key_set(doc)  # type: ignore[arg-type]
         except (EgressViolation, JoseError, ValueError, KeyError, TypeError) as exc:
             raise OidcFailure("jwks_unavailable") from exc
+        return keys, headers
+
+    def _fetch_jwks(self, jwks_uri: str) -> KeySet:
+        keys, headers = self._load_jwks(jwks_uri)
         max_age = cache_max_age(headers.get("cache-control"))
         ttl = self._settings.oidc_jwks_cache_seconds if max_age is None else max_age
         lifetime = min(self._settings.oidc_jwks_max_cache_seconds, max(JWKS_MIN_TTL, ttl))
@@ -226,17 +238,17 @@ class OidcClient:
         return keys
 
     def run_checks(self, discovery_url: str, issuer: str) -> list[tuple[str, bool, str]]:
-        """Uncached connectivity checks for the IdP `test` endpoint: (name, ok, detail)."""
+        """Uncached connectivity checks for the IdP `test` endpoint: (name, ok, detail). The
+        sign-in caches are neither read nor written (issue #189)."""
         checks: list[tuple[str, bool, str]] = []
-        self._discovery.pop(discovery_url, None)
         try:
-            disc = self.discovery(discovery_url, issuer)
+            disc = self._fetch_discovery(discovery_url, issuer)
         except OidcFailure as exc:
             checks.append(("discovery", False, exc.reason))
             return checks
         checks.append(("discovery", True, "discovery document fetched; issuer matches"))
         try:
-            keys = self._fetch_jwks(disc.jwks_uri)
+            keys, _ = self._load_jwks(disc.jwks_uri)
             checks.append(("jwks", True, f"{len(keys.keys)} signing key(s) available"))
         except OidcFailure as exc:
             checks.append(("jwks", False, exc.reason))
