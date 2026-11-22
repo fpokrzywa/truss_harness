@@ -1,7 +1,7 @@
 # Starts the unattended build after a logon or reboot: the local cluster, then
 # one supervisor and one watchdog. Registered as the "SETH build autostart"
 # scheduled task (at logon). Does nothing for a part that is already running.
-param([int]$Goal = 2, [int]$WatchMinutes = 50)
+param([int]$Goal = 2, [int]$WatchMinutes = 50, [switch]$Detached)
 
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -10,6 +10,17 @@ $logs = Join-Path $repo '.devdata\supervisor\logs'
 New-Item -ItemType Directory -Force $logs | Out-Null
 $log = Join-Path $logs 'autostart.log'
 function Write-Log($m) { "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $m" | Out-File -Append -Encoding utf8 $log }
+
+# The task's own console can be closed at logon (it can show as a terminal window even with
+# -WindowStyle Hidden); that ends this script with 0xC000013A before anything starts
+# (2026-11-22 06:28). Relaunch under a headless console, which has no window, and return.
+if (-not $Detached) {
+    Start-Process -FilePath (Join-Path $env:WINDIR 'System32\conhost.exe') -WindowStyle Hidden -ArgumentList @(
+        '--headless', 'powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+        '-File', "`"$PSCommandPath`"", '-Goal', "$Goal", '-WatchMinutes', "$WatchMinutes", '-Detached')
+    Write-Log 'autostart: relaunched headless'
+    exit 0
+}
 
 function Test-Running($pattern) {
     [bool](Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match $pattern })
@@ -58,5 +69,16 @@ if (Test-Running 'watchdog\.py') {
         -RedirectStandardOutput (Join-Path $logs 'autostart-watchdog.out') `
         -RedirectStandardError (Join-Path $logs 'autostart-watchdog.err')
     Write-Log 'watchdog started'
+}
+
+# The factory dashboard (http://127.0.0.1:8000/dashboard.html), localhost only.
+if (Test-Running 'http\.server 8000') {
+    Write-Log 'dashboard already running; not starting another'
+} else {
+    Start-Process -FilePath $py -ArgumentList '-I', '-m', 'http.server', '8000', '--bind', '127.0.0.1' `
+        -WorkingDirectory (Join-Path $repo 'factory') -WindowStyle Hidden `
+        -RedirectStandardOutput (Join-Path $logs 'dashboard.out') `
+        -RedirectStandardError (Join-Path $logs 'dashboard.err')
+    Write-Log 'dashboard started'
 }
 Write-Log 'autostart: done'

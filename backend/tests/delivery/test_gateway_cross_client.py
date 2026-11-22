@@ -1,12 +1,13 @@
 """Executor gateway routes, organization A against organization B (B-1019, B-2669; isolation
-review of SP2-3, finding 1, issue #64 item 1).
+review of SP2-3, finding 1, issue #64 item 1; issue #74).
 
 Every route of `delivery.gateway_api.router` has a test here (`GATEWAY_ROUTE_TESTS`, matched
 against the router). Each organization has an active executor with a token and a queued job. B's
 lease never returns A's job; B's token on A's job id, even with A's current `lease_id` and
 `fence`, gets exactly the 404 an unknown job id gets, and A's job and journal rows stay as they
 were, read as the schema owner. B's lease call sweeps only B's expired leases. User sessions and
-`shf_` API keys get 401 on every gateway route.
+`shf_` API keys get 401 on every gateway route. With both organizations owning native resources
+under the same application key, A's job context lists only A's.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from shifde.core.clock import utcnow
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
-from shifde.delivery import gateway_api
+from shifde.delivery import gateway_api, repository
 from shifde.identity import apikeys
 from tests.connections.routes import as_user
 from tests.delivery.conftest import ExecutorSide, make_executor
@@ -33,6 +34,7 @@ from tests.delivery.routes import (
     LEASE,
     WHOAMI,
     bearer,
+    deployment_row,
     enqueue,
     expire,
     job_row,
@@ -40,6 +42,7 @@ from tests.delivery.routes import (
     journal_rows,
     lease,
     make_deployment,
+    owner_sql,
     proof,
 )
 from tests.tenancy.conftest import World, app_session
@@ -279,3 +282,66 @@ def test_whoami_answers_for_each_organizations_executor(client: TestClient, two:
     for side in (two.a, two.b):
         r = client.get(WHOAMI, headers=bearer(side.token))
         assert r.status_code == 200 and r.json()["executor_id"] == side.executor_id, r.text
+
+
+def _native_rows(owner_db: Database, tenant: UUID) -> list[tuple[Any, ...]]:
+    with owner_db.session() as o:
+        rows = o.execute(
+            text(
+                "SELECT target_id, application_key, resource_type, native_id, deployment_id "
+                "FROM shifde.delivery_native_resources WHERE tenant_id = :t ORDER BY native_id"
+            ),
+            {"t": tenant},
+        ).all()
+    return [tuple(r) for r in rows]
+
+
+def test_as_context_lists_only_as_resources_under_a_shared_application_key(
+    client: TestClient, world: World, people: People, app_db: Database, owner_db: Database
+) -> None:
+    """A and B each own native resources under `helper-app` (`make_deployment`'s key) on their own
+    target, made active; A's plan job context lists exactly A's, and B's rows stay as they were."""
+    a = make_executor(client, world.a, people.owner_a)
+    plans: dict[UUID, tuple[UUID, UUID]] = {}
+    for side in (a.tenant, world.b.tenant):
+        deployment = deployment_row(owner_db, make_deployment(owner_db, side))
+        owner_sql(  # activate the target under a claim of its own organization
+            owner_db,
+            "WITH c AS (INSERT INTO shifde.delivery_platform_claims (id, tenant_id, platform_kind, "
+            "address_key, created_by) VALUES (:c, :t, 'databricks', :k, :u) RETURNING id) "
+            "UPDATE shifde.delivery_targets SET status = 'active', claim_id = (SELECT id FROM c) "
+            "WHERE id = :g",
+            c=uuid7(),
+            t=side,
+            k=uuid7().hex * 2,
+            u=uuid7(),
+            g=deployment["target_id"],
+        )
+        with app_session(app_db, side) as s:
+            for resource_type in ("databricks_app", "workspace_directory"):
+                repository.insert_native_resource(
+                    s,
+                    {
+                        "tenant_id": side,
+                        "target_id": deployment["target_id"],
+                        "application_key": deployment["application_key"],
+                        "resource_type": resource_type,
+                        "native_id": f"{resource_type}-{uuid7().hex[-12:]}",
+                        "deployment_id": deployment["id"],
+                    },
+                )
+            s.commit()
+        plans[side] = (deployment["plan_id"], deployment["target_id"])
+    b_before = _native_rows(owner_db, world.b.tenant)
+    a_rows = _native_rows(owner_db, a.tenant)
+    plan_a, target_a = plans[a.tenant]
+    job = enqueue(app_db, a.tenant, "plan", plan_id=plan_a, target_id=target_a)
+    r = lease(client, a.token, kinds=("plan",))
+    assert r.status_code == 200 and r.json()["job"]["id"] == str(job), r.text
+    r = client.get(job_url(job, "context"), params=proof(r.json()), headers=bearer(a.token))
+    assert r.status_code == 200, r.text
+    owned = {(o["resource_type"], o["native_id"]) for o in r.json()["owned_resources"]}
+    assert owned == {(row[2], row[3]) for row in a_rows}
+    assert len(owned) == 2
+    assert not owned & {(row[2], row[3]) for row in b_before}
+    assert _native_rows(owner_db, world.b.tenant) == b_before

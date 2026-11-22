@@ -2,6 +2,8 @@
 
 Read this first after any compaction or resume. Standing instructions: `docs/build/CHARTER.md`. Plan: `docs/superpowers/plans/2026-11-13-subproject-1-foundation-and-seth-port.md`.
 
+**Owner priorities (supervisor, 2026-11-22):** (1) S-025: design, cut and start #156 (connection management space, per client/project; Databricks, Snowflake and every other kind) before any other `new` line. (2) S-026: SETH is hosted on an Ubuntu server; SP4-10 filed for systemd units, edge proxy and the host runbook.
+
 States: `todo`, `in progress`, `done`, `blocked` (with evidence), `waiting on owner input`.
 
 **Sub-project 1 is complete (unit `goal1-final`, 2026-11-17).** The owner's pause (S-003, 2026-11-16 08:05) ended when the owner resumed the build at 14:15 (S-005). Every SETH module in the design's layer order is done; the software factory is installed (B-2480, B-2481). Charter 7 started (2026-11-17): 18 known-defect issues filed (#1-#18, labels `factory`, `known-defect`); sub-project 2 short design written and settled (B-2500, B-2501) and cut into 10 issues (#19-#28, label `sp2`). Next: `/factory run`.

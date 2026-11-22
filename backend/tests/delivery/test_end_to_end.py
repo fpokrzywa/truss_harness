@@ -56,12 +56,18 @@ def test_plan_approve_apply_observe_verify_against_the_fake(
     fake = fake_platform()
     target = flow.target()
     runner_a = make_runner(
-        client, flow.token, credentials_file(tmp_path, target["address"], name="a.json"), fake
+        client,
+        flow.token,
+        credentials_file(tmp_path, target["address"], tenant=flow.tenant, name="a.json"),
+        fake,
     )
     b = make_executor(client, world.b, people.owner_b)
     b_target_host = "https://adb-organization-b.cloud.databricks.com"
     runner_b = make_runner(
-        client, b.token, credentials_file(tmp_path, b_target_host, name="b.json"), fake
+        client,
+        b.token,
+        credentials_file(tmp_path, b_target_host, tenant=b.tenant, name="b.json"),
+        fake,
     )
 
     # plan: requested by A's requester, sealed by A's runner
