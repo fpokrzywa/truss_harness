@@ -2346,6 +2346,21 @@
             "title": "Id",
             "type": "string"
           },
+          "last_test_outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pass",
+                  "fail"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Test Outcome"
+          },
           "last_tested_at": {
             "anyOf": [
               {
@@ -2431,6 +2446,7 @@
           "health_status",
           "health",
           "last_tested_at",
+          "last_test_outcome",
           "row_version",
           "created_at",
           "updated_at"
@@ -23893,6 +23909,16 @@
                 }
               ],
               "title": "Project"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_shared",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Shared",
+              "type": "boolean"
             }
           },
           {

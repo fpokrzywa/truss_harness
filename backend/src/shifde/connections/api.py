@@ -39,6 +39,7 @@ def list_connections(
     status: Annotated[str | None, Query()] = None,
     workspace: Annotated[str | None, Query()] = None,
     project: Annotated[str | None, Query()] = None,
+    include_shared: Annotated[bool, Query()] = False,
     limit: LimitQuery = DEFAULT_LIMIT,
     cursor: CursorQuery = None,
 ) -> Page[s.ConnectionOut]:
@@ -47,6 +48,7 @@ def list_connections(
         status=status,
         workspace=workspace,
         project=project,
+        include_shared=include_shared,
         limit=limit,
         cursor=cursor,
     )
