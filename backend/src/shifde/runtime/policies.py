@@ -5,11 +5,13 @@
   write node (api_request with a write method, connection sink) needs a human approval. Every
   condition the rule names must hold. `data_export` is true for a pipeline write node (it sends
   run data to an external connection) and false for a tool call; `target_environments` matches the
-  write node's optional `target_environment` config exactly, and a call without one (every tool
-  call) never matches it. Pipeline writes have the class `write_non_idempotent` (F-10). A rule can
-  only ADD an approval - it never waives the `destructive` / write-class / rule-8 / pipeline
-  approval-node approvals the platform already requires - and the approval then needs the rule's
-  `approver_permission` on top of `approval:decide`; separation of duties and the
+  write node's optional `target_environment` config ignoring case and surrounding spaces, a write
+  node with no (or a blank) label matches every environment rule, and a tool call never matches one
+  (F-10, #60). A pipeline write is classed by its HTTP method: DELETE `destructive`, PUT
+  `write_idempotent`, POST / PATCH `write_non_idempotent`. A rule can only ADD an approval - it
+  never waives the `destructive` / write-class / rule-8 / pipeline approval-node approvals the
+  platform already requires - and the approval then needs EVERY matched rule's
+  `approver_permission` on top of `approval:decide` (B-2728); separation of duties and the
   indeterminate-side-effect flow are unchanged.
 * `cost_threshold` (`threshold_amount`, `currency`, `action`): when the known cost of the run tree
   exceeds the threshold the run raises an alert (`governance.cost_threshold` audit event and a
@@ -49,7 +51,36 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class ApprovalRule:
     policy_ids: tuple[UUID, ...]
-    approver_permission: str | None
+    approver_permissions: tuple[str, ...]  # sorted, distinct; the approver must hold every one
+
+
+WRITE_METHOD_CLASSES = {
+    "DELETE": "destructive",
+    "PUT": "write_idempotent",
+    "POST": "write_non_idempotent",
+    "PATCH": "write_non_idempotent",
+}
+
+
+def write_method_class(method: str) -> str:
+    """The side-effect class of a pipeline write with HTTP `method` (upper case)."""
+    return WRITE_METHOD_CLASSES[method]
+
+
+def required_permission(permissions: Sequence[str]) -> str | None:
+    """The approval row's `required_permission`: the first sorted permission (None = the
+    default `approval:decide`)."""
+    return permissions[0] if permissions else None
+
+
+def approver_summary(permissions: Sequence[str]) -> dict[str, list[str]]:
+    """The `context_summary` entry naming every permission the approver must hold (B-2728);
+    `ApprovalsService.decide` requires each one."""
+    return {"approver_permissions": list(permissions)} if permissions else {}
+
+
+def _env_key(value: str) -> str:
+    return value.strip().casefold()
 
 
 def _policies(ctx: RunContext, kind: str) -> list[dict[str, Any]]:  # Any: policy rows
@@ -94,6 +125,7 @@ def _rule_matches(
     *,
     data_export: bool,
     target_environment: str | None,
+    unlabelled_matches: bool,
 ) -> bool:
     classes = when.get("side_effect_classes")
     has_cost = "estimated_cost_gt" in when
@@ -104,8 +136,14 @@ def _rule_matches(
         return False
     if "data_export" in when and when["data_export"] is not data_export:
         return False
-    if envs is not None and (target_environment is None or target_environment not in envs):
-        return False
+    if envs is not None:
+        label = _env_key(target_environment or "")
+        if not label:
+            # a write node without a label may write anywhere, so it meets every environment rule
+            if not unlabelled_matches:
+                return False
+        elif label not in {_env_key(str(e)) for e in envs}:
+            return False
     if has_cost:
         threshold = _decimal(when.get("estimated_cost_gt"))
         if threshold is None or run_cost(ctx.session, ctx, str(when.get("currency"))) <= threshold:
@@ -114,11 +152,18 @@ def _rule_matches(
 
 
 def _approval_rules(
-    ctx: RunContext, side: str, *, data_export: bool, target_environment: str | None
-) -> tuple[list[UUID], str | None]:
-    """The matching `approval_rule` policy ids and the first one's approver permission."""
+    ctx: RunContext,
+    side: str,
+    *,
+    data_export: bool,
+    target_environment: str | None,
+    unlabelled_matches: bool,
+) -> tuple[list[UUID], tuple[str, ...]]:
+    """The matching `approval_rule` policy ids and the sorted, distinct approver permissions of
+    all of them. `target_environments` is compared ignoring case and surrounding spaces; with
+    `unlabelled_matches` a missing or blank label meets every environment rule (write nodes)."""
     matched: list[UUID] = []
-    permission: str | None = None
+    permissions: set[str] = set()
     for pol in _policies(ctx, "approval_rule"):
         d: Mapping[str, Any] = pol["definition"] or {}
         if _rule_matches(
@@ -127,15 +172,19 @@ def _approval_rules(
             side,
             data_export=data_export,
             target_environment=target_environment,
+            unlabelled_matches=unlabelled_matches,
         ):
             matched.append(pol["id"])
-            permission = permission or d.get("approver_permission")
-    return matched, permission
+            if d.get("approver_permission"):
+                permissions.add(str(d["approver_permission"]))
+    return matched, tuple(sorted(permissions))
 
 
 def tool_approval(ctx: RunContext, call: ToolCall, side: str) -> ApprovalRule | None:
     """The governance approval a tool call needs, if any (None = no rule applies)."""
-    matched, permission = _approval_rules(ctx, side, data_export=False, target_environment=None)
+    matched, permissions = _approval_rules(
+        ctx, side, data_export=False, target_environment=None, unlabelled_matches=False
+    )
     for pol in _policies(ctx, "cost_threshold"):
         d = pol["definition"] or {}
         limit = _decimal(d.get("threshold_amount"))
@@ -147,18 +196,23 @@ def tool_approval(ctx: RunContext, call: ToolCall, side: str) -> ApprovalRule | 
             matched.append(pol["id"])
     if not matched:
         return None
-    return ApprovalRule(tuple(matched), permission)
+    return ApprovalRule(tuple(matched), permissions)
 
 
-def write_node_approval(ctx: RunContext, target_environment: str | None) -> ApprovalRule | None:
+def write_node_approval(
+    ctx: RunContext, target_environment: str | None, side: str = "write_non_idempotent"
+) -> ApprovalRule | None:
     """The governance approval a pipeline write node needs, if any (None = no rule applies). A
-    write node is a `write_non_idempotent` data export; `cost_threshold` is not evaluated."""
-    matched, permission = _approval_rules(
-        ctx, "write_non_idempotent", data_export=True, target_environment=target_environment
+    write node is a data export of class `side` (the pipeline passes its method's class,
+    `write_method_class`; POST is the default); its label
+    matches ignoring case and surrounding spaces, and no label matches every environment rule.
+    `cost_threshold` is not evaluated."""
+    matched, permissions = _approval_rules(
+        ctx, side, data_export=True, target_environment=target_environment, unlabelled_matches=True
     )
     if not matched:
         return None
-    return ApprovalRule(tuple(matched), permission)
+    return ApprovalRule(tuple(matched), permissions)
 
 
 def record_rule_decision(
