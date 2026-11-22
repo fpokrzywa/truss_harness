@@ -10,7 +10,8 @@ Process control (SP4 design 6.2): SIGTERM, SIGINT and CTRL_BREAK stop the runner
 the job in flight runs to its normal end) and the process waits up to
 `SHIFDE_EXECUTOR_SHUTDOWN_GRACE_SECONDS` for it: exit 0 when drained, 1 when a job was still in
 flight (nothing more is posted for it; the server's unknown-outcome path decides it) or on a
-crash, 2 configuration refused, 5 when `whoami` answers 401 or 403. Any other `whoami` failure is
+crash, 2 configuration refused (also when the credentials file's organization is not the one
+`whoami` names), 5 when `whoami` answers 401 or 403. Any other `whoami` failure is
 retried every `POLL_SECONDS`. With `SHIFDE_EXECUTOR_HEALTH_PORT` set, `GET /healthz` and
 `GET /readyz` answer from the runner's ticks (`Runner.live`, `Runner.ready`).
 """
@@ -232,7 +233,21 @@ class Process:
         log.info(
             "executor %s running against the %s platform", me.executor_id, self.config.platform.kind
         )
-        runner = Runner(self.client, self.config.broker, me.executor_id, self.config.platform)
+        if self.config.broker.tenant_id not in (None, me.tenant_id):
+            print(
+                "shifde-executor: refusing to start: the credentials file belongs to another "
+                "organization than this executor",
+                file=sys.stderr,
+                flush=True,
+            )
+            return EXIT_CONFIG
+        runner = Runner(
+            self.client,
+            self.config.broker,
+            me.executor_id,
+            self.config.platform,
+            tenant_id=me.tenant_id,
+        )
         self.runner = runner
         if self.stopping.is_set():
             runner.stop()

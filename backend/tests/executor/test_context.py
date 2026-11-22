@@ -1,6 +1,7 @@
 """`GET /api/executor/v1/jobs/{id}/context` (B-2688): the target (host = its address), the sealed
-plan, the deployment's receipt and the owned native resources of a leased job; 409 `lease_lost`
-after the lease ends; never a credential, the claim or the address key."""
+plan, the deployment's receipt and the owned native resources of a leased job, the plan and the
+deployment each with its own row's organization (issue #155); 409 `lease_lost` after the lease
+ends; never a credential, the claim or the address key."""
 
 from __future__ import annotations
 
@@ -64,6 +65,7 @@ def test_apply_and_observe_contexts(flow: Flow, tmp_path: Path, owner_db: Databa
     assert body["job"]["id"] == leased["job"]["id"]
     assert body["deployment"] == {
         "id": first["deployment_id"],
+        "tenant_id": str(flow.tenant),
         "status": "observing",
         "receipt": receipt,
     }
@@ -92,10 +94,12 @@ def test_apply_and_observe_contexts(flow: Flow, tmp_path: Path, owner_db: Databa
     for key in ("id", "artifact_id", "artifact_digest", "steps", "snapshot", "digest"):
         assert body["plan"][key] == second[key], key
     assert body["plan"]["status"] == "approved"
+    assert body["plan"]["tenant_id"] == str(flow.tenant)
     assert body["plan"]["toolchain_digest"] == second["toolchain_digest"]
     assert body["plan"]["expires_at"] is not None
     assert body["deployment"] == {
         "id": second["deployment_id"],
+        "tenant_id": str(flow.tenant),
         "status": "leased",
         "receipt": None,
     }
@@ -112,6 +116,7 @@ def test_a_plan_job_context_before_sealing(flow: Flow) -> None:
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["plan"]["id"] == plan["id"] and body["plan"]["status"] == "planning"
+    assert body["plan"]["tenant_id"] == str(flow.tenant)
     for key in ("steps", "snapshot", "adapter_version", "toolchain_digest", "digest"):
         assert body["plan"][key] is None
     assert body["plan"]["expires_at"] is None
