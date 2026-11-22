@@ -3,7 +3,7 @@
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { useDashboard, usePermissions } from '@/lib/hooks';
-import { projHref } from '@/lib/scope';
+import { connectionsHref, projHref } from '@/lib/scope';
 import type { Dashboard } from '@/lib/api/types';
 import { QueryError } from './QueryError';
 
@@ -71,6 +71,10 @@ export function DashboardView() {
   const query = useDashboard(org, ws, proj);
   const permissions = usePermissions(org, ws, proj);
   const canRun = !!ws && !!proj && !!permissions.data?.has('agent:execute');
+  const canConnections =
+    !!ws &&
+    !!proj &&
+    ['connection:read', 'model:read', 'delivery:target:read'].some((p) => permissions.data?.has(p));
 
   if (query.isPending) {
     return (
@@ -83,11 +87,18 @@ export function DashboardView() {
   const heading = proj ? `Project: ${proj}` : ws ? `Workspace: ${ws}` : `Organization: ${org}`;
   return (
     <>
-      {ws && proj && canRun && (
-        <p className="mb-4">
-          <Link className="btn btn-primary" href={`${projHref(org, ws, proj)}/run`}>
-            Run an agent
-          </Link>
+      {ws && proj && (canRun || canConnections) && (
+        <p className="mb-4 flex flex-wrap gap-2">
+          {canRun && (
+            <Link className="btn btn-primary" href={`${projHref(org, ws, proj)}/run`}>
+              Run an agent
+            </Link>
+          )}
+          {canConnections && (
+            <Link className="btn btn-primary" href={connectionsHref(org, ws, proj)}>
+              Connections
+            </Link>
+          )}
         </p>
       )}
       <DashboardContent data={query.data} heading={heading} />

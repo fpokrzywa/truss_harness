@@ -51,6 +51,47 @@ describe('DashboardView', () => {
     expect(await screen.findByText('No recent activity in this scope.')).toBeInTheDocument();
   });
 
+  describe('Connections link (CM-6)', () => {
+    const stub = (permissions: string[]) =>
+      vi.stubGlobal(
+        'fetch',
+        routeFetch({
+          'GET /api/v1/orgs/acme/dashboard': () =>
+            jsonResponse({ counts: { projects: 1 }, recent_activity: [] }),
+          'GET /api/v1/orgs/acme/me/permissions': () => jsonResponse({ permissions }),
+        }),
+      );
+
+    it('links a project reader to the Connections space of the project', async () => {
+      params = { org: 'acme', ws: 'eng', proj: 'api' };
+      stub(['connection:read']);
+      renderWithClient(<DashboardView />);
+      expect(await screen.findByRole('link', { name: 'Connections' })).toHaveAttribute(
+        'href',
+        '/o/acme/connections?ws=eng&proj=api',
+      );
+      expect(screen.queryByRole('link', { name: 'Run an agent' })).not.toBeInTheDocument();
+    });
+
+    it('shows it next to Run an agent', async () => {
+      params = { org: 'acme', ws: 'eng', proj: 'api' };
+      stub(['agent:execute', 'delivery:target:read']);
+      renderWithClient(<DashboardView />);
+      const link = await screen.findByRole('link', { name: 'Connections' });
+      expect(link.parentElement).toContainElement(
+        screen.getByRole('link', { name: 'Run an agent' }),
+      );
+    });
+
+    it('has no link without connection, model or target read', async () => {
+      params = { org: 'acme', ws: 'eng', proj: 'api' };
+      stub(['agent:execute']);
+      renderWithClient(<DashboardView />);
+      expect(await screen.findByRole('link', { name: 'Run an agent' })).toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'Connections' })).not.toBeInTheDocument();
+    });
+  });
+
   it('renders the neutral no-access page for 404 without echoing existence', async () => {
     params = { org: 'secret' };
     vi.stubGlobal(

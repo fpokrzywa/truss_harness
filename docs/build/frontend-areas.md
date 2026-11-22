@@ -277,9 +277,9 @@ Files not in SETH: `src/lib/contrast.ts` (shell, new in fe-areas-5): `contrastRa
 | File | Status | Notes |
 |---|---|---|
 | `src/app/(app)/o/[org]/integrate/adapters/page.tsx` | ported | |
-| `src/app/(app)/o/[org]/integrate/connections/[id]/page.tsx` | ported | |
-| `src/app/(app)/o/[org]/integrate/connections/[id]/tests/page.tsx` | ported | |
-| `src/app/(app)/o/[org]/integrate/connections/page.tsx` | ported | |
+| `src/app/(app)/o/[org]/integrate/connections/[id]/page.tsx` | ported, modified | redirects to `/o/[org]/connections...` (CM-6, #164) |
+| `src/app/(app)/o/[org]/integrate/connections/[id]/tests/page.tsx` | ported, modified | redirects to `/o/[org]/connections...` (CM-6, #164) |
+| `src/app/(app)/o/[org]/integrate/connections/page.tsx` | ported, modified | redirects to `/o/[org]/connections...` (CM-6, #164) |
 | `src/app/(app)/o/[org]/integrate/egress/page.tsx` | ported | |
 | `src/app/(app)/platform/egress/layout.tsx` | ported | |
 | `src/app/(app)/platform/egress/page.tsx` | ported | |

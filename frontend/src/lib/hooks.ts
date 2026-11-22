@@ -52,12 +52,21 @@ export const useDashboard = (org: string, ws?: string, proj?: string) =>
 
 const toSet = (d: { permissions: string[] }): ReadonlySet<string> => new Set(d.permissions);
 
-/** Effective permissions at a scope (FR-UI-004). Hiding is convenience only; the server decides. */
-export const usePermissions = (org: string | undefined, ws?: string, proj?: string) =>
+/**
+ * Effective permissions at a scope (FR-UI-004). Hiding is convenience only; the server decides.
+ * `keepPrevious` keeps the last scope's set as placeholder data while a new scope loads.
+ */
+export const usePermissions = (
+  org: string | undefined,
+  ws?: string,
+  proj?: string,
+  keepPrevious = false,
+) =>
   useQuery({
     queryKey: keys.permissions(org ?? '', ws, proj),
     queryFn: () => endpoints.myPermissions(org as string, ws, proj),
     enabled: !!org,
+    placeholderData: keepPrevious ? keepPreviousData : undefined,
     select: toSet,
     retry: false,
     staleTime: 60_000,
