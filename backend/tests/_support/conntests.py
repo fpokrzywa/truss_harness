@@ -4,7 +4,8 @@
 posts it and executes exactly that job the way `shifde-worker` does: it leases the job only if it
 is still queued (never through `shifde_claim_jobs`, so another test's job is never picked up),
 runs it through `connections.service.run_test_job` on the app's own application-role database, and
-finishes it with the worker's `finish_job`. It returns the status route's body.
+finishes it with the worker's `finish_job`. It returns the status route's body. `run_discover`
+does the same for `POST .../discover` and its `connection.discover` job (B-2971).
 """
 
 from __future__ import annotations
@@ -107,5 +108,49 @@ def result_of(
 ) -> Any:  # Any: the test result's JSON body
     """`run_test`'s recorded result (the job must end `done`)."""
     out = run_test(client, h, base, cid, tenant_id=tenant_id)
+    assert out["status"] == "done", out
+    return out["result"]
+
+
+def discover_status(
+    client: TestClient, h: dict[str, str], base: str, cid: str, job_id: str
+) -> Any:  # Any: the status route's JSON body
+    got = client.get(f"{base}/connections/{cid}/discovery-jobs/{job_id}", headers=h)
+    assert got.status_code == 200, got.text
+    return got.json()
+
+
+def run_discover(
+    client: TestClient, h: dict[str, str], base: str, cid: str, *, tenant_id: UUID | None = None
+) -> Any:  # Any: the status route's JSON body
+    """POST the connection discovery (202, B-2971), execute that one job, return the status
+    route's body. A job a running worker loop leased first is waited for instead."""
+    posted = client.post(f"{base}/connections/{cid}/discover", headers=h)
+    assert posted.status_code == 202, posted.text
+    job = posted.json()
+    assert job["connection_id"] == cid and job["status"] in ("queued", "running"), job
+    app: Any = client.app  # Any: the FastAPI app behind the test client
+    tenant = tenant_id or tenant_of(client, base)
+    execute_job(
+        app.state.db,
+        app.state.integration,
+        tenant,
+        UUID(job["id"]),
+        kind=connections.DISCOVER_JOB_KIND,
+        runner=connections.run_discover_job,
+    )
+    end = time.monotonic() + 30
+    while True:
+        out = discover_status(client, h, base, cid, job["id"])
+        if out["status"] not in ("queued", "running") or time.monotonic() > end:
+            return out
+        time.sleep(0.05)
+
+
+def discovery_of(
+    client: TestClient, h: dict[str, str], base: str, cid: str, *, tenant_id: UUID | None = None
+) -> Any:  # Any: the discovery's JSON body
+    """`run_discover`'s recorded discovery (the job must end `done`)."""
+    out = run_discover(client, h, base, cid, tenant_id=tenant_id)
     assert out["status"] == "done", out
     return out["result"]

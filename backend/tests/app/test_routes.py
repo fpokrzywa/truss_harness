@@ -50,6 +50,8 @@ UNIFIED_ONLY = {
     # ARCH M2 (issue #47, B-2720): discovery and health check run on the worker; their job status
     ("GET", "/api/v1/orgs/{org}/model-providers/{provider_id}/discovery-jobs/{job_id}"),
     ("GET", "/api/v1/orgs/{org}/model-providers/{provider_id}/health-check-jobs/{job_id}"),
+    # ARCH M2 (issue #144, B-2971): connection discovery runs on the worker; its job's status
+    ("GET", "/api/v1/orgs/{org}/connections/{connection_id}/discovery-jobs/{job_id}"),
 }
 # native delivery (design 2026-11-17 section 9 item 2, B-2501): not a SETH module
 EXECUTOR_CREDENTIAL = (

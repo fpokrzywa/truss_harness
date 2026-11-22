@@ -894,6 +894,36 @@ def test_a_worker_loop_runs_a_connection_test_job_in_its_own_client(
     assert _state(owner_db, world.b.tenant) == b_before
 
 
+def test_a_worker_loop_runs_a_connection_discover_job_in_its_own_client(
+    world: World, owner_db: Database, server: RestTestServer, running: Callable[..., Worker]
+) -> None:
+    """ARCH M2 (issue #144, B-2971): `connection.discover` runs through `run_discover_job` and
+    records the discovery the payload allocated, in the job's own client."""
+    with owner_db.session() as o:
+        t = _test_job(o, world.a.tenant, server)  # its connection (the test job runs as well)
+        job, discovery = uuid7(), uuid7()
+        payload = {"connection_id": str(t.connection), "discovery_id": str(discovery),
+                   "principal_id": str(add_person(o, t.tenant, "finder", "tenant_administrator")),
+                   "principal_type": "user", "api_key_id": None}  # fmt: skip
+        o.execute(
+            text(
+                "INSERT INTO shifde.jobs (id, tenant_id, kind, payload, dedupe_key) "
+                "VALUES (:i, :t, :k, CAST(:p AS jsonb), :dk)"
+            ),
+            {"i": job, "t": t.tenant, "k": connections.DISCOVER_JOB_KIND,
+             "p": json.dumps(payload), "dk": f"connection-discover:{t.connection}"},
+        )  # fmt: skip
+        o.commit()
+    b_before = _state(owner_db, world.b.tenant)
+    running("w-discover")
+    done = "SELECT status, last_error, run_id FROM shifde.jobs WHERE id = :j"
+    _until(lambda: _q(owner_db, done, j=job) == [("done", None, None)])
+    found = "SELECT id, tenant_id, kind FROM shifde.connection_discoveries WHERE connection_id = :c"
+    assert _q(owner_db, found, c=t.connection) == [(discovery, world.a.tenant, "openapi")]
+    assert any(r["path"] == "/openapi.json" for r in server.requests)
+    assert _state(owner_db, world.b.tenant) == b_before
+
+
 def _provider_jobs(o: Session, tenant: UUID) -> tuple[UUID, UUID, UUID]:
     """A fake model provider of `tenant` and a queued `model.health_check` and `model.discover`
     job for it, requested by a client administrator (the payload the models route writes)."""
@@ -961,6 +991,7 @@ def test_a_job_of_an_unknown_kind_ends_dead_and_is_never_run(
     ran: list[object] = []
     monkeypatch.setattr(worker_mod.lifecycle, "advance", lambda *a, **kw: ran.append(a) or "done")
     monkeypatch.setattr(worker_mod.connections, "run_test_job", lambda *a: ran.append(a))
+    monkeypatch.setattr(worker_mod.connections, "run_discover_job", lambda *a: ran.append(a))
     monkeypatch.setattr(worker_mod.models_admin, "run_provider_job", lambda *a: ran.append(a))
     job = uuid7()
     with owner_db.session() as o:

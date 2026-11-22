@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from shifde.adapters.testservers import McpTestServer, RestTestServer
+from tests._support.conntests import discovery_of
 from tests._support.fullapp import World
 from tests._support.p2util import login, post
 from tests._support.p3util import (
@@ -433,7 +434,7 @@ def test_mcp_tool_snapshot_is_taken_at_publish(
 
     t = art(client, h, "tools", "adder", mcp_spec("add"), scope)
     assert {e["code"] for e in validate(client, h, t["id"])["errors"]} == {"mcp_discovery_required"}
-    post(client, f"{A}/connections/{conn['id']}/discover", h, {}, 200)
+    discovery_of(client, h, A, conn["id"])
     assert validate(client, h, t["id"])["valid"] is True
     v1 = publish(client, h, "tools", t["id"])
     snap = v1["spec"]["binding"]["schema_snapshot"]

@@ -18,7 +18,7 @@ from shifde.core import db as dbmod
 from shifde.core.context import Principal, RequestContext
 from shifde.core.errors import ConnectionDisabled, Forbidden, NotFound
 from shifde.tenancy.scope import TenantScope
-from tests._support.conntests import result_of, run_test
+from tests._support.conntests import discovery_of, result_of, run_test
 from tests._support.fullapp import World
 from tests._support.p2util import login, new_user, post, system_role
 from tests._support.p3util import (
@@ -975,19 +975,19 @@ def test_rest_mcp_and_postgres_connections_with_secret_references(
     assert (
         client.get(f"{A}/connections/{rest['id']}/discoveries/latest", headers=h).status_code == 404
     )
-    d = post(client, f"{A}/connections/{rest['id']}/discover", h, {}, 200)
+    d = discovery_of(client, h, A, rest["id"])
     assert (
         d["kind"] == "openapi"
         and {"method": "GET", "path": "/echo", "summary": "echo"} in d["payload"]["paths"]
     )
-    d = post(client, f"{A}/connections/{mcp['id']}/discover", h, {}, 200)
+    d = discovery_of(client, h, A, mcp["id"])
     assert d["kind"] == "mcp_tools" and {t["name"] for t in d["payload"]["tools"]} == {
         "add",
         "echo",
         "flaky",  # R1: the test server's write that errors on a resend
         "wipe",
     }
-    d = post(client, f"{A}/connections/{pg['id']}/discover", h, {}, 200)
+    d = discovery_of(client, h, A, pg["id"])
     tables = {t["name"]: t for t in d["payload"]["tables"]}
     assert d["kind"] == "schema" and {
         "customers",

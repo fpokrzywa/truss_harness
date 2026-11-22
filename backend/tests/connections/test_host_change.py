@@ -26,7 +26,7 @@ from shifde.adapters.testservers import RestTestServer
 from shifde.connections import repository as connections_repository
 from shifde.core.db import Database, set_tenant
 from shifde.core.settings import Settings
-from tests._support.conntests import run_test
+from tests._support.conntests import run_discover, run_test
 from tests.connections.routes import (
     REST_TOKEN,
     activate,
@@ -131,7 +131,7 @@ def test_a_role_without_secret_use_cannot_repoint_a_credentialed_connection(
     assert row["status"] == "active" and row["secret_set"] is True
     # every path that would send the secret reaches only the original host
     assert run_test(c, hm, A, setup.cid)["status"] == "done"
-    assert c.post(f"{A}/connections/{setup.cid}/discover", headers=hm).status_code in (200, 422)
+    assert run_discover(c, hm, A, setup.cid)["status"] in ("done", "failed")
     assert evil.requests == [] and _deliveries(evil) == 0
 
 
@@ -199,7 +199,7 @@ def test_a_role_with_secret_use_can_repoint_and_the_connection_must_be_retested(
     assert stale.status_code == 409
     assert evil.requests == []
     activate(c, hm, setup.cid, A)  # test + activate: the authorized holder chose this host
-    assert c.post(f"{A}/connections/{setup.cid}/discover", headers=hm).status_code in (200, 422)
+    assert run_discover(c, hm, A, setup.cid)["status"] in ("done", "failed")
     assert _deliveries(evil) >= 2
 
 
