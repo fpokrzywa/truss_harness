@@ -122,8 +122,8 @@ def _agent(
 
 def _first(o: Session, t: UUID) -> dict[str, Any]:  # Any: ids of the first phase
     user = add_person(o, t, "runner", "tenant_administrator")
-    model = add_model(o, t)
-    add_rate(o, t, input_rate="1000", output_rate="1000")
+    model = add_model(o, t, adapter_key="fake")
+    add_rate(o, t, provider_key="fake", input_rate="1000", output_rate="1000")
     route = uuid7()
     o.execute(
         text(
