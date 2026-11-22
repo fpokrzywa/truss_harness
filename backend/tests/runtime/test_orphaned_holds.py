@@ -6,7 +6,8 @@ keeps counting; when an orphan handler finds the run (the reaper's audit pass, a
 advance, `settle_terminal`), it becomes `settled_unknown` at the full held amount with one usage
 row marked as unknown usage, counted once as used and no longer as held. A hold without the
 marker is released by the same handlers and writes no usage. `settle_ended_run` (runtime_0004)
-leaves a marked hold `held` for the handler.
+leaves a marked hold `held` for the handler. The reaper also sweeps every client's marked
+direct-invocation holds past their TTL (issue #91), each in its own client.
 """
 
 from __future__ import annotations
@@ -297,3 +298,93 @@ def test_the_reapers_audit_pass_naming_bs_run_with_as_client_charges_nothing(
     with owner_db.session() as o:
         assert _hold(o, hold) == ("held", None)
         assert _usage_count(o, b.tenant) == 0 and _usage_count(o, a.tenant) == 0
+
+
+# ------------------------------------------------------------------ direct-invocation holds
+def _direct(o: Session, c: C, budget: UUID, *, marked: bool) -> UUID:
+    """A direct invocation of `c` held AMOUNT (marked or not) and its TTL passed (a crash)."""
+    hold = reservations.reserve_invocation(o, c.tenant, [budget], AMOUNT, Decimal(0), None)
+    if marked:
+        reservations.mark_provider_request(o, c.tenant, hold)
+    o.execute(
+        text(
+            "UPDATE shifde.budget_reservations SET expires_at = now() - interval '1 second' "
+            "WHERE id = :i"
+        ),
+        {"i": hold},
+    )
+    return hold
+
+
+def _client_rows(o: Session, tenant: UUID) -> tuple[Any, ...]:  # Any: row values
+    o.rollback()
+    holds = o.execute(
+        text("SELECT * FROM shifde.budget_reservations WHERE tenant_id = :t ORDER BY id"),
+        {"t": tenant},
+    ).all()
+    usage = o.execute(
+        text("SELECT * FROM shifde.usage_events WHERE tenant_id = :t ORDER BY id"), {"t": tenant}
+    ).all()
+    return tuple(map(tuple, holds)), tuple(map(tuple, usage))
+
+
+def test_the_invocation_sweep_of_client_a_never_touches_client_bs_holds_or_usage(
+    two: tuple[C, C], app_db: Database, owner_db: Database, settings: Settings
+) -> None:
+    a, b = two
+    with owner_db.session() as o:
+        budget_a = add_budget(o, a.tenant, amount="100000")
+        budget_b = add_budget(o, b.tenant, amount="100000")
+        hold_a = _direct(o, a, budget_a, marked=True)
+        hold_b = _direct(o, b, budget_b, marked=True)
+        _direct(o, b, budget_b, marked=False)  # in the snapshot of B below
+        o.commit()
+    with owner_db.session() as o:
+        before = _client_rows(o, b.tenant)
+    with app_session(app_db, a.tenant) as s:  # A's context naming B's client or hold
+        assert reservations.settle_orphaned_invocations(s, b.tenant) == 0
+        assert reservations.settle_unknown_invocation(s, b.tenant, hold_b, {}) is False
+        assert reservations.settle_unknown_invocation(s, a.tenant, hold_b, {}) is False
+        s.commit()
+    w = _worker(settings)
+    try:
+        w._sweep_client_invocations(a.tenant)
+        w._sweep_client_invocations(a.tenant)  # twice: one usage row
+    finally:
+        w.db.dispose()
+    with owner_db.session() as o:
+        assert _hold(o, hold_a) == ("settled_unknown", AMOUNT)
+        assert _unknown(o, hold_a) == [
+            (AMOUNT, "failed", {"estimated": True, "usage_unknown": True})
+        ]
+        assert _usage_count(o, a.tenant) == 1
+        assert _client_rows(o, b.tenant) == before
+    assert _used_and_held(app_db, a, budget_a) == (AMOUNT, 0)
+
+
+def test_the_reaper_tick_settles_every_clients_marked_expired_invocation_holds_in_its_client(
+    two: tuple[C, C], app_db: Database, owner_db: Database, settings: Settings
+) -> None:
+    a, b = two
+    with owner_db.session() as o:
+        budgets = {c.tenant: add_budget(o, c.tenant, amount="100000") for c in (a, b)}
+        marked = {c.tenant: _direct(o, c, budgets[c.tenant], marked=True) for c in (a, b)}
+        unmarked_b = _direct(o, b, budgets[b.tenant], marked=False)
+        o.commit()
+    w = _worker(settings)
+    try:
+        w._reap()
+    finally:
+        w.db.dispose()
+    with owner_db.session() as o:
+        for c in (a, b):
+            assert _hold(o, marked[c.tenant]) == ("settled_unknown", AMOUNT)
+            owner = o.execute(
+                text("SELECT tenant_id FROM shifde.usage_events WHERE event_key = :k"),
+                {"k": f"reservation_unknown:{marked[c.tenant]}"},
+            ).scalar_one()
+            assert owner == c.tenant
+            assert _usage_count(o, c.tenant) == 1
+        assert _hold(o, unmarked_b) == ("held", None)  # left to the expiry sweep, no usage
+    for c in (a, b):
+        assert _used_and_held(app_db, c, budgets[c.tenant]) == (AMOUNT, 0)

@@ -38,6 +38,13 @@ never ran (the reaper's follow-up transaction failed, or a worker died first) an
 per client, in a transaction of its own under that client's context and a per-client advisory
 lock. A failure is logged and the sweep moves on to the next client.
 
+Invocation-hold sweep (issue #91): on the same ticks the reaper also settles, per client in a
+transaction of its own under that client's context, every direct-invocation hold whose provider
+call may have started (marker set) and whose TTL has passed
+(`ledger.reservations.settle_orphaned_invocations`): it becomes `settled_unknown` at its full
+amount with one unknown-usage row attributed from the budgets and quotas it names. A failure is
+rolled back and logged, and the sweep moves on to the next client.
+
 Jobs are dispatched by `kind` (ARCH M2, B-2610, B-2720): `run.advance` advances its run;
 `connection.test` (no run) runs `connections.service.run_test_job`, and `model.health_check` and
 `model.discover` (no run) run `models_admin.service.run_provider_job`, in the job's own client as
@@ -488,6 +495,7 @@ class Worker:
             self._audit_reaped(row["tenant_id"], row["run_id"], row["reason"])
         if got:
             self._sweep_capture_off()
+            self._sweep_invocation_holds()
 
     def _audit_reaped(self, tenant_id: UUID, run_id: UUID, reason: str) -> None:
         self._settle_reaped_holds(tenant_id, run_id)
@@ -525,16 +533,43 @@ class Worker:
         (a follow-up transaction failed, or a worker died first). Clients are listed under the
         platform-administrator context; each one is then swept in a transaction of its own with
         only that client set, under a per-client advisory lock. Idempotent; writes no audit."""
+        clients = self._clients("worker.capture_sweep_failed")
+        for tenant_id in clients or []:
+            self._sweep_client(tenant_id)
+
+    def _clients(self, event: str) -> list[UUID] | None:
+        """Every client's id, listed under the platform-administrator context; None (logged as
+        `event`) when the listing fails."""
         try:
             with self.db.session() as s:
                 with db.platform_admin_context(s):
                     clients = list(s.execute(_CLIENTS).scalars())
                 s.commit()
         except Exception:  # noqa: BLE001 - the sweep must never stop the reaper
-            log.error("worker.capture_sweep_failed", exc_info=True)
-            return
-        for tenant_id in clients:
-            self._sweep_client(tenant_id)
+            log.error(event, exc_info=True)
+            return None
+        return clients
+
+    def _sweep_invocation_holds(self) -> None:
+        """Settle every client's marked direct-invocation holds past their TTL (issue #91), each
+        client in a transaction of its own with only that client set. Idempotent."""
+        for tenant_id in self._clients("worker.invocation_sweep_failed") or []:
+            self._sweep_client_invocations(tenant_id)
+
+    def _sweep_client_invocations(self, tenant_id: UUID) -> None:
+        with self.db.session() as s:
+            try:
+                db.init_context(s, "reaper")
+                db.set_tenant(s, tenant_id)
+                settled = ledger.reservations.settle_orphaned_invocations(s, tenant_id)
+                s.commit()
+                if settled:
+                    log.info("worker.invocations_swept", tenant_id=str(tenant_id), holds=settled)
+            except Exception:  # noqa: BLE001 - one client's failure must not stop the others
+                s.rollback()
+                log.error("worker.invocation_sweep_failed", tenant_id=str(tenant_id), exc_info=True)
+            finally:
+                db.forget_tenant(s)
 
     def _sweep_client(self, tenant_id: UUID) -> None:
         with self.db.session() as s:

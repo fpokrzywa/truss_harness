@@ -266,5 +266,161 @@ def test_an_orphan_without_a_currency_or_a_step_is_unmeasured_without_a_model(
     s.rollback()
 
 
+# ------------------------------------------------------------------ orphaned invocation holds
+def _expire(s: Session, *holds: UUID) -> None:
+    s.execute(
+        text(
+            "UPDATE shifde.budget_reservations SET expires_at = now() - interval '1 second' "
+            "WHERE id = ANY (:h)"
+        ),
+        {"h": list(holds)},
+    )
+
+
+def _unknown_rows(s: Session, tenant: UUID) -> list[tuple[object, ...]]:
+    rows = s.execute(
+        text(
+            "SELECT event_key, event_type, status, input_tokens, output_tokens, call_count, "
+            "cost_kind, cost_amount, currency, workspace_id, project_id, agent_id, principal_id, "
+            "model_id, run_id, provider_reported_usage FROM shifde.usage_events "
+            "WHERE tenant_id = :t ORDER BY event_key"
+        ),
+        {"t": tenant},
+    ).all()
+    return [tuple(r) for r in rows]
+
+
+def test_settling_one_unknown_invocation_uses_the_callers_attribution_once(
+    owner_session: Session, tenant: UUID
+) -> None:
+    s = owner_session
+    budget = add_budget(s, tenant, amount="10000")
+    model, ws, pj, principal = add_model(s, tenant), uuid7(), uuid7(), uuid7()
+    hold = reservations.reserve_invocation(s, tenant, [budget], 120, Decimal(0), None)
+    attribution = {"workspace_id": ws, "project_id": pj, "principal_id": principal,
+                   "model_id": model, "is_test": True, "event_type": "prompt_test"}  # fmt: skip
+    # not marked yet: nothing to settle
+    assert reservations.settle_unknown_invocation(s, tenant, hold, attribution) is False
+    reservations.mark_provider_request(s, tenant, hold)
+    assert reservations.settle_unknown_invocation(s, tenant, uuid7(), attribution) is False
+    assert reservations.settle_unknown_invocation(s, tenant, hold, attribution) is True
+    assert reservations.settle_unknown_invocation(s, tenant, hold, attribution) is False
+    assert _hold(s, hold) == ("settled_unknown", 120, 120, Decimal(0), True)
+    unknown = {"estimated": True, "usage_unknown": True}
+    assert _unknown_rows(s, tenant) == [
+        (
+            f"reservation_unknown:{hold}",
+            "prompt_test",
+            "failed",
+            120,
+            0,
+            1,
+            "unmeasured",
+            None,
+            None,
+            ws,
+            pj,
+            None,
+            principal,
+            model,
+            None,
+            unknown,
+        )  # fmt: skip
+    ]
+    rule = {"id": budget, "scope_type": "tenant", "scope_id": tenant, "period": "daily"}
+    since = budgeting.period_start("daily")
+    assert budgeting.used_and_held(s, tenant, None, rule, metric="tokens", since=since) == (120, 0)
+    s.rollback()
+
+
+def test_the_invocation_sweep_charges_a_marked_expired_hold_with_the_scope_of_its_rules(
+    owner_session: Session, tenant: UUID
+) -> None:
+    s = owner_session
+    ws, other_ws, pj, principal, agent = uuid7(), uuid7(), uuid7(), uuid7(), uuid7()
+    on_ws = add_budget(s, tenant, scope_type="workspace", scope_id=ws, amount="10000")
+    on_other_ws = add_budget(s, tenant, scope_type="workspace", scope_id=other_ws, amount="10000")
+    on_pj = add_budget(s, tenant, scope_type="project", scope_id=pj, amount="10000")
+    on_tenant = add_budget(s, tenant, amount="10000")
+    # named only by the unmarked hold (an agent budget: no run or usage row matches it)
+    lone = add_budget(s, tenant, scope_type="agent", scope_id=agent, amount="10000")
+    quota = uuid7()
+    s.execute(
+        text(
+            "INSERT INTO shifde.quotas (id, tenant_id, scope_type, scope_id, metric, limit_value)"
+            " VALUES (:i, :t, 'principal', :p, 'tokens_per_day', 100000)"
+        ),
+        {"i": quota, "t": tenant, "p": principal},
+    )
+    named = [on_other_ws, on_ws, on_pj, on_tenant, quota]  # on_ws has the lower id: it wins
+    marked = reservations.reserve_invocation(s, tenant, named, 300, Decimal("0.25"), "USD")
+    unmarked = reservations.reserve_invocation(s, tenant, [lone], 50, Decimal(0), None)
+    live = reservations.reserve_invocation(s, tenant, [on_tenant], 70, Decimal(0), None)
+    run = add_run(s, tenant)
+    run_hold = reservations.reserve_step(s, tenant, run, "m:1", [on_tenant], 40, Decimal(0), None)
+    for h in (marked, live, run_hold):
+        reservations.mark_provider_request(s, tenant, h)
+    since = budgeting.period_start("daily")
+
+    def counted(budget: UUID, scope_type: str = "tenant", scope_id: UUID = tenant) -> object:
+        rule = {"id": budget, "scope_type": scope_type, "scope_id": scope_id, "period": "daily"}
+        return budgeting.used_and_held(s, tenant, None, rule, metric="tokens", since=since)
+
+    assert counted(lone, "agent", agent) == (0, 50)  # within its TTL the unmarked hold counts
+    _expire(s, marked, unmarked, run_hold)
+    assert reservations.settle_orphaned_invocations(s, tenant) == 1
+    assert reservations.settle_orphaned_invocations(s, tenant) == 0
+    assert _hold(s, marked) == ("settled_unknown", 300, 300, Decimal("0.25"), True)
+    for h in (unmarked, live, run_hold):
+        assert _hold(s, h)[0] == "held"
+    unknown = {"estimated": True, "usage_unknown": True}
+    assert _unknown_rows(s, tenant) == [
+        (
+            f"reservation_unknown:{marked}",
+            "model_call",
+            "failed",
+            300,
+            0,
+            1,
+            "estimated",
+            Decimal("0.25"),
+            "USD",
+            ws,
+            pj,
+            None,
+            principal,
+            None,
+            None,
+            unknown,
+        )  # fmt: skip
+    ]
+    # the settled amount keeps counting, as used, against every rule the hold counted against
+    assert counted(on_ws, "workspace", ws) == (300, 0)
+    assert counted(on_pj, "project", pj) == (300, 0)
+    assert counted(quota, "principal", principal) == (300, 0)
+    assert counted(on_tenant) == (300, 110)  # plus the live direct hold and the marked run hold
+    # the unmarked hold is left to the expiry sweep of a budget check and no longer counts
+    assert counted(lone, "agent", agent) == (0, 0)
+    enforcement.evaluate(s, _scope(tenant), 1, ReserveDetail(est_output_tokens=1))
+    assert _hold(s, unmarked)[0] == "expired"
+    assert counted(lone, "agent", agent) == (0, 0)
+    assert len(_unknown_rows(s, tenant)) == 1  # the unmarked hold wrote no usage row
+    s.rollback()
+
+
+@pytest.mark.parametrize("rule", [{}, {"id": None}], ids=["missing", "none"])
+@pytest.mark.parametrize("period", ["daily", "run"])
+def test_counting_holds_requires_the_rules_id(
+    owner_session: Session, tenant: UUID, rule: dict[str, object], period: str
+) -> None:
+    b = {**rule, "scope_type": "tenant", "scope_id": tenant, "period": period}
+    since = budgeting.period_start(period)
+    with pytest.raises(ValueError, match="needs its id"):
+        budgeting.used_and_held(owner_session, tenant, None, b, metric="tokens", since=since)
+    with pytest.raises(ValueError, match="needs its id"):
+        budgeting.held_amount(owner_session, tenant, None, b, metric="tokens", since=since)
+    owner_session.rollback()
+
+
 def test_the_ledger_package_reexports_the_reservations_module() -> None:
     assert ledger.reservations is reservations

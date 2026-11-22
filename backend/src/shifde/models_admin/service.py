@@ -31,6 +31,7 @@ from decimal import Decimal
 from typing import Any, Literal  # Any: rows / provider JSON
 from uuid import UUID
 
+import structlog
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -79,6 +80,8 @@ from shifde.models_admin.schemas import ScopeType
 from shifde.tenancy import service as tenancy
 from shifde.tenancy.scope import TenantScope
 from shifde.vendors import service as vendors
+
+log = structlog.get_logger("shifde.models_admin")
 
 LIFECYCLE_TRANSITIONS: dict[str, frozenset[str]] = {
     "preview": frozenset({"active", "deprecated", "retired"}),
@@ -816,6 +819,34 @@ class ModelService:
         if hold is not None:
             ledger.reservations.settle(self._session, self.sc.tenant_id, hold, tokens, cost)
 
+    def _settle_failed_call(
+        self,
+        hold: UUID,
+        recorded: ledger.EventResult | None,
+        tokens: int,
+        attribution: Mapping[str, Any],  # Any: usage column values
+    ) -> None:
+        """A direct invocation failed after its provider request with anything but an
+        `AdapterFailure` (issue #91): its marked hold is never left `held`. When the answer's
+        usage row is already committed (durable write) the hold is settled at that usage, so the
+        call is not counted twice; otherwise it becomes `settled_unknown` at the full amount with
+        one unknown-usage row of the call's `attribution`. Committed; a failure here is logged and
+        never masks the call's own error (the reaper's sweep is the backstop)."""
+        try:
+            if self._session.in_transaction():
+                self._session.rollback()
+            if recorded is not None and self.db is not None:
+                ledger.reservations.settle(
+                    self._session, self.sc.tenant_id, hold, tokens, recorded.costed.amount
+                )
+            else:
+                ledger.reservations.settle_unknown_invocation(
+                    self._session, self.sc.tenant_id, hold, attribution
+                )
+            self._session.commit()
+        except Exception:  # noqa: BLE001 - the original error is re-raised by the caller
+            log.error("models_admin.invoke_hold_settle_failed", hold=str(hold), exc_info=True)
+
     def _usage_values(
         self,
         ref: ResourceRef,
@@ -1425,6 +1456,8 @@ class ModelService:
         if max_deadline is not None:
             deadline = max(min(deadline, max_deadline), 0.001)
         started = time.monotonic()
+        sent = False  # generate was called and did not fail with an AdapterFailure
+        recorded: ledger.EventResult | None = None
         try:
             limiter.check_tokens(
                 self._session, self.sc.tenant_id, bucket + ":tpm", limits.get("tpm"), rate_estimate
@@ -1463,8 +1496,10 @@ class ModelService:
                 self._release_hold(hold)  # refused before anything was sent
                 raise
             try:
+                sent = True
                 response = adapter.generate(ctx, cfg, model["model_key"], request)
             except AdapterFailure as exc:
+                sent = False  # settled at zero below, as before
                 latency = int((time.monotonic() - started) * 1000)
                 if record_usage:
                     failed = self._record_failure(
@@ -1489,7 +1524,11 @@ class ModelService:
                 self._session.commit()
                 raise failure_to_error(exc) from exc
             latency = int((time.monotonic() - started) * 1000)
-            recorded: ledger.EventResult | None = None
+            used = estimate.resolve_usage(
+                response.usage,
+                estimated_input=est_input,
+                estimated_output=estimate.estimate_output_tokens(response.output),
+            )
             if record_usage:  # the usage row first, while nothing of this transaction is pending
                 recorded = self._record_success(
                     self._usage_values(
@@ -1499,11 +1538,6 @@ class ModelService:
                     est_input,
                     response.output,
                 )
-            used = estimate.resolve_usage(
-                response.usage,
-                estimated_input=est_input,
-                estimated_output=estimate.estimate_output_tokens(response.output),
-            )
             if recorded is not None:
                 self._settle_hold(
                     hold, used.input_tokens + used.output_tokens, recorded.costed.amount
@@ -1529,6 +1563,18 @@ class ModelService:
                 details["output"] = scrub(response.output)
             self._invoked(model, ref, run_id, details)
             self._session.commit()
+        except Exception:
+            if hold is not None and sent:  # the call may have reached the provider
+                latency = int((time.monotonic() - started) * 1000)
+                self._settle_failed_call(
+                    hold,
+                    recorded,
+                    used.input_tokens + used.output_tokens if recorded is not None else 0,
+                    self._usage_values(
+                        ref, model_id, latency, usage_event_type, is_test, agent_id, succeeded=False
+                    ),
+                )
+            raise
         finally:
             limiter.release_lease(self._session, self.sc.tenant_id, lease)
         out = s.InvokeOut(

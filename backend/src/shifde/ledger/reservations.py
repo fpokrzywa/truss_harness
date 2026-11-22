@@ -10,17 +10,25 @@ full held amount with one usage row marked as unknown usage (`settle_orphaned`).
 the marker is released (or expires after its TTL) as before. Settle and release match `held`
 only, so a late answer never rewrites an orphaned hold.
 
+A marked direct-invocation hold has two orphan handlers of its own (issue #91):
+`settle_unknown_invocation`, called in process when the call fails after the provider request
+with anything but an `AdapterFailure` (the usage row carries the call's attribution), and
+`settle_orphaned_invocations`, the reaper's per-client sweep of such holds past their TTL (the
+usage row's scope columns come from the budgets and quotas the hold names, so the settled amount
+keeps counting against every rule the hold counted against).
+
 Every statement names the hold's client next to row-level security (`tenant_id` with the hold or
 run id); none relies on row-level security alone."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import timedelta
 from decimal import Decimal
+from typing import Any  # Any: column values
 from uuid import UUID
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 from sqlalchemy.orm import Session
 
 from shifde.core.clock import utcnow
@@ -41,6 +49,8 @@ __all__ = [
     "reserve_step",
     "settle",
     "settle_orphaned",
+    "settle_orphaned_invocations",
+    "settle_unknown_invocation",
 ]
 
 
@@ -246,3 +256,121 @@ def settle_orphaned(session: Session, tenant_id: UUID, run_id: UUID) -> int:
         {"r": run_id, "t": tenant_id},
     )
     return changed + int(released.rowcount or 0)  # type: ignore[attr-defined]
+
+
+_UNKNOWN_INVOCATION = (
+    "res.tenant_id = :t AND res.status = 'held' AND res.invocation_id IS NOT NULL "
+    "AND res.provider_request_at IS NOT NULL"
+)
+_SCOPE_COLUMN = {
+    "workspace": "workspace_id",
+    "project": "project_id",
+    "agent": "agent_id",
+    "principal": "principal_id",
+}
+
+
+def _charge_unknown(
+    session: Session,
+    tenant_id: UUID,
+    hold: RowMapping,  # the hold row (id, amount, cost_amount, currency)
+    attribution: Mapping[str, Any],  # Any: usage column values
+) -> int:
+    """One failed unknown-usage row of the held tokens, then the hold `settled_unknown` at its
+    full amount (as `settle_orphaned`). Returns the number of holds changed (0 or 1)."""
+    costed = (
+        pricing.Costed("estimated", Decimal(hold["cost_amount"]), hold["currency"])
+        if hold["currency"] is not None
+        else pricing.UNMEASURED
+    )
+    record(
+        session,
+        {
+            "event_type": "model_call",
+            **attribution,
+            "tenant_id": tenant_id,
+            "event_key": f"reservation_unknown:{hold['id']}",
+            "status": "failed",
+            "input_tokens": int(hold["amount"]),
+            "output_tokens": 0,
+            "call_count": 1,
+            "costed": costed,
+            "provider_reported_usage": {"estimated": True, "usage_unknown": True},
+        },
+    )
+    done = session.execute(
+        text(
+            "UPDATE shifde.budget_reservations SET status = 'settled_unknown', "
+            "settled_amount = amount, settled_cost = cost_amount "
+            "WHERE id = :id AND tenant_id = :t AND status = 'held'"
+        ),
+        {"id": hold["id"], "t": tenant_id},
+    )
+    return int(done.rowcount or 0)  # type: ignore[attr-defined]
+
+
+def settle_unknown_invocation(
+    session: Session,
+    tenant_id: UUID,
+    reservation_id: UUID,
+    attribution: Mapping[str, Any],  # Any: usage column values
+) -> bool:
+    """A direct invocation whose call may have reached the provider failed with an unexpected
+    error: its `held`, marked hold `reservation_id` in client `tenant_id` becomes
+    `settled_unknown` at its full amount with one unknown-usage row
+    (`event_key = reservation_unknown:<hold id>`) whose scope and model columns come from
+    `attribution` (`event_type` defaults to `model_call`). A second call changes nothing and
+    writes no second row. Returns whether the hold changed."""
+    hold = (
+        session.execute(
+            text(
+                # fixed fragment; values are bound
+                "SELECT res.id, res.amount, res.cost_amount, res.currency "  # nosec B608
+                f"FROM shifde.budget_reservations res WHERE res.id = :id AND {_UNKNOWN_INVOCATION} "
+                "FOR UPDATE"
+            ),
+            {"id": reservation_id, "t": tenant_id},
+        )
+        .mappings()
+        .first()
+    )
+    if hold is None:
+        return False
+    return _charge_unknown(session, tenant_id, hold, attribution) > 0
+
+
+def settle_orphaned_invocations(session: Session, tenant_id: UUID) -> int:
+    """The reaper's sweep of client `tenant_id`: every `held` direct-invocation hold whose call
+    may have reached the provider (marker set) and whose TTL has passed becomes `settled_unknown`
+    at its full amount with one unknown-usage row (`model_call`, no model). The hold stores no
+    scope, so the row's `workspace_id` / `project_id` / `agent_id` / `principal_id` are the
+    `scope_id`s of the budgets and quotas its `budget_ids` name in this client (the lowest rule
+    id wins a disagreement): the amount keeps counting against every rule it counted against.
+    Unmarked holds and run holds are not touched. Idempotent; returns the number changed."""
+    holds = session.execute(
+        text(
+            # fixed fragment; values are bound
+            "SELECT res.id, res.amount, res.cost_amount, res.currency, "  # nosec B608
+            f"res.budget_ids FROM shifde.budget_reservations res WHERE {_UNKNOWN_INVOCATION} "
+            "AND res.expires_at <= now() ORDER BY res.id FOR UPDATE"
+        ),
+        {"t": tenant_id},
+    ).mappings()
+    changed = 0
+    for h in holds.all():
+        rules = session.execute(
+            text(
+                "SELECT id, scope_type, scope_id FROM shifde.budgets "
+                "WHERE tenant_id = :t AND id = ANY (:b) "
+                "UNION ALL SELECT id, scope_type, scope_id FROM shifde.quotas "
+                "WHERE tenant_id = :t AND id = ANY (:b) ORDER BY id"
+            ),
+            {"t": tenant_id, "b": list(h["budget_ids"] or [])},
+        ).all()
+        attribution: dict[str, Any] = {}
+        for _, scope_type, scope_id in rules:
+            column = _SCOPE_COLUMN.get(str(scope_type))
+            if column is not None:
+                attribution.setdefault(column, scope_id)
+        changed += _charge_unknown(session, tenant_id, h, attribution)
+    return changed
