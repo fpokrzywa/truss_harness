@@ -894,24 +894,32 @@ def test_a_worker_loop_runs_a_connection_test_job_in_its_own_client(
     assert _state(owner_db, world.b.tenant) == b_before
 
 
-def _provider_jobs(o: Session, tenant: UUID) -> tuple[UUID, UUID, UUID]:
+def _provider_jobs(
+    o: Session,
+    tenant: UUID,
+    *,
+    provider_tenant: UUID | None = None,
+    principal_tenant: UUID | None = None,
+) -> tuple[UUID, UUID, UUID]:
     """A fake model provider of `tenant` and a queued `model.health_check` and `model.discover`
-    job for it, requested by a client administrator (the payload the models route writes)."""
-    user = add_person(o, tenant, "checker", "tenant_administrator")
+    job for it, requested by a client administrator (the payload the models route writes).
+    `provider_tenant` / `principal_tenant` put the provider / the requester in another client
+    instead (a forged job row)."""
+    user = add_person(o, principal_tenant or tenant, "checker", "tenant_administrator")
     cid, pid, health, discover = uuid7(), uuid7(), uuid7(), uuid7()
     o.execute(
         text(
             "INSERT INTO shifde.connections (id, tenant_id, name, connection_type, adapter_key, "
             "status) VALUES (:i, :t, :n, 'model_api', 'fake', 'active')"
         ),
-        {"i": cid, "t": tenant, "n": f"conn-{cid.hex}"},
+        {"i": cid, "t": provider_tenant or tenant, "n": f"conn-{cid.hex}"},
     )
     o.execute(
         text(
             "INSERT INTO shifde.model_providers (id, tenant_id, name, adapter_key, connection_id) "
             "VALUES (:i, :t, :n, 'fake', :c)"
         ),
-        {"i": pid, "t": tenant, "n": f"prov-{pid.hex}", "c": cid},
+        {"i": pid, "t": provider_tenant or tenant, "n": f"prov-{pid.hex}", "c": cid},
     )
     payload = json.dumps({"provider_id": str(pid), "principal_id": str(user),
                           "principal_type": "user", "api_key_id": None})  # fmt: skip
@@ -949,6 +957,53 @@ def test_a_worker_loop_runs_provider_jobs_in_their_own_client(
         (world.a.tenant, "model.provider.health_checked", f"model-health-check-{health}"),
         (world.a.tenant, "model.provider.models_discovered", f"model-discover-{discover}"),
     ]
+    assert _state(owner_db, world.b.tenant) == b_before
+
+
+_HEALTH_COLUMNS = ("SELECT health_status, health_checked_at, health_detail "
+                  "FROM shifde.model_providers WHERE id = :p")  # fmt: skip
+
+
+def test_a_forged_provider_job_naming_another_clients_provider_ends_dead(
+    world: World, owner_db: Database, running: Callable[..., Worker]
+) -> None:
+    """Issue #134: `model.health_check` / `model.discover` jobs of client A whose payload names an
+    A administrator but B's provider end `dead` (`not_found`, B's provider is not visible in A);
+    B's provider is never checked and nothing of B changes."""
+    with owner_db.session() as o:
+        pid, health, discover = _provider_jobs(o, world.a.tenant, provider_tenant=world.b.tenant)
+        o.commit()
+    b_before = _state(owner_db, world.b.tenant)
+    columns = _q(owner_db, _HEALTH_COLUMNS, p=pid)
+    running("w-forged-provider")
+    job = "SELECT status, last_error FROM shifde.jobs WHERE id = :j"
+    _until(lambda: _q(owner_db, job, j=health) == [("dead", "not_found")])
+    _until(lambda: _q(owner_db, job, j=discover) == [("dead", "not_found")])
+    assert _q(owner_db, _HEALTH_COLUMNS, p=pid) == columns
+    events = "SELECT tenant_id, action FROM shifde.audit_events WHERE target_id = :p"
+    assert _q(owner_db, events, p=str(pid)) == []  # neither in A nor in B
+    assert _state(owner_db, world.b.tenant) == b_before
+
+
+def test_a_forged_provider_job_naming_another_clients_principal_ends_dead(
+    world: World, owner_db: Database, running: Callable[..., Worker]
+) -> None:
+    """Issue #134: provider jobs of client A naming A's provider but a user of client B end
+    `dead` (`authz_denied`, the principal cannot be re-derived in A); A's provider is never
+    checked and nothing of B changes."""
+    with owner_db.session() as o:
+        pid, health, discover = _provider_jobs(o, world.a.tenant, principal_tenant=world.b.tenant)
+        o.commit()
+    b_before = _state(owner_db, world.b.tenant)
+    columns = _q(owner_db, _HEALTH_COLUMNS, p=pid)
+    running("w-forged-principal")
+    job = "SELECT status, last_error FROM shifde.jobs WHERE id = :j"
+    _until(lambda: _q(owner_db, job, j=health) == [("dead", "authz_denied")])
+    _until(lambda: _q(owner_db, job, j=discover) == [("dead", "authz_denied")])
+    assert _q(owner_db, _HEALTH_COLUMNS, p=pid) == columns
+    events = "SELECT action FROM shifde.audit_events WHERE target_id = :p AND action = ANY(:a)"
+    actions = list(models_admin.JOB_ACTION.values())
+    assert _q(owner_db, events, p=str(pid), a=actions) == []
     assert _state(owner_db, world.b.tenant) == b_before
 
 
