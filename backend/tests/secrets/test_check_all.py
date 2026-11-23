@@ -3,7 +3,9 @@
 Behaviour: with the right ring every `db_encrypted` secret (a disabled one too) decrypts and none
 fails; a tampered ciphertext is reported by id; nothing is written (`secret_access_log` and
 `audit_events` keep their counts); with a ring lacking the key the command prints `ok 0, failed
-<m>` and each failed id, exits 1, and shows no plaintext and no key material.
+<m>` and each failed id, exits 1, and shows no plaintext and no key material. Under a role
+subject to row-level security (the app role) nothing is checked: `check_all` raises, the command
+exits 1 with the fixed message and no `ok` line, and the restore's secrets check reports it.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from typer.testing import CliRunner
 
+from shifde.cli import backup
 from shifde.cli import main as cli_main
 from shifde.core.crypto import KeyRing
 from shifde.core.db import Database
@@ -94,6 +97,47 @@ def test_secrets_check_with_a_ring_lacking_the_key_fails_every_secret_without_pl
     for secret in (*PLAIN, other.split(":", 1)[1], _entry(keyring, "k1").split(":", 1)[1]):
         assert secret not in result.output
         assert secret not in ok.output
+
+
+def test_check_all_under_the_app_role_refuses_before_reading_any_row(
+    app_db: Database, keyring: KeyRing, clients: Clients
+) -> None:
+    _seed(app_db, keyring, clients)
+    with app_db.session() as s, pytest.raises(secrets_service.RowSecurityHidesSecrets) as err:
+        secrets_service.check_all(s, keyring)
+    assert str(err.value) == secrets_service.ROW_SECURITY_HIDES_SECRETS
+
+
+def test_secrets_check_under_the_app_role_exits_1_with_the_fixed_message(
+    settings: Settings,
+    app_db: Database,
+    keyring: KeyRing,
+    clients: Clients,
+    app_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ids = _seed(app_db, keyring, clients)
+    as_app = settings.model_copy(
+        update={
+            "secret_keys": SecretStr(_entry(keyring, "k1")),
+            "migration_database_url": app_url,
+        }
+    )
+    monkeypatch.setattr(cli_main, "_settings", lambda: as_app)
+    result = CliRunner().invoke(cli_main.app, ["secrets", "check"])
+    assert result.exit_code == 1
+    assert f"error: {secrets_service.ROW_SECURITY_HIDES_SECRETS}" in result.output
+    assert not any(line.startswith("ok ") for line in result.output.splitlines())
+    for value in (*PLAIN, *(str(i) for i in ids), app_url, _entry(keyring, "k1").split(":", 1)[1]):
+        assert value not in result.output
+
+
+def test_restore_secrets_check_under_the_app_role_returns_the_fixed_message(
+    app_db: Database, keyring: KeyRing, clients: Clients
+) -> None:
+    _seed(app_db, keyring, clients)
+    with app_db.session() as s:
+        assert backup._check_secrets(s, keyring) == secrets_service.ROW_SECURITY_HIDES_SECRETS
 
 
 def _entry(ring: KeyRing, kid: str) -> str:

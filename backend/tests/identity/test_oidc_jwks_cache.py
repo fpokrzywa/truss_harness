@@ -118,6 +118,7 @@ def test_a_retired_key_is_trusted_until_the_lifetime_ends_then_refused() -> None
         (None, 900),  # no header: the default
         ("max-age=soon", 900),  # unparsable: the default
         ("no-cache, s-maxage=120", 900),  # no max-age: the default
+        ("max-age=" + "9" * 5000, 900),  # too long to convert: the default
     ],
 )
 def test_the_jwks_lifetime_is_max_age_clamped_or_the_default(
@@ -165,6 +166,7 @@ def test_the_default_settings_cap_entras_max_age_at_an_hour() -> None:
         ("max-age=1.5", None),
         ('max-age="60"', None),
         ("max-age=abc, max-age=30", None),  # the first max-age is unparsable: the default
+        ("max-age=" + "9" * 5000, None),  # too long for int(): unparsable
     ],
 )
 def test_cache_max_age_parsing(header: str | None, expected: int | None) -> None:
@@ -213,3 +215,55 @@ def test_get_json_with_headers_returns_the_document_and_headers() -> None:
     )
     with pytest.raises(EgressViolation):
         private.get_json_with_headers(JWKS_URI)
+
+
+def _run_checks(oidc: OidcClient) -> list[tuple[str, bool, str]]:
+    return oidc.run_checks(IDP.discovery_url, ISSUER)
+
+
+def test_the_idp_test_fetches_the_jwks_but_never_touches_the_shared_cache() -> None:
+    # issue #140 (DECISIONS B-2891): the IdP `test` endpoint fetches fresh and stores nothing
+    fake = FakeOidcProvider()
+    clock = Clock()
+    oidc = _client(fake, clock)
+    oidc.signing_keys(JWKS_URI, fake.kid)
+    before = oidc._jwks[JWKS_URI]
+    assert oidc._last_forced == {}
+    for n in range(1, 5):
+        clock.now += 10
+        checks = _run_checks(oidc)
+        assert checks[-1] == ("jwks", True, "1 signing key(s) available")
+        assert fake.jwks_calls == 1 + n  # every test call fetches
+        assert oidc._jwks[JWKS_URI] == before
+        assert oidc._jwks[JWKS_URI][2] is before[2]
+        assert oidc._last_forced == {}
+
+
+def test_the_idp_test_with_nothing_cached_leaves_no_cache_entry() -> None:
+    fake = FakeOidcProvider()
+    oidc = _client(fake, Clock())
+    assert [c[:2] for c in _run_checks(oidc)] == [("discovery", True), ("jwks", True)]
+    assert fake.jwks_calls == 1
+    assert JWKS_URI not in oidc._jwks
+    assert oidc._last_forced == {}
+
+
+def test_the_idp_test_keeps_the_kid_miss_refresh_rate_limit() -> None:
+    fake = FakeOidcProvider()
+    clock = Clock()
+    oidc = _client(fake, clock, _settings(oidc_jwks_min_refresh_seconds=60))
+    oidc.signing_keys(JWKS_URI, fake.kid)
+    clock.now += 100
+    oidc.signing_keys(JWKS_URI, "unknown-kid")  # a kid miss: one rate-limited refresh
+    assert fake.jwks_calls == 2
+    entry, forced = oidc._jwks[JWKS_URI], dict(oidc._last_forced)
+    assert forced == {JWKS_URI: clock.now}
+    for _ in range(3):
+        clock.now += 5
+        assert _run_checks(oidc)[-1][:2] == ("jwks", True)
+    assert fake.jwks_calls == 5
+    assert oidc._jwks[JWKS_URI] == entry
+    assert oidc._last_forced == forced
+    clock.now += 5  # still inside the 60 s window: no refetch on another kid miss
+    oidc.signing_keys(JWKS_URI, "other-kid")
+    assert fake.jwks_calls == 5

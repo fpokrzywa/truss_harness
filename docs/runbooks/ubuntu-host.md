@@ -396,7 +396,8 @@ The services keep running on the current database throughout.
 
    `secrets check` prints `ok <n>, failed <m>` and the ids of failed secrets, and exits 1 if any
    failed: a failure means the key ring in `seth.env` is not the one the backup's secrets were
-   encrypted with.
+   encrypted with. It refuses (exit 1, no `ok` line) when the database role cannot see every
+   row, i.e. when it lacks BYPASSRLS: nothing was checked then.
 
 The key ring (`SHIFDE_SECRET_KEYS`) and the API-key pepper are **not** in the backup. Keep a copy
 of both apart from the backups (for example in the owner's password vault): without the ring the
