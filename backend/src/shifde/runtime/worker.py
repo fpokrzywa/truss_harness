@@ -62,7 +62,7 @@ advances its run; `connection.test` and `connection.discover` (no run) run
 from the database, and end `done`, or `dead` with the refusal's error code (an invoke records its
 refusal on its invocation and ends `done`). The built-in kinds are checked first, then the
 `JobKindRegistry` the worker was given (`runtime.jobkinds`, built by the composition root
-`shifde.worker_main`, so `runtime` never imports the modules above it): a registered handler runs
+`worker_main`, so `runtime` never imports the modules above it): a registered handler runs
 the job in its own client and returns None (`done`) or an error code (`dead` with that code), as
 the built-in run-less handlers do; any other kind ends `dead` without running.
 """

@@ -1,11 +1,11 @@
 """The worker's job-kind registry (SP5 design section 3, R1).
 
-A module above `runtime` (`shifde.appgen`) runs run-less jobs on the worker without `runtime`
-importing it: the composition root (`shifde.worker_main`) builds a `JobKindRegistry` of kind ->
-handler and hands it to `runtime.worker.Worker`. A handler has the signature of
-`connections.service.run_discover_job`: it runs the job of its client and returns None (the job
-ends `done`) or an error code (the job ends `dead` with that code). A kind of the worker's own
-(`run.advance`, `connection.*`, `model.*`) cannot be registered.
+A module above `runtime` (the solution generator, `appgen`) runs run-less jobs on the worker
+without `runtime` importing it: the composition root (`worker_main`, the `shifde-worker` entry
+point) builds a `JobKindRegistry` of kind -> handler and hands it to `runtime.worker.Worker`. A
+handler has the signature of `connections.service.run_discover_job`: it runs the job of its
+client and returns None (the job ends `done`) or an error code (the job ends `dead` with that
+code). A kind of the worker's own (`run.advance`, `connection.*`, `model.*`) cannot be registered.
 """
 
 from __future__ import annotations
