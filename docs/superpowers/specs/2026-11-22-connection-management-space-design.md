@@ -317,7 +317,7 @@ Descriptor values: `destination_fields = ("account",)`, `secret_fields = ("priva
 
 ### 7.4 Read-only and egress
 
-In `read` mode, `sqlapi.check_read_only(sql)` strips comments and accepts one statement whose first keyword is `SELECT`, `WITH`, `SHOW`, `DESCRIBE`, `DESC` or `EXPLAIN`. Anything else gets 422 before any call. `read_write` needs `connection:write` and the existing approval gate. The read-only credential (B-1507) is the real control; the UI copy says the keyword check is defense in depth.
+In `read` mode, `sqlapi.check_read_only(sql)` strips comments and accepts one statement whose first keyword is `SELECT`, `WITH`, `SHOW`, `DESCRIBE`, `DESC` or `EXPLAIN`. Anything else gets 422 before any call. For Snowflake (`dialect="snowflake"`), the check also reads `$$...$$` as a string and refuses the words `PROCEDURE` and `CALL` outside quoted text (B-3211). `read_write` needs `connection:write` and the existing approval gate. The read-only credential (B-1507) is the real control; the UI copy says the keyword check is defense in depth.
 
 Egress is the AND of four layers: the adapter host rule, the installation default (https, port 443, public addresses only, no redirects), the client default, and the connection policy (`connections/egress.py` unchanged).
 
