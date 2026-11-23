@@ -57,9 +57,12 @@ def test_a_head_named_in_depends_on_is_not_a_version_head() -> None:
     head; identity_0006 stays a non-head (delivery_0001 depends on it, and identity_0007 follows
     it). tenancy_0007 follows tenancy_0006 with no depends_on (issue #39), so it is a version
     head. packaging_0003 follows packaging_0002 with no depends_on (issue #158), so it is the
-    packaging version head (packaging_0002 stays a non-head)."""
+    packaging version head (packaging_0002 stays a non-head). mcp_0001 depends on tenancy_0007
+    and identity_0007 (issue #287), so neither is a version head any more and mcp_0001 is the mcp
+    head."""
     heads = code_heads()
-    assert "identity_0007" in heads
+    assert "mcp_0001" in heads
+    assert "identity_0007" not in heads
     assert "identity_0006" not in heads
     assert "delivery_0006" in heads
     assert "evaluation_0001" not in heads
@@ -81,7 +84,7 @@ def test_a_head_named_in_depends_on_is_not_a_version_head() -> None:
     assert "packaging_0001" not in heads
     assert "build_0002" not in heads
     assert "models_admin_0003" not in heads
-    assert "tenancy_0007" in heads
+    assert "tenancy_0007" not in heads
     assert "tenancy_0006" not in heads
     assert "tenancy_0005" not in heads
     assert "tenancy_0004" not in heads

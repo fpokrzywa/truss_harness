@@ -239,3 +239,12 @@ def test_role_grants_of_the_mcp_permissions(owner_session: Session) -> None:
 
     assert privileged("mcp:settings:write") is True
     assert privileged("mcp:access") is False and privileged("mcp:settings:read") is False
+
+
+def test_the_permission_catalog_offers_the_mcp_scopes(mcp: TestClient, world: World) -> None:
+    """The API key screen's scope checklist reads this catalog (no front-end change needed)."""
+    h = sign_in(mcp, world, ADMIN_A)
+    r = mcp.get("/api/v1/permissions", params={"limit": 200}, headers=h)
+    assert r.status_code == 200, r.text
+    keys = {p["key"] for p in r.json()["items"]}
+    assert {"mcp:access", "mcp:settings:read", "mcp:settings:write"} <= keys
