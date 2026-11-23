@@ -20,7 +20,9 @@ SP5 design sections 4 and 5 (issue #255).
 * `shifde.appgen_requests_guard()`: a SECURITY INVOKER `BEFORE INSERT` trigger,
   `SET search_path = pg_catalog, pg_temp`, every object schema-qualified, EXECUTE revoked from
   PUBLIC. It refuses (`check_violation`) a request whose discovery, read under the writer's
-  row-level security, is not a discovery of the request's own client and connection.
+  row-level security, is not a discovery of the request's own client and connection, whose
+  project is not in its workspace, or whose connection is neither client-wide nor of its
+  workspace or project.
   `connection_discoveries` (a ported SETH table) has no `(tenant_id, id)` unique key to name in a
   composite foreign key, and adding one would change a ported table, so this trigger keeps the
   reference inside the client instead.
@@ -92,6 +94,21 @@ REQUESTS_GUARD = """CREATE FUNCTION shifde.appgen_requests_guard()
                         WHERE d.tenant_id = NEW.tenant_id AND d.id = NEW.discovery_id
                           AND d.connection_id = NEW.connection_id) THEN
           RAISE EXCEPTION 'the discovery must be one of the request''s connection'
+            USING ERRCODE = 'check_violation';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM shifde.projects p
+                        WHERE p.tenant_id = NEW.tenant_id AND p.id = NEW.project_id
+                          AND p.workspace_id = NEW.workspace_id) THEN
+          RAISE EXCEPTION 'the project must be in the request''s workspace'
+            USING ERRCODE = 'check_violation';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM shifde.connections c
+                        WHERE c.tenant_id = NEW.tenant_id AND c.id = NEW.connection_id
+                          AND (c.workspace_id IS NULL
+                               OR (c.workspace_id = NEW.workspace_id
+                                   AND (c.project_id IS NULL
+                                        OR c.project_id = NEW.project_id)))) THEN
+          RAISE EXCEPTION 'the connection must be client-wide or of the request''s scope'
             USING ERRCODE = 'check_violation';
         END IF;
         RETURN NEW;
