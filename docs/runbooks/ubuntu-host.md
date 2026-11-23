@@ -108,8 +108,9 @@ the repository's `scripts/hosted_db.py setup`; do not write role SQL by hand. It
 
    `setup` creates or repairs both roles, gives the database to `shifde_owner`, runs the migration
    and checks that `shifde_app` passes the startup role check. It writes the two role URLs, the
-   API-key pepper and the key ring (`SHIFDE_SECRET_KEYS`) into that copy's `.devdata/hosted.env`.
-   Copy them into `/etc/seth/seth.env` (app URL, pepper, ring) and `/etc/seth/admin.env` (owner
+   API-key pepper, the key ring (`SHIFDE_SECRET_KEYS`) and the metrics token
+   (`SHIFDE_METRICS_TOKEN`) into that copy's `.devdata/hosted.env`. Copy them into
+   `/etc/seth/seth.env` (app URL, pepper, ring, metrics token) and `/etc/seth/admin.env` (owner
    URL), add `?sslmode=verify-full&sslrootcert=/etc/seth/db-ca.pem` to both URLs, store a copy of
    the key ring off the host (section (g)), then delete `.env.local` and `.devdata/hosted.env`
    from the scratch copy.

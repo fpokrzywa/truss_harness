@@ -16,7 +16,8 @@ This script never prints the URL, host, user, password or database name.
      already owned by `shifde_owner`; otherwise it refuses. PUBLIC loses access; `shifde_app` gets
      CONNECT and TEMPORARY;
   3. writes `.devdata/hosted.env` (gitignored) with SHIFDE_DATABASE_URL and
-     SHIFDE_MIGRATION_DATABASE_URL for this route;
+     SHIFDE_MIGRATION_DATABASE_URL for this route, and the instance's API-key pepper, secret key
+     ring and metrics token (generated once, then reused);
   4. runs `shifde-admin db upgrade heads` as the owner;
   5. connects as `shifde_app` through the application's own startup role check, and counts the
      row-level-security tables.
@@ -28,6 +29,7 @@ without TLS. The owner chose the Tailscale route on 2026-11-16.
 
 from __future__ import annotations
 
+import base64
 import ipaddress
 import os
 import secrets
@@ -41,6 +43,8 @@ REPO = Path(__file__).resolve().parents[1]
 HOSTED_ENV = REPO / ".devdata" / "hosted.env"
 OWNER_ROLE, APP_ROLE = "shifde_owner", "shifde_app"
 CGNAT = ipaddress.ip_network("100.64.0.0/10")
+# The migration and the role check serve no HTTP; production settings still need a base URL.
+SUBPROCESS_PUBLIC_BASE_URL = "http://127.0.0.1"
 
 
 class Admin:
@@ -131,6 +135,29 @@ def read_hosted_env() -> dict[str, str]:
     return values
 
 
+def instance_secrets(saved: dict[str, str]) -> dict[str, str]:
+    """The instance's API-key pepper, secret key ring and metrics token: reused from `saved`, else new."""
+    return {
+        "SHIFDE_API_KEY_PEPPER": saved.get("SHIFDE_API_KEY_PEPPER") or secrets.token_urlsafe(48),
+        "SHIFDE_SECRET_KEYS": saved.get("SHIFDE_SECRET_KEYS")
+        or f"hosted1:{base64.b64encode(os.urandom(32)).decode()}",
+        "SHIFDE_METRICS_TOKEN": saved.get("SHIFDE_METRICS_TOKEN") or secrets.token_urlsafe(32),
+    }
+
+
+def subprocess_env(base_environ: dict[str, str], app_url: str, owner_url: str,
+                   instance: dict[str, str]) -> dict[str, str]:
+    """The backend subprocess environment: no inherited SHIFDE_* values, valid production settings."""
+    env = {k: v for k, v in base_environ.items() if not k.startswith("SHIFDE_")}
+    env["SHIFDE_ENV"] = "production"
+    env["SHIFDE_DATABASE_URL"], env["SHIFDE_MIGRATION_DATABASE_URL"] = app_url, owner_url
+    env["SHIFDE_API_KEY_PEPPER"] = instance["SHIFDE_API_KEY_PEPPER"]
+    env["SHIFDE_SECRET_KEYS"] = instance["SHIFDE_SECRET_KEYS"]
+    env["SHIFDE_METRICS_TOKEN"] = instance["SHIFDE_METRICS_TOKEN"]
+    env["SHIFDE_PUBLIC_BASE_URL"] = SUBPROCESS_PUBLIC_BASE_URL
+    return env
+
+
 def cmd_setup(admin: Admin) -> int:
     kind = route_kind(admin.host)
     with admin.connect() as c:
@@ -177,29 +204,27 @@ def cmd_setup(admin: Admin) -> int:
         print("database: owned by shifde_owner; PUBLIC revoked; shifde_app has CONNECT, TEMPORARY")
     # 3. hosted.env for this route.
     base = f"postgresql+psycopg://{{user}}:{{pw}}@{admin.host}:{admin.port}/{admin.db}"
-    # The instance's own API-key pepper and secret-encryption key ring. Production settings require
-    # them, and they must never change for this database (stored secrets are encrypted with them),
-    # so they are generated once, the same way the app does, and kept here.
-    import base64
-    pepper = saved.get("SHIFDE_API_KEY_PEPPER") or secrets.token_urlsafe(48)
-    keyring = saved.get("SHIFDE_SECRET_KEYS") or f"hosted1:{base64.b64encode(os.urandom(32)).decode()}"
+    app_url, owner_url = base.format(user=APP_ROLE, pw=app_pw), base.format(user=OWNER_ROLE, pw=owner_pw)
+    # The instance's own API-key pepper, secret-encryption key ring and metrics token. Production
+    # settings require them, and the pepper and ring must never change for this database (stored
+    # secrets are encrypted with them), so they are generated once, the same way the app does, and
+    # kept here.
+    instance = instance_secrets(saved)
     env_lines = [
         "# Hosted database (scripts/hosted_db.py). Never commit or print.",
         f"OWNER_PASSWORD={owner_pw}",
         f"APP_PASSWORD={app_pw}",
-        "SHIFDE_DATABASE_URL=" + base.format(user=APP_ROLE, pw=app_pw),
-        "SHIFDE_MIGRATION_DATABASE_URL=" + base.format(user=OWNER_ROLE, pw=owner_pw),
-        f"SHIFDE_API_KEY_PEPPER={pepper}",
-        f"SHIFDE_SECRET_KEYS={keyring}",
+        "SHIFDE_DATABASE_URL=" + app_url,
+        "SHIFDE_MIGRATION_DATABASE_URL=" + owner_url,
+        f"SHIFDE_API_KEY_PEPPER={instance['SHIFDE_API_KEY_PEPPER']}",
+        f"SHIFDE_SECRET_KEYS={instance['SHIFDE_SECRET_KEYS']}",
+        f"SHIFDE_METRICS_TOKEN={instance['SHIFDE_METRICS_TOKEN']}",
     ]
     HOSTED_ENV.parent.mkdir(parents=True, exist_ok=True)
     HOSTED_ENV.write_text("\n".join(env_lines) + "\n", encoding="utf-8")
     print("wrote .devdata/hosted.env")
-    # 4 and 5 run inside the backend environment, with only the hosted URLs.
-    env = {k: v for k, v in os.environ.items() if not k.startswith("SHIFDE_")}
-    env["SHIFDE_DATABASE_URL"] = base.format(user=APP_ROLE, pw=app_pw)
-    env["SHIFDE_MIGRATION_DATABASE_URL"] = base.format(user=OWNER_ROLE, pw=owner_pw)
-    env["SHIFDE_API_KEY_PEPPER"], env["SHIFDE_SECRET_KEYS"] = pepper, keyring
+    # 4 and 5 run inside the backend environment, with only the hosted URLs and instance secrets.
+    env = subprocess_env(dict(os.environ), app_url, owner_url, instance)
     backend = REPO / "backend"
     r = subprocess.run(["uv", "run", "--frozen", "shifde-admin", "db", "upgrade", "heads"], cwd=backend, env=env,
                        capture_output=True, text=True)

@@ -1,8 +1,8 @@
 {
-  "session_id": "a31179bf-f7b8-443c-967d-f90d9cdab29a",
-  "head_sha": "f8c996dec48247ccf501a554a598ef90ab8ea159",
+  "session_id": "f36bd0f4-92a3-42ae-a03d-83ce6533ac48",
+  "head_sha": "64926a01d50d5dd9a40319f822c2d7309de55896",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "PYTHONUTF8=1 factory/bin/job queue; re-sync and gate 097 (PR #207, conflicts with main), then hand merges PR #214, 077, 105, 083, 084, 109, 087; 111 reviewers",
-  "written_at": "2026-11-23T00:00:02Z"
+  "next_step": "PYTHONUTF8=1 factory/bin/job queue; gate 110 (PR #222), resume builder-098 round 2 (raw-string read-only bypass), then hand merges 077, 105, 083, 084, 109, 087, 111, 112",
+  "written_at": "2026-11-23T01:53:20Z"
 }
