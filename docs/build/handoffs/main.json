@@ -1,8 +1,8 @@
 {
   "session_id": "ca60ae91-b043-4245-b90e-acc8d116677b",
-  "head_sha": "e27686a9554c094aac1caa38e2c992069e9f0d12",
+  "head_sha": "dc1a8e8a75943fb788b0a3f497dfc8c896b98b8a",
   "branch": "main",
   "unit_in_progress": "charter 7 factory run: jobs 120 (approve), 121 (needs-human), 123 (gate); runtime_0007 on lead/jobs-payload-scrub awaiting gates",
   "next_step": "PYTHONUTF8=1 factory/bin/job queue and start every resume/new line (123 gate, 120 approver, 100, 102, #230 #231 #235 #238); then 121 hand merge, then gate and merge runtime_0007 and re-intake 119. Full steps in docs/build/HANDOFF.md.",
-  "written_at": "2026-11-23T07:12:18Z"
+  "written_at": "2026-11-23T07:27:17Z"
 }
