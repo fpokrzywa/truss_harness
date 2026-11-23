@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from shifde.core.errors import AppError
+from shifde.core.errors import AppError, RateLimited
 from shifde.core.redaction import scrub, scrub_text
 from shifde.core.securityheaders import security_headers
 
@@ -83,7 +83,7 @@ def problem_response(
 
 async def _app_error(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, AppError)
-    return problem_response(
+    response = problem_response(
         request,
         status=exc.status,
         code=exc.code,
@@ -91,6 +91,9 @@ async def _app_error(request: Request, exc: Exception) -> JSONResponse:
         detail=exc.detail,
         errors=exc.errors,
     )
+    if isinstance(exc, RateLimited) and exc.retry_after is not None:
+        response.headers["Retry-After"] = str(exc.retry_after)
+    return response
 
 
 async def _validation_error(request: Request, exc: Exception) -> JSONResponse:
