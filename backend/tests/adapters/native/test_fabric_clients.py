@@ -11,7 +11,7 @@ patching `asyncio.sleep`.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from urllib.parse import parse_qs
 from uuid import uuid4
 
@@ -289,6 +289,23 @@ def test_fabric_entra_token_is_refetched_inside_the_expiry_margin() -> None:
     provider()
     provider()
     assert len(requests) == 2 and len(calls) == 2
+
+
+def test_fabric_entra_oversized_response_is_refused_at_the_streaming_cap() -> None:
+    sent: list[int] = []
+
+    def chunks() -> Iterator[bytes]:
+        while True:
+            sent.append(1)
+            yield b"x" * 16384
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=chunks())
+
+    with pytest.raises(FabricAuthError) as failed:
+        entra(handle, [])()
+    assert 4 <= len(sent) <= 5  # 64 KiB cap in 16 KiB blocks: stops at the first block past it
+    assert "x" * 16 not in repr(failed.value)
 
 
 def test_fabric_entra_token_request_does_not_follow_redirects() -> None:

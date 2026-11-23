@@ -28,6 +28,7 @@ RESPONSE_MAX = 24 * 1024 * 1024
 LOGIN_ORIGIN = "https://login.microsoftonline.com"
 SCOPE = "https://api.fabric.microsoft.com/.default"
 TOKEN_MARGIN_SECONDS = 60
+TOKEN_RESPONSE_MAX = 64 * 1024
 _GUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
@@ -73,10 +74,12 @@ class EntraTokenProvider:
             return self._token
 
     def _fetch(self) -> tuple[str, float]:
-        with httpx.Client(
-            timeout=TIMEOUT, follow_redirects=False, trust_env=False, transport=self.transport
-        ) as client:
-            response = client.post(
+        with (
+            httpx.Client(
+                timeout=TIMEOUT, follow_redirects=False, trust_env=False, transport=self.transport
+            ) as client,
+            client.stream(
+                "POST",
                 self.token_url,
                 data={
                     "grant_type": "client_credentials",
@@ -84,11 +87,17 @@ class EntraTokenProvider:
                     "client_secret": self.client_secret(),
                     "scope": SCOPE,
                 },
-            )
-        if response.status_code != 200 or len(response.content) > 64 * 1024:
-            raise FabricAuthError
+            ) as response,
+        ):
+            if response.status_code != 200:
+                raise FabricAuthError
+            data = bytearray()
+            for block in response.iter_bytes():
+                data.extend(block)
+                if len(data) > TOKEN_RESPONSE_MAX:
+                    raise FabricAuthError
         try:
-            body = response.json()
+            body = json.loads(data)
         except ValueError:
             raise FabricAuthError from None
         token = body.get("access_token") if isinstance(body, dict) else None
