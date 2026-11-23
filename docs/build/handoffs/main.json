@@ -1,8 +1,8 @@
 {
-  "session_id": "a0eef6a0-8154-4a4c-b201-6d9511f8cb1b",
-  "head_sha": "310a543e01ace5c95e2572973682608820c37572",
+  "session_id": "58242b09-b544-4415-aab6-8317646591c7",
+  "head_sha": "dede5ec44e1c5b2ce489da32acd0b8f4440f6afe",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "PYTHONUTF8=1 factory/bin/job queue; spawn reviewers for 137, 138, 140, 141, 143, 146 (stage review); gate 145; job 133 feedback per HANDOFF.md (update depends_on-head test expectations); gates.py + hand merge 139; see docs/build/HANDOFF.md",
-  "written_at": "2026-11-23T17:10:37Z"
+  "next_step": "PYTHONUTF8=1 factory/bin/job queue; spawn spec-writer for 147; then sync+gates.py+hand merge needs-human jobs in order 139, 141, 137, 145, 140, 143 (see HANDOFF.md)",
+  "written_at": "2026-11-23T19:52:16Z"
 }

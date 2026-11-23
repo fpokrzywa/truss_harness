@@ -55,7 +55,8 @@ def test_snowflake_test_discover_and_invoke_succeed(auth: str) -> None:
         result = session.invoke({"sql": SELECT_ONE})
     finally:
         session.close()
-    assert result.result["columns"] == ["1"] and result.result["rows"] == [["1"]]
+    assert result.result["columns"] == [{"name": "1", "type": "text"}]
+    assert result.result["rows"] == [["1"]]
 
 
 def test_a_databricks_host_still_gets_a_permissive_workspace() -> None:

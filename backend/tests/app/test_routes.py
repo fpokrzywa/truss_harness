@@ -125,6 +125,17 @@ EVALUATION = {
     ("POST", EVALUATIONS),
     ("GET", "/api/v1/orgs/{org}/evaluation-runs/{run_id}"),
 }
+# appgen: app requests and their drafts (SP5 design section 7, issue #255): not a SETH module
+APP_REQUESTS = "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/app-requests"
+APP_REQUEST = "/api/v1/orgs/{org}/app-requests/{request_id}"
+APPGEN = {
+    ("GET", APP_REQUESTS),
+    ("POST", APP_REQUESTS),
+    ("GET", APP_REQUEST),
+    ("POST", APP_REQUEST + "/drafts"),
+    ("POST", APP_REQUEST + "/discard"),
+    ("POST", APP_REQUEST + "/retry"),
+}
 # the project and release board (sub-project 7 design 7.2, Call S7-F): not a SETH module
 BOARD = {
     ("GET", "/api/v1/orgs/{org}/board"),
@@ -161,6 +172,7 @@ def test_the_mounted_route_table_is_sethss_minus_branding(
         | DELIVERY
         | PACKAGING
         | EVALUATION
+        | APPGEN
         | MCP
         | BOARD
     )

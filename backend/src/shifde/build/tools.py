@@ -5,8 +5,9 @@ Validation is the security boundary of a tool definition: the executor must exis
 usable by the publisher (`connection:use`), JSON Schemas must be valid draft 2020-12 documents
 without remote references, and the side-effect class must be consistent with the binding, retry
 policy and idempotency declaration (SYSTEM_ARCHITECTURE 6.7 is authoritative). A `connection.sql`
-tool on a Databricks `data_platform` connection also passes the SELECT-only statement rules of
-`core/sqlrules.py` on its template converted to the `:name` form.
+tool on a Databricks or Snowflake `data_platform` connection also passes the SELECT-only statement
+rules of `core/sqlrules.py`, in the connection's dialect, on its template converted to the `:name`
+form. `positional_sql` gives the Snowflake form the runtime sends: `?` in order, outside literals.
 """
 
 from __future__ import annotations
@@ -71,6 +72,47 @@ def _is_number(value: Any) -> bool:
 def named_sql(template: str) -> str:
     """A stored `%(name)s` template in the data-platform form: `:name` parameters, `%%` as `%`."""
     return _PARAM_OR_PERCENT.sub(lambda m: f":{m.group(1)}" if m.group(1) else "%", template)
+
+
+def _literal_end(template: str, i: int) -> int:
+    """Index after the Snowflake string literal opened at `i` (`'...'` with backslash escapes, or
+    `$$...$$`); the end of the template when it never closes."""
+    n = len(template)
+    if template.startswith("$$", i):
+        end = template.find("$$", i + 2)
+        return n if end < 0 else end + 2
+    j = i + 1
+    while j < n and template[j] != "'":
+        j += 2 if template[j] == "\\" else 1
+    return min(j + 1, n)
+
+
+def positional_sql(template: str) -> tuple[str, list[str]]:
+    """A stored `%(name)s` template in the Snowflake form: each `%(name)s` outside a string literal
+    becomes `?` (the names in that order, a repeated name repeated), `%%` becomes `%`. Inside a
+    literal the text is what `named_sql` gives (`:name`, never bound). A doubled `''` closes the
+    literal and opens the next one, so it stays literal text."""
+    out: list[str] = []
+    names: list[str] = []
+    i, n = 0, len(template)
+    while i < n:
+        if template[i] == "'" or template.startswith("$$", i):
+            end = _literal_end(template, i)
+            out.append(named_sql(template[i:end]))
+            i = end
+            continue
+        m = _PARAM_OR_PERCENT.match(template, i)
+        if m is None:
+            out.append(template[i])
+            i += 1
+        elif m.group(1):
+            out.append("?")
+            names.append(m.group(1))
+            i = m.end()
+        else:
+            out.append("%")
+            i = m.end()
+    return "".join(out), names
 
 
 def template_names(node: Any, pattern: re.Pattern[str]) -> set[str]:  # Any: JSON template
@@ -289,7 +331,7 @@ def _validate_binding(
     else:
         _validate_sql(binding, side, props, report)
         if info is not None and info.connection_type == "data_platform":
-            _validate_platform_sql(binding, report)
+            _validate_platform_sql(binding, report, info.adapter_key)
     return out
 
 
@@ -323,7 +365,7 @@ def _connection(
         report.error(
             path,
             "executor_adapter_unsupported",
-            "connection.sql supports Databricks data platform connections only",
+            "connection.sql supports Databricks and Snowflake data platform connections only",
         )
     if not info.implemented:
         report.error(path, "executor_planned", "the connection's adapter is planned only")
@@ -420,8 +462,9 @@ def _validate_sql(binding: dict[str, Any], side: str, props: set[str], report: R
         report.error("binding.max_rows", "invalid_value", "must be between 1 and 10000")
 
 
-def _validate_platform_sql(binding: dict[str, Any], report: Report) -> None:
-    """The SELECT-only statement rules on the template as the data platform receives it."""
+def _validate_platform_sql(binding: dict[str, Any], report: Report, adapter_key: str) -> None:
+    """The SELECT-only statement rules, in the dialect of the connection's adapter, on the
+    template as the data platform receives it."""
     sql = binding.get("sql_template")
     if not isinstance(sql, str) or not sql.strip():
         return  # `_validate_sql` reported it
@@ -432,7 +475,8 @@ def _validate_platform_sql(binding: dict[str, Any], report: Report) -> None:
             "invalid_template",
             "a %(name)s parameter must not be followed by a letter, digit or underscore",
         )
-    for issue in sqlrules.statement_rules(named_sql(sql)):
+    dialect: sqlrules.Dialect = "snowflake" if adapter_key == "snowflake" else "databricks"
+    for issue in sqlrules.statement_rules(named_sql(sql), dialect=dialect):
         report.error("binding.sql_template", issue.code, issue.message)
 
 

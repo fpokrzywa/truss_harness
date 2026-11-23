@@ -21,6 +21,7 @@ from shifde import __version__
 from shifde.adapters.registry import AdapterRegistry
 from shifde.adapters.runtime import IntegrationRuntime
 from shifde.admin import api as admin_api
+from shifde.appgen import api as appgen_api
 from shifde.board import api as board_api
 from shifde.build import api as build_api
 from shifde.connections import api as connections_api
@@ -179,6 +180,7 @@ def create_app(
     features.register("governance")
     app.include_router(packaging_api.router, dependencies=guard)
     app.include_router(evaluation_api.router, dependencies=guard)
+    app.include_router(appgen_api.router, dependencies=guard)
     app.include_router(delivery_api.router, dependencies=guard)
     app.include_router(mcp_api.router, dependencies=guard)
     app.include_router(board_api.router, dependencies=guard)

@@ -252,6 +252,6 @@ def test_the_committed_register_parses() -> None:
         "ARCH M11": "closed",
         "ARCH M5": "closed",
         "REQ F-08": "accepted",
-        "REQ F-22": "pending-owner",
+        "REQ F-22": "closed",
         "Hosting target": "accepted",
     }
