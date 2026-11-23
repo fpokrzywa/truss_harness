@@ -111,11 +111,17 @@ class DraftEdit(BaseModel):
     draft: Draft
 
 
-class Diagnostic(BaseModel):
+class DraftDiagnostic(BaseModel):
+    """One diagnostic of a draft (design 5.4); named apart from `packaging`'s `Diagnostic` so the
+    OpenAPI schema names stay unchanged."""
+
     path: str
     code: str
     message: str
     severity: Literal["error", "warning"]
+
+
+Diagnostic = DraftDiagnostic
 
 
 class DraftOut(BaseModel):
@@ -123,7 +129,7 @@ class DraftOut(BaseModel):
     source: Literal["model", "edited"]
     draft: dict[str, Any]
     draft_hash: str
-    validation: list[Diagnostic]
+    validation: list[DraftDiagnostic]
     created_by: UUID
     created_at: datetime
 

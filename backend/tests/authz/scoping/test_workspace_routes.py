@@ -39,6 +39,7 @@ from shifde.authz.pdp import PLATFORM_ONLY_ACTIONS
 from shifde.core.clock import utcnow
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
+from tests._support.appgen_fixtures import SAMPLE_DRAFT
 from tests._support.conntests import run_discover, run_invoke, run_test
 from tests._support.fullapp import World, full_client
 from tests._support.p2util import login, new_user, post, tenant_id
@@ -63,6 +64,9 @@ from tests._support.p4util import (
 )
 from tests._support.p5util import Hdr, user_session
 from tests._support.runs import add_run
+from tests.appgen.helpers import body as appgen_body
+from tests.appgen.helpers import databricks, drafting_model, wire
+from tests.appgen.helpers import run_job as run_appgen_job
 
 Op = tuple[str, str]
 
@@ -72,6 +76,8 @@ CLASSES = frozenset({SCOPED, CLIENT, PLATFORM, PUBLIC})
 SOLUTIONS = "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/solutions"
 DATASETS = "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/evaluation-datasets"
 EVALUATIONS = "/api/v1/orgs/{org}/releases/{release_id}/evaluations"
+APP_REQUESTS = "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/app-requests"
+APP_REQUEST = "/api/v1/orgs/{org}/app-requests/{request_id}"
 
 ROUTES: dict[Op, tuple[str, str]] = {
     # ------------------------------------------------------------------ no organization
@@ -568,6 +574,13 @@ ROUTES: dict[Op, tuple[str, str]] = {
     ("GET", SOLUTIONS + "/{solution_id}/versions/{version_id}/releases"): (SCOPED, "packaging"),
     ("GET", "/api/v1/orgs/{org}/releases/{release_id}"): (SCOPED, "packaging"),
     ("POST", "/api/v1/orgs/{org}/releases/{release_id}/withdraw"): (SCOPED, "packaging"),
+    # ------------------------------------------------------------------ appgen
+    ("GET", APP_REQUESTS): (SCOPED, "appgen"),
+    ("POST", APP_REQUESTS): (SCOPED, "appgen"),
+    ("GET", APP_REQUEST): (SCOPED, "appgen"),
+    ("POST", APP_REQUEST + "/drafts"): (SCOPED, "appgen"),
+    ("POST", APP_REQUEST + "/discard"): (SCOPED, "appgen"),
+    ("POST", APP_REQUEST + "/retry"): (SCOPED, "appgen"),
     # ------------------------------------------------------------------ evaluation
     ("GET", DATASETS): (SCOPED, "evaluation"),
     ("POST", DATASETS): (SCOPED, "evaluation"),
@@ -1533,6 +1546,64 @@ _register(
 )
 
 
+# ---------------------------------------------------------------------- appgen
+APPGEN = (
+    "SELECT * FROM shifde.appgen_requests WHERE workspace_id = :w ORDER BY id",
+    "SELECT d.* FROM shifde.appgen_drafts d JOIN shifde.appgen_requests r "
+    "ON r.id = d.request_id WHERE r.workspace_id = :w ORDER BY d.id",
+    "SELECT j.* FROM shifde.jobs j JOIN shifde.appgen_requests r ON r.job_id = j.id "
+    "WHERE r.workspace_id = :w ORDER BY j.id",
+)
+
+
+def _app_request(w: W, n: int, tail: str = "") -> str:
+    return f"/app-requests/{w('app_request', n)}{tail}"
+
+
+def _app_request_body(w: W, n: int) -> dict[str, Any]:  # Any: JSON body
+    return appgen_body(w("app_connection", n), w("draft_model", 0))
+
+
+# the retry case before the discard case (W1's request stays drafted until the discard; its retry
+# is refused on state, 409)
+_register(
+    "appgen",
+    {
+        ("GET", APP_REQUESTS): lambda w: _case(
+            LIST,
+            "GET",
+            lambda n: f"/workspaces/w{n}/projects/p{n}/app-requests",
+            ids=lambda n: w("app_request", n),
+        ),
+        ("GET", APP_REQUEST): lambda w: _case(READ, "GET", lambda n: _app_request(w, n)),
+        ("POST", APP_REQUESTS): lambda w: _case(
+            CREATE,
+            "POST",
+            lambda n: f"/workspaces/w{n}/projects/p{n}/app-requests",
+            body=lambda n: _app_request_body(w, n),
+            state=w.snap(*APPGEN),
+        ),
+        ("POST", APP_REQUEST + "/drafts"): lambda w: _case(
+            WRITE,
+            "POST",
+            lambda n: _app_request(w, n, "/drafts"),
+            body=lambda n: {"base_revision_no": 1, "draft": SAMPLE_DRAFT},
+            state=w.snap(*APPGEN),
+        ),
+        ("POST", APP_REQUEST + "/retry"): lambda w: _case(
+            WRITE,
+            "POST",
+            lambda n: _app_request(w, n, "/retry"),
+            state=w.snap(*APPGEN),
+            also=(409,),
+        ),
+        ("POST", APP_REQUEST + "/discard"): lambda w: _case(
+            WRITE, "POST", lambda n: _app_request(w, n, "/discard"), state=w.snap(*APPGEN)
+        ),
+    },
+)
+
+
 # ---------------------------------------------------------------------- evaluation
 EVALUATION = (
     "SELECT * FROM shifde.evaluation_datasets WHERE workspace_id = :w ORDER BY id",
@@ -2277,6 +2348,20 @@ def test_evaluation_datasets_and_runs(
     for n in (1, 2):
         w.set("evaluation_run", n, w.post(f"/releases/{w('release', n)}/evaluations", {})["id"])
     _check(w, "evaluation")
+
+
+def test_app_requests(client: TestClient, world: World, owner_session: Session) -> None:
+    w = _world(client, owner_session, world.passwords)
+    wire(w.admin.client)
+    w.set("draft_model", 0, drafting_model(w.admin.client, w.admin))
+    for n in (1, 2):
+        scope = {"workspace": f"w{n}", "project": f"p{n}"}
+        cid = databricks(w.admin.client, w.admin, f"app-lake-{n}", scope=scope)
+        w.set("app_connection", n, cid)
+        made = w.post(f"/workspaces/w{n}/projects/p{n}/app-requests", _app_request_body(w, n), 202)
+        assert run_appgen_job(w.admin.client, owner_session, made["id"])
+        w.set("app_request", n, made["id"])
+    _check(w, "appgen")
 
 
 def test_models(client: TestClient, world: World, owner_session: Session) -> None:
