@@ -57,6 +57,30 @@ describe('ChatScreen', () => {
     expect(await screen.findByText('hello')).toBeInTheDocument();
   });
 
+  it('shows a sending status while pending and announces answers politely', async () => {
+    let resolve: (value: Response) => void = () => {};
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockReturnValueOnce(new Promise<Response>((r) => (resolve = r))),
+    );
+    render(<ChatScreen screen={CHAT} api={httpApi} />);
+    expect(screen.getByRole('list', { name: 'Conversation' })).toHaveAttribute(
+      'aria-live',
+      'polite',
+    );
+    expect(screen.getByRole('status')).toHaveTextContent('');
+
+    await userEvent.type(screen.getByLabelText('Message'), 'hi');
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(screen.getByRole('button', { name: 'Sending...' })).toBeDisabled();
+    expect(screen.getByRole('status')).toHaveTextContent('Sending...');
+
+    resolve(jsonResponse({ answer: 'hello', tool_calls: [] }));
+    expect(await screen.findByText('hello')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('');
+  });
+
   it('shows an error on a failed request and keeps the earlier conversation', async () => {
     vi.stubGlobal(
       'fetch',

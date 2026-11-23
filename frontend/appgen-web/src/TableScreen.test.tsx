@@ -74,6 +74,26 @@ describe('TableScreen', () => {
     expect(screen.queryByText(/truncated/)).not.toBeInTheDocument();
   });
 
+  it('shows a running status while pending and the row count after, with a scrollable table', async () => {
+    let resolve: (value: Response) => void = () => {};
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockReturnValueOnce(new Promise<Response>((r) => (resolve = r))),
+    );
+    render(<TableScreen screen={TABLE} api={httpApi} />);
+    expect(screen.getByRole('status')).toHaveTextContent('');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Run' }));
+    expect(screen.getByRole('button', { name: 'Running...' })).toBeDisabled();
+    expect(screen.getByRole('status')).toHaveTextContent('Running...');
+
+    resolve(jsonResponse(RESULT));
+    const table = await screen.findByRole('table');
+    expect(screen.getByRole('status')).toHaveTextContent('2 rows');
+    expect(screen.getByRole('button', { name: 'Run' })).toBeEnabled();
+    expect(table.parentElement).toHaveClass('table-wrap');
+  });
+
   it('shows the truncated note when the result is truncated', async () => {
     vi.stubGlobal(
       'fetch',

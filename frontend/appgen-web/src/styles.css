@@ -83,8 +83,13 @@ input {
   padding: 6px 8px;
 }
 
-table {
+.table-wrap {
   margin-top: 16px;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+table {
   border-collapse: collapse;
   background: #fff;
 }
@@ -100,6 +105,24 @@ td {
   color: #b42318;
 }
 
-.note {
+.note,
+.status {
   color: #52606d;
+}
+
+@media (max-width: 640px) {
+  .app {
+    flex-direction: column;
+  }
+
+  nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    width: auto;
+    padding: 8px;
+  }
+
+  main {
+    padding: 16px;
+  }
 }

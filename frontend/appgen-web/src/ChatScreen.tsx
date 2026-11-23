@@ -34,13 +34,16 @@ export function ChatScreen({ screen, api }: { screen: ChatScreenConfig; api: App
   return (
     <section className="screen chat">
       <h2>{screen.title}</h2>
-      <ol className="messages" aria-label="Conversation">
+      <ol className="messages" aria-label="Conversation" aria-live="polite">
         {messages.map((message, index) => (
           <li key={index} className={`message ${message.role}`}>
             {message.text}
           </li>
         ))}
       </ol>
+      <p role="status" className="status">
+        {pending ? 'Sending...' : ''}
+      </p>
       {error && (
         <p role="alert" className="error">
           {error}
@@ -55,7 +58,7 @@ export function ChatScreen({ screen, api }: { screen: ChatScreenConfig; api: App
           onChange={(event) => setText(event.target.value)}
         />
         <button type="submit" disabled={pending || !text.trim()}>
-          Send
+          {pending ? 'Sending...' : 'Send'}
         </button>
       </form>
     </section>

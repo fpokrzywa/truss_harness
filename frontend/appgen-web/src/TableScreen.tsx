@@ -8,6 +8,10 @@ function cellText(cell: unknown): string {
   return String(cell);
 }
 
+function rowCount(count: number): string {
+  return count === 1 ? '1 row' : `${count} rows`;
+}
+
 export function TableScreen({ screen, api }: { screen: TableScreenConfig; api: AppApi }) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [result, setResult] = useState<ToolResult | null>(null);
@@ -49,9 +53,12 @@ export function TableScreen({ screen, api }: { screen: TableScreenConfig; api: A
           </label>
         ))}
         <button type="submit" disabled={pending}>
-          Run
+          {pending ? 'Running...' : 'Run'}
         </button>
       </form>
+      <p role="status" className="status">
+        {pending ? 'Running...' : result ? rowCount(result.rows.length) : ''}
+      </p>
       {error && (
         <p role="alert" className="error">
           {error}
@@ -59,26 +66,28 @@ export function TableScreen({ screen, api }: { screen: TableScreenConfig; api: A
       )}
       {result && (
         <>
-          <table>
-            <thead>
-              <tr>
-                {result.columns.map((column, index) => (
-                  <th key={index} scope="col">
-                    {column.name}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {result.rows.map((row, rowIndex) => (
-                <tr key={rowIndex}>
-                  {row.map((cell, cellIndex) => (
-                    <td key={cellIndex}>{cellText(cell)}</td>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  {result.columns.map((column, index) => (
+                    <th key={index} scope="col">
+                      {column.name}
+                    </th>
                   ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {result.rows.map((row, rowIndex) => (
+                  <tr key={rowIndex}>
+                    {row.map((cell, cellIndex) => (
+                      <td key={cellIndex}>{cellText(cell)}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           {result.truncated && (
             <p className="note">
               Showing the first {result.rows.length} rows: the result was truncated.
