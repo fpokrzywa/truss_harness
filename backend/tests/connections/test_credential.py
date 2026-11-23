@@ -29,7 +29,7 @@ from shifde.core.ids import uuid7
 from shifde.core.redaction import REDACTED
 from shifde.core.settings import Settings
 from shifde.secrets.service import MAX_SECRET_BYTES
-from tests._support.conntests import result_of, run_test
+from tests._support.conntests import result_of, run_discover, run_test
 from tests.adapters.test_f09_oauth2_rest import OAuth2FakeServer
 from tests.admin.conftest import admin_client
 from tests.connections.routes import (
@@ -662,7 +662,7 @@ def test_a_failing_test_masks_the_value(
     out = run_test(client, h, A, made["id"])
     assert out["status"] == "done" and out["result"]["outcome"] == "fail", out
     assert value not in json.dumps(out) and REDACTED in json.dumps(out)
-    found = client.post(f"{A}/connections/{made['id']}/discover", headers=h)
-    assert found.status_code >= 400 and value not in found.text and REDACTED in found.text
+    found = run_discover(client, h, A, made["id"])  # the worker's job stores a code, no message
+    assert found["status"] == "failed" and value not in json.dumps(found), found
     every = json.dumps([e["details"] for e in _events(owner_db, world.a.tenant)], default=str)
     assert value not in every

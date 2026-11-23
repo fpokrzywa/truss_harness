@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 
 from shifde.adapters.dataplatforms.fakes import FakeSnowflakeAccount
 from shifde.core.settings import Settings
-from tests._support.conntests import invoke_outcome
+from tests._support.conntests import discovery_of, invoke_outcome
 from tests.connections.routes import activate, as_user, connection, connections_client, org
 from tests.tenancy.conftest import World
 from tests.tenancy.routes import People
@@ -76,9 +76,8 @@ def test_create_test_discover_and_invoke_against_the_fake(
     activated = activate(c, h, cid, A)  # the worker's run_test_job against the fake
     assert activated["status"] == "active"
     assert fake.requests[0].headers["x-snowflake-authorization-token-type"] == "KEYPAIR_JWT"
-    discovered = c.post(f"{A}/connections/{cid}/discover", headers=h)
-    assert discovered.status_code == 200, discovered.text
-    tables = discovered.json()["payload"]["tables"]
+    discovered = discovery_of(c, h, A, cid, tenant_id=world.a.tenant)  # the worker's job
+    tables = discovered["payload"]["tables"]
     assert ("ANALYTICS", "PUBLIC", "CUSTOMERS") in {
         (t["catalog"], t["schema"], t["name"]) for t in tables
     }
@@ -90,7 +89,7 @@ def test_create_test_discover_and_invoke_against_the_fake(
     refused = invoke_outcome(c, h, A, cid, {"sql": "DROP TABLE t"}, tenant_id=world.a.tenant)
     assert refused[0] == 422, refused
     assert len(fake.requests) == sent  # refused before any request
-    for text in (activated, discovered.text, invoked, refused):
+    for text in (activated, discovered, invoked, refused):
         assert KEY_BODY not in str(text)
 
     hb = as_user(c, people.owner_b)
@@ -157,14 +156,13 @@ def test_the_dev_switch_serves_a_snowflake_connection(
     cid = made["id"]
     activated = activate(c, h, cid, A)  # the worker's run_test_job against the dev fake
     assert activated["status"] == "active"
-    discovered = c.post(f"{A}/connections/{cid}/discover", headers=h)
-    assert discovered.status_code == 200, discovered.text
-    tables = discovered.json()["payload"]["tables"]
+    discovered = discovery_of(c, h, A, cid, tenant_id=world.a.tenant)  # the worker's job
+    tables = discovered["payload"]["tables"]
     assert ("ANALYTICS", "PUBLIC", "CUSTOMERS") in {
         (t["catalog"], t["schema"], t["name"]) for t in tables
     }
     invoked = invoke_outcome(c, h, A, cid, {"sql": "SELECT 1"}, tenant_id=world.a.tenant)
     assert invoked[0] == 200, invoked
     assert invoked[1]["result"] == {"columns": ["1"], "rows": [["1"]], "row_count": 1}
-    for text in (made, activated, discovered.text, invoked):
+    for text in (made, activated, discovered, invoked):
         assert DEV_PAT not in str(text)

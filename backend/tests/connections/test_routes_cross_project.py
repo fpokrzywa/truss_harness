@@ -22,7 +22,7 @@ from shifde.connections import api as connections_api
 from shifde.core.db import Database, set_tenant
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
-from tests._support.conntests import run_invoke
+from tests._support.conntests import discovery_of, run_invoke
 from tests._support.tenants import add_project
 from tests.connections.routes import (
     REST_TOKEN,
@@ -58,8 +58,9 @@ CASES: dict[tuple[str, str], tuple[Any, int]] = {
     ("GET", _ONE): (None, 200),
     ("GET", f"{_ONE}/tests"): (None, 200),
     ("GET", f"{_ONE}/test-jobs/{{job_id}}"): (None, 200),
+    ("GET", f"{_ONE}/discovery-jobs/{{job_id}}"): (None, 200),
     ("GET", f"{_ONE}/discoveries/latest"): (None, 200),
-    ("POST", f"{_ONE}/discover"): (None, 200),
+    ("POST", f"{_ONE}/discover"): (None, 202),
     ("POST", f"{_ONE}/invoke"): ({"method": "GET", "path": "/health"}, 202),
     ("GET", f"{_ONE}/invocations/{{invocation_id}}"): (None, 200),
     ("POST", f"{_ONE}/test"): (None, 202),
@@ -112,9 +113,10 @@ def _state(owner_db: Database, world: World, cid: str) -> tuple[Any, ...]:
         secret = o.execute(  # the bound secret, all columns (ciphertext included)
             text("SELECT s.* FROM shifde.secrets s WHERE s.id = :s"), {"s": row.secret_ref_id}
         ).one()
-        jobs = o.execute(
+        jobs = o.execute(  # its test and discover jobs (ARCH M2)
             text(
-                "SELECT id, status FROM shifde.jobs WHERE kind = 'connection.test' "
+                "SELECT id, kind, status FROM shifde.jobs "
+                "WHERE kind IN ('connection.test', 'connection.discover') "
                 "AND payload->>'connection_id' = :i ORDER BY id"
             ),
             {"i": cid},
@@ -163,8 +165,7 @@ def test_a_connection_of_another_project_answers_like_an_unknown_id(
             ]
         )
         activate(client, owner, cid, A)
-        found = client.post(f"{A}/connections/{cid}/discover", headers=owner)
-        assert found.status_code == 200, found.text
+        discovery_of(client, owner, A, cid)
         return cid
 
     own = made(rest_server, "in-p1", project_slug(a), a.project)
@@ -192,14 +193,16 @@ def test_a_connection_of_another_project_answers_like_an_unknown_id(
     ] == [own]
 
     before, evil_before = _state(owner_db, world, hidden), len(evil.requests)
-    own_job, hidden_job = _state(owner_db, world, own)[3][-1][0], before[3][-1][0]
+    own_jobs = {kind: jid for jid, kind, _ in _state(owner_db, world, own)[3]}
+    hidden_jobs = {kind: jid for jid, kind, _ in before[3]}
     nobody = str(uuid7())
 
-    def url(path: str, cid: str, job: Any, inv: Any = None) -> str:
+    def url(path: str, cid: str, jobs: Any, inv: Any = None) -> str:
+        kind = "connection.discover" if "/discovery-jobs/" in path else "connection.test"
         return (
             path.replace("/api/v1/orgs/{org}", A)
             .replace("{connection_id}", cid)
-            .replace("{job_id}", str(job))
+            .replace("{job_id}", str(jobs[kind]) if jobs else "")
             .replace("{invocation_id}", str(inv))
         )
 
@@ -207,15 +210,15 @@ def test_a_connection_of_another_project_answers_like_an_unknown_id(
         if method == "PUT":
             current = client.get(url(_ONE, own, None), headers=h).json()["row_version"]
             payload = {**payload, "row_version": current}
-        r = client.request(method, url(path, own, own_job, own_inv), headers=h, json=payload)
+        r = client.request(method, url(path, own, own_jobs, own_inv), headers=h, json=payload)
         assert r.status_code == ok, (method, path, r.text)  # own object first
         missing = client.request(
-            method, url(path, nobody, hidden_job, hidden_inv), headers=h, json=payload
+            method, url(path, nobody, hidden_jobs, hidden_inv), headers=h, json=payload
         )
         assert missing.json()["detail"] == "connection not found", missing.text
         _same_404(
             client.request(
-                method, url(path, hidden, hidden_job, hidden_inv), headers=h, json=payload
+                method, url(path, hidden, hidden_jobs, hidden_inv), headers=h, json=payload
             ),
             missing,
         )

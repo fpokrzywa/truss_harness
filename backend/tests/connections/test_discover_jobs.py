@@ -188,7 +188,7 @@ def test_the_job_records_the_discovery_and_latest_returns_it(
     app: Any = client.app  # Any: the FastAPI app behind the test client
     with app.state.db.session() as session:
         db.set_tenant(session, world.a.tenant)
-        scope = connections._job_scope(session, world.a.tenant, payload, "inline-discover")
+        scope = connections._job_scope(session, world.a.tenant, "inline-discover", payload)
         inline = connections.ConnectionService(scope, app.state.integration).discover(UUID(cid))
     assert (inline.kind, inline.payload) == (result["kind"], result["payload"])
     assert str(inline.id) != result["id"]
@@ -229,8 +229,8 @@ def test_synchronous_refusals_queue_nothing(
     planned = {
         "name": "planned",
         "connection_type": "data_platform",
-        "adapter_key": "snowflake",
-        "config": {"account": "a"},
+        "adapter_key": "fabric",
+        "config": {"endpoint": "e"},
     }
     pid = str(connection(client, owner, planned, A)["id"])
     r = client.post(f"{A}/connections/{pid}/discover", headers=owner)
