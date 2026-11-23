@@ -87,6 +87,10 @@ CONFIG_AFFECTING = frozenset(
 TEST_VALIDITY = timedelta(hours=24)
 TEST_JOB_KIND = "connection.test"  # `shifde.jobs.kind` of a queued connection test (B-2610)
 INVOKE_JOB_KIND = "connection.invoke"  # `shifde.jobs.kind` of a queued connection invoke (#190)
+# an invoke request header refused at enqueue (B-2999): a forbidden header, or a name holding one
+CREDENTIAL_HEADER_PARTS = ("auth", "token", "key", "secret", "password", "passwd", "cookie",
+                           "session", "signature", "credential", "bearer")  # fmt: skip
+CREDENTIAL_HEADER_REFUSED = "credentials come from the connection, not the request"
 ERROR_CODE = re.compile(r"[a-z][a-z_]*")  # an `AppError.code` the worker stored as `last_error`
 SCOPE_MISMATCH = "the secret must have the connection's scope"
 # the kind of a connection's own secret (`connection-<id>`) per auth method (rule 4.7, B-2747)
@@ -1298,6 +1302,8 @@ class ConnectionService:
                     "(model:invoke, allowlists and limits), not as raw connections"
                 )
             request = self._parse_request(row, body)
+            if any(_credential_header(k) for k in request.get("headers") or {}):
+                raise ValidationFailed(CREDENTIAL_HEADER_REFUSED)
             write = bool(request.pop("write", False))
             if write:
                 self._require("connection:write", row, hide=None)
@@ -1318,7 +1324,7 @@ class ConnectionService:
         payload = {
             "invocation_id": str(invocation_id),
             "connection_id": str(connection_id),
-            "request": _queued_request(request),
+            "request": request,
             "write": write,
             "request_hash": fingerprint,
             "principal_id": str(p.principal_id),
@@ -1343,14 +1349,22 @@ class ConnectionService:
         )
         if found is None or found["requested_by"] != p.principal_id:
             raise NotFound("invocation not found")
+        if created:  # ids only, never request content (B-2999)
+            self._audit(
+                "connection.invoke_queued",
+                row,
+                {"invocation_id": str(found["id"]), "job_id": str(job["id"])},
+            )
         self._session.commit()
         return _invocation_out(found), created
 
     def invocation(self, connection_id: UUID, invocation_id: UUID) -> s.InvocationOut:
-        """The caller's own invocation of a connection it may read; any other id (another
-        client's, another user's, another connection's, unknown) gets the same 404."""
+        """The caller's own invocation of a connection it may read or use (a use-only requester
+        reads its own, B-2999); any other id (another client's, another user's, another
+        connection's, unknown) gets the same 404."""
         row = self._get_row(connection_id)
-        self._require("connection:read", row)
+        if not self.sc.pdp.authorize("connection:read", self.ref_of(row)).allowed:
+            self._require("connection:use", row, hide="connection:use")
         found = repository.get_invocation(
             self._session,
             invocation_id,
@@ -1560,7 +1574,8 @@ def run_invoke_job(
     The requester is re-derived from the database and the permissions are checked again; a
     refusal or failure is recorded as `failed` with an error code, never a message. Returns None
     once the outcome is recorded, `not_found` (nothing written) when the job or its invocation is
-    missing."""
+    missing, or when the payload names another connection or invocation than the claimed
+    invocation row (B-2999); the adapter is called for the row's own connection."""
     request_id = f"connection-invoke-{job_id}"
     session = database.session()
     db.init_context(session, request_id)
@@ -1573,6 +1588,12 @@ def run_invoke_job(
         if found is None:
             return NotFound.code
         invocation_id = found["id"]
+        payload = job["payload"]
+        if (
+            str(found["connection_id"]) != payload["connection_id"]
+            or str(invocation_id) != payload["invocation_id"]
+        ):
+            return NotFound.code  # a payload naming another row: nothing is touched
         if found["status"] != "queued":
             if found["status"] == "running":
                 repository.move_invocation(
@@ -1591,11 +1612,10 @@ def run_invoke_job(
             session.rollback()  # another run of this job claimed it first
             return None
         session.commit()
-        payload = job["payload"]
         try:
             scope = _job_scope(session, tenant_id, request_id, payload)
             out = ConnectionService(scope, runtime).execute_invoke(
-                UUID(payload["connection_id"]),
+                found["connection_id"],
                 dict(payload["request"]),
                 bool(payload["write"]),
                 invocation_id,
@@ -1646,16 +1666,10 @@ def _invocation_out(r: Mapping[str, Any]) -> s.InvocationOut:
     )
 
 
-def _queued_request(request: Mapping[str, Any]) -> dict[str, Any]:
-    """The parsed request as it is queued in `jobs.payload`: headers the adapter never sends
-    (`FORBIDDEN_HEADERS`: authorization, cookies) are dropped, so the payload holds no
-    credential (B-2998); the connection's own secret is resolved only by the worker."""
-    out = dict(request)
-    if out.get("headers"):
-        out["headers"] = {
-            k: v for k, v in out["headers"].items() if str(k).lower() not in FORBIDDEN_HEADERS
-        }
-    return out
+def _credential_header(name: str) -> bool:
+    """Whether an invoke request header may carry a credential (refused at enqueue, B-2999)."""
+    lower = name.lower()
+    return lower in FORBIDDEN_HEADERS or any(part in lower for part in CREDENTIAL_HEADER_PARTS)
 
 
 def definition_fingerprint(row: Mapping[str, Any]) -> str:

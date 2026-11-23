@@ -18,7 +18,7 @@ from shifde.core import db as dbmod
 from shifde.core.context import Principal, RequestContext
 from shifde.core.errors import ConnectionDisabled, Forbidden, NotFound
 from shifde.tenancy.scope import TenantScope
-from tests._support.conntests import execute_invocation, invoke_outcome, result_of, run_test
+from tests._support.conntests import invoke_outcome, result_of, run_test
 from tests._support.fullapp import World
 from tests._support.p2util import login, new_user, post, system_role
 from tests._support.p3util import (
@@ -414,16 +414,9 @@ def test_unauthorized_use_is_prevented_and_tenants_are_isolated(
     )
     assert bind.status_code == 201, bind.text
     hu = login(client, {"binder@demo-a.local": "Passw0rd!-test-1"}, "binder@demo-a.local")
-    # `connection:use` alone invokes; the status route also needs `connection:read` (issue #190),
-    # so the stored result is read from the table
-    queued = client.post(f"{A}/connections/{cid}/invoke", json=invoke, headers=hu)
-    assert queued.status_code == 202, queued.text
-    assert execute_invocation(client, A, queued.json()["id"])
-    ok = owner_session.execute(
-        text("SELECT status, result FROM shifde.connection_invocations WHERE id = :i"),
-        {"i": queued.json()["id"]},
-    ).one()
-    assert ok[0] == "succeeded" and ok[1]["result"]["status"] == 200
+    # `connection:use` alone invokes and reads its own invocation (issue #190, B-2999)
+    ok = invoke_outcome(client, hu, A, cid, invoke)
+    assert ok[0] == 200 and ok[1]["result"]["status"] == 200
     for target in (other,):  # a sibling connection: not granted (404: not even visible)
         assert invoke_outcome(client, hu, A, target, invoke)[0] in (403, 404)
     assert client.post(f"{A}/connections/{cid}/test", headers=hu).status_code in (

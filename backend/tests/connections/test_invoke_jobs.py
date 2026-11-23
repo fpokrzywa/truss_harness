@@ -172,6 +172,37 @@ def test_the_post_queues_a_job_and_never_calls_the_adapter(
     assert [r[4] for r in _jobs(owner_db, cid)] == ["done"]
 
 
+@pytest.mark.parametrize(
+    "header",
+    ["X-Api-Key", "Proxy-Authorization", "authorization", "Cookie", "X-Auth-Token",
+     "X-Session-Id", "X-Amz-Signature", "X-Client-Credential", "Host"],
+)  # fmt: skip
+def test_a_credential_header_is_refused_and_queues_nothing(
+    header: str,
+    client: TestClient,
+    world: World,
+    people: People,
+    app_db: Database,
+    owner_db: Database,
+    settings: Settings,
+    rest_server: RestTestServer,
+) -> None:
+    """Lead decision B-2999 (1): a request header whose name may carry a credential (a forbidden
+    header, or a name holding auth, token, key, secret, password, passwd, cookie, session,
+    signature, credential or bearer, in any case) is refused with 422 before anything is queued:
+    no job, no invocation, no upstream call."""
+    A, h = org(world.a.slug), as_user(client, people.owner_a)
+    cid = _active_rest(client, h, A, app_db, settings, world.a.tenant, rest_server)
+    calls = len(rest_server.requests)
+    body = {**ECHO, "headers": {header: f"caller-secret-{uuid7().hex}", "X-Trace": "t-1"}}
+    refused = _post(client, h, A, cid, body, status=422)
+    assert refused["code"] == "validation_error"
+    assert refused["detail"] == connections.CREDENTIAL_HEADER_REFUSED
+    assert refused["detail"] == "credentials come from the connection, not the request"
+    assert _jobs(owner_db, cid) == [] and _invocations(owner_db, cid) == []
+    assert len(rest_server.requests) == calls
+
+
 def test_the_payload_holds_no_credential(
     client: TestClient,
     world: World,
@@ -181,24 +212,14 @@ def test_the_payload_holds_no_credential(
     settings: Settings,
     rest_server: RestTestServer,
 ) -> None:
-    """Lead decision B-2998 (b): the parsed request is queued in `jobs.payload` with no
-    credential: the connection's secret is resolved only by the worker, and headers the adapter
-    never sends (authorization, cookies) are not queued."""
+    """Lead decisions B-2998 (b), B-2999 (5): the parsed request is queued in `jobs.payload`
+    with no credential (the connection's secret is resolved only by the worker), and the
+    enqueue is audited `connection.invoke_queued` with ids only."""
     A, h = org(world.a.slug), as_user(client, people.owner_a)
     cid = _active_rest(client, h, A, app_db, settings, world.a.tenant, rest_server)
-    caller_secret = f"caller-secret-{uuid7().hex}"
-    body = {
-        "method": "GET",
-        "path": "/echo",
-        "headers": {
-            "Authorization": f"Bearer {caller_secret}",
-            "cookie": f"session={caller_secret}",
-            "Proxy-Authorization": caller_secret,
-            "X-Trace": "t-1",
-        },
-    }
+    body = {**ECHO, "headers": {"X-Trace": "t-1"}}
     inv = _post(client, h, A, cid, body)
-    [(_, _, _, _, _, payload, _, _)] = _jobs(owner_db, cid)
+    [(job_id, _, _, _, _, payload, _, _)] = _jobs(owner_db, cid)
     assert set(payload) == {
         "invocation_id",
         "connection_id",
@@ -210,11 +231,24 @@ def test_the_payload_holds_no_credential(
         "api_key_id",
     }
     assert payload["request"]["headers"] == {"X-Trace": "t-1"}
-    blob = json.dumps(payload)
-    assert REST_TOKEN not in blob and caller_secret not in blob
+    assert REST_TOKEN not in json.dumps(payload)
+    queued = _q(
+        owner_db,
+        "SELECT target_id, outcome, details FROM shifde.audit_events "
+        "WHERE action = 'connection.invoke_queued' AND target_id = :c",
+        c=cid,
+    )
+    assert [(str(t), o) for t, o, _ in queued] == [(cid, "success")]
+    details = {k: v for k, v in queued[0][2].items() if k not in ("actor", "target")}
+    assert details == {"invocation_id": inv["id"], "job_id": str(job_id)}
     # the worker still authenticates with the connection's own secret
     assert execute_invocation(client, A, inv["id"], tenant_id=world.a.tenant)
     assert invocation_status(client, h, A, cid, inv["id"])["status"] == "succeeded"
+    # a replay queues nothing, so it audits nothing
+    _post(client, h, A, cid, body, key="k-1")
+    _post(client, h, A, cid, body, key="k-1", status=200)
+    assert len(_q(owner_db, "SELECT 1 FROM shifde.audit_events WHERE action = "
+                  "'connection.invoke_queued' AND target_id = :c", c=cid)) == 2  # fmt: skip
 
 
 def test_an_idempotency_key_replays_the_first_invocation(
@@ -339,6 +373,36 @@ def test_another_member_cannot_read_the_invocation(
     )
     assert client.get(f"{url}/{inv['id']}", headers=h).status_code == 200
     assert _invocations(owner_db, cid) == before
+
+
+def test_a_use_only_requester_reads_its_own_invocation(
+    client: TestClient,
+    world: World,
+    people: People,
+    app_db: Database,
+    owner_db: Database,
+    settings: Settings,
+    rest_server: RestTestServer,
+) -> None:
+    """Lead decision B-2999 (3): a requester holding `connection:use` but not `connection:read`
+    reads its own invocation on the status route; another use-only member, and a member holding
+    neither, get the unknown-invocation 404 (the requester filter is unchanged)."""
+    a, A, h = world.a, org(world.a.slug), as_user(client, people.owner_a)
+    cid = _active_rest(client, h, A, app_db, settings, a.tenant, rest_server)
+    email, _ = limited_user(owner_db, a.tenant, ["connection:use"])
+    hu = as_user(client, email)
+    inv = run_invoke(client, hu, A, cid, ECHO, tenant_id=a.tenant)
+    url = f"{A}/connections/{cid}/invocations"
+    own = client.get(f"{url}/{inv['id']}", headers=hu)
+    assert own.status_code == 200, own.text
+    assert own.json()["status"] == "succeeded" and own.json()["result"]["result"]["status"] == 200
+    other, _ = limited_user(owner_db, a.tenant, ["connection:use"])
+    ho = as_user(client, other)
+    _same_404(client.get(f"{url}/{inv['id']}", headers=ho),
+              client.get(f"{url}/{uuid7()}", headers=ho))  # fmt: skip
+    neither, _ = limited_user(owner_db, a.tenant, ["workspace:read"])
+    hn = as_user(client, neither)
+    assert client.get(f"{url}/{inv['id']}", headers=hn).status_code == 404
 
 
 def test_a_finished_job_never_runs_twice(
