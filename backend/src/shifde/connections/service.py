@@ -164,11 +164,13 @@ class ConnectionPlacement:
 
 @dataclass(frozen=True)
 class UseSession:
-    """An `open_for_use` session: the adapter session and the type of the connection row the open
-    re-read (a caller shapes its request by it, never by a value from a spec or arguments)."""
+    """An `open_for_use` session: the adapter session and the type and adapter key of the
+    connection row the open re-read (a caller shapes its request by them, never by a value from a
+    spec or arguments)."""
 
     inner: ConnectionSession
     connection_type: str
+    adapter_key: str
 
     def invoke(self, request: dict[str, Any], *, write: bool = False) -> InvokeResult:
         return self.inner.invoke(request, write=write)
@@ -1384,7 +1386,7 @@ class ConnectionService:
         with self.open_trusted(row, purpose, write=write, deadline=deadline) as session:
             self._audit("connection.used", row, {"purpose": purpose[:200], "write": write})
             self._session.commit()
-            yield UseSession(session, str(row["connection_type"]))
+            yield UseSession(session, str(row["connection_type"]), str(row["adapter_key"]))
 
     def _parse_request(self, row: Mapping[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         """Validate the invoke body against the connection type's request model (422)."""

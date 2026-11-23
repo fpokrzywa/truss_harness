@@ -8,10 +8,11 @@ the connection's status gates, `connection:use` / `connection:write`, the Egress
 redaction: there is no second network path.
 
 `connection.sql` runs on a `database` connection (postgres, `%(name)s` parameters) or on a
-`data_platform` connection whose adapter is in `DATA_PLATFORM_ADAPTER_OF` (Databricks): there the
-stored `%(name)s` template is sent as `:name` with typed parameters, the tool's derived maturity is
-that of the Databricks adapter's `query.sql`, and publish runs the SELECT-only statement rules of
-`core/sqlrules.py` on it.
+`data_platform` connection whose adapter is in `DATA_PLATFORM_ADAPTER_OF` (Databricks and
+Snowflake): there the stored `%(name)s` template is sent as `:name` with typed parameters
+(Databricks) or as positional `?` with types keyed by position (Snowflake), the tool's derived
+maturity is that of the platform adapter's `query.sql`, and publish runs the SELECT-only statement
+rules of `core/sqlrules.py` on it in the platform's dialect.
 """
 
 from __future__ import annotations
@@ -37,7 +38,10 @@ CONNECTION_TYPES_OF: dict[str, frozenset[str]] = {
     "connection.sql": frozenset({"database", "data_platform"}),
 }
 # data_platform adapter key -> (adapter key, capability) a connection.sql tool on it inherits
-DATA_PLATFORM_ADAPTER_OF = {"databricks": ("databricks", "query.sql")}
+DATA_PLATFORM_ADAPTER_OF = {
+    "databricks": ("databricks", "query.sql"),
+    "snowflake": ("snowflake", "query.sql"),
+}
 
 
 @dataclass(frozen=True)

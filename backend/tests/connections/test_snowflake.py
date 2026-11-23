@@ -84,7 +84,11 @@ def test_create_test_discover_and_invoke_against_the_fake(
     # the invoke is queued (issue #190): its job runs, the outcome is read on the status route
     invoked = invoke_outcome(c, h, A, cid, {"sql": "SELECT 1"}, tenant_id=world.a.tenant)
     assert invoked[0] == 200, invoked
-    assert invoked[1]["result"] == {"columns": ["1"], "rows": [["1"]], "row_count": 1}
+    assert invoked[1]["result"] == {
+        "columns": [{"name": "1", "type": "text"}],
+        "rows": [["1"]],
+        "row_count": 1,
+    }
     sent = len(fake.requests)
     refused = invoke_outcome(c, h, A, cid, {"sql": "DROP TABLE t"}, tenant_id=world.a.tenant)
     assert refused[0] == 422, refused
@@ -163,6 +167,10 @@ def test_the_dev_switch_serves_a_snowflake_connection(
     }
     invoked = invoke_outcome(c, h, A, cid, {"sql": "SELECT 1"}, tenant_id=world.a.tenant)
     assert invoked[0] == 200, invoked
-    assert invoked[1]["result"] == {"columns": ["1"], "rows": [["1"]], "row_count": 1}
+    assert invoked[1]["result"] == {
+        "columns": [{"name": "1", "type": "text"}],
+        "rows": [["1"]],
+        "row_count": 1,
+    }
     for text in (made, activated, discovered, invoked):
         assert DEV_PAT not in str(text)
