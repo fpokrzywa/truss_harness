@@ -24,7 +24,7 @@ dependencies = [
 
 [project.scripts]
 shifde-api = "shifde.main:run"
-shifde-worker = "shifde.runtime.worker:run"
+shifde-worker = "shifde.worker_main:run"
 shifde-admin = "shifde.cli.main:app"
 shifde-executor = "shifde.executor.main:run"
 # the "shifde.adapters" entry points below came back with the adapters port.
@@ -113,9 +113,10 @@ include_external_packages = true
 name = "Modules are layered (higher may import lower, never the reverse)"
 type = "layers"
 layers = [
-  "shifde.main | shifde.executor",
+  "shifde.main | shifde.executor | shifde.worker_main",
   "shifde.app | shifde.cli",
   "shifde.delivery",
+  "shifde.appgen",
   "shifde.evaluation",
   "shifde.packaging",
   "shifde.runtime",
@@ -154,6 +155,7 @@ containers = [
   "shifde.delivery",
   "shifde.evaluation",
   "shifde.packaging",
+  "shifde.appgen",
 ]
 exhaustive = false
 
@@ -166,7 +168,7 @@ forbidden_modules = [
   "shifde.observability", "shifde.app", "shifde.cli", "shifde.main",
   "shifde.adapters", "shifde.vendors", "shifde.connections", "shifde.models_admin",
   "shifde.build", "shifde.ontology", "shifde.runtime", "shifde.governance", "shifde.ledger",
-  "shifde.evaluation", "shifde.packaging",
+  "shifde.evaluation", "shifde.packaging", "shifde.appgen", "shifde.worker_main",
 ]
 
 [[tool.importlinter.contracts]]
@@ -181,7 +183,7 @@ forbidden_modules = [
   "shifde.governance", "shifde.admin", "shifde.models_admin", "shifde.connections",
   "shifde.vendors", "shifde.installation", "shifde.tenancy", "shifde.identity", "shifde.secrets",
   "shifde.audit", "shifde.authz", "shifde.observability", "shifde.ledger", "shifde.evaluation",
-  "shifde.packaging",
+  "shifde.packaging", "shifde.appgen", "shifde.worker_main",
 ]
 
 [[tool.importlinter.contracts]]
@@ -194,7 +196,17 @@ forbidden_modules = [
   "shifde.governance", "shifde.admin", "shifde.models_admin", "shifde.connections",
   "shifde.vendors", "shifde.installation", "shifde.tenancy", "shifde.identity", "shifde.secrets",
   "shifde.audit", "shifde.authz", "shifde.observability", "shifde.ledger", "shifde.evaluation",
-  "shifde.packaging",
+  "shifde.packaging", "shifde.appgen", "shifde.worker_main",
+]
+
+[[tool.importlinter.contracts]]
+name = "appgen.render is pure"
+type = "forbidden"
+source_modules = ["shifde.appgen.render"]
+forbidden_modules = [
+  "sqlalchemy", "psycopg", "httpx", "shifde.core.db", "shifde.build", "shifde.connections",
+  "shifde.models_admin", "shifde.packaging", "shifde.evaluation", "shifde.runtime",
+  "shifde.appgen.service", "shifde.appgen.repository",
 ]
 
 [[tool.importlinter.contracts]]
@@ -243,6 +255,8 @@ source_modules = [
   "shifde.packaging.canonical",
   "shifde.evaluation.service", "shifde.evaluation.repository", "shifde.evaluation.schemas",
   "shifde.evaluation.assertions", "shifde.evaluation.scoring",
+  "shifde.appgen.service", "shifde.appgen.repository", "shifde.appgen.schemas",
+  "shifde.appgen.draft", "shifde.appgen.sqlcheck", "shifde.appgen.render",
 ]
 forbidden_modules = ["fastapi", "starlette"]
 
