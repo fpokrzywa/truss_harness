@@ -161,6 +161,19 @@ def test_a_read_sql_tool_on_an_active_databricks_read_connection_publishes(
         ("select 1 /* note */ from main.default.orders", "sql_comment"),
         ("select 1; select 2", "sql_multiple_statements"),
         ("show tables", "sql_not_select"),
+        (
+            r"with a as (select '\'' as q) insert into main.default.orders select * from a "
+            r"where q <> '\''",
+            "sql_write_statement",
+        ),
+        (
+            r"select '\'' ; drop table main.default.orders; select '\''",
+            "sql_multiple_statements",
+        ),
+        (
+            "select o.id from main.default.orders o where o.id = %(customer_id)s_x",
+            "invalid_template",
+        ),
     ],
 )
 def test_the_statement_rules_run_at_publish_on_a_databricks_sql_tool(

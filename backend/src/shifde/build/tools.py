@@ -425,6 +425,13 @@ def _validate_platform_sql(binding: dict[str, Any], report: Report) -> None:
     sql = binding.get("sql_template")
     if not isinstance(sql, str) or not sql.strip():
         return  # `_validate_sql` reported it
+    after = [sql[m.end() : m.end() + 1] for m in _PARAM_OR_PERCENT.finditer(sql) if m.group(1)]
+    if any(ch.isalnum() or ch == "_" for ch in after):  # `%(a)s_x` would become `:a_x`
+        report.error(
+            "binding.sql_template",
+            "invalid_template",
+            "a %(name)s parameter must not be followed by a letter, digit or underscore",
+        )
     for issue in sqlrules.statement_rules(named_sql(sql)):
         report.error("binding.sql_template", issue.code, issue.message)
 
