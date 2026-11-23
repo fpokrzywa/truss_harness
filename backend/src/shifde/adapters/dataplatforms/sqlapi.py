@@ -1,8 +1,9 @@
 """Shared toolkit of the REST SQL-API adapters (design 2026-11-22 sections 7.1 and 7.4).
 
 * `check_read_only`: the keyword check a `read` invoke passes before any network call (a read
-  first keyword, no write keyword anywhere in the code). It is defense in depth; the read-only
-  credential (B-1507) is the real control.
+  first keyword, no write keyword anywhere in the code; in the Snowflake dialect also no
+  `procedure`/`call` word and no `SYSTEM$` function, #285). It is defense in depth; the
+  read-only credential (B-1507) is the real control.
 * `classify_status`: HTTP status -> `ErrorClass`, with fixed messages (never a body).
 * `send`: one request through an egress-guarded client, with one `Retry-After` retry on 429.
 * `run_statement`: submit, poll, cancel at the deadline.
@@ -49,6 +50,8 @@ _WORD = re.compile(r"[\w$]+")
 # tokenizer splits identifiers)
 _DATABRICKS_WORD = re.compile(r"[A-Za-z0-9_]+")
 _SNOWFLAKE_REFUSED_WORDS = frozenset({"procedure", "call"})
+# Snowflake system functions (`SYSTEM$CANCEL_ALL_QUERIES`) can act on the account (#285)
+_SNOWFLAKE_REFUSED_PREFIX = "system$"
 _QUOTES = ("'", '"', "`")
 # Snowflake has no backtick quoting and no raw literals; only `'` takes backslash escapes,
 # `"` takes only the doubled `""` (B-3212)
@@ -65,9 +68,10 @@ def _raw_prefix(sql: str, quote: int) -> bool:
     return quote == 1 or not (sql[quote - 2].isalnum() or sql[quote - 2] == "_")
 
 
-def _code_of(sql: str, dialect: Dialect = "databricks") -> tuple[str, list[int], str]:
-    """`sql` with comments replaced by spaces, the offsets of every `;` outside quotes, and the
-    code alone (quoted text also replaced by a space, so a word search never sees it).
+def _code_of(sql: str, dialect: Dialect = "databricks") -> tuple[str, list[int], str, list[str]]:
+    """`sql` with comments replaced by spaces, the offsets of every `;` outside quotes, the
+    code alone (quoted text also replaced by a space, so a word search never sees it), and the
+    content of every Snowflake `"..."` identifier (a doubled `""` read as one `"`).
 
     Single- and double-quoted text honours backslash escapes (Databricks SQL reads `\\'` as a
     quote inside a string); a raw literal (`r'...'`, `R"..."`) and backtick identifiers do not.
@@ -83,6 +87,8 @@ def _code_of(sql: str, dialect: Dialect = "databricks") -> tuple[str, list[int],
     out: list[str] = []
     bare: list[str] = []
     semicolons: list[int] = []
+    identifiers: list[str] = []
+    identifier_end = -1  # index just past the last Snowflake `"..."` identifier
     size = 0  # length of the text in `out` so far
     i, n = 0, len(sql)
     while i < n:
@@ -94,6 +100,12 @@ def _code_of(sql: str, dialect: Dialect = "databricks") -> tuple[str, list[int],
                 j += 2 if escapes and sql[j] == "\\" else 1
             if j >= n:
                 raise AdapterFailure(ErrorClass.CAPABILITY, _UNTERMINATED)
+            if snowflake and ch == '"':
+                if i == identifier_end:  # `""` inside the identifier
+                    identifiers[-1] += '"' + sql[i + 1 : j]
+                else:
+                    identifiers.append(sql[i + 1 : j])
+                identifier_end = j + 1
             out.append(sql[i : j + 1])
             bare.append(" ")
             size += j + 1 - i
@@ -131,7 +143,7 @@ def _code_of(sql: str, dialect: Dialect = "databricks") -> tuple[str, list[int],
             bare.append(ch)
             size += 1
             i += 1
-    return "".join(out), semicolons, "".join(bare)
+    return "".join(out), semicolons, "".join(bare), identifiers
 
 
 def check_read_only(sql: str, *, dialect: Dialect = "databricks") -> None:
@@ -139,8 +151,9 @@ def check_read_only(sql: str, *, dialect: Dialect = "databricks") -> None:
     and whose code holds no word of `WRITE_KEYWORDS` (the set publish refuses, shared through
     `core/sqlrules.py`); comments are stripped first, quoted text is never read as code. The
     Snowflake dialect also refuses a `procedure` or `call` word anywhere in the code (anonymous
-    procedures)."""
-    code, semicolons, bare = _code_of(sql, dialect)
+    procedures), and a word or a whole `"..."` identifier starting with `SYSTEM$` (system
+    functions, #285); `'...'`, `$$...$$` and comments stay unread."""
+    code, semicolons, bare, identifiers = _code_of(sql, dialect)
     stripped = code.rstrip()
     if semicolons:
         if len(semicolons) > 1 or semicolons[0] != len(stripped) - 1:
@@ -154,6 +167,10 @@ def check_read_only(sql: str, *, dialect: Dialect = "databricks") -> None:
     if any(word in WRITE_KEYWORDS for word in words):
         raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
     if dialect == "snowflake" and any(word in _SNOWFLAKE_REFUSED_WORDS for word in words):
+        raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
+    if dialect == "snowflake" and any(
+        name.lower().startswith(_SNOWFLAKE_REFUSED_PREFIX) for name in words + identifiers
+    ):
         raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
 
 
