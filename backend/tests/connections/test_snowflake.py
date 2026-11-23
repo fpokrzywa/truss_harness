@@ -135,3 +135,36 @@ def test_an_invalid_pem_on_put_credential_is_422_without_echo(
     )
     assert ok.status_code == 200, ok.text
     assert KEY_BODY not in ok.text
+
+
+DEV_PAT = "sf-dev-route-pat-0001"  # scan-secrets: allow, any non-empty token passes the dev fake
+
+
+@pytest.fixture
+def dev_client(settings: Settings) -> Iterator[TestClient]:
+    """The routes with `SHIFDE_DEV_FAKE_DATA_PLATFORMS` on (test settings), no injected hooks."""
+    with connections_client(settings.model_copy(update={"dev_fake_data_platforms": True})) as c:
+        yield c
+
+
+def test_the_dev_switch_serves_a_snowflake_connection(
+    dev_client: TestClient, world: World, people: People
+) -> None:
+    c, A = dev_client, org(world.a.slug)
+    h = as_user(c, people.owner_a)
+    body = _body(auth_method="bearer", credential={"value": DEV_PAT}, read_only_confirmed=True)
+    made = connection(c, h, body, A)
+    cid = made["id"]
+    activated = activate(c, h, cid, A)  # the worker's run_test_job against the dev fake
+    assert activated["status"] == "active"
+    discovered = c.post(f"{A}/connections/{cid}/discover", headers=h)
+    assert discovered.status_code == 200, discovered.text
+    tables = discovered.json()["payload"]["tables"]
+    assert ("ANALYTICS", "PUBLIC", "CUSTOMERS") in {
+        (t["catalog"], t["schema"], t["name"]) for t in tables
+    }
+    invoked = invoke_outcome(c, h, A, cid, {"sql": "SELECT 1"}, tenant_id=world.a.tenant)
+    assert invoked[0] == 200, invoked
+    assert invoked[1]["result"] == {"columns": ["1"], "rows": [["1"]], "row_count": 1}
+    for text in (made, activated, discovered.text, invoked):
+        assert DEV_PAT not in str(text)
