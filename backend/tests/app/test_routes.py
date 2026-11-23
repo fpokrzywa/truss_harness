@@ -135,6 +135,7 @@ APPGEN = {
     ("POST", APP_REQUEST + "/drafts"),
     ("POST", APP_REQUEST + "/discard"),
     ("POST", APP_REQUEST + "/retry"),
+    ("POST", APP_REQUEST + "/accept"),
 }
 # the project and release board (sub-project 7 design 7.2, Call S7-F): not a SETH module
 BOARD = {
