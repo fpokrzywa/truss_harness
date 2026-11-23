@@ -35,9 +35,9 @@ Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` (n
 | 103-cm-8-scripts-scripts | #166 | - | needs-info (replied: wait) | step 3 |
 | 119-clear-the-queued-request | #224 | - | needs-info (replied: wait) | step 2 |
 | 121-refuse-rewrap-audit-check | #218 | #236 | needs-human | step 4 |
-| 125-harden-check-read-only | #231 | #244 | build r2 | step 1 |
+| 125-harden-check-read-only | #231 | #244 | gate r2 (READY, head aac1248) | step 1 |
 | 126-restore-catalog-rules-port | #235 | #247 | approve r1 | step 1 |
-| 127-intermittent-winerror-10055-at | #238 | - | build r1 | step 1 |
+| 127-intermittent-winerror-10055-at | #238 | #243 | gate r1 (READY) | step 1 |
 
 ## Traps learned this session
 - 103 and 119 show as `resume` (author replied) but the replies say wait; they take the free-slot lines and push new issues to `hold`. `job create <n>` still works when a running slot is free.
@@ -45,4 +45,6 @@ Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` (n
 - `job merge`'s sync gate can fail on one WinError 10055 setup error: grep `^(FAILED|ERROR) ` in `round-N/merge-checks.log`, rerun those files at the synced sha in the job worktree, then push (fast-forward) and hand merge with a DECISIONS row.
 - Reviewers sometimes reply with a verdict without writing `round-N/review-<r>.md`; say "write it to round-N/review-<r>.md before replying" in the prompt.
 - Builders can be reported "stalled" by the watchdog after they already finished; check `build.md` first line and `git status` before respawning.
+- Job 127 builder: its first full run hit WinError 10055 in asyncio `socket.socketpair()` (TestClient start, `tests/_support/fullapp.py:49`), not a DB connect; the retry hook does not cover it. File a follow-up for that after 127 merges.
+- Python `open(p,"w")` on Windows writes CRLF: edit docs in binary mode (`rb`/`wb`). DECISIONS.md was fixed back to LF in `b461773`.
 - Don't run gates.py while a builder runs its own full pytest (load → connect timeouts). Earlier traps (PYTHONUTF8=1, UV_LINK_MODE=copy, gates.py ~25-40 min one at a time) still hold.
