@@ -353,6 +353,24 @@ def test_f7_rejecting_a_pipeline_approval_cancels_the_running_agent_children(
     run = w.run(pipe["id"], {"t": "need-approval"})
     with thread_worker(settings):
         wait_for(lambda: len(w.pending_approvals()) == 2, 40)  # g and the child's tool approval
+        # an approval commits before its run parks (steps._create_approval, then
+        # lifecycle.finalize): wait until the child and the pipeline are both waiting_for_approval
+        seen: dict[str, Any] = {}
+
+        def parked() -> bool:
+            seen["children"] = children(owner_session, run["id"])
+            seen["run"] = w.client.get(f"{A}/runs/{run['id']}", headers=w.h).json()["status"]
+            return seen["children"] == ["waiting_for_approval"] and (
+                seen["run"] == "waiting_for_approval"
+            )
+
+        try:
+            wait_for(parked, 60)
+        except AssertionError:
+            raise AssertionError(
+                f"run {run['id']} not parked: status {seen.get('run')}, "
+                f"children {seen.get('children')}"
+            ) from None
         assert children(owner_session, run["id"]) == ["waiting_for_approval"]
         [gate] = [a for a in w.pending_approvals() if a["reason"] == "pipeline_node"]
         assert w.decide(gate["id"], "reject").status_code == 200
