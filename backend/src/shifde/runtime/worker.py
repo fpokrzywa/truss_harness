@@ -456,14 +456,22 @@ class Worker:
                         repo.finish_job(s, job.tenant_id, job.id, self.worker_id)
                         s.commit()
                     return
+                # an ended invoke job keeps its ids and hash, never the request (issue #224)
+                drop = job.kind == connections.INVOKE_JOB_KIND
                 if outcome == "released":
                     repo.release_job(s, job.tenant_id, job.id, self.worker_id)
                 elif outcome == "dead":
                     repo.finish_job(
-                        s, job.tenant_id, job.id, self.worker_id, "dead", last_error=job.error
+                        s,
+                        job.tenant_id,
+                        job.id,
+                        self.worker_id,
+                        "dead",
+                        last_error=job.error,
+                        drop_request=drop,
                     )
                 else:
-                    repo.finish_job(s, job.tenant_id, job.id, self.worker_id)
+                    repo.finish_job(s, job.tenant_id, job.id, self.worker_id, drop_request=drop)
                 s.commit()
         except Exception:  # noqa: BLE001 - the lease expires and the run is already settled
             log.error("worker.job_settle_failed", job_id=str(job.id), exc_info=True)
@@ -657,6 +665,21 @@ class Worker:
             except Exception:  # noqa: BLE001 - one client's failure must not stop the others
                 s.rollback()
                 log.error("worker.invocation_sweep_failed", tenant_id=str(tenant_id), exc_info=True)
+            # invoke jobs the reaper ended (`stale lease`) still hold their request (issue #224);
+            # their own transaction, so a failure never undoes the holds' settlement
+            try:
+                db.set_tenant(s, tenant_id)
+                scrubbed = connections.scrub_ended_invoke_jobs(s, tenant_id)
+                s.commit()
+                if scrubbed:
+                    log.info(
+                        "worker.invoke_payloads_swept", tenant_id=str(tenant_id), jobs=scrubbed
+                    )
+            except Exception:  # noqa: BLE001 - one client's failure must not stop the others
+                s.rollback()
+                log.error(
+                    "worker.invoke_payload_sweep_failed", tenant_id=str(tenant_id), exc_info=True
+                )
             finally:
                 db.forget_tenant(s)
 

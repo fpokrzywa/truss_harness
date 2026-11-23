@@ -483,6 +483,22 @@ def enqueue_invoke_job(
     return inserted, True
 
 
+def scrub_ended_invoke_jobs(session: Session, *, tenant_id: UUID, kind: str) -> int:
+    """Drop `request` and `write` from the ended (`done`/`dead`) `kind` jobs of `tenant_id` that
+    still hold them, such as a job the reaper closed (issue #224); the ids and `request_hash`
+    stay. Returns the number of jobs cleared (the caller commits)."""
+    cleared = session.execute(
+        text(
+            "UPDATE shifde.jobs SET payload = payload - 'request' - 'write' "
+            "WHERE tenant_id = :t AND kind = :k AND status IN ('done', 'dead') "
+            "AND jsonb_typeof(payload) = 'object' AND payload ?| array['request', 'write'] "
+            "RETURNING id"
+        ),
+        {"t": tenant_id, "k": kind},
+    ).all()
+    return len(cleared)
+
+
 def get_invocation(
     session: Session,
     invocation_id: UUID,
