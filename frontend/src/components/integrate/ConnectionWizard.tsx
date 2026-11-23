@@ -9,7 +9,6 @@ import type {
   ConnectionInput,
   ConnectionType,
 } from '@/lib/api/integrate-types';
-import { visibleConfigFields } from '@/lib/adapter-fields';
 import { credentialError } from '@/lib/credential';
 import { useCan, usePermissions, useProjects, useWorkspaces } from '@/lib/hooks';
 import { useAdapters, useEgressPolicies, useRefreshInt, useVendors } from '@/lib/integrate-hooks';
@@ -20,6 +19,7 @@ import {
   initialValues,
   mapServerErrors,
   validateValues,
+  visibleConfigFields,
   type FormValues,
 } from '@/lib/schema-form';
 import { useSecrets } from '@/lib/security-hooks';
@@ -122,7 +122,7 @@ export function ConnectionWizard({
 
   const adapter = adapters.data?.find((a) => a.key === adapterKey);
   const fields = visibleConfigFields(
-    adapterKey,
+    adapter,
     authMethod,
     fieldsFromSchema(adapter?.config_schema, adapter?.secret_fields),
   );

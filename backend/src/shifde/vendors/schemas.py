@@ -40,6 +40,8 @@ class AdapterOut(BaseModel):
     config_schema: dict[str, Any]
     secret_fields: list[str]
     auth_methods: list[str]
+    auth_only_fields: dict[str, list[str]]
+    destination_fields: list[str]
 
 
 class ConformanceRunOut(BaseModel):

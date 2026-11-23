@@ -39,6 +39,11 @@ _DEFINER = (
 )
 _REVOKE = "REVOKE EXECUTE ON FUNCTION shifde.zz_definer() FROM PUBLIC"
 _PINNED = "SET search_path = pg_catalog, pg_temp"
+_CLIENT_PAIR = [
+    "CREATE TABLE shifde.zz_fk_target (id uuid PRIMARY KEY, tenant_id uuid NOT NULL, "
+    "code text, CONSTRAINT zz_fk_target_tid UNIQUE (tenant_id, id))",
+    "CREATE TABLE shifde.zz_fk_source (id uuid PRIMARY KEY, tenant_id uuid, ref uuid)",
+]
 
 PROBES: dict[str, list[str]] = {
     "rls not forced": [
@@ -106,11 +111,36 @@ PROBES: dict[str, list[str]] = {
         " SECURITY DEFINER SET search_path = shifde, pg_catalog, pg_temp AS $$ SELECT 1 $$",
         "REVOKE EXECUTE ON FUNCTION shifde.rate_card_versions_guard(int) FROM PUBLIC",
     ],
+    "plain foreign key between client tables": [
+        *_CLIENT_PAIR,
+        "ALTER TABLE shifde.zz_fk_source ADD CONSTRAINT zz_plain"
+        " FOREIGN KEY (ref) REFERENCES shifde.zz_fk_target (id)",
+    ],
+    "crossed composite key": [
+        *_CLIENT_PAIR,
+        "ALTER TABLE shifde.zz_fk_source ADD CONSTRAINT zz_crossed"
+        " FOREIGN KEY (ref, tenant_id) REFERENCES shifde.zz_fk_target (tenant_id, id)",
+    ],
+    "unique key without tenant_id": [
+        *_CLIENT_PAIR,
+        "ALTER TABLE shifde.zz_fk_target ADD CONSTRAINT zz_code UNIQUE (code)",
+        "CREATE UNIQUE INDEX zz_lower_code ON shifde.zz_fk_target (lower(code))",
+    ],
+    "text key column": [
+        "CREATE TABLE shifde.zz_text_key (id int PRIMARY KEY, tenant_id text, user_id text)"
+    ],
+    "admin flag on a client table": [
+        *_SECURED,
+        f"CREATE POLICY p ON {PROBE} USING ({rls_rules.ADMIN_OR}) WITH CHECK ({TENANT})",
+    ],
+    "principal table with tenant_id": [
+        "ALTER TABLE shifde.login_lockouts ADD COLUMN tenant_id uuid"
+    ],
 }
 
 
 def _both(c: Connection) -> list[tuple[list[str], list[str]]]:
-    """(ported, test) results of the four rule functions on `c`."""
+    """(ported, test) results of the rule functions on `c`."""
     return [
         (
             catalog_rules.rls_violations(c),
@@ -127,6 +157,16 @@ def _both(c: Connection) -> list[tuple[list[str], list[str]]]:
         (
             catalog_rules.context_write_violations(c),
             scan_rules.context_write_violations(c),
+        ),
+        (catalog_rules.foreign_key_problems(c), rls_rules.foreign_key_problems(c)),
+        (catalog_rules.unique_key_problems(c), rls_rules.unique_key_problems(c)),
+        (catalog_rules.key_type_problems(c), rls_rules.key_type_problems(c)),
+        (catalog_rules.admin_flag_problems(c), rls_rules.admin_flag_problems(c)),
+        (
+            catalog_rules.principal_table_problems(c),
+            rls_rules.principal_table_problems(
+                c, rls_rules.PRINCIPAL_TABLES, seth_tables={}, ported=()
+            ),
         ),
     ]
 
@@ -149,7 +189,10 @@ def test_the_rule_data_matches_the_schema_tests() -> None:
     assert catalog_rules.FORBIDDEN_PRIVILEGES == rls_rules._FORBIDDEN_PRIVILEGES
     assert catalog_rules.CONTEXT_HELPERS == scan_rules.CONTEXT_HELPERS
     assert catalog_rules.CONTEXT_WRITE_ALLOWLIST == scan_rules.CONTEXT_WRITE_ALLOWLIST
-    assert set(rls_rules.PRINCIPAL_TABLES) == catalog_rules.PRINCIPAL_TABLES
+    assert catalog_rules.PRINCIPAL_TABLES == rls_rules.PRINCIPAL_TABLES
+    assert catalog_rules.PLAIN_FOREIGN_KEYS == rls_rules.PLAIN_FOREIGN_KEYS
+    assert catalog_rules.UNIQUE_WITHOUT_TENANT == rls_rules.UNIQUE_WITHOUT_TENANT
+    assert catalog_rules.ADMIN_FLAG_CATALOGS == rls_rules.ADMIN_FLAG_CATALOGS
     assert set(catalog_rules.GLOBAL_TABLES) == rls_rules.global_tables()
     assert all(reason.strip() for reason in catalog_rules.GLOBAL_TABLES.values())
     assert set(fn_rules.SECURITY_DEFINER_ALLOWLIST) == catalog_rules.SECURITY_DEFINER_ALLOWLIST
@@ -184,6 +227,50 @@ def test_each_probe_gives_the_same_non_empty_results(
     for ported, expected in results:
         assert ported == expected
     assert any(ported for ported, _ in results)
+
+
+def test_the_exception_arguments_give_the_same_results(scratch: Connection) -> None:
+    """A stale entry and an extra listed entry (a probe the defaults would report)."""
+    for statement in [
+        *PROBES["plain foreign key between client tables"],
+        "ALTER TABLE shifde.zz_fk_target ADD CONSTRAINT zz_code UNIQUE (code)",
+        *_SECURED,
+        f"CREATE POLICY p ON {PROBE} USING ({rls_rules.ADMIN_OR}) WITH CHECK ({TENANT})",
+    ]:
+        scratch.execute(text(statement))
+    fk = {**catalog_rules.PLAIN_FOREIGN_KEYS, "shifde.zz_fk_source.zz_plain": "probe"}
+    uq = {**catalog_rules.UNIQUE_WITHOUT_TENANT, "shifde.zz_fk_target.zz_code": "probe"}
+    admin = {**catalog_rules.ADMIN_FLAG_CATALOGS, PROBE: "probe"}
+    principal = {**catalog_rules.PRINCIPAL_TABLES, PROBE: "probe", "zz_unqualified": "probe"}
+    pairs = [
+        (
+            catalog_rules.foreign_key_problems(scratch, {**fk, "shifde.nope.nope_fk": "x"}),
+            rls_rules.foreign_key_problems(scratch, {**fk, "shifde.nope.nope_fk": "x"}),
+        ),
+        (
+            catalog_rules.unique_key_problems(scratch, {**uq, "shifde.x.uq_x": "x"}),
+            rls_rules.unique_key_problems(scratch, {**uq, "shifde.x.uq_x": "x"}),
+        ),
+        (
+            catalog_rules.admin_flag_problems(scratch, {**admin, "shifde.zz_none": "x"}),
+            rls_rules.admin_flag_problems(scratch, {**admin, "shifde.zz_none": "x"}),
+        ),
+        (
+            catalog_rules.principal_table_problems(scratch, {**principal, "shifde.zz_none": " "}),
+            rls_rules.principal_table_problems(
+                scratch, {**principal, "shifde.zz_none": " "}, seth_tables={}, ported=()
+            ),
+        ),
+        (
+            catalog_rules.principal_table_problems(scratch, {"shifde.zz_none": "x"}),
+            rls_rules.principal_table_problems(
+                scratch, {"shifde.zz_none": "x"}, seth_tables={}, ported=()
+            ),
+        ),
+    ]
+    for ported, expected in pairs:
+        assert ported == expected
+        assert ported
 
 
 @pytest.mark.parametrize("expr", rls_rules.WRITE_FORMS)

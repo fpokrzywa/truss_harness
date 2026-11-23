@@ -221,6 +221,8 @@ const ADAPTER_DATABRICKS: Adapter = {
   },
   secret_fields: ['token', 'client_secret'],
   auth_methods: ['none', 'bearer', 'oauth2_client_credentials'],
+  auth_only_fields: { client_id: ['oauth2_client_credentials'] },
+  destination_fields: ['host'],
 };
 const HOST = 'https://adb-1.7.azuredatabricks.net';
 const TOKEN = 'dapi-very-secret-value';
