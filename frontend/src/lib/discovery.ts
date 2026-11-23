@@ -9,6 +9,8 @@ export interface DiscoveredTool {
   description?: string;
 }
 export interface DiscoveredTable {
+  /** Databricks catalog, or the Snowflake database. */
+  catalog?: string;
   schema?: string;
   name: string;
   columns: { name: string; type?: string }[];
@@ -17,6 +19,8 @@ export interface NormalizedDiscovery {
   paths: DiscoveredPath[];
   tools: DiscoveredTool[];
   tables: DiscoveredTable[];
+  /** True when the discovery hit its limits and not everything is listed. */
+  truncated: boolean;
 }
 
 const HTTP = new Set(['get', 'put', 'post', 'delete', 'patch', 'head', 'options']);
@@ -37,7 +41,12 @@ export function normalizeDiscovery(d: Discovery): NormalizedDiscovery {
       : isRec(d.data)
         ? d.data
         : { ...d };
-  const out: NormalizedDiscovery = { paths: [], tools: [], tables: [] };
+  const out: NormalizedDiscovery = {
+    paths: [],
+    tools: [],
+    tables: [],
+    truncated: base.truncated === true,
+  };
 
   const paths = base.paths;
   if (Array.isArray(paths)) {
@@ -71,6 +80,7 @@ export function normalizeDiscovery(d: Discovery): NormalizedDiscovery {
       if (!isRec(t) || !str(t.name)) continue;
       const cols = Array.isArray(t.columns) ? t.columns : [];
       out.tables.push({
+        catalog: str(t.catalog),
         schema: str(t.schema),
         name: t.name as string,
         columns: cols.flatMap((c) =>

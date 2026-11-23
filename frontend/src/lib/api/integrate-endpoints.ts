@@ -8,6 +8,7 @@ import type {
   ConnectionInput,
   ConnectionInvocation,
   ConnectionInvokeResult,
+  ConnectionPatch,
   ConnectionStatus,
   ConnectionTestJob,
   ConnectionTestResult,
@@ -241,6 +242,23 @@ export function createIntegrateEndpoints(client: ApiClient) {
       client.request<Connection>(`${org$(org)}/connections/${enc(id)}`),
     createConnection: (org: string, input: ConnectionInput) =>
       send<Connection>('POST', `${org$(org)}/connections`, input),
+    updateConnection: (org: string, c: Connection, patch: Omit<ConnectionPatch, 'row_version'>) =>
+      send<Connection>('PATCH', `${org$(org)}/connections/${enc(c.id)}`, {
+        ...patch,
+        row_version: c.row_version,
+      }),
+    /** Set the connection's own credential, or rotate the bound secret (CM-4, B-2749). */
+    setConnectionCredential: (
+      org: string,
+      c: Connection,
+      value: string,
+      readOnlyConfirmed?: boolean,
+    ) =>
+      send<Connection>('PUT', `${org$(org)}/connections/${enc(c.id)}/credential`, {
+        value,
+        row_version: c.row_version,
+        ...(readOnlyConfirmed ? { read_only_confirmed: true } : {}),
+      }),
     setConnectionStatus: (org: string, c: Connection, status: ConnectionStatus) =>
       send<Connection>('POST', `${org$(org)}/connections/${enc(c.id)}/status`, {
         status,
