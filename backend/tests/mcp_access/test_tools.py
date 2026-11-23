@@ -305,3 +305,18 @@ def test_a_result_above_256_kib_is_truncated(
     text_out = r.json()["result"]["content"][0]["text"]
     cut = json.loads(text_out)
     assert cut["truncated"] is True and len(text_out.encode()) <= 256 * 1024
+
+
+def test_a_missing_tool_permission_is_forbidden_and_audited(
+    mcp: TestClient, world: World, owner_session: Session
+) -> None:
+    _, key = make_key(mcp, world, ADMIN_A, A, scopes=["mcp:access"])
+    set_mcp(mcp, world, ADMIN_A, A)
+    assert ok(mcp, key, "whoami")["tools"] == ["whoami"]  # the only tool the mask allows
+    is_error, body = call(mcp, key, "list_projects")
+    assert is_error and body == {
+        "error": "forbidden",
+        "message": "the key may not use this tool here",
+    }
+    assert refused(mcp, key, "list_deployments") == "forbidden"
+    assert _reasons(owner_session, ORG_A) == ["permission", "permission"]
