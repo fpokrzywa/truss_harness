@@ -5,6 +5,7 @@ Issue #13, findings Item 22 (REQ F-16). Decisions B-2633..B-2638.
 ## Method
 
 - The harness is `backend/tests/perf/test_api_latency.py::test_main_routes_p95_within_budget`, with the measurement helper in `backend/tests/perf/latency.py`.
+- The two board routes (sub-project 7, SP7-5) are timed the same way by `backend/tests/perf/test_api_latency.py::test_board_routes_p95_within_budget` (selected with `-k board`), on the seeded demo world as it is.
 - Requests go through the real app in-process (`TestClient` over `create_app`) as `shifde_app`, signed in as `admin@demo-a.local`.
 - Each run gets a fresh database cloned from the migrated template and seeded with the demo world (the `tests/app` fixtures, imported by `backend/tests/perf/conftest.py`).
 - Setup builds a fake-model `Stack` (scripted fake model connection, prompt, builtin tool, published agent) and starts one run, so the single-run read has an id.
@@ -27,6 +28,8 @@ All routes are under `/api/v1/orgs/demo-a`.
 | `GET /prompts` | 200 | 2000 ms |
 | `GET /connections` | 200 | 2000 ms |
 | `POST /runs` (run start, `agent` kind, no `Idempotency-Key`) | 202 | 3000 ms |
+| `GET /board` | 200 | 2000 ms |
+| `GET /workspaces/main/projects/sample/board` | 200 | 2000 ms |
 
 The test fails if any route's p95 exceeds its budget and names every such route with its p95. The budgets are deliberately generous so the test does not flake beside the full suite under `-n 8`.
 
@@ -57,6 +60,13 @@ Without the variable, `uv run pytest tests/perf -q` runs the same test with 20 i
 | `GET /prompts` | 200 | 37.3 | 51.8 | 2000 |
 | `GET /connections` | 200 | 32.6 | 47.6 | 2000 |
 | `POST /runs` | 200 | 64.0 | 89.4 | 3000 |
+
+2026-11-23, base commit `0701bf1`, local cluster (PostgreSQL 17, port 55450), Windows 11, 200 iterations, warm-up 3 (`-k board`):
+
+| Route | Iterations | p50 ms | p95 ms | Budget ms |
+|---|---|---|---|---|
+| `GET /board` | 200 | 30.0 | 37.9 | 2000 |
+| `GET /workspaces/main/projects/sample/board` | 200 | 32.3 | 42.5 | 2000 |
 
 ## Not measured
 
