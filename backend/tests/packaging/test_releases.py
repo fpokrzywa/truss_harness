@@ -1231,3 +1231,75 @@ def test_the_retire_guard_for_the_owner_without_a_client_context(
     ).scalar_one()
     owner_session.rollback()
     assert state == "deprecated"
+
+
+NO_CONTEXT = "retiring a version needs its client context"
+
+
+def _owner_retire(owner: Session, version: str, tenant: UUID | None = None) -> DBAPIError:
+    """The schema owner retires `version` (no client context, or `tenant`'s); the refusal."""
+    if tenant is not None:
+        owner.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)})
+    else:
+        setting = owner.execute(text("SELECT current_setting('app.tenant_id', true)"))
+        assert setting.scalar_one() in (None, "")
+    with pytest.raises(DBAPIError) as err:
+        owner.execute(
+            text("UPDATE shifde.artifact_versions SET state = 'retired' WHERE id = :v"),
+            {"v": version},
+        )
+    owner.rollback()
+    assert _sqlstate(err.value) == "23514", err.value
+    return err.value
+
+
+def _version_state(owner: Session, version: str) -> str:
+    state: str = owner.execute(
+        text("SELECT state FROM shifde.artifact_versions WHERE id = :v"), {"v": version}
+    ).scalar_one()
+    owner.rollback()
+    return state
+
+
+def test_the_retire_guard_refuses_an_unpinned_version_outside_its_client_context(
+    client: TestClient, world: World, owner_session: Session
+) -> None:
+    """Issue #158 (packaging_0003): no release pins the version, yet the owner with no client
+    context, or in another client's context, cannot retire it (23514, row unchanged); the client
+    itself, in its own context, can."""
+    h, s, _ = _setup(client, world)
+    path = f"{A}/agents/{s.agent}/versions/{s.agent_v1}/state"
+    post(h.client, path, h, {"state": "deprecated"}, 200)
+    other = owner_session.execute(
+        text("SELECT id FROM shifde.tenants WHERE slug = 'demo-b'")
+    ).scalar_one()
+    owner_session.rollback()
+
+    assert NO_CONTEXT in str(_owner_retire(owner_session, s.agent_v1))
+    assert NO_CONTEXT in str(_owner_retire(owner_session, s.agent_v1, other))
+    assert _version_state(owner_session, s.agent_v1) == "deprecated"
+
+    assert post(h.client, path, h, {"state": "retired"}, 200)["state"] == "retired"
+    assert _version_state(owner_session, s.agent_v1) == "retired"
+
+
+def test_the_retire_guard_refuses_a_pinned_version_outside_its_client_context(
+    client: TestClient, world: World, owner_session: Session
+) -> None:
+    """Issue #158: a version a sealed release pins (here a transitive prompt pin) is refused for
+    the owner with no client context and in another client's context (23514, row unchanged),
+    whether or not the owner can see the release."""
+    h, s, sid = _setup(client, world)
+    vid = new_version(h.client, h, sid, version_body(s.agent_v1, dataset=s.dataset))["id"]
+    assert seal(h.client, h, sid, vid, _own_bindings(s)).status_code == 201
+    path = f"{A}/prompts/{s.prompt}/versions/{s.prompt_v1}/state"
+    post(h.client, path, h, {"state": "deprecated"}, 200)
+    other = owner_session.execute(
+        text("SELECT id FROM shifde.tenants WHERE slug = 'demo-b'")
+    ).scalar_one()
+    owner_session.rollback()
+
+    for tenant in (None, other):
+        refused = str(_owner_retire(owner_session, s.prompt_v1, tenant))
+        assert "a sealed release pins this version" in refused or NO_CONTEXT in refused
+    assert _version_state(owner_session, s.prompt_v1) == "deprecated"
