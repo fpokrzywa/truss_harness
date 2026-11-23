@@ -283,7 +283,7 @@
 </div>
 
 <script>
-const POLL_MS = 2000
+const POLL_MS = 10000 // each poll fetches files for every job; 2 s exhausted ephemeral ports (S-034)
 const COLUMNS = [
   { label: 'Intake', who: 'intake · fable', stages: ['intake', 'needs-info'] },
   { label: 'Spec', who: 'spec-writer · opus', stages: ['spec'] },

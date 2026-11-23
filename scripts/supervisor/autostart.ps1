@@ -71,11 +71,13 @@ if (Test-Running 'watchdog\.py') {
     Write-Log 'watchdog started'
 }
 
-# The factory dashboard (http://127.0.0.1:8000/dashboard.html), localhost only.
+# The factory dashboard (http://127.0.0.1:8000/dashboard.html), localhost only. HTTP/1.1 keeps
+# the browser's polling on a few kept-alive connections; HTTP/1.0 (the default) closed one per
+# file fetch, and the TIME_WAIT sockets exhausted the ephemeral ports under test load (S-034).
 if (Test-Running 'http\.server 8000') {
     Write-Log 'dashboard already running; not starting another'
 } else {
-    Start-Process -FilePath $py -ArgumentList '-I', '-m', 'http.server', '8000', '--bind', '127.0.0.1' `
+    Start-Process -FilePath $py -ArgumentList '-I', '-m', 'http.server', '8000', '--bind', '127.0.0.1', '--protocol', 'HTTP/1.1' `
         -WorkingDirectory (Join-Path $repo 'factory') -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $logs 'dashboard.out') `
         -RedirectStandardError (Join-Path $logs 'dashboard.err')
