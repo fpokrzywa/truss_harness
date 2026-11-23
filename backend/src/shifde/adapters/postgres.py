@@ -84,7 +84,7 @@ _POSITIONAL = re.compile(r"\$[0-9]+")
 _NOT_READ = "only read statements are allowed (read_write access and connection:write needed)"
 _UNTERMINATED = "the statement has an unterminated quote or comment"
 _NESTED = "nested block comments are not allowed"
-_BACKSLASH = "a backslash inside a string is not allowed in a read statement"
+_BACKSLASH = "a backslash inside a string or quoted identifier is not allowed in a read statement"
 _DOLLAR = "a $ is allowed only as a positional parameter ($1) in a read statement"
 _OPS = {"=": "=", "!=": "<>", "<": "<", "<=": "<=", ">": ">", ">=": ">=", "like": "LIKE"}
 
@@ -97,8 +97,9 @@ def check_read_only(sql: str) -> None:
     and `--`/`/* */` comments are otherwise never read as code.
     Text Postgres could read differently is refused (fail closed): an unterminated quote or
     comment, a nested `/*`, a backslash in a string (E-strings, `standard_conforming_strings`)
-    and a `$` that is not a positional parameter (dollar quotes). Messages never echo the SQL;
-    the READ ONLY transaction stays the backstop."""
+    or in a `"..."` identifier (`U&"..."` Unicode escapes), and a `$` that is not a positional
+    parameter (dollar quotes). Messages never echo the SQL; the READ ONLY transaction stays the
+    backstop."""
     code: list[str] = []
     identifiers: list[str] = []
     i, n = 0, len(sql)
@@ -112,7 +113,7 @@ def check_read_only(sql: str) -> None:
                         j += 2
                         continue
                     break
-                if ch == "'" and sql[j] == "\\":
+                if sql[j] == "\\":
                     raise AdapterFailure(ErrorClass.CAPABILITY, _BACKSLASH)
                 j += 1
             if j >= n:

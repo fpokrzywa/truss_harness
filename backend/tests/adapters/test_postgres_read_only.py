@@ -83,6 +83,10 @@ REFUSED = [
     'SELECT "pg_terminate_backend"(1)',
     "SELECT \"PG_CATALOG\".\"set_config\"('a', 'b', false)",
     "WITH a AS (SELECT 1) SELECT \"dblink_connect\"('c') FROM a",
+    # a Unicode-escape identifier Postgres decodes to pg_terminate_backend
+    r'SELECT U&"pg\005fterminate_backend"(1)',
+    r"""SELECT u&"set\+00005Fconfig"('a', 'b', false)""",
+    r'SELECT "a\b" FROM t',
 ]
 
 
