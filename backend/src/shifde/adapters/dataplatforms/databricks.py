@@ -60,6 +60,7 @@ NEEDS_CREDENTIAL = "a Databricks connection needs a credential"
 NEEDS_CLIENT_ID = "client_id is required for oauth2_client_credentials"
 NEEDS_WAREHOUSE = "warehouse_id is required to run statements"
 BAD_CREDENTIAL = "the credential must be a non-empty value without whitespace"
+STORED_HOST = "the stored host is not a workspace URL of the form https://<host>; update it"
 SUBJECT = "the Databricks workspace"
 
 JSON = dict[str, Any]  # Any: free-form JSON object
@@ -106,13 +107,31 @@ class _Auth:
         return {"Authorization": f"Bearer {self._oauth2.refresh()}"}
 
 
+def _stored_host(config: JSON) -> str:
+    """The stored `host` when it is in normalized `https://<host>` form, else CONFIG (B-3116).
+
+    A row stored before this adapter (the planned one took any string) reaches discover and
+    invoke unchecked, so the session refuses anything `normalize_config` could not have stored:
+    a scheme but https, a port, user info, a path, an IP literal or a malformed label. The suffix
+    allowlist is not repeated here; its extra suffixes are installation settings."""
+    host = str(config.get("host", ""))
+    _, dot, tail = host.partition(".")
+    try:
+        normalized = bool(dot) and normalize_databricks_address(host, (tail,)) == host
+    except AddressRefused:
+        normalized = False
+    if not normalized:
+        raise AdapterFailure(ErrorClass.CONFIG, STORED_HOST)
+    return host
+
+
 class DatabricksSession:
     """One adapter session: an egress-guarded client and the connection's credential."""
 
     def __init__(self, ctx: ExecContext, conn: ConnectionConfig) -> None:
         self._ctx = ctx
         self._conn = conn
-        self._host = str(conn.config["host"])
+        self._host = _stored_host(conn.config)
         self._auth = _Auth(ctx, conn, self._host)
         self._client = ctx.egress.client(headers={"Accept": "application/json"})
 

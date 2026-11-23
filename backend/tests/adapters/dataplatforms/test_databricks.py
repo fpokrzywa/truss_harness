@@ -286,6 +286,8 @@ REFUSED = [
     "SELECT 'unterminated",
     "SELECT 1 /* /* nested */ ; DROP t */",
     "SELECT '\\'' ; DROP t --'",
+    'SELECT R"\\"; DROP TABLE t; --"',
+    "SELECT r'\\'; DROP TABLE t; --'",
     "-- only a comment",
     "",
 ]
@@ -300,6 +302,8 @@ ACCEPTED = [
     "EXPLAIN SELECT 1",
     "/* lead */ SELECT `a;b` FROM t -- trailing",
     "SELECT \"x;y\", 'it''s'",
+    "SELECT r'\\', 'a;b'",
+    "SELECT attr'\\';'",
 ]
 
 
@@ -450,3 +454,33 @@ def test_validate_credential_accepts_tokens() -> None:
     assert ADAPTER.validate_credential("bearer", "dapi0123456789abcdef") == []
     assert ADAPTER.validate_credential(OAUTH2, "secret-value") == []
     assert ADAPTER.validate_credential("none", "") == []
+
+
+# ------------------------------------------------------------------ stored host (B-3116)
+LEGACY_HOSTS = [
+    "ws1.cloud.databricks.com",
+    "http://ws1.cloud.databricks.com",
+    "https://ws1.cloud.databricks.com:8443",
+    "https://ws1.cloud.databricks.com/path",
+    "https://user@ws1.cloud.databricks.com",
+    "https://10.0.0.1",
+    "https://localhost",
+    "https://WS1.cloud.databricks.com",
+    "",
+]
+
+
+@pytest.mark.parametrize("host", LEGACY_HOSTS)
+def test_a_non_normalized_stored_host_is_refused_before_any_request(
+    fake: FakeDatabricksWorkspace, host: str
+) -> None:
+    stored = conn(host=host)
+    for call in (
+        lambda: ADAPTER.discover(ctx_for(fake), stored),
+        lambda: ADAPTER.open(ctx_for(fake), stored),
+    ):
+        with pytest.raises(AdapterFailure) as raised:
+            call()
+        assert raised.value.error_class is ErrorClass.CONFIG
+        assert host not in raised.value.message or not host
+    assert fake.requests == []
