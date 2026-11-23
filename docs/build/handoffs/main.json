@@ -1,8 +1,8 @@
 {
-  "session_id": "7d438bdc-c734-4c7c-8a9f-7c168cf2751a",
-  "head_sha": "161cdd8630d33eb448c3a9568b21461df78d3ab7",
+  "session_id": "a31179bf-f7b8-443c-967d-f90d9cdab29a",
+  "head_sha": "f8c996dec48247ccf501a554a598ef90ab8ea159",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "PYTHONUTF8=1 factory/bin/job queue; 097 (CM-2) and 077 reviews; 104 spec; hand merges 093, 083, 084, 087",
-  "written_at": "2026-11-22T22:32:03Z"
+  "next_step": "PYTHONUTF8=1 factory/bin/job queue; re-sync and gate 097 (PR #207, conflicts with main), then hand merges PR #214, 077, 105, 083, 084, 109, 087; 111 reviewers",
+  "written_at": "2026-11-23T00:00:02Z"
 }
