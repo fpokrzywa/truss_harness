@@ -258,8 +258,8 @@ def test_a_planned_adapter_is_refused_synchronously_and_queues_nothing(
     body = {
         "name": "planned",
         "connection_type": "data_platform",
-        "adapter_key": "snowflake",
-        "config": {"account": "a"},
+        "adapter_key": "fabric",
+        "config": {"endpoint": "e"},
     }
     cid = str(connection(client, h, body, A)["id"])
     r = client.post(f"{A}/connections/{cid}/test", headers=h)

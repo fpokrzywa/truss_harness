@@ -70,6 +70,8 @@ def adapter_out(d: AdapterDescriptor, latest: evidence.ConformanceRun | None) ->
         config_schema=d.config_schema,
         secret_fields=list(d.secret_fields),
         auth_methods=list(d.auth_methods),
+        auth_only_fields={k: list(v) for k, v in d.auth_only_fields.items()},
+        destination_fields=list(d.destination_fields),
     )
 
 

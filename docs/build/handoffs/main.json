@@ -1,8 +1,8 @@
 {
-  "session_id": "dfd8a5b7-c5b3-457f-b91a-702106af5711",
-  "head_sha": "2cbacfb2f1ec7188a06f0b69837bdb2dec54c03f",
+  "session_id": "c88d27a4-97d8-42d4-b155-e409395c3445",
+  "head_sha": "110459f2d875d3388efeaa9aec5ced9728867935",
   "branch": "main",
-  "unit_in_progress": "charter 7 factory run: batch 2 hand merge (lead/batch-2 c86119e) and job 099 round 3",
-  "next_step": "Merge origin/main into .worktrees/batch-2 (docs only), push lead/batch-2, run gates.py --name batch-2-merge; on 13/13 fast-forward main to it. Then spawn builder-099 round 3 (feedback-1, B-3906). Full steps in docs/build/HANDOFF.md.",
-  "written_at": "2026-11-23T05:10:49Z"
+  "unit_in_progress": "none",
+  "next_step": "PYTHONUTF8=1 factory/bin/job queue and start every resume line: gate 125 and 127, approver for 102 (PR #246) and 126 (PR #247), then job merge; then runtime_0007 re-sync and gates.py (HANDOFF.md step 2)",
+  "written_at": "2026-11-23T08:40:23Z"
 }

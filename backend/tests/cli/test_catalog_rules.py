@@ -7,6 +7,7 @@ counterpart returns. Each probe yields at least one problem, so no comparison is
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 
 import pytest
@@ -38,6 +39,11 @@ _DEFINER = (
 )
 _REVOKE = "REVOKE EXECUTE ON FUNCTION shifde.zz_definer() FROM PUBLIC"
 _PINNED = "SET search_path = pg_catalog, pg_temp"
+_CLIENT_PAIR = [
+    "CREATE TABLE shifde.zz_fk_target (id uuid PRIMARY KEY, tenant_id uuid NOT NULL, "
+    "code text, CONSTRAINT zz_fk_target_tid UNIQUE (tenant_id, id))",
+    "CREATE TABLE shifde.zz_fk_source (id uuid PRIMARY KEY, tenant_id uuid, ref uuid)",
+]
 
 PROBES: dict[str, list[str]] = {
     "rls not forced": [
@@ -105,11 +111,36 @@ PROBES: dict[str, list[str]] = {
         " SECURITY DEFINER SET search_path = shifde, pg_catalog, pg_temp AS $$ SELECT 1 $$",
         "REVOKE EXECUTE ON FUNCTION shifde.rate_card_versions_guard(int) FROM PUBLIC",
     ],
+    "plain foreign key between client tables": [
+        *_CLIENT_PAIR,
+        "ALTER TABLE shifde.zz_fk_source ADD CONSTRAINT zz_plain"
+        " FOREIGN KEY (ref) REFERENCES shifde.zz_fk_target (id)",
+    ],
+    "crossed composite key": [
+        *_CLIENT_PAIR,
+        "ALTER TABLE shifde.zz_fk_source ADD CONSTRAINT zz_crossed"
+        " FOREIGN KEY (ref, tenant_id) REFERENCES shifde.zz_fk_target (tenant_id, id)",
+    ],
+    "unique key without tenant_id": [
+        *_CLIENT_PAIR,
+        "ALTER TABLE shifde.zz_fk_target ADD CONSTRAINT zz_code UNIQUE (code)",
+        "CREATE UNIQUE INDEX zz_lower_code ON shifde.zz_fk_target (lower(code))",
+    ],
+    "text key column": [
+        "CREATE TABLE shifde.zz_text_key (id int PRIMARY KEY, tenant_id text, user_id text)"
+    ],
+    "admin flag on a client table": [
+        *_SECURED,
+        f"CREATE POLICY p ON {PROBE} USING ({rls_rules.ADMIN_OR}) WITH CHECK ({TENANT})",
+    ],
+    "principal table with tenant_id": [
+        "ALTER TABLE shifde.login_lockouts ADD COLUMN tenant_id uuid"
+    ],
 }
 
 
 def _both(c: Connection) -> list[tuple[list[str], list[str]]]:
-    """(ported, test) results of the three rule functions on `c`."""
+    """(ported, test) results of the rule functions on `c`."""
     return [
         (
             catalog_rules.rls_violations(c),
@@ -122,6 +153,20 @@ def _both(c: Connection) -> list[tuple[list[str], list[str]]]:
         (
             catalog_rules.definer_violations(c, fn_rules.OWNER_ROLE, fn_rules.APP_ROLE),
             fn_rules.definer_violations(c, fn_rules.SECURITY_DEFINER_ALLOWLIST),
+        ),
+        (
+            catalog_rules.context_write_violations(c),
+            scan_rules.context_write_violations(c),
+        ),
+        (catalog_rules.foreign_key_problems(c), rls_rules.foreign_key_problems(c)),
+        (catalog_rules.unique_key_problems(c), rls_rules.unique_key_problems(c)),
+        (catalog_rules.key_type_problems(c), rls_rules.key_type_problems(c)),
+        (catalog_rules.admin_flag_problems(c), rls_rules.admin_flag_problems(c)),
+        (
+            catalog_rules.principal_table_problems(c),
+            rls_rules.principal_table_problems(
+                c, rls_rules.PRINCIPAL_TABLES, seth_tables={}, ported=()
+            ),
         ),
     ]
 
@@ -144,10 +189,25 @@ def test_the_rule_data_matches_the_schema_tests() -> None:
     assert catalog_rules.FORBIDDEN_PRIVILEGES == rls_rules._FORBIDDEN_PRIVILEGES
     assert catalog_rules.CONTEXT_HELPERS == scan_rules.CONTEXT_HELPERS
     assert catalog_rules.CONTEXT_WRITE_ALLOWLIST == scan_rules.CONTEXT_WRITE_ALLOWLIST
-    assert set(rls_rules.PRINCIPAL_TABLES) == catalog_rules.PRINCIPAL_TABLES
+    assert catalog_rules.PRINCIPAL_TABLES == rls_rules.PRINCIPAL_TABLES
+    assert catalog_rules.PLAIN_FOREIGN_KEYS == rls_rules.PLAIN_FOREIGN_KEYS
+    assert catalog_rules.UNIQUE_WITHOUT_TENANT == rls_rules.UNIQUE_WITHOUT_TENANT
+    assert catalog_rules.ADMIN_FLAG_CATALOGS == rls_rules.ADMIN_FLAG_CATALOGS
     assert set(catalog_rules.GLOBAL_TABLES) == rls_rules.global_tables()
     assert all(reason.strip() for reason in catalog_rules.GLOBAL_TABLES.values())
     assert set(fn_rules.SECURITY_DEFINER_ALLOWLIST) == catalog_rules.SECURITY_DEFINER_ALLOWLIST
+
+
+def _patterns(patterns: tuple[tuple[re.Pattern[str], str], ...]) -> list[tuple[str, int, str]]:
+    return [(pattern.pattern, pattern.flags, why) for pattern, why in patterns]
+
+
+def test_the_context_scan_data_matches_the_schema_tests() -> None:
+    assert catalog_rules.ALL_KINDS == scan_rules.ALL_KINDS
+    assert catalog_rules._SCANNED_LANGUAGES == scan_rules._SCANNED_LANGUAGES
+    assert catalog_rules._EXPRESSIONS.keys() == scan_rules._EXPRESSIONS.keys()
+    assert _patterns(catalog_rules._PATTERNS) == _patterns(scan_rules._PATTERNS)
+    assert _patterns(catalog_rules._BODY_PATTERNS) == _patterns(scan_rules._BODY_PATTERNS)
 
 
 def test_the_migrated_database_gives_the_same_empty_results(owner_engine: Engine) -> None:
@@ -169,6 +229,50 @@ def test_each_probe_gives_the_same_non_empty_results(
     assert any(ported for ported, _ in results)
 
 
+def test_the_exception_arguments_give_the_same_results(scratch: Connection) -> None:
+    """A stale entry and an extra listed entry (a probe the defaults would report)."""
+    for statement in [
+        *PROBES["plain foreign key between client tables"],
+        "ALTER TABLE shifde.zz_fk_target ADD CONSTRAINT zz_code UNIQUE (code)",
+        *_SECURED,
+        f"CREATE POLICY p ON {PROBE} USING ({rls_rules.ADMIN_OR}) WITH CHECK ({TENANT})",
+    ]:
+        scratch.execute(text(statement))
+    fk = {**catalog_rules.PLAIN_FOREIGN_KEYS, "shifde.zz_fk_source.zz_plain": "probe"}
+    uq = {**catalog_rules.UNIQUE_WITHOUT_TENANT, "shifde.zz_fk_target.zz_code": "probe"}
+    admin = {**catalog_rules.ADMIN_FLAG_CATALOGS, PROBE: "probe"}
+    principal = {**catalog_rules.PRINCIPAL_TABLES, PROBE: "probe", "zz_unqualified": "probe"}
+    pairs = [
+        (
+            catalog_rules.foreign_key_problems(scratch, {**fk, "shifde.nope.nope_fk": "x"}),
+            rls_rules.foreign_key_problems(scratch, {**fk, "shifde.nope.nope_fk": "x"}),
+        ),
+        (
+            catalog_rules.unique_key_problems(scratch, {**uq, "shifde.x.uq_x": "x"}),
+            rls_rules.unique_key_problems(scratch, {**uq, "shifde.x.uq_x": "x"}),
+        ),
+        (
+            catalog_rules.admin_flag_problems(scratch, {**admin, "shifde.zz_none": "x"}),
+            rls_rules.admin_flag_problems(scratch, {**admin, "shifde.zz_none": "x"}),
+        ),
+        (
+            catalog_rules.principal_table_problems(scratch, {**principal, "shifde.zz_none": " "}),
+            rls_rules.principal_table_problems(
+                scratch, {**principal, "shifde.zz_none": " "}, seth_tables={}, ported=()
+            ),
+        ),
+        (
+            catalog_rules.principal_table_problems(scratch, {"shifde.zz_none": "x"}),
+            rls_rules.principal_table_problems(
+                scratch, {"shifde.zz_none": "x"}, seth_tables={}, ported=()
+            ),
+        ),
+    ]
+    for ported, expected in pairs:
+        assert ported == expected
+        assert ported
+
+
 @pytest.mark.parametrize("expr", rls_rules.WRITE_FORMS)
 def test_a_recognised_write_form_is_not_reported(scratch: Connection, expr: str) -> None:
     for statement in PROBES[f"write form {rls_rules.WRITE_FORMS.index(expr)}"]:
@@ -176,3 +280,89 @@ def test_a_recognised_write_form_is_not_reported(scratch: Connection, expr: str)
     assert catalog_rules.rls_violations(scratch) == [
         "shifde.zz_rls_probe: row level security not forced"
     ]
+
+
+# --------------------------------------------------------------------------- context helpers
+# `helper_violations` has no counterpart in tests/schema, so it is not in `_both` or `PROBES`.
+_WEAK_BODY = {
+    "current_tenant_id": "uuid LANGUAGE sql STABLE AS $$ SELECT NULL::uuid $$",
+    "current_principal_id": "uuid LANGUAGE sql STABLE AS $$ SELECT NULL::uuid $$",
+    "is_platform_admin_ctx": "boolean LANGUAGE sql STABLE AS $$ SELECT true $$",
+}
+
+
+def test_the_pinned_helper_texts_match_the_schema_tests_bodies() -> None:
+    assert tuple(catalog_rules.CONTEXT_HELPER_DEFINITIONS) == catalog_rules.CONTEXT_HELPERS
+    for name, definition in catalog_rules.CONTEXT_HELPER_DEFINITIONS.items():
+        body = definition.split("$function$")[1]
+        assert fn_rules._squash(body) == fn_rules.BASE_HELPERS[name]["body"]
+
+
+def test_the_migrated_database_has_the_pinned_helpers(owner_engine: Engine) -> None:
+    with owner_engine.connect() as c:
+        assert catalog_rules.helper_violations(c) == []
+
+
+@pytest.mark.parametrize("name", catalog_rules.CONTEXT_HELPERS)
+def test_a_replaced_helper_body_is_reported(scratch: Connection, name: str) -> None:
+    scratch.execute(text(f"CREATE OR REPLACE FUNCTION shifde.{name}() RETURNS {_WEAK_BODY[name]}"))
+    assert catalog_rules.helper_violations(scratch) == [
+        f"shifde.{name}: definition differs from the migrations"
+    ]
+
+
+@pytest.mark.parametrize("change", ["SECURITY DEFINER", "SET search_path = pg_catalog", "VOLATILE"])
+def test_a_changed_helper_attribute_is_reported(scratch: Connection, change: str) -> None:
+    scratch.execute(text(f"ALTER FUNCTION shifde.current_tenant_id() {change}"))
+    assert catalog_rules.helper_violations(scratch) == [
+        "shifde.current_tenant_id: definition differs from the migrations"
+    ]
+
+
+def test_a_renamed_helper_is_reported_missing(scratch: Connection) -> None:
+    scratch.execute(text("ALTER FUNCTION shifde.current_principal_id() RENAME TO zz_gone"))
+    assert catalog_rules.helper_violations(scratch) == ["shifde.current_principal_id: missing"]
+
+
+def test_an_overloaded_helper_is_reported(scratch: Connection) -> None:
+    scratch.execute(
+        text(
+            "CREATE FUNCTION shifde.current_tenant_id(x int) RETURNS uuid LANGUAGE sql STABLE"
+            " AS $$ SELECT NULL::uuid $$"
+        )
+    )
+    assert catalog_rules.helper_violations(scratch) == [
+        "shifde.current_tenant_id: 2 functions with this name (overloaded)"
+    ]
+
+
+@pytest.mark.parametrize(("ddl", "labels"), fn_rules.CONTEXT_WRITERS)
+def test_each_context_writer_gives_the_same_non_empty_scan(
+    scratch: Connection, ddl: list[str], labels: set[str]
+) -> None:
+    for statement in ddl:
+        scratch.execute(text(statement))
+    ported = catalog_rules.context_write_violations(scratch)
+    assert ported == scan_rules.context_write_violations(scratch)
+    assert ported
+
+
+def test_the_allowlist_argument_gives_the_same_scan(scratch: Connection) -> None:
+    ddl, labels = fn_rules.CONTEXT_WRITERS[0]
+    for statement in ddl:
+        scratch.execute(text(statement))
+    for allowlist in ({}, dict.fromkeys(labels, "probe")):
+        ported = catalog_rules.context_write_violations(scratch, allowlist=allowlist)
+        assert ported == scan_rules.context_write_violations(scratch, allowlist=allowlist)
+    assert catalog_rules.context_write_violations(scratch, allowlist={}) != []
+
+
+@pytest.mark.parametrize("body", [False, True])
+@pytest.mark.parametrize(
+    "config", [["app.platform_admin=on"], ["search_path=pg_catalog", "APP.Tenant_Id=x"]]
+)
+def test_a_set_clause_gives_the_same_reasons(config: list[str], body: bool) -> None:
+    source = " ".join(config)
+    ported = catalog_rules.context_reasons(source, body=body)
+    assert ported == scan_rules.context_reasons(source, body=body)
+    assert ported

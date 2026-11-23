@@ -439,6 +439,7 @@ def test_a_dropped_policy_fails_the_fingerprint_check_by_name(
     assert "RESTORE VERIFIED" not in captured.out + captured.err
 
 
+FORGED_TENANT = "00000000-0000-0000-0000-00000000f0f0"
 FORGERIES = {
     "weak policy": (
         ["CREATE POLICY zz_forged_read ON shifde.runs FOR SELECT USING (true)"],
@@ -459,6 +460,50 @@ FORGERIES = {
             "REVOKE EXECUTE ON FUNCTION shifde.zz_forged() FROM PUBLIC",
         ],
         "shifde.zz_forged: SECURITY DEFINER but not on the allowlist",
+    ),
+    "replaced helper": (
+        [
+            "CREATE OR REPLACE FUNCTION shifde.current_tenant_id() RETURNS uuid LANGUAGE sql"
+            f" STABLE AS $$ SELECT '{FORGED_TENANT}'::uuid $$"
+        ],
+        "shifde.current_tenant_id: definition differs from the migrations",
+    ),
+    # a plain (not SECURITY DEFINER) trigger function that sets the client context
+    "set_updated_at writes the context": (
+        [
+            "CREATE OR REPLACE FUNCTION shifde.set_updated_at() RETURNS trigger LANGUAGE plpgsql"
+            " AS $$ BEGIN PERFORM pg_catalog.set_config('app.tenant_id',"
+            " '01900000-0000-7000-8000-0000000000bb', true);"
+            " NEW.updated_at = pg_catalog.now(); RETURN NEW; END $$"
+        ],
+        "function shifde.set_updated_at(): set_config, names app.<context setting>",
+    ),
+    "plain foreign key": (
+        [
+            "ALTER TABLE shifde.runs ADD CONSTRAINT zz_forged_fk"
+            " FOREIGN KEY (id) REFERENCES shifde.runs (id)"
+        ],
+        "shifde.runs.zz_forged_fk: foreign key between client tables without tenant_id",
+    ),
+    "unique key without tenant_id": (
+        ["CREATE UNIQUE INDEX zz_forged_uq ON shifde.runs (id)"],
+        "shifde.runs.zz_forged_uq: unique key on a client table without tenant_id",
+    ),
+    "text key column": (
+        ["ALTER TABLE shifde.runs ADD COLUMN user_id text"],
+        "shifde.runs.user_id: text (must be uuid)",
+    ),
+    "admin flag on client rows": (
+        [
+            "CREATE POLICY zz_forged_admin ON shifde.runs FOR SELECT"
+            " USING (shifde.is_platform_admin_ctx())"
+        ],
+        "shifde.runs: policy zz_forged_admin (SELECT) USING lets"
+        " shifde.is_platform_admin_ctx() reach client rows",
+    ),
+    "principal table with tenant_id": (
+        ["ALTER TABLE shifde.login_lockouts ADD COLUMN tenant_id uuid"],
+        "shifde.login_lockouts: has a tenant_id column",
     ),
 }
 
@@ -503,6 +548,7 @@ def test_a_forged_manifest_passes_the_fingerprint_but_not_the_catalog_rules(
     assert not by_name["catalog rules"].ok
     assert by_name["catalog rules"].detail.startswith("violates: ")
     assert named in by_name["catalog rules"].detail
+    assert FORGED_TENANT not in by_name["catalog rules"].detail
     assert all(r.ok for r in results if r.name != "catalog rules")
     with pytest.raises(typer.Exit) as exited:
         cli_main._report_restore_checks(results)

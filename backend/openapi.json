@@ -114,6 +114,16 @@
             "title": "Auth Methods",
             "type": "array"
           },
+          "auth_only_fields": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Auth Only Fields",
+            "type": "object"
+          },
           "capabilities": {
             "items": {
               "$ref": "#/components/schemas/CapabilityOut"
@@ -136,6 +146,13 @@
               }
             ],
             "title": "Connection Type"
+          },
+          "destination_fields": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Destination Fields",
+            "type": "array"
           },
           "display_name": {
             "title": "Display Name",
@@ -170,7 +187,9 @@
           "capabilities",
           "config_schema",
           "secret_fields",
-          "auth_methods"
+          "auth_methods",
+          "auth_only_fields",
+          "destination_fields"
         ],
         "title": "AdapterOut",
         "type": "object"

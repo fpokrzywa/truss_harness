@@ -245,12 +245,24 @@ def test_a_parked_idempotent_write_resumed_after_each_verdict(
             [first] = pending_unknown(ah, run["id"])
             assert decide(ah, first["id"], verdict).status_code == 200
 
+            # a fresh approval commits before the run parks (steps._create_approval, then
+            # lifecycle.finalize): it only counts once the run is waiting_for_approval
+            seen: dict[str, Any] = {}
+
             def settled() -> bool:
                 now = get_run(client, h, run["id"])
+                seen["status"] = now["status"]
                 fresh = [a for a in pending_unknown(ah, run["id"]) if a["id"] != first["id"]]
-                return now["status"] in {"completed", "failed"} or bool(fresh)
+                return now["status"] in {"completed", "failed"} or (
+                    bool(fresh) and now["status"] == "waiting_for_approval"
+                )
 
-            wait_for(settled, 60)
+            try:
+                wait_for(settled, 60)
+            except AssertionError:
+                raise AssertionError(
+                    f"run {run['id']} did not settle: last status {seen.get('status')}"
+                ) from None
             final = get_run(client, h, run["id"])
         assert final["status"] == status, final
         assert srv.deliveries == deliveries
