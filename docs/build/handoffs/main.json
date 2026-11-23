@@ -1,8 +1,8 @@
 {
-  "session_id": "c88d27a4-97d8-42d4-b155-e409395c3445",
-  "head_sha": "110459f2d875d3388efeaa9aec5ced9728867935",
+  "session_id": "eb9319b4-e864-4aa2-9ed7-b988cca13868",
+  "head_sha": "2686e1d9804ac9e47c614509afa9fd1682102aa3",
   "branch": "main",
-  "unit_in_progress": "none",
-  "next_step": "PYTHONUTF8=1 factory/bin/job queue and start every resume line: gate 125 and 127, approver for 102 (PR #246) and 126 (PR #247), then job merge; then runtime_0007 re-sync and gates.py (HANDOFF.md step 2)",
-  "written_at": "2026-11-23T08:40:23Z"
+  "unit_in_progress": "none (charter 7 factory run; queue: #253 new)",
+  "next_step": "PYTHONUTF8=1 factory/bin/job queue and start the new line for #253; then lead work for #174/#147 and write SP5-8 designs per docs/build/HANDOFF.md",
+  "written_at": "2026-11-23T11:46:44Z"
 }
