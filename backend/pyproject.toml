@@ -115,6 +115,7 @@ type = "layers"
 layers = [
   "shifde.main | shifde.executor",
   "shifde.app | shifde.cli",
+  "shifde.mcp_access",
   "shifde.delivery",
   "shifde.evaluation",
   "shifde.packaging",
@@ -245,6 +246,19 @@ source_modules = [
   "shifde.evaluation.assertions", "shifde.evaluation.scoring",
 ]
 forbidden_modules = ["fastapi", "starlette"]
+
+[[tool.importlinter.contracts]]
+name = "MCP tools call services, never a repository (SP8 design 3.1)"
+type = "forbidden"
+source_modules = ["shifde.mcp_access"]
+forbidden_modules = [
+  "shifde.secrets.repository", "shifde.identity.repository", "shifde.tenancy.repository",
+  "shifde.authz.repository", "shifde.audit.repository", "shifde.vendors.repository",
+  "shifde.connections.repository", "shifde.models_admin.repository", "shifde.build.repository",
+  "shifde.ontology.repository", "shifde.runtime.repository", "shifde.governance.repository",
+  "shifde.delivery.repository", "shifde.packaging.repository", "shifde.evaluation.repository",
+]
+allow_indirect_imports = true
 
 [[tool.importlinter.contracts]]
 name = "Repositories/models are private to their module (cross-module calls use service)"

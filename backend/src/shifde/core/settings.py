@@ -20,7 +20,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from dotenv import dotenv_values
-from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
+from pydantic import AnyHttpUrl, Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
@@ -243,6 +243,13 @@ class Settings(BaseSettings):
     metrics_token: SecretStr | None = None  # required in production
     # `/api/docs` and `/api/openapi.json`; unset: off in production, on in development and test
     api_docs_enabled: bool | None = None
+    # MCP access (SP8 design 3.1): `/mcp` is mounted only when enabled. Allowed `Host` values of
+    # its DNS-rebinding check (comma-separated, `host:*` admits any port), the installation
+    # ceiling of a key's tool calls per minute, and the endpoint URL shown to clients.
+    mcp_enabled: bool = False
+    mcp_allowed_hosts: Annotated[list[str], NoDecode] = []
+    mcp_max_rate_per_minute: int = Field(default=600, ge=1)
+    mcp_public_url: AnyHttpUrl | None = None
 
     @field_validator("allowed_origins", mode="before")
     @classmethod
@@ -278,6 +285,13 @@ class Settings(BaseSettings):
                     "of two or more letter, digit or hyphen labels"
                 )
         return suffixes
+
+    @field_validator("mcp_allowed_hosts", mode="before")
+    @classmethod
+    def _split_mcp_hosts(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [part.strip() for part in value.split(",") if part.strip()]
+        return value
 
     @field_validator("trusted_proxies", mode="before")
     @classmethod
