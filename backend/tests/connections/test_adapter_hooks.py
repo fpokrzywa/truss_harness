@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from shifde.adapters.dataplatforms.databricks import DatabricksAdapter
 from shifde.core.settings import Settings
+from tests._support.conntests import invoke_outcome
 from tests.connections.routes import activate, as_user, connection, connections_client, org
 from tests.tenancy.conftest import World
 from tests.tenancy.routes import People
@@ -139,13 +140,14 @@ def test_the_fake_runs_test_discover_and_invoke_without_normalizing(
     assert ("main", "default", "customers") in {
         (t["catalog"], t["schema"], t["name"]) for t in tables
     }
-    invoked = c.post(f"{A}/connections/{cid}/invoke", headers=h, json={"sql": "SELECT 1"})
-    assert invoked.status_code == 200, invoked.text
-    assert invoked.json()["result"] == {"columns": ["1"], "rows": [["1"]], "row_count": 1}
-    refused = c.post(f"{A}/connections/{cid}/invoke", headers=h, json={"sql": "DROP TABLE t"})
-    assert refused.status_code == 422
+    # the invoke is queued (issue #190): its job runs, the outcome is read on the status route
+    invoked = invoke_outcome(c, h, A, cid, {"sql": "SELECT 1"}, tenant_id=world.a.tenant)
+    assert invoked[0] == 200, invoked
+    assert invoked[1]["result"] == {"columns": ["1"], "rows": [["1"]], "row_count": 1}
+    refused = invoke_outcome(c, h, A, cid, {"sql": "DROP TABLE t"}, tenant_id=world.a.tenant)
+    assert refused[0] == 422, refused
     assert calls == []  # neither the worker's test nor discover / invoke normalized
-    for text in (activated, discovered.text, invoked.text):
+    for text in (activated, discovered.text, invoked, refused):
         assert TOKEN not in str(text)
 
     hb = as_user(c, people.owner_b)
