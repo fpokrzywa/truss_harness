@@ -67,6 +67,7 @@ describe('navigation config (FR-UI-003)', () => {
       'security-secrets',
       'security-service-accounts',
       'security-users',
+      'settings-mcp',
       'workspaces',
     ]);
     for (const bad of UNIMPLEMENTED) {

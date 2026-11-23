@@ -1,8 +1,8 @@
 {
-  "session_id": "58242b09-b544-4415-aab6-8317646591c7",
-  "head_sha": "dede5ec44e1c5b2ce489da32acd0b8f4440f6afe",
+  "session_id": "a76bd9e5-8860-479f-8220-f70d81bb4aad",
+  "head_sha": "1177ea56d91a85ca67469f0b72b8c98f0464abab",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "PYTHONUTF8=1 factory/bin/job queue; spawn spec-writer for 147; then sync+gates.py+hand merge needs-human jobs in order 139, 141, 137, 145, 140, 143 (see HANDOFF.md)",
-  "written_at": "2026-11-23T19:52:16Z"
+  "next_step": "Serial merges per docs/build/HANDOFF.md: sync and 13-gate 147 (PR #314), then 148 (PR #313), job merge 150 and 149, then 145, 140, 143; one gate run at a time",
+  "written_at": "2026-11-23T22:29:42Z"
 }

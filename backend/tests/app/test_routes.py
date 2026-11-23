@@ -142,6 +142,13 @@ BOARD = {
     ("GET", "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/board"),
 }
 
+# MCP access: the organization's MCP settings (SP8 design 3.6, issue #287); `/mcp` itself is a
+# mounted ASGI app (only with SHIFDE_MCP_ENABLED) and never in OpenAPI
+MCP = {
+    ("GET", "/api/v1/orgs/{org}/mcp/settings"),
+    ("PUT", "/api/v1/orgs/{org}/mcp/settings"),
+}
+
 
 def _pairs(rows: list[list[str]]) -> set[tuple[str, str]]:
     return {(m, p) for m, p in rows}
@@ -166,6 +173,7 @@ def test_the_mounted_route_table_is_sethss_minus_branding(
         | PACKAGING
         | EVALUATION
         | APPGEN
+        | MCP
         | BOARD
     )
     mounted = _mounted(client)
