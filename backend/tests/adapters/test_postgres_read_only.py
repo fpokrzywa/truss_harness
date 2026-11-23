@@ -34,6 +34,9 @@ ACCEPTED = [
     "SELECT 1 -- pg_notify('c', 'x')",
     "SELECT 1 /* dblink_exec('x') lo_export(1, 'f') */",
     "SELECT my_set_config, pg_notify_count FROM t",
+    # a bitwise & before a quoted identifier and UESCAPE in a string are not Unicode escapes
+    'SELECT a & "b" FROM t',
+    "SELECT 'U&\"x\" UESCAPE'",
 ]
 # #285: side-effecting functions a READ ONLY transaction still runs
 FUNCTIONS = [
@@ -87,6 +90,12 @@ REFUSED = [
     r'SELECT U&"pg\005fterminate_backend"(1)',
     r"""SELECT u&"set\+00005Fconfig"('a', 'b', false)""",
     r'SELECT "a\b" FROM t',
+    # any Unicode escape is refused, whatever its escape character (UESCAPE)
+    """SELECT U&"pg!005fterminate_backend" UESCAPE '!'(1)""",
+    """SELECT U&"pg!005fadvisory!005flock" UESCAPE '!' (1)""",
+    'SELECT U&"abc" FROM t',
+    "SELECT u&'abc'",
+    "SELECT a uescape FROM t",
 ]
 
 

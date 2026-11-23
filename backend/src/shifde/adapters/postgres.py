@@ -85,6 +85,7 @@ _NOT_READ = "only read statements are allowed (read_write access and connection:
 _UNTERMINATED = "the statement has an unterminated quote or comment"
 _NESTED = "nested block comments are not allowed"
 _BACKSLASH = "a backslash inside a string or quoted identifier is not allowed in a read statement"
+_UNICODE_ESCAPE = "a Unicode escape (U&) is not allowed in a read statement"
 _DOLLAR = "a $ is allowed only as a positional parameter ($1) in a read statement"
 _OPS = {"=": "=", "!=": "<>", "<": "<", "<=": "<=", ">": ">", ">=": ">=", "like": "LIKE"}
 
@@ -97,8 +98,9 @@ def check_read_only(sql: str) -> None:
     and `--`/`/* */` comments are otherwise never read as code.
     Text Postgres could read differently is refused (fail closed): an unterminated quote or
     comment, a nested `/*`, a backslash in a string (E-strings, `standard_conforming_strings`)
-    or in a `"..."` identifier (`U&"..."` Unicode escapes), and a `$` that is not a positional
-    parameter (dollar quotes). Messages never echo the SQL; the READ ONLY transaction stays the
+    or in a `"..."` identifier, any `U&'...'`/`U&"..."` Unicode escape and the word `uescape`
+    (whatever the escape character), and a `$` that is not a positional parameter (dollar
+    quotes). Messages never echo the SQL; the READ ONLY transaction stays the
     backstop."""
     code: list[str] = []
     identifiers: list[str] = []
@@ -106,6 +108,8 @@ def check_read_only(sql: str) -> None:
     while i < n:
         ch = sql[i]
         if ch in ("'", '"'):
+            if sql[max(i - 2, 0) : i].lower() == "u&":
+                raise AdapterFailure(ErrorClass.CAPABILITY, _UNICODE_ESCAPE)
             j = i + 1
             while j < n:
                 if sql[j] == ch:
@@ -148,6 +152,8 @@ def check_read_only(sql: str) -> None:
     if first is None or first.group(1).lower() not in READ_WORDS:
         raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
     words = [word.lower() for word in _WORD.findall(bare)]
+    if "uescape" in words:
+        raise AdapterFailure(ErrorClass.CAPABILITY, _UNICODE_ESCAPE)
     if any(word in _REFUSED_WORDS for word in words):
         raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
     for name in words + [identifier.lower() for identifier in identifiers]:
