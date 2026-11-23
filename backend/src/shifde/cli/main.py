@@ -298,6 +298,8 @@ def secrets_rewrap() -> None:
         with _owner_session(settings) as session:
             changed, total = secrets_service.rewrap_all(session, settings.keyring)
             session.commit()
+    except secrets_service.RowSecurityHidesSecrets as exc:
+        raise _fail(str(exc)) from exc
     except CryptoError as exc:
         raise _fail(
             f"a secret could not be re-wrapped ({exc}); is the old KEK still in the ring?"
