@@ -139,13 +139,18 @@ def pkce_challenge(verifier: str) -> str:
 
 
 def cache_max_age(cache_control: str | None) -> int | None:
-    """The first `max-age` of a `Cache-Control` header, or None when absent or not all digits;
-    every other directive is ignored."""
+    """The first `max-age` of a `Cache-Control` header, or None when absent, not all digits or
+    too long for `int()` to convert; every other directive is ignored."""
     for directive in (cache_control or "").split(","):
         name, _, value = directive.strip().partition("=")
         if name.strip().lower() == "max-age":
             value = value.strip()
-            return int(value) if value.isascii() and value.isdigit() else None
+            if not (value.isascii() and value.isdigit()):
+                return None
+            try:
+                return int(value)
+            except ValueError:  # past the int-string digit limit (issue #139)
+                return None
     return None
 
 
