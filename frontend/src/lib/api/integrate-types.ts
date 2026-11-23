@@ -44,6 +44,8 @@ export interface Adapter {
   config_schema: JsonSchema;
   secret_fields: string[];
   auth_methods: string[];
+  auth_only_fields: Record<string, string[]>;
+  destination_fields: string[];
 }
 
 export interface ConformanceRun {

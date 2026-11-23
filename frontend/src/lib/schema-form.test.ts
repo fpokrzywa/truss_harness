@@ -3,10 +3,12 @@ import { ApiError } from './api/errors';
 import { ADAPTER_REST } from '@/test/integrate';
 import {
   buildConfig,
+  destinationChanged,
   fieldsFromSchema,
   initialValues,
   mapServerErrors,
   validateValues,
+  visibleConfigFields,
 } from './schema-form';
 
 const fields = fieldsFromSchema(ADAPTER_REST.config_schema, ADAPTER_REST.secret_fields);
@@ -82,5 +84,83 @@ describe('schema-driven form', () => {
     const { byField, other } = mapServerErrors(err.fieldErrors, ['base_url']);
     expect(byField).toEqual({ base_url: 'host not allowed' });
     expect(other).toHaveLength(1);
+  });
+});
+
+const OAUTH2 = 'oauth2_client_credentials';
+const REST_ONLY = {
+  auth_only_fields: { oauth2_url: [OAUTH2], client_id: [OAUTH2], scope: [OAUTH2] },
+};
+const DBX_ONLY = { auth_only_fields: { client_id: [OAUTH2] } };
+const REST = fieldsFromSchema({
+  type: 'object',
+  properties: {
+    base_url: { type: 'string' },
+    oauth2_url: { type: 'string' },
+    client_id: { type: 'string' },
+    scope: { type: 'string' },
+    timeout_seconds: { type: 'integer' },
+  },
+});
+const keys = (adapter: Parameters<typeof visibleConfigFields>[0], method: string) =>
+  visibleConfigFields(adapter, method, REST).map((f) => f.key);
+
+describe('visibleConfigFields', () => {
+  it('hides the auth-only fields under any other method', () => {
+    expect(keys(REST_ONLY, 'bearer')).toEqual(['base_url', 'timeout_seconds']);
+  });
+
+  it('shows the auth-only fields under their method', () => {
+    expect(keys(REST_ONLY, OAUTH2)).toEqual([
+      'base_url',
+      'oauth2_url',
+      'client_id',
+      'scope',
+      'timeout_seconds',
+    ]);
+  });
+
+  it('hides the Databricks client_id under bearer only', () => {
+    expect(keys(DBX_ONLY, 'bearer')).not.toContain('client_id');
+    expect(keys(DBX_ONLY, OAUTH2)).toContain('client_id');
+    expect(keys(DBX_ONLY, 'bearer')).toContain('scope');
+  });
+
+  it('has no auth-only fields for an undefined adapter', () => {
+    expect(keys(undefined, 'none')).toHaveLength(REST.length);
+  });
+});
+
+describe('destinationChanged', () => {
+  const dbx = { destination_fields: ['host'] };
+
+  it('is true when a destination field changes', () => {
+    expect(destinationChanged(dbx, { host: 'https://a' }, { host: 'https://b' })).toBe(true);
+    expect(
+      destinationChanged(
+        { destination_fields: ['host', 'port', 'sslmode'] },
+        { port: 5432 },
+        {
+          port: 5433,
+        },
+      ),
+    ).toBe(true);
+    expect(
+      destinationChanged(
+        { destination_fields: ['base_url', 'oauth2_url'] },
+        {},
+        { oauth2_url: 'https://t' },
+      ),
+    ).toBe(true);
+  });
+
+  it('is false when only other fields change', () => {
+    expect(destinationChanged(dbx, { host: 'h', max_rows: 1 }, { host: 'h', max_rows: 2 })).toBe(
+      false,
+    );
+  });
+
+  it('is false for an undefined adapter', () => {
+    expect(destinationChanged(undefined, { host: 'a' }, { host: 'b' })).toBe(false);
   });
 });

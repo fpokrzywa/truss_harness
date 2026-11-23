@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import { destinationChanged, visibleConfigFields } from '@/lib/adapter-fields';
 import { ApiError } from '@/lib/api/errors';
 import { endpoints } from '@/lib/api/endpoints';
 import type {
@@ -14,10 +13,12 @@ import { credentialError } from '@/lib/credential';
 import { useRefreshInt } from '@/lib/integrate-hooks';
 import {
   buildConfig,
+  destinationChanged,
   fieldsFromSchema,
   mapServerErrors,
   validateValues,
   valuesFromConfig,
+  visibleConfigFields,
   type FormValues,
 } from '@/lib/schema-form';
 import { ConfirmDialog } from '../ConfirmDialog';
@@ -40,7 +41,7 @@ export function EditConnectionDialog({
   const refresh = useRefreshInt(org);
   const action = useAction();
   const fields = visibleConfigFields(
-    c.adapter_key,
+    adapter,
     c.auth_method,
     fieldsFromSchema(adapter?.config_schema, adapter?.secret_fields),
   );
@@ -54,7 +55,7 @@ export function EditConnectionDialog({
   // Keys the form does not show (other auth methods, unknown to the schema) are kept as they are.
   const kept = Object.fromEntries(Object.entries(c.config).filter(([k]) => !fieldKeys.includes(k)));
   const nextConfig = { ...kept, ...buildConfig(fields, values) };
-  const moved = configDirty && destinationChanged(c.adapter_key, c.config, nextConfig);
+  const moved = configDirty && destinationChanged(adapter, c.config, nextConfig);
   const serverErr =
     action.error instanceof ApiError
       ? mapServerErrors(action.error.fieldErrors, [...fieldKeys, 'name'])
