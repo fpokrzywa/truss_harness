@@ -11,6 +11,8 @@ by the schema owner on a cluster with both roles, runs `pg_restore --single-tran
 `restore_checks` then compares the target with the manifest (seven checks, design 6.1).
 The `catalog rules` check never reads the manifest: it applies the code's own isolation rules
 (`catalog_rules`) to the restored catalog, so a forged manifest cannot hide weakened isolation.
+It also pins the context helper definitions (`current_tenant_id()` and the other two) to the
+texts reviewed in `catalog_rules`.
 
 The digests detect corruption and edits, not a deliberate forger: the manifest is unsigned, so
 anyone who can edit it can recompute them. The KEK ring (`SHIFDE_SECRET_KEYS`, only its key ids
@@ -645,6 +647,7 @@ def _check_catalog_rules(session: Session, owner_role: str, app_role: str) -> st
         *catalog_rules.rls_violations(conn),
         *catalog_rules.privilege_problems(conn, app_role),
         *catalog_rules.definer_violations(conn, owner_role, app_role),
+        *catalog_rules.helper_violations(conn),
     ]
     return "violates: " + "; ".join(problems) if problems else ""
 

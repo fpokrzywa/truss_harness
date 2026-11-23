@@ -439,6 +439,7 @@ def test_a_dropped_policy_fails_the_fingerprint_check_by_name(
     assert "RESTORE VERIFIED" not in captured.out + captured.err
 
 
+FORGED_TENANT = "00000000-0000-0000-0000-00000000f0f0"
 FORGERIES = {
     "weak policy": (
         ["CREATE POLICY zz_forged_read ON shifde.runs FOR SELECT USING (true)"],
@@ -459,6 +460,13 @@ FORGERIES = {
             "REVOKE EXECUTE ON FUNCTION shifde.zz_forged() FROM PUBLIC",
         ],
         "shifde.zz_forged: SECURITY DEFINER but not on the allowlist",
+    ),
+    "replaced helper": (
+        [
+            "CREATE OR REPLACE FUNCTION shifde.current_tenant_id() RETURNS uuid LANGUAGE sql"
+            f" STABLE AS $$ SELECT '{FORGED_TENANT}'::uuid $$"
+        ],
+        "shifde.current_tenant_id: definition differs from the migrations",
     ),
 }
 
@@ -503,6 +511,7 @@ def test_a_forged_manifest_passes_the_fingerprint_but_not_the_catalog_rules(
     assert not by_name["catalog rules"].ok
     assert by_name["catalog rules"].detail.startswith("violates: ")
     assert named in by_name["catalog rules"].detail
+    assert FORGED_TENANT not in by_name["catalog rules"].detail
     assert all(r.ok for r in results if r.name != "catalog rules")
     with pytest.raises(typer.Exit) as exited:
         cli_main._report_restore_checks(results)
