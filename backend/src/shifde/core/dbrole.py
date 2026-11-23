@@ -24,6 +24,7 @@ from typing import Any
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
 # Predefined roles that read or write server files or run server programs. Any of them lets the
@@ -194,6 +195,19 @@ def check_app_role(engine: Engine) -> None:
         raise UnsafeDatabaseRole(
             f"database role {session_role!r} may bypass row-level security: " + "; ".join(reasons)
         )
+
+
+def sees_all_rows(session: Session) -> bool:
+    """True when the current (effective) role ignores row-level security: a superuser or a
+    `BYPASSRLS` role. Read only; BYPASSRLS is never inherited through role membership."""
+    return bool(
+        session.execute(
+            text(
+                "SELECT rolsuper OR rolbypassrls FROM pg_catalog.pg_roles "
+                "WHERE rolname = current_user"
+            )
+        ).scalar_one()
+    )
 
 
 def check_database_url(url: str) -> None:
