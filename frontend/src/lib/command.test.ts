@@ -5,6 +5,7 @@ import type { PlatformInstallation, PlatformStatus } from './api/types';
 import { contrastRatio } from './contrast';
 import {
   adminGroups,
+  boardCardHref,
   buildNodes,
   buildReadout,
   buildWorkerNodes,
@@ -151,6 +152,16 @@ describe('administration', () => {
   it('adds platform settings for platform admins only', () => {
     const groups = adminGroups('acme', { isPlatformAdmin: true, features });
     expect(groups.flatMap((g) => g.items.map((i) => i.id))).toContain('platform-settings');
+  });
+
+  it('links the Board card only where the nav shows Board', () => {
+    const opts = (perms: string[]) => ({
+      isPlatformAdmin: false,
+      permissions: new Set(perms),
+      features,
+    });
+    expect(boardCardHref('acme', opts(['packaging:solution:read']))).toBe('/o/acme/board');
+    expect(boardCardHref('acme', opts(['delivery:target:read']))).toBeUndefined();
   });
 });
 

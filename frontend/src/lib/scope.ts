@@ -21,6 +21,7 @@ export function parseScope(pathname: string): ScopePath {
     seg[2] === 'build' ||
     seg[2] === 'govern' ||
     seg[2] === 'deliver' ||
+    seg[2] === 'board' ||
     seg[2] === 'solutions' ||
     seg[2] === 'releases' ||
     seg[2] === 'evaluations' ||
@@ -54,6 +55,8 @@ export const governHref = (org: string, area = '') =>
   `${orgHref(org)}/govern${area ? `/${area}` : ''}`;
 export const deliverHref = (org: string, area = '') =>
   `${orgHref(org)}/deliver${area ? `/${area}` : ''}`;
+/** The release board (SP7); the filter comes from `?ws=&proj=`. */
+export const boardHref = (org: string) => `${orgHref(org)}/board`;
 /** `?ws=&proj=` query naming the project of an organization-level release screen. */
 const projQuery = (ws?: string, proj?: string) =>
   ws && proj ? `?ws=${e(ws)}&proj=${e(proj)}` : '';
