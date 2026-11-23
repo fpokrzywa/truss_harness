@@ -41,6 +41,12 @@ export const ADAPTER_REST: Adapter = {
   },
   secret_fields: ['api_token'],
   auth_methods: ['none', 'bearer'],
+  auth_only_fields: {
+    oauth2_url: ['oauth2_client_credentials'],
+    client_id: ['oauth2_client_credentials'],
+    scope: ['oauth2_client_credentials'],
+  },
+  destination_fields: ['base_url', 'oauth2_url'],
 };
 
 export const ADAPTER_PLANNED: Adapter = {
@@ -54,6 +60,8 @@ export const ADAPTER_PLANNED: Adapter = {
   config_schema: { type: 'object', properties: {} },
   secret_fields: [],
   auth_methods: ['token'],
+  auth_only_fields: { client_id: ['oauth2_client_credentials'] },
+  destination_fields: ['host'],
 };
 
 export const ADAPTER_FAKE: Adapter = {
@@ -64,6 +72,8 @@ export const ADAPTER_FAKE: Adapter = {
   config_schema: { type: 'object', properties: {} },
   secret_fields: [],
   auth_methods: ['none'],
+  auth_only_fields: {},
+  destination_fields: [],
 };
 
 export { list } from './security';
