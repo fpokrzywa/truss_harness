@@ -125,6 +125,31 @@ describe('McpSettingsView', () => {
     expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
   });
 
+  it('without audit:read shows one line instead of the audit list and never requests it', async () => {
+    const fetchMock = stubApi({ [SETTINGS]: () => jsonResponse(OFF) }, ['mcp:settings:read']);
+    renderWithClient(<McpSettingsView />);
+    expect(await screen.findByText('You need audit:read to see MCP events.')).toBeInTheDocument();
+    expect(
+      screen.getByText('Only organization administrators can change this.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Not found or no access')).not.toBeInTheDocument();
+    expect(fetchMock.calls.some((c) => c.key === AUDIT)).toBe(false);
+  });
+
+  it('without mcp:settings:read shows one refusal and no audit section', async () => {
+    const fetchMock = stubApi(
+      {
+        [SETTINGS]: () => jsonResponse({ detail: 'forbidden' }, { status: 403 }),
+        [AUDIT]: () => list([]),
+      },
+      [],
+    );
+    renderWithClient(<McpSettingsView />);
+    expect(await screen.findAllByText('Not found or no access')).toHaveLength(1);
+    expect(screen.queryByRole('region', { name: 'MCP audit events' })).not.toBeInTheDocument();
+    expect(fetchMock.calls.some((c) => c.key === AUDIT)).toBe(false);
+  });
+
   it('requests the last 50 mcp audit events and shows them', async () => {
     const fetchMock = stubApi(
       { [SETTINGS]: () => jsonResponse(OFF), [AUDIT]: () => list([EVENT]) },

@@ -50,7 +50,9 @@ function EndpointBox({ url }: { url: string | null }) {
           <p className="font-mono text-sm break-all">{url}</p>
           <p className="text-sm text-slate-600">
             Client configuration (create an API key with the <code>mcp:access</code> scope on the
-            API keys screen and put it in place of the placeholder):
+            API keys screen and put it in place of the placeholder). Tools that take a project also
+            need <code>workspace:read</code>, and <code>start_run</code> needs{' '}
+            <code>prompt:read</code>:
           </p>
           <pre className="overflow-x-auto rounded-md bg-slate-50 p-3 text-xs">
             {clientSnippet(url)}
@@ -108,6 +110,18 @@ function McpAudit({ org }: { org: string }) {
             </tbody>
           </table>
         ))}
+    </section>
+  );
+}
+
+/** The audit list needs audit:read, which the developer role does not hold. */
+function AuditSection({ org }: { org: string }) {
+  const { loaded, can } = useCan(org);
+  if (!loaded) return null;
+  if (can('audit:read')) return <McpAudit org={org} />;
+  return (
+    <section aria-label="MCP audit events" className="card">
+      <p className="text-sm text-slate-600">You need audit:read to see MCP events.</p>
     </section>
   );
 }
@@ -175,6 +189,11 @@ function SettingsForm({ org, saved }: { org: string; saved: McpSettings }) {
         >
           {saved.enabled ? 'Turn off' : 'Turn on'}
         </button>
+        {!writable && (
+          <span className="text-xs text-slate-600">
+            Only organization administrators can change this.
+          </span>
+        )}
         {saved.updated_at && (
           <span className="text-xs text-slate-600">
             Last changed {formatDate(saved.updated_at)}
@@ -275,7 +294,8 @@ export function McpSettingsView() {
           </>
         )}
       </QueryGate>
-      <McpAudit org={org} />
+      {/* only once the settings load, so a user without mcp:settings:read sees one refusal */}
+      {settings.isSuccess && <AuditSection org={org} />}
     </div>
   );
 }
