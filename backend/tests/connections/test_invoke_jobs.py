@@ -79,6 +79,38 @@ def _jobs(owner_db: Database, cid: str) -> list[tuple[Any, ...]]:
     )
 
 
+KEPT = {
+    "invocation_id",
+    "connection_id",
+    "request_hash",
+    "principal_id",
+    "principal_type",
+    "api_key_id",
+}  # an ended invoke job's payload (issue #224)
+
+
+def _payload(owner_db: Database, cid: str) -> dict[str, Any]:  # Any: JSON values
+    [job] = _jobs(owner_db, cid)
+    return dict(job[5])
+
+
+def _assert_cleared(
+    owner_db: Database, cid: str, request_hash: str, *markers: str
+) -> dict[str, Any]:  # Any: JSON values
+    """The ended job's payload kept the ids and the hash, and none of the request's values."""
+    payload = _payload(owner_db, cid)
+    assert set(payload) == KEPT and payload["request_hash"] == request_hash
+    dumped = json.dumps(payload)
+    assert all(m not in dumped for m in markers), payload
+    return payload
+
+
+def _marked(tag: str) -> tuple[dict[str, Any], tuple[str, ...]]:  # Any: the invoke request
+    """A request carrying a unique value in its query, its `X-Trace` header and its body."""
+    q, t, b = (f"{tag}-{part}-{uuid7().hex}" for part in ("query", "trace", "body"))
+    return {**ECHO, "query": {"q": q}, "headers": {"X-Trace": t}, "body": {"note": b}}, (q, t, b)
+
+
 def _active_rest(
     client: TestClient,
     h: dict[str, str],
@@ -427,6 +459,9 @@ def test_a_finished_job_never_runs_twice(
     assert again is None
     assert _invocations(owner_db, cid) == before  # same row, same `updated_at`
     assert len(rest_server.requests) == calls
+    # the ended job no longer holds the request (issue #224)
+    [job] = _jobs(owner_db, cid)
+    assert "request" not in job[5] and "write" not in job[5]
     # redelivered (the job queued again): still no second call
     with owner_db.session() as o:
         o.execute(
@@ -642,3 +677,103 @@ def test_a_refusal_before_the_queue_queues_nothing(
     write = _post(client, h, A, cid, {**ECHO, "write": True}, status=403)  # read-only
     assert write["code"] == "forbidden"
     assert _jobs(owner_db, cid) == [] and _invocations(owner_db, cid) == []
+
+
+def test_a_succeeded_invoke_job_keeps_no_request_and_replays_the_same_invocation(
+    client: TestClient,
+    world: World,
+    people: People,
+    app_db: Database,
+    owner_db: Database,
+    settings: Settings,
+    rest_server: RestTestServer,
+) -> None:
+    """Issue #224: the statement that ends the job drops `request` and `write` from its payload;
+    the ids and `request_hash` stay, so a replay with the same Idempotency-Key still answers the
+    first invocation and a different body is still a conflict."""
+    a, A, h = world.a, org(world.a.slug), as_user(client, people.owner_a)
+    cid = _active_rest(client, h, A, app_db, settings, a.tenant, rest_server)
+    body, markers = _marked("ok")
+    first = _post(client, h, A, cid, body, key="clear-1")
+    queued = _payload(owner_db, cid)
+    assert queued["request"]["headers"] == {"X-Trace": markers[1]}
+    assert all(m in json.dumps(queued) for m in markers)
+    assert execute_invocation(client, A, first["id"], tenant_id=a.tenant)
+    out = invocation_status(client, h, A, cid, first["id"])
+    assert out["status"] == "succeeded", out
+    _assert_cleared(owner_db, cid, queued["request_hash"], *markers)
+    assert [r[4] for r in _jobs(owner_db, cid)] == ["done"]
+    # a replay of the ended, cleared invocation: the same one, nothing new, no second call
+    jobs, invocations, calls = (
+        _jobs(owner_db, cid),
+        _invocations(owner_db, cid),
+        len(rest_server.requests),
+    )
+    again = _post(client, h, A, cid, body, key="clear-1", status=200)
+    assert (again["id"], again["status"]) == (first["id"], "succeeded")
+    assert again["result"] == out["result"]
+    assert _jobs(owner_db, cid) == jobs and _invocations(owner_db, cid) == invocations
+    assert len(rest_server.requests) == calls
+    other = _post(client, h, A, cid, {**body, "query": {"q": "2"}}, key="clear-1", status=409)
+    assert other["code"] == "idempotency_conflict"
+    assert _jobs(owner_db, cid) == jobs and _invocations(owner_db, cid) == invocations
+
+
+def test_a_failed_invoke_job_keeps_no_request(
+    client: TestClient,
+    world: World,
+    people: People,
+    app_db: Database,
+    owner_db: Database,
+    settings: Settings,
+    rest_server: RestTestServer,
+) -> None:
+    """Issue #224: an adapter failure ends the invocation `failed` and its job `done` without
+    the request, as a success does."""
+    a, A, h = world.a, org(world.a.slug), as_user(client, people.owner_a)
+    cid = _active_rest(client, h, A, app_db, settings, a.tenant, rest_server)
+    body, markers = _marked("bad")
+    inv = _post(client, h, A, cid, {**body, "path": "http://evil.test/x"})
+    request_hash = _payload(owner_db, cid)["request_hash"]
+    assert execute_invocation(client, A, inv["id"], tenant_id=a.tenant)
+    out = invocation_status(client, h, A, cid, inv["id"])
+    assert (out["status"], out["error"]) == ("failed", "validation_error")
+    _assert_cleared(owner_db, cid, request_hash, *markers)
+    assert [r[4] for r in _jobs(owner_db, cid)] == ["done"]
+
+
+def test_a_refused_invoke_job_keeps_no_request(
+    client: TestClient,
+    world: World,
+    people: People,
+    app_db: Database,
+    owner_db: Database,
+    settings: Settings,
+    rest_server: RestTestServer,
+) -> None:
+    """Issue #224: `connection:use` removed before the job runs fails the invocation
+    `forbidden`; the ended job holds no request either."""
+    a, A = world.a, org(world.a.slug)
+    owner = as_user(client, people.owner_a)
+    cid = _active_rest(client, owner, A, app_db, settings, a.tenant, rest_server)
+    email, uid = limited_user(owner_db, a.tenant, ["connection:read", "connection:use"])
+    h = as_user(client, email)
+    body, markers = _marked("refused")
+    inv = _post(client, h, A, cid, body)
+    request_hash = _payload(owner_db, cid)["request_hash"]
+    with owner_db.session() as o:
+        o.execute(text("SELECT set_config('app.platform_admin', 'on', true)"))
+        o.execute(
+            text(
+                "DELETE FROM shifde.role_permissions WHERE permission_key = 'connection:use' "
+                "AND role_id IN (SELECT role_id FROM shifde.role_bindings WHERE subject_id = :u)"
+            ),
+            {"u": uid},
+        )
+        o.commit()
+    calls = len(rest_server.requests)
+    assert execute_invocation(client, A, inv["id"], tenant_id=a.tenant)
+    assert len(rest_server.requests) == calls
+    out = invocation_status(client, h, A, cid, inv["id"])
+    assert (out["status"], out["error"]) == ("failed", "forbidden")
+    _assert_cleared(owner_db, cid, request_hash, *markers)

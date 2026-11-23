@@ -4,7 +4,9 @@
 posts it and executes exactly that job the way `shifde-worker` does: it leases the job only if it
 is still queued (never through `shifde_claim_jobs`, so another test's job is never picked up),
 runs it through `connections.service.run_test_job` on the app's own application-role database, and
-finishes it with the worker's `finish_job`. It returns the status route's body.
+finishes it with the worker's `finish_job`, as the worker does: an invoke job's `request` and
+`write` are dropped in that same statement (`drop_request`, issue #224). It returns the status
+route's body.
 
 `POST .../connections/{id}/invoke` answers 202 with a queued `connection.invoke` invocation
 (issue #190); `run_invoke` posts it and executes exactly that job the same way, through
@@ -75,7 +77,13 @@ def execute_job(
     with database.session() as s:
         db.set_tenant(s, tenant_id)
         runtime_repo.finish_job(
-            s, tenant_id, job_id, owner, "done" if error is None else "dead", last_error=error
+            s,
+            tenant_id,
+            job_id,
+            owner,
+            "done" if error is None else "dead",
+            last_error=error,
+            drop_request=(kind == connections.INVOKE_JOB_KIND),
         )
         s.commit()
     return True
