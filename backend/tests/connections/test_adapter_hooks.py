@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from shifde.adapters.dataplatforms.databricks import DatabricksAdapter
 from shifde.core.settings import Settings
-from tests._support.conntests import invoke_outcome
+from tests._support.conntests import discovery_of, invoke_outcome
 from tests.connections.routes import activate, as_user, connection, connections_client, org
 from tests.tenancy.conftest import World
 from tests.tenancy.routes import People
@@ -134,9 +134,8 @@ def test_the_fake_runs_test_discover_and_invoke_without_normalizing(
     )
     activated = activate(c, h, cid, A)  # the worker's run_test_job against the fake
     assert activated["status"] == "active"
-    discovered = c.post(f"{A}/connections/{cid}/discover", headers=h)
-    assert discovered.status_code == 200, discovered.text
-    tables = discovered.json()["payload"]["tables"]
+    discovered = discovery_of(c, h, A, cid, tenant_id=world.a.tenant)  # the worker's job
+    tables = discovered["payload"]["tables"]
     assert ("main", "default", "customers") in {
         (t["catalog"], t["schema"], t["name"]) for t in tables
     }
@@ -147,7 +146,7 @@ def test_the_fake_runs_test_discover_and_invoke_without_normalizing(
     refused = invoke_outcome(c, h, A, cid, {"sql": "DROP TABLE t"}, tenant_id=world.a.tenant)
     assert refused[0] == 422, refused
     assert calls == []  # neither the worker's test nor discover / invoke normalized
-    for text in (activated, discovered.text, invoked, refused):
+    for text in (activated, discovered, invoked, refused):
         assert TOKEN not in str(text)
 
     hb = as_user(c, people.owner_b)

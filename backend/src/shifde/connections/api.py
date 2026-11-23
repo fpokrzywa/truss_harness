@@ -113,9 +113,18 @@ def list_connection_tests(
     return svc.list_tests(connection_id, limit, cursor)
 
 
-@router.post("/orgs/{org}/connections/{connection_id}/discover", tags=["connections"])
-def discover_connection(svc: Connections, connection_id: UUID) -> s.DiscoveryOut:
-    return svc.discover(connection_id)
+@router.post(
+    "/orgs/{org}/connections/{connection_id}/discover", status_code=202, tags=["connections"]
+)
+def discover_connection(svc: Connections, connection_id: UUID) -> s.ConnectionDiscoveryJobOut:
+    return svc.enqueue_discover(connection_id)
+
+
+@router.get("/orgs/{org}/connections/{connection_id}/discovery-jobs/{job_id}", tags=["connections"])
+def get_connection_discovery_job(
+    svc: Connections, connection_id: UUID, job_id: UUID
+) -> s.ConnectionDiscoveryJobOut:
+    return svc.discover_job(connection_id, job_id)
 
 
 @router.get("/orgs/{org}/connections/{connection_id}/discoveries/latest", tags=["connections"])

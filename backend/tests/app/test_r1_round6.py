@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from shifde.core.settings import Settings
 from shifde.runtime import repository as repo
+from tests._support.conntests import discovery_of
 from tests._support.fullapp import World
 from tests._support.p2util import login
 from tests._support.p3util import ADMIN, A, activate, connection, secret
@@ -186,8 +187,7 @@ def test_an_mcp_error_result_on_a_resend_is_a_refusal(
         },
     )
     activate(client, h, conn["id"])
-    r = client.post(f"{A}/connections/{conn['id']}/discover", headers=h, json={})
-    assert r.status_code == 200, r.text
+    discovery_of(client, h, A, conn["id"])
     spec = builtin_tool_spec()
     spec.update(
         executor="mcp.tool",

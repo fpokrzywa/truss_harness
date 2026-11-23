@@ -23,10 +23,11 @@ from sqlalchemy.orm import Session
 from shifde.adapters.testservers import RestTestServer
 from shifde.connections import api as connections_api
 from shifde.connections import repository
+from shifde.connections import service as connections
 from shifde.core.db import Database, set_tenant
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
-from tests._support.conntests import execute_invocation, run_invoke
+from tests._support.conntests import discovery_of, execute_invocation, run_invoke
 from tests.connections.conftest import check_values
 from tests.connections.routes import (
     REST_TOKEN,
@@ -79,8 +80,7 @@ def _side(
     sid = secret(app_db, settings, tenant, REST_TOKEN)
     conn = connection(client, h, rest_body(server, sid, name=f"rest-{slug}"), base)
     activate(client, h, conn["id"], base)
-    found = client.post(f"{base}/connections/{conn['id']}/discover", headers=h)
-    assert found.status_code == 200, found.text
+    discovery_of(client, h, base, str(conn["id"]), tenant_id=tenant)
     policy = post(client, f"{base}/egress-policies", h, {"name": f"policy-{slug}"})
     return Side(base, email, tenant, sid, str(conn["id"]), str(policy["id"]))
 
@@ -156,16 +156,17 @@ def _b_state(owner_db: Database, two: Two) -> tuple[Any, ...]:
     )
 
 
-def _test_job(owner_db: Database, side: Side) -> str:
-    """The connection test job `activate` ran for `side`'s connection."""
+def _test_job(owner_db: Database, side: Side, kind: str = "connection.test") -> str:
+    """The latest `kind` job of `side`'s connection: the test `activate` ran, or (kind
+    `connection.discover`) the discovery `_side` ran."""
     with owner_db.session() as o:
         return str(
             o.execute(
                 text(
-                    "SELECT id FROM shifde.jobs WHERE tenant_id = :t AND kind = 'connection.test' "
+                    "SELECT id FROM shifde.jobs WHERE tenant_id = :t AND kind = :k "
                     "AND payload->>'connection_id' = :c ORDER BY id DESC LIMIT 1"
                 ),
-                {"t": side.tenant, "c": side.connection},
+                {"t": side.tenant, "k": kind, "c": side.connection},
             ).scalar_one()
         )
 
@@ -195,6 +196,9 @@ ROUTE_TESTS = {
     ),
     ("POST", "/api/v1/orgs/{org}/connections/{connection_id}/discover"): (
         "test_a_cannot_reach_bs_connection"
+    ),
+    ("GET", "/api/v1/orgs/{org}/connections/{connection_id}/discovery-jobs/{job_id}"): (
+        "test_a_cannot_read_bs_discovery_job"
     ),
     ("GET", "/api/v1/orgs/{org}/connections/{connection_id}/discoveries/latest"): (
         "test_a_cannot_reach_bs_connection"
@@ -269,7 +273,7 @@ def test_a_cannot_reach_bs_connection(
         ("GET", "", None, 200),
         ("GET", "/tests", None, 200),
         ("GET", "/discoveries/latest", None, 200),
-        ("POST", "/discover", None, 200),
+        ("POST", "/discover", None, 202),
         ("POST", "/invoke", invoke, 202),
         ("POST", "/test", None, 202),
         ("PATCH", "", {"name": "renamed"}, 200),
@@ -319,6 +323,47 @@ def test_a_cannot_read_bs_test_job(client: TestClient, owner_db: Database, two: 
         client.get(f"{two.b.base}{path}", headers=h), client.get(f"{unknown}{path}", headers=h)
     )
     assert _b_state(owner_db, two) == before
+
+
+def test_a_cannot_read_bs_discovery_job(client: TestClient, owner_db: Database, two: Two) -> None:
+    """ARCH M2 (issue #144, B-2971): as `test_a_cannot_read_bs_test_job`, for B's discover job;
+    and the worker side keyed by B's client never finds A's job."""
+    A, h = two.a.base, as_user(client, two.a.email)
+    before = _b_state(owner_db, two)
+    kind = connections.DISCOVER_JOB_KIND
+    own_job, b_job, nobody = (
+        _test_job(owner_db, two.a, kind),
+        _test_job(owner_db, two.b, kind),
+        uuid7(),
+    )
+    jobs = f"{A}/connections/{two.a.connection}/discovery-jobs"
+    own = client.get(f"{jobs}/{own_job}", headers=h)
+    assert own.status_code == 200 and own.json()["status"] == "done", own.text  # own job first
+    missing = client.get(f"{jobs}/{nobody}", headers=h)
+    assert missing.json()["detail"] == "discovery job not found"
+    _same_404(client.get(f"{jobs}/{b_job}", headers=h), missing)
+    # under B's connection id: the answer an unknown connection id gets
+    _same_404(
+        client.get(f"{A}/connections/{two.b.connection}/discovery-jobs/{b_job}", headers=h),
+        client.get(f"{A}/connections/{uuid7()}/discovery-jobs/{b_job}", headers=h),
+    )
+    path = f"/connections/{two.b.connection}/discovery-jobs/{b_job}"
+    unknown = org(f"no-such-{uuid7().hex[-12:]}")
+    _same_404(
+        client.get(f"{two.b.base}{path}", headers=h), client.get(f"{unknown}{path}", headers=h)
+    )
+    # the worker side: A's job under B's client is not found, and nothing is recorded
+    count = "SELECT count(*) FROM shifde.connection_discoveries WHERE connection_id = :c"
+    with owner_db.session() as o:
+        a_found = o.execute(text(count), {"c": two.a.connection}).scalar_one()
+    app: Any = client.app  # Any: the FastAPI app behind the test client
+    gone = connections.run_discover_job(
+        app.state.db, app.state.integration, two.b.tenant, UUID(own_job)
+    )
+    assert gone == "not_found"
+    assert _b_state(owner_db, two) == before
+    with owner_db.session() as o:
+        assert o.execute(text(count), {"c": two.a.connection}).scalar_one() == a_found
 
 
 def test_a_cannot_read_bs_invocation(

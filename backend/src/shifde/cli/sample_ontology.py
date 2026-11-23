@@ -35,6 +35,7 @@ from shifde.cli.sample_pipeline import (
     _ensure_secret,
     _read_password,
 )
+from shifde.connections import service as connections
 from shifde.core.devenv import read_dev_env
 from shifde.core.settings import Settings
 
@@ -320,7 +321,7 @@ def seed_sample_ontology(
                 },
             },
         )
-        api.call("POST", f"/connections/{conn}/discover")  # schema metadata only: no rows are read
+        _run_discover(api, conn, UUID(str(tenant_id)))  # schema metadata only: no rows are read
         tool_version = _ensure_echo_tool(api, scope)
         spec = ontology_spec(tool_version)
         existing = api.find("/ontologies", "key", ONTOLOGY_KEY)
@@ -369,6 +370,22 @@ def seed_sample_ontology(
         )
     finally:
         api.close()
+
+
+def _run_discover(api: _Api, connection_id: str, tenant_id: UUID) -> None:
+    """POST the connection discovery (202, a queued job) and run that job in-process with the
+    worker's own `run_discover_job`, as `_run_test` does (DECISIONS B-2614, B-2971)."""
+    job = api.call("POST", f"/connections/{connection_id}/discover", ok=(202,))
+    if job["status"] in ("queued", "running"):
+        app: Any = api.client.app  # Any: the in-process FastAPI app
+        connections.run_discover_job(
+            app.state.db, app.state.integration, tenant_id, UUID(job["id"])
+        )
+        job = api.call("GET", f"/connections/{connection_id}/discovery-jobs/{job['id']}")
+    if job["status"] != "done":
+        raise SeedError(
+            f"the discovery job of connection {connection_id} ended {job['status']}: {job['error']}"
+        )
 
 
 def _role_ids(api: _Api) -> dict[str, str]:

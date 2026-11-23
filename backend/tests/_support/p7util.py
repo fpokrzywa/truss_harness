@@ -12,6 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from shifde.adapters.testservers import RestTestServer
+from tests._support.conntests import discovery_of
 from tests._support.fullapp import World
 from tests._support.p2util import login, system_role
 from tests._support.p3util import ADMIN, A, activate, connection, pg_body, secret
@@ -281,9 +282,7 @@ class World7:
 
     # ---------------------------------------------------------------- connection
     def discover(self, connection_id: str | None = None) -> dict[str, Any]:
-        r = self.client.post(f"{A}/connections/{connection_id or self.pg}/discover", headers=self.h)
-        assert r.status_code == 200, r.text
-        out: dict[str, Any] = r.json()
+        out: dict[str, Any] = discovery_of(self.client, self.h, A, connection_id or self.pg)
         return out
 
     # ---------------------------------------------------------------- ontology

@@ -143,6 +143,17 @@ class DiscoveryOut(BaseModel):
     payload: dict[str, Any]
 
 
+class ConnectionDiscoveryJobOut(BaseModel):
+    """A queued connection discovery (ARCH M2): `result` once the worker has recorded it."""
+
+    id: UUID
+    connection_id: UUID
+    status: Literal["queued", "running", "done", "failed"]
+    result: DiscoveryOut | None
+    error: str | None
+    created_at: datetime
+
+
 class InvokeOut(BaseModel):
     result: Any  # Any: adapter-specific JSON
     truncated: bool

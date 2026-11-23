@@ -39,7 +39,7 @@ from shifde.authz.pdp import PLATFORM_ONLY_ACTIONS
 from shifde.core.clock import utcnow
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
-from tests._support.conntests import run_invoke, run_test
+from tests._support.conntests import run_discover, run_invoke, run_test
 from tests._support.fullapp import World, full_client
 from tests._support.p2util import login, new_user, post, tenant_id
 from tests._support.p3util import (
@@ -451,6 +451,10 @@ ROUTES: dict[Op, tuple[str, str]] = {
     ("PUT", "/api/v1/orgs/{org}/connections/{connection_id}/credential"): (SCOPED, "connections"),
     ("POST", "/api/v1/orgs/{org}/connections/{connection_id}/test"): (SCOPED, "connections"),
     ("GET", "/api/v1/orgs/{org}/connections/{connection_id}/test-jobs/{job_id}"): (
+        SCOPED,
+        "connections",
+    ),
+    ("GET", "/api/v1/orgs/{org}/connections/{connection_id}/discovery-jobs/{job_id}"): (
         SCOPED,
         "connections",
     ),
@@ -1258,6 +1262,9 @@ _register(
         ),
         ("GET", ORG + "/connections/{connection_id}/test-jobs/{job_id}"): lambda w: _case(
             READ, "GET", lambda n: _conn(w, n, f"/test-jobs/{w('job', n)}")
+        ),
+        ("GET", ORG + "/connections/{connection_id}/discovery-jobs/{job_id}"): lambda w: _case(
+            READ, "GET", lambda n: _conn(w, n, f"/discovery-jobs/{w('discover_job', n)}")
         ),
         ("GET", ORG + "/connections/{connection_id}/invocations/{invocation_id}"): lambda w: _case(
             READ, "GET", lambda n: _conn(w, n, f"/invocations/{w('invocation', n)}")
@@ -2177,7 +2184,9 @@ def test_connections_and_delivery_targets(
         w.set("conn", n, cid)
         tested = run_test(w.admin.client, w.admin, A, cid)
         w.set("job", n, tested["id"])
-        w.post(f"/connections/{cid}/discover", None, 200)
+        found = run_discover(w.admin.client, w.admin, A, cid)
+        assert found["status"] == "done", found
+        w.set("discover_job", n, found["id"])
         w.set("target", n, w.post("/delivery/targets", _target_body(n))["id"])
         plan = w.post("/delivery/plans", _plan_body(w("target", n), w("release", n)))
         w.set("plan", n, plan["id"])

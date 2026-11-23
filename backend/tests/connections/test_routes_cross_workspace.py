@@ -19,7 +19,7 @@ from shifde.adapters.testservers import RestTestServer
 from shifde.core.db import Database, set_tenant
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
-from tests._support.conntests import run_invoke
+from tests._support.conntests import discovery_of, run_invoke
 from tests.connections.routes import (
     REST_TOKEN,
     activate,
@@ -73,9 +73,10 @@ def _state(owner_db: Database, world: World, cid: str) -> tuple[Any, ...]:
             text("SELECT count(*) FROM shifde.connection_discoveries WHERE connection_id = :i"),
             {"i": cid},
         ).scalar_one()
-        jobs = o.execute(  # its test jobs (ARCH M2): none is queued by the member
+        jobs = o.execute(  # its test and discover jobs (ARCH M2): none is queued by the member
             text(
-                "SELECT id, status FROM shifde.jobs WHERE kind = 'connection.test' "
+                "SELECT id, kind, status FROM shifde.jobs "
+                "WHERE kind IN ('connection.test', 'connection.discover') "
                 "AND payload->>'connection_id' = :i ORDER BY id"
             ),
             {"i": cid},
@@ -115,8 +116,7 @@ def test_a_connection_in_an_unreadable_workspace_answers_like_an_unknown_id(
         body = {**rest_body(server, sids[workspace], name=name), "scope": {"workspace": workspace}}
         cid = str(connection(client, owner, body, A)["id"])
         activate(client, owner, cid, A)
-        found = client.post(f"{A}/connections/{cid}/discover", headers=owner)
-        assert found.status_code == 200, found.text
+        discovery_of(client, owner, A, cid)
         return cid
 
     own = made(rest_server, "in-ws1", ws_slug(a))
@@ -137,7 +137,7 @@ def test_a_connection_in_an_unreadable_workspace_answers_like_an_unknown_id(
         ("GET", "", None, 200),
         ("GET", "/tests", None, 200),
         ("GET", "/discoveries/latest", None, 200),
-        ("POST", "/discover", None, 200),
+        ("POST", "/discover", None, 202),
         ("POST", "/invoke", invoke, 202),
         ("POST", "/test", None, 202),
         ("PATCH", "", {"name": "renamed"}, 200),
@@ -154,12 +154,14 @@ def test_a_connection_in_an_unreadable_workspace_answers_like_an_unknown_id(
             client.request(method, f"{A}/connections/{hidden}{suffix}", headers=h, json=payload),
             missing,
         )
-    # the status route of the hidden connection's test job (ARCH M2): the unknown-connection 404
-    hidden_job = _state(owner_db, world, hidden)[3][-1][0]
-    _same_404(
-        client.get(f"{A}/connections/{hidden}/test-jobs/{hidden_job}", headers=h),
-        client.get(f"{A}/connections/{nobody}/test-jobs/{hidden_job}", headers=h),
-    )
+    # the status routes of the hidden connection's test and discover jobs (ARCH M2): the
+    # unknown-connection 404
+    hidden_jobs = {kind: jid for jid, kind, _ in _state(owner_db, world, hidden)[3]}
+    for path, kind in (("test-jobs", "connection.test"), ("discovery-jobs", "connection.discover")):
+        _same_404(
+            client.get(f"{A}/connections/{hidden}/{path}/{hidden_jobs[kind]}", headers=h),
+            client.get(f"{A}/connections/{nobody}/{path}/{hidden_jobs[kind]}", headers=h),
+        )
     # ... and of its invocation (issue #190)
     _same_404(
         client.get(f"{A}/connections/{hidden}/invocations/{hidden_inv}", headers=h),

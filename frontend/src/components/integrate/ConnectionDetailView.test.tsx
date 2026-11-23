@@ -187,6 +187,58 @@ describe('ConnectionDetailView', () => {
     expect(screen.getByText(/id uuid/)).toBeInTheDocument();
   });
 
+  it('queues a discovery, polls its job and renders the recorded result', async () => {
+    const DISCOVERY = {
+      id: 'd-1',
+      kind: 'openapi',
+      discovered_at: '2026-11-22T10:00:00Z',
+      payload: { paths: [{ method: 'GET', path: '/invoices', summary: 'list' }] },
+    };
+    let recorded = false;
+    const fetchMock = stubInt({
+      ...route({}),
+      'GET /api/v1/orgs/acme/connections/c-1/discoveries/latest': () =>
+        recorded ? jsonResponse(DISCOVERY) : problemResponse(404, 'not_found'),
+      'POST /api/v1/orgs/acme/connections/c-1/discover': () =>
+        jsonResponse(QUEUED, { status: 202 }),
+      'GET /api/v1/orgs/acme/connections/c-1/discovery-jobs/j-1': () => {
+        recorded = true;
+        return jsonResponse({ ...QUEUED, status: 'done', result: DISCOVERY });
+      },
+    });
+    renderWithClient(<ConnectionDetailView id="c-1" />);
+    expect(
+      await screen.findByText('No discovery has been run for this connection.'),
+    ).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Run discovery' }));
+    expect(await screen.findByText('/invoices', undefined, { timeout: 5000 })).toBeInTheDocument();
+    expect(
+      fetchMock.calls.some((c) =>
+        c.key.endsWith('GET /api/v1/orgs/acme/connections/c-1/discovery-jobs/j-1'),
+      ),
+    ).toBe(true);
+  });
+
+  it('shows why a queued discovery did not run', async () => {
+    stubInt({
+      ...route({}),
+      'POST /api/v1/orgs/acme/connections/c-1/discover': () =>
+        jsonResponse(QUEUED, { status: 202 }),
+      'GET /api/v1/orgs/acme/connections/c-1/discovery-jobs/j-1': () =>
+        jsonResponse({ ...QUEUED, status: 'failed', error: 'validation_error' }),
+    });
+    renderWithClient(<ConnectionDetailView id="c-1" />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Run discovery' }));
+    expect(
+      await screen.findByText(
+        /The connection discovery did not run \(validation_error\)/,
+        undefined,
+        { timeout: 5000 },
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText('No discovery has been run for this connection.')).toBeInTheDocument();
+  });
+
   it('hides the test and console sections without the permissions', async () => {
     stubInt(route({ status: 'active' }), ['connection:read']);
     renderWithClient(<ConnectionDetailView id="c-1" />);

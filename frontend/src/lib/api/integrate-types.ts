@@ -331,6 +331,17 @@ export interface Discovery {
   tables?: unknown;
 }
 
+/** A queued connection discovery (ARCH M2): the worker runs it; `result` once it is recorded. */
+export interface ConnectionDiscoveryJob {
+  id: string;
+  connection_id: string;
+  status: 'queued' | 'running' | 'done' | 'failed';
+  result: Discovery | null;
+  /** Error code of a failed job (e.g. `validation_error`, `worker_lost`). */
+  error: string | null;
+  created_at: string;
+}
+
 export interface ConnectionInvokeResult {
   result: unknown;
   truncated: boolean;
