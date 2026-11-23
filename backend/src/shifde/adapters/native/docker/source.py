@@ -29,6 +29,7 @@ ENV_FILE_DIR = "/etc/shifde-apps"
 PROJECT = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
 PORT_MIN, PORT_MAX = 1024, 65535
 CONTAINER_PORT = 8000
+TMPFS = "/tmp"  # nosec B108 - the container's tmpfs mount point, never a host path
 
 FILES = frozenset({"Dockerfile", "compose.yaml", "release.json"})
 SERVICE_KEYS = frozenset(
@@ -222,7 +223,7 @@ def _validate_compose(data: bytes) -> tuple[dict[str, Any], dict[str, str], dict
             "the compose service must be read-only, drop all capabilities and set only "
             "no-new-privileges",
         )
-    if "tmpfs" in service and service["tmpfs"] not in ("/tmp", ["/tmp"]):
+    if "tmpfs" in service and service["tmpfs"] not in (TMPFS, [TMPFS]):
         raise BundleInvalid("compose_tmpfs", "the compose tmpfs may only be /tmp")
     environment = _string_map(
         service.get("environment"), "compose_environment", "the compose environment is malformed"
