@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Literal  # Any: connection config / adapter payload JSON
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 Strict = ConfigDict(extra="forbid")
 ConnectionType = Literal["rest", "mcp", "database", "data_platform", "model_api"]
@@ -22,6 +22,14 @@ class ScopeSlugs(BaseModel):
     project: str | None = None
 
 
+class ConnectionCredential(BaseModel):
+    """A connection's own credential (B-2747). No length constraint here: the byte limit is the
+    secrets service's, whose refusal never echoes the value."""
+
+    model_config = Strict
+    value: SecretStr
+
+
 class ConnectionCreate(BaseModel):
     model_config = Strict
     name: str = Field(min_length=1, max_length=200)
@@ -32,6 +40,8 @@ class ConnectionCreate(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
     auth_method: AuthMethod = "none"
     secret_id: UUID | None = None
+    # stored as the connection's own secret `connection-<id>`; not together with `secret_id`
+    credential: ConnectionCredential | None = None
     egress_policy_id: UUID | None = None
     access_mode: AccessMode = "read"
     # design 5.3 (B-1507): required true when a secret is bound to a read connection
@@ -50,6 +60,15 @@ class ConnectionPatch(BaseModel):
     # design 5.3 (B-1507): re-confirmed when a new secret, or read mode, is set with a secret bound
     read_only_confirmed: bool | None = None
     row_version: int | None = None
+
+
+class ConnectionCredentialSet(BaseModel):
+    """`PUT .../credential` (B-2749): sets the connection's own secret, or rotates the bound one."""
+
+    model_config = Strict
+    value: SecretStr
+    row_version: int
+    read_only_confirmed: bool | None = None
 
 
 class ConnectionStatusChange(BaseModel):
@@ -80,6 +99,7 @@ class ConnectionOut(BaseModel):
     health_status: str
     health: str  # alias of health_status (the UI reads `health`)
     last_tested_at: datetime | None
+    last_test_outcome: Literal["pass", "fail"] | None  # of the latest test by `started_at`
     row_version: int
     created_at: datetime
     updated_at: datetime | None
@@ -138,6 +158,19 @@ class InvokeOut(BaseModel):
     result: Any  # Any: adapter-specific JSON
     truncated: bool
     duration_ms: int
+
+
+class InvocationOut(BaseModel):
+    """A connection invoke queued on the worker (issue #190): `result` once it has succeeded,
+    `error` (a code, never a message) once it has failed."""
+
+    id: UUID
+    connection_id: UUID
+    status: Literal["queued", "running", "succeeded", "failed"]
+    result: InvokeOut | None
+    error: str | None
+    created_at: datetime
+    finished_at: datetime | None
 
 
 # ------------------------------------------------------------------ egress policies (B2)

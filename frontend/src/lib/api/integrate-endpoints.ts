@@ -7,7 +7,9 @@ import type {
   Connection,
   ConnectionDiscoveryJob,
   ConnectionInput,
+  ConnectionInvocation,
   ConnectionInvokeResult,
+  ConnectionPatch,
   ConnectionStatus,
   ConnectionTestJob,
   ConnectionTestResult,
@@ -87,6 +89,40 @@ async function awaitJob<R>(
     code: job.error ?? `${label.code}_failed`,
     title: `${label.title} did not run`,
     detail: `The ${label.noun} did not run (${job.error ?? 'unknown error'}).`,
+  });
+}
+
+/**
+ * Poll a queued connection invocation (issue #190) until it is terminal: the stored result once it
+ * succeeded; a failed invocation (its error code) or a timeout throws. `onStatus` hears each
+ * non-terminal status.
+ */
+async function awaitInvocation(
+  first: ConnectionInvocation,
+  poll: (invocationId: string) => Promise<ConnectionInvocation>,
+  onStatus?: (status: 'queued' | 'running') => void,
+): Promise<ConnectionInvokeResult> {
+  let inv = first;
+  const deadline = Date.now() + TEST_TIMEOUT_MS;
+  while (inv.status === 'queued' || inv.status === 'running') {
+    onStatus?.(inv.status);
+    if (Date.now() >= deadline) {
+      throw new ApiError({
+        status: 504,
+        code: 'invoke_timeout',
+        title: 'Invocation did not finish',
+        detail: 'The invocation did not finish within 60 seconds. Try again later.',
+      });
+    }
+    await pause(TEST_POLL_MS);
+    inv = await poll(inv.id);
+  }
+  if (inv.status === 'succeeded' && inv.result) return inv.result;
+  throw new ApiError({
+    status: 409,
+    code: inv.error ?? 'invoke_failed',
+    title: 'Invocation failed',
+    detail: `The invocation failed (${inv.error ?? 'unknown error'}).`,
   });
 }
 
@@ -208,6 +244,23 @@ export function createIntegrateEndpoints(client: ApiClient) {
       client.request<Connection>(`${org$(org)}/connections/${enc(id)}`),
     createConnection: (org: string, input: ConnectionInput) =>
       send<Connection>('POST', `${org$(org)}/connections`, input),
+    updateConnection: (org: string, c: Connection, patch: Omit<ConnectionPatch, 'row_version'>) =>
+      send<Connection>('PATCH', `${org$(org)}/connections/${enc(c.id)}`, {
+        ...patch,
+        row_version: c.row_version,
+      }),
+    /** Set the connection's own credential, or rotate the bound secret (CM-4, B-2749). */
+    setConnectionCredential: (
+      org: string,
+      c: Connection,
+      value: string,
+      readOnlyConfirmed?: boolean,
+    ) =>
+      send<Connection>('PUT', `${org$(org)}/connections/${enc(c.id)}/credential`, {
+        value,
+        row_version: c.row_version,
+        ...(readOnlyConfirmed ? { read_only_confirmed: true } : {}),
+      }),
     setConnectionStatus: (org: string, c: Connection, status: ConnectionStatus) =>
       send<Connection>('POST', `${org$(org)}/connections/${enc(c.id)}/status`, {
         status,
@@ -245,8 +298,29 @@ export function createIntegrateEndpoints(client: ApiClient) {
       ),
     latestDiscovery: (org: string, id: string) =>
       client.request<Discovery>(`${org$(org)}/connections/${enc(id)}/discoveries/latest`),
-    invokeConnection: (org: string, id: string, body: Record<string, unknown>) =>
-      send<ConnectionInvokeResult>('POST', `${org$(org)}/connections/${enc(id)}/invoke`, body),
+    getConnectionInvocation: (org: string, id: string, invocationId: string) =>
+      client.request<ConnectionInvocation>(
+        `${org$(org)}/connections/${enc(id)}/invocations/${enc(invocationId)}`,
+      ),
+    /** Queue the invocation (202), then poll it until the worker has recorded the outcome. */
+    invokeConnection: async (
+      org: string,
+      id: string,
+      body: Record<string, unknown>,
+      onStatus?: (status: 'queued' | 'running') => void,
+    ): Promise<ConnectionInvokeResult> =>
+      awaitInvocation(
+        await send<ConnectionInvocation>(
+          'POST',
+          `${org$(org)}/connections/${enc(id)}/invoke`,
+          body,
+        ),
+        (invocationId) =>
+          client.request<ConnectionInvocation>(
+            `${org$(org)}/connections/${enc(id)}/invocations/${enc(invocationId)}`,
+          ),
+        onStatus,
+      ),
 
     // Egress
     listEgressPolicies: (org: string) => list<EgressPolicy>(`${org$(org)}/egress-policies`),

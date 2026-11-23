@@ -5,20 +5,22 @@ import { useState } from 'react';
 import { ApiError } from '@/lib/api/errors';
 import { endpoints } from '@/lib/api/endpoints';
 import type { Connection, ConnectionStatus, ConnectionTestResult } from '@/lib/api/integrate-types';
-import { useCan } from '@/lib/hooks';
+import { useCan, usePermissions } from '@/lib/hooks';
 import {
   useAdapters,
   useConnection,
   useLatestDiscovery,
   useRefreshInt,
 } from '@/lib/integrate-hooks';
-import { normalizeDiscovery } from '@/lib/discovery';
+import { normalizeDiscovery, type DiscoveredTable } from '@/lib/discovery';
+import { connectionHref, connectionsHref } from '@/lib/scope';
 import { adapterMaturity, isPlannedAdapter, PLANNED_EXPLANATION } from '@/lib/maturity';
 import { useSecrets } from '@/lib/security-hooks';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { ActionError, EmptyState, formatDate, PageHeader, QueryGate, useAction } from '../admin/ui';
 import { useOrgParam } from '../security/useOrg';
 import { ConnectionConsole } from './ConnectionConsole';
+import { CredentialSection, EditConnectionDialog } from './ConnectionManage';
 import { TestResultView } from './ConnectionTests';
 import { MaturityBadge, StatusBadge } from './Maturity';
 import { scopeLabel } from './ConnectionsView';
@@ -54,14 +56,19 @@ export function ConnectionDetailView({ id }: { id: string }) {
   const test = useAction();
   const [pending, setPending] = useState<ConnectionStatus | null>(null);
   const [lastTest, setLastTest] = useState<ConnectionTestResult | null>(null);
+  const [editing, setEditing] = useState(false);
+  // Edit and Set/Rotate are decided at the connection's own scope (the server decides).
+  const scopePerms = usePermissions(
+    org,
+    connection.data?.scope?.workspace ?? undefined,
+    connection.data?.scope?.project ?? undefined,
+  );
+  const canAtScope = (key: string) => scopePerms.data?.has(key) ?? false;
 
   return (
     <div className="space-y-6">
       <p className="text-sm">
-        <Link
-          className="text-blue-800 underline"
-          href={`/o/${encodeURIComponent(org)}/integrate/connections`}
-        >
+        <Link className="text-blue-800 underline" href={connectionsHref(org)}>
           Back to connections
         </Link>
       </p>
@@ -71,6 +78,13 @@ export function ConnectionDetailView({ id }: { id: string }) {
           const planned = adapters.isSuccess && isPlannedAdapter(adapter);
           const secretName = secrets.data?.items.find((s) => s.id === c.secret_id)?.name;
           const configEntries = Object.entries(c.config);
+          const live = c.status !== 'retired';
+          const canEdit = canAtScope('connection:manage') && live;
+          const canRotate =
+            canAtScope('connection:manage') &&
+            canAtScope('secret:manage') &&
+            c.auth_method !== 'none' &&
+            live;
           const consoleBlocked = planned
             ? PLANNED_EXPLANATION
             : c.status !== 'active'
@@ -88,10 +102,7 @@ export function ConnectionDetailView({ id }: { id: string }) {
               <PageHeader
                 title={c.name}
                 actions={
-                  <Link
-                    className="btn"
-                    href={`/o/${encodeURIComponent(org)}/integrate/connections/${encodeURIComponent(id)}/tests`}
-                  >
+                  <Link className="btn" href={connectionHref(org, id, 'tests')}>
                     Test history
                   </Link>
                 }
@@ -113,14 +124,22 @@ export function ConnectionDetailView({ id }: { id: string }) {
                   {c.auth_method}
                   {c.secret_id ? ` using secret ${secretName ?? c.secret_id}` : ''}
                 </Item>
+                <Item label="Credential">{c.secret_set ? 'Set' : 'Not set'}</Item>
                 <Item label="Egress policy">{c.egress_policy_id ?? 'Default policy'}</Item>
                 <Item label="Last tested">{formatDate(c.last_tested_at)}</Item>
               </dl>
 
               <section aria-labelledby="cfg-h" className="card space-y-2">
-                <h2 id="cfg-h" className="text-lg font-semibold">
-                  Configuration
-                </h2>
+                <div className="flex items-center justify-between gap-2">
+                  <h2 id="cfg-h" className="text-lg font-semibold">
+                    Configuration
+                  </h2>
+                  {canEdit && (
+                    <button type="button" className="btn" onClick={() => setEditing(true)}>
+                      Edit
+                    </button>
+                  )}
+                </div>
                 {configEntries.length === 0 ? (
                   <p className="text-sm text-slate-600">No configuration values.</p>
                 ) : (
@@ -137,6 +156,22 @@ export function ConnectionDetailView({ id }: { id: string }) {
                   re-tested.
                 </p>
               </section>
+              {editing && (
+                <EditConnectionDialog
+                  org={org}
+                  connection={c}
+                  adapter={adapter}
+                  onClose={() => setEditing(false)}
+                />
+              )}
+
+              <CredentialSection
+                org={org}
+                connection={c}
+                secretName={c.secret_id ? secretName : undefined}
+                canRotate={canRotate}
+                testBlocked={planned}
+              />
 
               {planned && (
                 <p
@@ -185,6 +220,10 @@ export function ConnectionDetailView({ id }: { id: string }) {
                   >
                     <p>
                       <strong>{c.name}</strong> will stop working and cannot be reactivated.
+                    </p>
+                    <p className="mt-2">
+                      Retiring archives the connection. Its own credential is disabled unless
+                      another live connection uses it. A shared secret it uses is kept.
                     </p>
                   </ConfirmDialog>
                 </section>
@@ -252,6 +291,8 @@ function Discovery({
   const discover = useAction();
   const none = latest.isError && latest.error instanceof ApiError && latest.error.status === 404;
   const view = latest.data ? normalizeDiscovery(latest.data) : null;
+  const catalogTables = view?.tables.filter((t) => t.catalog !== undefined) ?? [];
+  const flatTables = view?.tables.filter((t) => t.catalog === undefined) ?? [];
 
   return (
     <section aria-labelledby="disc-h" className="card space-y-3">
@@ -319,11 +360,17 @@ function Discovery({
               </ul>
             </div>
           )}
-          {view.tables.length > 0 && (
+          {view.truncated && (
+            <p role="note" className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
+              The discovery hit its limits: not every catalog, schema or table is shown.
+            </p>
+          )}
+          {catalogTables.length > 0 && <CatalogTree tables={catalogTables} />}
+          {flatTables.length > 0 && (
             <div>
-              <h3 className="font-medium">Tables ({view.tables.length})</h3>
+              <h3 className="font-medium">Tables ({flatTables.length})</h3>
               <ul className="mt-1 space-y-2 text-sm">
-                {view.tables.map((t) => (
+                {flatTables.map((t) => (
                   <li key={`${t.schema ?? ''}.${t.name}`}>
                     <span className="font-mono">{t.schema ? `${t.schema}.${t.name}` : t.name}</span>
                     <span className="text-slate-600">
@@ -338,5 +385,53 @@ function Discovery({
         </div>
       ) : null}
     </section>
+  );
+}
+
+const columnText = (t: DiscoveredTable) =>
+  t.columns.map((c) => (c.type ? `${c.name} ${c.type}` : c.name)).join(', ');
+
+/** Discovered tables as catalog > schema > table, each level a keyboard-operable <details>. */
+function CatalogTree({ tables }: { tables: DiscoveredTable[] }) {
+  const tree = new Map<string, Map<string, DiscoveredTable[]>>();
+  for (const t of tables) {
+    const schemas = tree.get(t.catalog ?? '') ?? new Map<string, DiscoveredTable[]>();
+    schemas.set(t.schema ?? '', [...(schemas.get(t.schema ?? '') ?? []), t]);
+    tree.set(t.catalog ?? '', schemas);
+  }
+  return (
+    <div>
+      <h3 className="font-medium">Catalogs ({tree.size})</h3>
+      <ul aria-label="Catalogs" className="mt-1 space-y-1 text-sm">
+        {[...tree].map(([catalog, schemas]) => (
+          <li key={catalog}>
+            <details>
+              <summary className="cursor-pointer font-mono">{catalog}</summary>
+              <ul aria-label={`Schemas in ${catalog}`} className="ml-5 space-y-1">
+                {[...schemas].map(([schema, list]) => (
+                  <li key={schema}>
+                    <details>
+                      <summary className="cursor-pointer font-mono">
+                        {schema || '(no schema)'}
+                      </summary>
+                      <ul aria-label={`Tables in ${catalog}.${schema}`} className="ml-5 space-y-1">
+                        {list.map((t) => (
+                          <li key={t.name}>
+                            <span className="font-mono">{t.name}</span>
+                            {t.columns.length > 0 && (
+                              <span className="text-slate-600"> {columnText(t)}</span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

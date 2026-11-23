@@ -39,7 +39,7 @@ from shifde.authz.pdp import PLATFORM_ONLY_ACTIONS
 from shifde.core.clock import utcnow
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
-from tests._support.conntests import run_discover, run_test
+from tests._support.conntests import run_discover, run_invoke, run_test
 from tests._support.fullapp import World, full_client
 from tests._support.p2util import login, new_user, post, tenant_id
 from tests._support.p3util import (
@@ -50,7 +50,6 @@ from tests._support.p3util import (
     activate,
     fake_model_stack,
     invoke_body,
-    secret,
 )
 from tests._support.p4util import (
     agent_spec,
@@ -449,12 +448,17 @@ ROUTES: dict[Op, tuple[str, str]] = {
     ),
     ("POST", "/api/v1/orgs/{org}/connections/{connection_id}/invoke"): (SCOPED, "connections"),
     ("POST", "/api/v1/orgs/{org}/connections/{connection_id}/status"): (SCOPED, "connections"),
+    ("PUT", "/api/v1/orgs/{org}/connections/{connection_id}/credential"): (SCOPED, "connections"),
     ("POST", "/api/v1/orgs/{org}/connections/{connection_id}/test"): (SCOPED, "connections"),
     ("GET", "/api/v1/orgs/{org}/connections/{connection_id}/test-jobs/{job_id}"): (
         SCOPED,
         "connections",
     ),
     ("GET", "/api/v1/orgs/{org}/connections/{connection_id}/discovery-jobs/{job_id}"): (
+        SCOPED,
+        "connections",
+    ),
+    ("GET", "/api/v1/orgs/{org}/connections/{connection_id}/invocations/{invocation_id}"): (
         SCOPED,
         "connections",
     ),
@@ -838,6 +842,10 @@ RUNS = (
     "SELECT * FROM shifde.runs WHERE workspace_id = :w ORDER BY id",
     "SELECT * FROM shifde.approvals WHERE workspace_id = :w ORDER BY id",
     "SELECT count(*) FROM shifde.usage_events WHERE workspace_id = :w",
+)
+CONN_SECRETS = (  # W2's connections' secrets, all columns (CM-2: set and rotate)
+    "SELECT s.* FROM shifde.secrets s JOIN shifde.connections c ON c.secret_ref_id = s.id "
+    "WHERE c.workspace_id = :w ORDER BY s.id"
 )
 CONNS = (
     "SELECT * FROM shifde.connections WHERE workspace_id = :w ORDER BY id",
@@ -1258,6 +1266,9 @@ _register(
         ("GET", ORG + "/connections/{connection_id}/discovery-jobs/{job_id}"): lambda w: _case(
             READ, "GET", lambda n: _conn(w, n, f"/discovery-jobs/{w('discover_job', n)}")
         ),
+        ("GET", ORG + "/connections/{connection_id}/invocations/{invocation_id}"): lambda w: _case(
+            READ, "GET", lambda n: _conn(w, n, f"/invocations/{w('invocation', n)}")
+        ),
         ("GET", ORG + "/connections/{connection_id}/discoveries/latest"): lambda w: _case(
             READ, "GET", lambda n: _conn(w, n, "/discoveries/latest")
         ),
@@ -1294,6 +1305,21 @@ _register(
             lambda n: _conn(w, n, "/status"),
             body=lambda n: {"status": "disabled"},
             state=w.snap(*CONNS),
+        ),
+        ("PUT", ORG + "/connections/{connection_id}/credential"): lambda w: _case(
+            WRITE,
+            "PUT",
+            lambda n: _conn(w, n, "/credential"),
+            body=lambda n: {
+                "value": REST_TOKEN,
+                "row_version": int(
+                    w.rows(
+                        "SELECT row_version FROM shifde.connections WHERE id = :c", c=w("conn", n)
+                    )[0][0]
+                ),
+                "read_only_confirmed": True,
+            },
+            state=w.snap(*CONNS, CONN_SECRETS),
         ),
     },
 )
@@ -2105,13 +2131,19 @@ def _rest(w: W, n: int, base_url: str, secret_id: str) -> str:
     return str(made["id"])
 
 
+def _project_token(w: W, n: int) -> str:
+    """Side n's REST token as a secret of project p{n}: a project connection takes only a secret
+    of its own project (connections_0002, #156)."""
+    body = {"name": f"rest-token-{n}", "value": REST_TOKEN, "scope": w.scope(n, "project")}
+    return str(w.post("/secrets", body)["id"])
+
+
 def test_ontologies(
     client: TestClient, world: World, owner_session: Session, rest_server: RestTestServer
 ) -> None:
     w = _world(client, owner_session, world.passwords)
-    token = secret(w.admin.client, w.admin, "rest-token", REST_TOKEN)
     for n in (1, 2):
-        w.set("conn", n, _rest(w, n, rest_server.base_url, token))
+        w.set("conn", n, _rest(w, n, rest_server.base_url, _project_token(w, n)))
         tool = art(w.admin.client, w.admin, "tools", "act", builtin_tool_spec(), w.scope(n))
         tool_v = publish(w.admin.client, w.admin, "tools", tool["id"])["id"]
         _artifact(w, "ontologies", n, _ontology_spec(tool_v), by_api=False, project=True)
@@ -2145,11 +2177,10 @@ def test_connections_and_delivery_targets(
 ) -> None:
     w = _world(client, owner_session, world.passwords)
     w.set("rest", 1, rest_server.base_url)
-    token = secret(w.admin.client, w.admin, "rest-token", REST_TOKEN)
     _solutions_world(w)  # each side's sealed release, in the side's project
     for n in (1, 2):
         _passed_evaluation(w, owner_session, n)
-        cid = _rest(w, n, rest_server.base_url, token)
+        cid = _rest(w, n, rest_server.base_url, _project_token(w, n))
         w.set("conn", n, cid)
         tested = run_test(w.admin.client, w.admin, A, cid)
         w.set("job", n, tested["id"])
@@ -2169,6 +2200,14 @@ def test_connections_and_delivery_targets(
             {"d": w("deployment", n), "p": w("plan", n)},
         )
         owner_session.commit()
+    # an invocation is read by its requester only (issue #190): W1's by U, W2's by the admin
+    tenant = tenant_id(owner_session, "demo-a")
+    for n, who in ((1, w.user), (2, w.admin)):
+        done = run_invoke(
+            who.client, who, A, w("conn", n), {"method": "GET", "path": "/health"}, tenant_id=tenant
+        )
+        assert done["status"] == "succeeded", done
+        w.set("invocation", n, done["id"])
     _check(w, "connections", "delivery")
 
 

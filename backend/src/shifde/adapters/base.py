@@ -192,7 +192,35 @@ class ConnectionSession(Protocol):
     def close(self) -> None: ...
 
 
+@dataclass(frozen=True)
+class AdapterRules:
+    """Installation rules an adapter's `normalize_config` applies (B-2753): passed in by
+    `ConnectionService`, because adapters never read settings. The default is the built-in rules
+    only (fail closed)."""
+
+    databricks_host_suffixes: tuple[str, ...] = ()
+
+
+class ConfigRefused(Exception):
+    """`normalize_config` refused the config: per-field errors whose messages are fixed text and
+    never echo the submitted value (`ConnectionService` answers 422 with them)."""
+
+    def __init__(self, errors: list[ConfigError]) -> None:
+        super().__init__("connection config was refused")
+        self.errors = errors
+
+
 class ConnectionAdapter(Protocol):
+    """A connection adapter. Two optional methods are not protocol members (existing adapters
+    satisfy the protocol without them); `ConnectionService` calls them when a class defines them:
+
+    * ``normalize_config(self, config: JSON, rules: AdapterRules) -> JSON`` returns the config to
+      validate and store (create, and a PATCH that sends `config`), or raises `ConfigRefused`.
+      The worker and the read, test, discover and invoke paths never call it.
+    * ``validate_credential(self, auth_method: str, value: str) -> list[ConfigError]`` checks an
+      inline credential (create, `PUT .../credential`); its messages never contain the value.
+    """
+
     descriptor: ClassVar[AdapterDescriptor]
 
     def validate_config(self, config: JSON) -> list[ConfigError]: ...

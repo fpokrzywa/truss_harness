@@ -1,8 +1,8 @@
 {
-  "session_id": "0017d47c-7e30-411c-8ea6-681a79a8238e",
-  "head_sha": "fbb3b09be02dfdef73e37614725f2b1e836621da",
+  "session_id": "c88d27a4-97d8-42d4-b155-e409395c3445",
+  "head_sha": "110459f2d875d3388efeaa9aec5ced9728867935",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "PYTHONUTF8=1 factory/bin/job queue; hand merge 073 (gates 12/13, only #188); gate 088; then gates+hand merge 080, 083, 084, 076 per docs/build/HANDOFF.md; job for #188",
-  "written_at": "2026-11-22T16:45:37Z"
+  "next_step": "PYTHONUTF8=1 factory/bin/job queue and start every resume line: gate 125 and 127, approver for 102 (PR #246) and 126 (PR #247), then job merge; then runtime_0007 re-sync and gates.py (HANDOFF.md step 2)",
+  "written_at": "2026-11-23T08:40:23Z"
 }

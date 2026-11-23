@@ -8,7 +8,15 @@ database: it checks the manifest, both digests, that the revisions are known to 
 not newer than its heads, and that `pg_restore` exists.
 `restore_backup` (SP4-5) verifies first, refuses a target that is not an empty database owned
 by the schema owner on a cluster with both roles, runs `pg_restore --single-transaction`, and
-`restore_checks` then compares the target with the manifest (six checks, design 6.1).
+`restore_checks` then compares the target with the manifest (seven checks, design 6.1).
+The `catalog rules` check never reads the manifest: it applies the code's own copy of the schema
+tests' isolation rules (`catalog_rules`) to the restored catalog -- the row-level security rules,
+the app role's privileges, the SECURITY DEFINER rules, the full context-write scan, tenant_id in
+foreign and unique keys between client tables, uuid key columns, the admin flag only on
+installation rows and the principal tables -- so a forged manifest cannot hide a catalog that
+breaks them. The principal-table check reads only the live catalog (see `catalog_rules`).
+It also pins the context helper definitions (`current_tenant_id()` and the other two) to the
+texts reviewed in `catalog_rules`.
 
 The digests detect corruption and edits, not a deliberate forger: the manifest is unsigned, so
 anyone who can edit it can recompute them. The KEK ring (`SHIFDE_SECRET_KEYS`, only its key ids
@@ -42,6 +50,7 @@ from sqlalchemy.orm import Session
 
 from shifde import __version__
 from shifde.audit import service as audit
+from shifde.cli import catalog_rules
 from shifde.core.clock import utcnow
 from shifde.core.crypto import KeyRing
 from shifde.core.db import Database, read_db_revisions
@@ -504,6 +513,7 @@ def verify_backup(from_dir: Path) -> tuple[dict[str, Any], Path, str]:
 # --------------------------------------------------------------------------- restore (SP4-5)
 RESTORE_CHECKS = (
     "fingerprint",
+    "catalog rules",
     "row counts",
     "migration state",
     "app role",
@@ -635,6 +645,24 @@ def _check_fingerprint(session: Session, manifest: Mapping[str, Any], app_role: 
     return "differs: " + (", ".join(_differences(expected, actual)) or "other fields")
 
 
+def _check_catalog_rules(session: Session, owner_role: str, app_role: str) -> str:
+    conn = session.connection()
+    problems = [
+        *catalog_rules.rls_violations(conn),
+        *catalog_rules.privilege_problems(conn, app_role),
+        *catalog_rules.definer_violations(conn, owner_role, app_role),
+        *catalog_rules.helper_violations(conn),
+        # policies are scanned by rls_violations
+        *catalog_rules.context_write_violations(conn, kinds=catalog_rules.ALL_KINDS - {"policy"}),
+        *catalog_rules.foreign_key_problems(conn),
+        *catalog_rules.unique_key_problems(conn),
+        *catalog_rules.key_type_problems(conn),
+        *catalog_rules.admin_flag_problems(conn),
+        *catalog_rules.principal_table_problems(conn),
+    ]
+    return "violates: " + "; ".join(problems) if problems else ""
+
+
 def _check_row_counts(session: Session, manifest: Mapping[str, Any]) -> str:
     volatile = set(manifest["volatile_tables"])
     expected = {k: v for k, v in manifest["row_counts"].items() if k not in volatile}
@@ -667,7 +695,10 @@ def _check_audit(session: Session) -> str:
 
 
 def _check_secrets(session: Session, keyring: KeyRing) -> str:
-    ok, failed = secrets_service.check_all(session, keyring)
+    try:
+        ok, failed = secrets_service.check_all(session, keyring)
+    except secrets_service.RowSecurityHidesSecrets:
+        return secrets_service.ROW_SECURITY_HIDES_SECRETS
     if not failed:
         return ""
     return f"ok {ok}, failed {len(failed)}: {', '.join(str(i) for i in failed)}"
@@ -676,7 +707,7 @@ def _check_secrets(session: Session, keyring: KeyRing) -> str:
 def restore_checks(
     manifest: Mapping[str, Any], target_url: str, app_url: str, app_role: str, keyring: KeyRing
 ) -> list[CheckResult]:
-    """The six post-restore checks of design 6.1, in `RESTORE_CHECKS` order; each runs even when
+    """The seven post-restore checks of design 6.1, in `RESTORE_CHECKS` order; each runs even when
     an earlier one failed. `app_url` gives the app role's credentials; its host, port and
     database become the target's. A detail never carries connection details or key material."""
     target = make_url(target_url)
@@ -687,6 +718,7 @@ def restore_checks(
     )
     steps: dict[str, Callable[[Session], str]] = {
         "fingerprint": lambda s: _check_fingerprint(s, manifest, app_role),
+        "catalog rules": lambda s: _check_catalog_rules(s, target.username or "", app_role),
         "row counts": lambda s: _check_row_counts(s, manifest),
         "migration state": _check_migrations,
         "audit chains": _check_audit,

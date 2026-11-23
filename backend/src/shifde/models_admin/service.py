@@ -69,6 +69,7 @@ from shifde.core.errors import (
     NotFound,
     ScopeArchived,
     ValidationFailed,
+    VendorNotVisible,
 )
 from shifde.core.ids import uuid7
 from shifde.core.pagination import Page, decode_cursor, encode_cursor, paginate
@@ -94,6 +95,11 @@ INVOCABLE = frozenset({"preview", "active"})
 ORG_NOT_FOUND = "organization not found"  # the answer `tenancy.dependencies.resolve_org` gives
 SHARED_READ_ONLY = "the SHI provider and its models are managed by the platform administrator"
 SHI_NOT_CONFIGURED = "the SHI provider is not configured"
+PROVIDER_CONNECTION_SCOPE = "a model provider needs a client-wide model_api connection"
+# the fixed RAISE texts of the `shifde.model_providers` guards (models_admin_0001, _0004)
+GUARD_PROVIDER_CONNECTION = "a model provider needs a client-wide connection"
+GUARD_PROVIDER_VENDOR = "vendor is not visible to the provider tenant"
+PROVIDER_CHECK_FAILED = "the model provider does not meet a database check"
 SHI_CONFIGURED = "model.shi_provider.configured"
 SHI_ACCESS_CHANGED = "model.shi_provider.access_changed"
 SHI_OFF = "shi_provider_off"  # the reason a call-time gate refusal is audited with
@@ -108,6 +114,25 @@ JOB_ACTION = {
     DISCOVER_JOB_KIND: "model.provider.models_discovered",
 }
 JOB_NOT_FOUND = "provider job not found"
+
+
+def provider_integrity_error(exc: IntegrityError) -> AppError | None:
+    """HTTP mapping of a database refusal of a provider insert by SQLSTATE (B-3121): a duplicate
+    name is 409; a `model_providers` guard refusal (23514) is 422 with the code of the guard its
+    fixed RAISE text names, any other 23514 (a plain CHECK) 422 `validation_error`; the message
+    is always a constant here, never ids or values; None for anything else, which the caller
+    re-raises."""
+    state = getattr(exc.orig, "sqlstate", None)
+    if state == "23505":
+        return Conflict("a model provider with this name already exists")
+    if state == "23514":
+        message = getattr(getattr(exc.orig, "diag", None), "message_primary", None)
+        if message == GUARD_PROVIDER_CONNECTION:
+            return ValidationFailed(PROVIDER_CONNECTION_SCOPE)
+        if message == GUARD_PROVIDER_VENDOR:
+            return VendorNotVisible(GUARD_PROVIDER_VENDOR)
+        return ValidationFailed(PROVIDER_CHECK_FAILED)
+    return None
 
 
 def _provider_out(r: Mapping[str, Any]) -> s.ProviderOut:
@@ -357,6 +382,8 @@ class ModelService:
             raise ValidationFailed(
                 "connection_id must reference a model_api connection of the same adapter"
             )
+        if conn["workspace_id"] is not None:  # #156 rule 4.6
+            raise ValidationFailed(PROVIDER_CONNECTION_SCOPE)
         if body.vendor_id is not None:
             vendors.require_active_vendor(self._session, self.sc.tenant_id, body.vendor_id)
         provider_id = uuid7()
@@ -377,7 +404,10 @@ class ModelService:
             self._session.flush()
         except IntegrityError as exc:
             self._session.rollback()
-            raise Conflict("a model provider with this name already exists") from exc
+            mapped = provider_integrity_error(exc)
+            if mapped is None:
+                raise
+            raise mapped from exc
         row = self._provider_row(provider_id)
         self._audit(
             "model.provider.created",

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import signal
 import socket
 import subprocess
 import sys
@@ -352,7 +353,72 @@ def _listening(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 
-def _start_api(database_url: str, port: int) -> subprocess.Popen[str]:
+# Runs `shifde.main` as `-m` would, after printing the PID of the interpreter that runs it: behind
+# the Windows venv launcher that is a grandchild of the test, not `proc.pid`.
+_CHILD = (
+    "import os, runpy; print(os.getpid(), flush=True); "
+    "runpy.run_module('shifde.main', run_name='__main__')"
+)
+
+
+def _holds_listener(pid: int, port: int) -> bool | None:
+    """Whether `pid` holds a TCP LISTEN socket on 127.0.0.1:`port` or 0.0.0.0:`port`.
+
+    None when this platform can't tell or the lookup fails; callers treat that as "it does".
+    """
+    try:
+        if sys.platform.startswith("linux"):
+            return _holds_listener_linux(pid, port)
+        if sys.platform == "win32":
+            return _holds_listener_windows(pid, port)
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return None
+    return None
+
+
+def _holds_listener_linux(pid: int, port: int) -> bool | None:
+    proc_dir = f"/proc/{pid}"
+    if not os.path.isdir(proc_dir):
+        return False  # the process is gone and holds nothing
+    with open(f"{proc_dir}/net/tcp", encoding="ascii") as f:
+        rows = f.read().splitlines()[1:]
+    inodes = set()
+    for row in rows:
+        fields = row.split()
+        address, local_port = fields[1].split(":")
+        listening = fields[3] == "0A" and int(local_port, 16) == port
+        if listening and address in ("0100007F", "00000000"):
+            inodes.add(fields[9])
+    if not inodes:
+        return False
+    links = set()
+    for fd in os.listdir(f"{proc_dir}/fd"):
+        try:
+            links.add(os.readlink(f"{proc_dir}/fd/{fd}"))
+        except FileNotFoundError:
+            continue  # closed while we looked
+    return any(f"socket:[{inode}]" in links for inode in inodes)
+
+
+def _holds_listener_windows(pid: int, port: int) -> bool | None:
+    out = subprocess.run(
+        ["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True, timeout=30, check=True
+    ).stdout
+    if "LISTENING" not in out:
+        return None  # unparseable (for example localized) output
+    pids = set()
+    for line in out.splitlines():
+        fields = line.split()
+        local = (f"127.0.0.1:{port}", f"0.0.0.0:{port}")
+        if len(fields) == 5 and fields[3] == "LISTENING" and fields[1] in local:
+            pids.add(int(fields[4]))
+    return pid in pids
+
+
+def _start_api(
+    database_url: str, port: int, *, creationflags: int = 0
+) -> tuple[subprocess.Popen[str], int]:
+    """Start the API and return it with the PID of the interpreter that runs `shifde.main`."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("SHIFDE_")}
     env.update(
         SHIFDE_ENV="test",
@@ -360,22 +426,65 @@ def _start_api(database_url: str, port: int) -> subprocess.Popen[str]:
         SHIFDE_API_HOST="127.0.0.1",
         SHIFDE_API_PORT=str(port),
     )
-    return subprocess.Popen(
-        [sys.executable, "-m", "shifde.main"],
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _CHILD],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        creationflags=creationflags,
     )
+    assert proc.stdout is not None
+    first = proc.stdout.readline()
+    try:
+        return proc, int(first)
+    except ValueError:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+        pytest.fail(f"the API did not report its PID: {first!r} {stdout!r} {stderr!r}")
+
+
+def test_listener_is_attributed_to_its_process() -> None:
+    """The owner-role check below relies on this: a child that binds is the one reported."""
+    if not (sys.platform.startswith("linux") or sys.platform == "win32"):
+        pytest.skip("no listener lookup on this platform")
+    port = _free_port()
+    code = (
+        "import os, socket, sys, time; s = socket.socket(); "
+        f"s.bind(('127.0.0.1', {port})); s.listen(); "
+        "print(os.getpid(), flush=True); sys.stdin.read()"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", code],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert proc.stdout is not None and proc.stdin is not None
+        pid = int(proc.stdout.readline())
+        assert _holds_listener(pid, port) is True
+        assert _holds_listener(os.getpid(), port) is False
+        proc.stdin.close()
+        proc.wait(timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    assert _holds_listener(pid, port) is False
 
 
 def test_api_exits_3_under_owner_role_without_listening(owner_url: str) -> None:
     port = _free_port()
-    proc = _start_api(owner_url, port)
+    proc, pid = _start_api(owner_url, port)
     try:
         deadline = time.monotonic() + 60
         while proc.poll() is None and time.monotonic() < deadline:
-            assert not _listening(port), "the API bound its port under an unsafe role"
+            if _listening(port):
+                # A listener held only by another process is not the API's; unknown counts as the API's.
+                assert _holds_listener(pid, port) is False, (
+                    "the API bound its port under an unsafe role"
+                )
             time.sleep(0.05)
         assert proc.poll() is not None, "the API did not exit under an unsafe role"
         stdout, stderr = proc.communicate(timeout=10)
@@ -392,21 +501,76 @@ def test_api_exits_3_under_owner_role_without_listening(owner_url: str) -> None:
 
 
 def test_api_serves_under_application_role(app_url: str) -> None:
-    """Positive control: the same probe sees the port open when the role is safe."""
+    """Positive control: the API under test opens its port when the role is safe."""
     port = _free_port()
-    proc = _start_api(app_url, port)
+    proc, pid = _start_api(app_url, port)
     try:
-        deadline = time.monotonic() + 60
-        while not _listening(port):
-            assert proc.poll() is None, proc.communicate()
+        deadline = time.monotonic() + 180
+        while True:
+            if proc.poll() is not None:
+                stdout, stderr = proc.communicate()
+                pytest.fail(f"the API exited with {proc.returncode}: {stdout!r} {stderr!r}")
+            try:
+                r = httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=2)
+                if r.status_code == 200:
+                    break
+            except httpx.TransportError:
+                pass
             assert time.monotonic() < deadline, "the API did not start"
             time.sleep(0.1)
-        r = httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=10)
         assert r.status_code == 200
         assert r.json() == {"status": "ok"}
+        assert _holds_listener(pid, port) in (True, None), "another process answered on the port"
     finally:
         proc.terminate()
-        proc.communicate(timeout=30)
+        try:
+            proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+
+
+@pytest.mark.parametrize(
+    "stop",
+    [
+        pytest.param(
+            "ctrl_break",
+            marks=pytest.mark.skipif(sys.platform != "win32", reason="Windows only"),
+        ),
+        pytest.param(
+            "sigterm", marks=pytest.mark.skipif(sys.platform == "win32", reason="POSIX only")
+        ),
+    ],
+)
+def test_api_exits_0_after_a_stop_signal(app_url: str, stop: str) -> None:
+    """A graceful stop exits 0, never 3 (the unsafe-role code): uvicorn re-raises the signal after
+    draining, and on Windows the default CTRL_BREAK action is exit 3 (issue #185)."""
+    port = _free_port()
+    flags = subprocess.CREATE_NEW_PROCESS_GROUP if stop == "ctrl_break" else 0
+    proc, _pid = _start_api(app_url, port, creationflags=flags)
+    try:
+        deadline = time.monotonic() + 180
+        while True:
+            if proc.poll() is not None:
+                stdout, stderr = proc.communicate()
+                pytest.fail(f"the API exited with {proc.returncode}: {stdout!r} {stderr!r}")
+            try:
+                if httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=2).status_code == 200:
+                    break
+            except httpx.TransportError:
+                pass
+            assert time.monotonic() < deadline, "the API did not start"
+            time.sleep(0.1)
+        if stop == "ctrl_break":
+            os.kill(proc.pid, signal.CTRL_BREAK_EVENT)
+        else:
+            proc.send_signal(signal.SIGTERM)
+        stdout, stderr = proc.communicate(timeout=60)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+    assert proc.returncode == 0, (proc.returncode, stdout, stderr)
 
 
 # --------------------------------------------------------------------------- every entrypoint

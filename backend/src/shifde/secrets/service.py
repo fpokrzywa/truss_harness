@@ -29,6 +29,7 @@ from shifde.core.clock import utcnow
 from shifde.core.context import Principal, RequestContext
 from shifde.core.crypto import CryptoError, Envelope, KeyRing
 from shifde.core.db import get_context
+from shifde.core.dbrole import sees_all_rows
 from shifde.core.errors import Conflict, NotFound, ValidationFailed
 from shifde.core.ids import uuid7
 from shifde.core.redaction import register_secret
@@ -38,11 +39,14 @@ from shifde.secrets.models import Secret
 __all__ = [
     "INSTALLATION_IDP_SECRET_RESOLVED",
     "MAX_SECRET_BYTES",
+    "ROW_SECURITY_HIDES_SECRETS",
     "SECRET_NAME_CONFLICT",
+    "RowSecurityHidesSecrets",
     "SecretMeta",
     "SecretProvider",
     "SecretValue",
     "check_all",
+    "check_value",
     "create_secret",
     "disable_secret",
     "get_secret",
@@ -55,6 +59,9 @@ __all__ = [
 MAX_SECRET_BYTES = 16 * 1024
 SECRET_NAME_CONFLICT = "a secret with this name already exists"
 INSTALLATION_IDP_SECRET_RESOLVED = "secret.idp_client_secret.resolved"
+ROW_SECURITY_HIDES_SECRETS = (
+    "the database role cannot see every client's secrets (needs BYPASSRLS); nothing was checked"
+)
 KINDS = frozenset({"generic", "api_key", "password", "token", "pem", "idp_client_secret"})
 
 
@@ -125,6 +132,12 @@ def _check_value(value: str) -> bytes:
         raise ValidationFailed(f"secret value must be 1..{MAX_SECRET_BYTES} bytes")
     register_secret(value)
     return raw
+
+
+def check_value(value: str) -> None:
+    """Refuse a value `create_secret`/`rotate_secret` would refuse (422, never echoing it), for a
+    caller whose earlier checks must answer before its later ones (connections, B-2749)."""
+    _check_value(value)
 
 
 def get_secret(session: Session, secret_id: UUID, *, tenant_id: UUID | None) -> SecretMeta | None:
@@ -261,9 +274,20 @@ def rewrap_all(session: Session, keyring: KeyRing) -> tuple[int, int]:
     return changed, len(rows)
 
 
+class RowSecurityHidesSecrets(Exception):
+    """The session's role is subject to row-level security, so not every secret is visible."""
+
+    def __init__(self) -> None:
+        super().__init__(ROW_SECURITY_HIDES_SECRETS)
+
+
 def check_all(session: Session, keyring: KeyRing) -> tuple[int, list[UUID]]:
     """Decrypt every ``db_encrypted`` envelope (any status) and discard the plaintext at once:
-    nothing is logged, audited or written. Returns (ok, ids that failed)."""
+    nothing is logged, audited or written. Returns (ok, ids that failed). Raises
+    ``RowSecurityHidesSecrets`` before reading any row unless the role is a superuser or has
+    BYPASSRLS (otherwise row-level security would hide rows and ``ok 0, failed 0`` mean nothing)."""
+    if not sees_all_rows(session):
+        raise RowSecurityHidesSecrets
     ok = 0
     failed: list[UUID] = []
     for sec in repository.all_secrets(session):

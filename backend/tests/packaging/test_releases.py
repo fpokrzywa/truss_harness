@@ -48,7 +48,7 @@ from tests._support.p4util import (
     publish,
 )
 from tests._support.p5util import Hdr, user_session
-from tests._support.p6util import mini
+from tests._support.p6util import mini, sink_artifact
 from tests.packaging.helpers import (
     Stack,
     bindings,
@@ -1019,6 +1019,140 @@ def test_unreadable_connection_ids_are_null_on_version_routes(
         {"path": path, "op": "replace", "from": None, "to": x.inner}
     ]
 
+    # a pipeline node's connection id, its connection ref and its diff hide it too (issue #167)
+    pipe_spec = _db_pipeline(x.pg)
+    pipe = art(h.client, h, "pipelines", "shared-query", pipe_spec, scope)
+    pipe_v1 = publish(h.client, h, "pipelines", pipe["id"])["id"]
+    pipe_url = f"{A}/pipelines/{pipe['id']}/versions/{pipe_v1}"
+    admin_pipe = h.client.get(pipe_url, headers=h)
+    assert admin_pipe.status_code == 200, admin_pipe.text
+    assert admin_pipe.json()["spec"]["nodes"][0]["config"]["connection_id"] == x.pg
+    assert {"node_id": "src", "ref_type": "connection", "ref_id": x.pg} in admin_pipe.json()["refs"]
+    got_pipe = proj.client.get(pipe_url, headers=proj)
+    assert got_pipe.status_code == 200, got_pipe.text
+    assert x.pg not in got_pipe.text
+    assert got_pipe.json()["spec"]["nodes"][0]["config"] == {
+        **pipe_spec["nodes"][0]["config"],
+        "connection_id": None,
+    }
+    assert got_pipe.json()["spec"]["nodes"][1:] == pipe_spec["nodes"][1:]
+    assert [r for r in got_pipe.json()["refs"] if r["ref_type"] == "connection"] == [
+        {"node_id": "src", "ref_type": "connection", "ref_id": None}
+    ]
+    assert len(got_pipe.json()["refs"]) == len(admin_pipe.json()["refs"])
+    assert got_pipe.json()["spec_hash"] == admin_pipe.json()["spec_hash"]
+
+    edit(h.client, h, "pipelines", pipe["id"], _db_pipeline(x.inner))
+    pipe_diff_url = f"{A}/pipelines/{pipe['id']}/diff?from={pipe_v1}&to=draft"
+    admin_pipe_diff = h.client.get(pipe_diff_url, headers=h)
+    assert admin_pipe_diff.status_code == 200, admin_pipe_diff.text
+    [admin_change] = [
+        c for c in admin_pipe_diff.json()["changes"] if c["path"].endswith("connection_id")
+    ]
+    assert (admin_change["from"], admin_change["to"]) == (x.pg, x.inner)
+    got_pipe_diff = proj.client.get(pipe_diff_url, headers=proj)
+    assert got_pipe_diff.status_code == 200, got_pipe_diff.text
+    assert x.pg not in got_pipe_diff.text
+    [change] = [c for c in got_pipe_diff.json()["changes"] if c["path"].endswith("connection_id")]
+    assert change == {**admin_change, "from": None}
+
+
+def _db_pipeline(connection_id: str) -> dict[str, Any]:
+    nodes = [
+        {
+            "id": "src",
+            "type": "db_query",
+            "config": {"connection_id": connection_id, "sql": "SELECT name FROM employees"},
+            "inputs": {},
+        },
+        sink_artifact("store", "src.rows"),
+    ]
+    return mini(nodes, [{"from": "src", "to": "store"}])
+
+
+def _sql_tool_spec(connection_id: str | None) -> dict[str, Any]:
+    return {
+        "executor": "connection.sql",
+        "binding": {"connection_id": connection_id, "sql_template": "SELECT name FROM employees"},
+        "input_schema": {"type": "object", "properties": {}},
+        "output_schema": {"type": "object", "required": ["columns", "rows"]},
+        "side_effect_class": "read",
+        "required_permissions": [],
+        "invocation_policy": {},
+        "timeout_s": 10,
+        "retry": {"max_attempts": 1, "backoff_s": 0},
+        "audit_level": "metadata",
+        "idempotency": "none",
+    }
+
+
+def _stored_draft(owner: Session, artifact: str) -> dict[str, Any]:
+    spec = owner.execute(
+        text(
+            "SELECT spec FROM shifde.artifact_versions WHERE artifact_id = :a AND state = 'draft'"
+        ),
+        {"a": artifact},
+    ).scalar_one()
+    owner.rollback()
+    return dict(spec)
+
+
+def _stored_connection(kind: str, spec: dict[str, Any]) -> Any:  # Any: JSON value
+    return spec["binding"] if kind == "tools" else spec["nodes"][0]["config"]
+
+
+def test_a_draft_saved_unchanged_keeps_an_unreadable_connection(
+    client: TestClient, world: World, owner_session: Session, sample_db_url: str
+) -> None:
+    """Issue #167: a reader shown `null` for a connection it cannot read saves the draft back
+    unchanged; the stored connection stays. A reader who can read it clears it with `null`."""
+    x = _hidden(client, world, sample_db_url)
+    h, s = x.h, x.s
+    scope = {"type": "project", "id": s.project_id}
+    proj = _project_developer(client, world, owner_session, s.project_id)
+    for kind, spec_of in (("tools", _sql_tool_spec), ("pipelines", _db_pipeline)):
+        made = art(h.client, h, kind, f"kept-{kind}", spec_of(x.pg), scope)
+        draft_url = f"{A}/{kind}/{made['id']}/draft"
+
+        # the developer saves the spec it was shown: the stored id is kept, and stays hidden
+        shown = proj.client.get(draft_url, headers=proj)
+        assert shown.status_code == 200, shown.text
+        assert x.pg not in shown.text
+        assert _stored_connection(kind, shown.json()["spec"])["connection_id"] is None
+        saved = proj.client.put(
+            draft_url,
+            headers=proj,
+            json={"spec": shown.json()["spec"], "row_version": shown.json()["row_version"]},
+        )
+        assert saved.status_code == 200, saved.text
+        assert x.pg not in saved.text
+        assert _stored_connection(kind, saved.json()["spec"])["connection_id"] is None
+        assert _stored_draft(owner_session, made["id"]) == spec_of(x.pg)
+        admin = h.client.get(draft_url, headers=h)
+        assert _stored_connection(kind, admin.json()["spec"])["connection_id"] == x.pg
+
+        # the administrator reads the connection: its `null` clears it
+        cleared = h.client.put(
+            draft_url,
+            headers=h,
+            json={"spec": spec_of(None), "row_version": admin.json()["row_version"]},
+        )
+        assert cleared.status_code == 200, cleared.text
+        assert _stored_connection(kind, _stored_draft(owner_session, made["id"])) == {
+            **_stored_connection(kind, spec_of(x.pg)),
+            "connection_id": None,
+        }
+
+        # so does the developer's `null` for the project connection it reads
+        inner = edit(h.client, h, kind, made["id"], spec_of(x.inner), cleared.json()["row_version"])
+        again = proj.client.put(
+            draft_url,
+            headers=proj,
+            json={"spec": spec_of(None), "row_version": inner["row_version"]},
+        )
+        assert again.status_code == 200, again.text
+        assert _stored_draft(owner_session, made["id"]) == spec_of(None)
+
 
 def test_a_hidden_binding_key_is_an_unknown_key_and_reports_read_hidden(
     client: TestClient, world: World, owner_session: Session, sample_db_url: str
@@ -1097,3 +1231,75 @@ def test_the_retire_guard_for_the_owner_without_a_client_context(
     ).scalar_one()
     owner_session.rollback()
     assert state == "deprecated"
+
+
+NO_CONTEXT = "retiring a version needs its client context"
+
+
+def _owner_retire(owner: Session, version: str, tenant: UUID | None = None) -> DBAPIError:
+    """The schema owner retires `version` (no client context, or `tenant`'s); the refusal."""
+    if tenant is not None:
+        owner.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)})
+    else:
+        setting = owner.execute(text("SELECT current_setting('app.tenant_id', true)"))
+        assert setting.scalar_one() in (None, "")
+    with pytest.raises(DBAPIError) as err:
+        owner.execute(
+            text("UPDATE shifde.artifact_versions SET state = 'retired' WHERE id = :v"),
+            {"v": version},
+        )
+    owner.rollback()
+    assert _sqlstate(err.value) == "23514", err.value
+    return err.value
+
+
+def _version_state(owner: Session, version: str) -> str:
+    state: str = owner.execute(
+        text("SELECT state FROM shifde.artifact_versions WHERE id = :v"), {"v": version}
+    ).scalar_one()
+    owner.rollback()
+    return state
+
+
+def test_the_retire_guard_refuses_an_unpinned_version_outside_its_client_context(
+    client: TestClient, world: World, owner_session: Session
+) -> None:
+    """Issue #158 (packaging_0003): no release pins the version, yet the owner with no client
+    context, or in another client's context, cannot retire it (23514, row unchanged); the client
+    itself, in its own context, can."""
+    h, s, _ = _setup(client, world)
+    path = f"{A}/agents/{s.agent}/versions/{s.agent_v1}/state"
+    post(h.client, path, h, {"state": "deprecated"}, 200)
+    other = owner_session.execute(
+        text("SELECT id FROM shifde.tenants WHERE slug = 'demo-b'")
+    ).scalar_one()
+    owner_session.rollback()
+
+    assert NO_CONTEXT in str(_owner_retire(owner_session, s.agent_v1))
+    assert NO_CONTEXT in str(_owner_retire(owner_session, s.agent_v1, other))
+    assert _version_state(owner_session, s.agent_v1) == "deprecated"
+
+    assert post(h.client, path, h, {"state": "retired"}, 200)["state"] == "retired"
+    assert _version_state(owner_session, s.agent_v1) == "retired"
+
+
+def test_the_retire_guard_refuses_a_pinned_version_outside_its_client_context(
+    client: TestClient, world: World, owner_session: Session
+) -> None:
+    """Issue #158: a version a sealed release pins (here a transitive prompt pin) is refused for
+    the owner with no client context and in another client's context (23514, row unchanged),
+    whether or not the owner can see the release."""
+    h, s, sid = _setup(client, world)
+    vid = new_version(h.client, h, sid, version_body(s.agent_v1, dataset=s.dataset))["id"]
+    assert seal(h.client, h, sid, vid, _own_bindings(s)).status_code == 201
+    path = f"{A}/prompts/{s.prompt}/versions/{s.prompt_v1}/state"
+    post(h.client, path, h, {"state": "deprecated"}, 200)
+    other = owner_session.execute(
+        text("SELECT id FROM shifde.tenants WHERE slug = 'demo-b'")
+    ).scalar_one()
+    owner_session.rollback()
+
+    for tenant in (None, other):
+        refused = str(_owner_retire(owner_session, s.prompt_v1, tenant))
+        assert "a sealed release pins this version" in refused or NO_CONTEXT in refused
+    assert _version_state(owner_session, s.prompt_v1) == "deprecated"

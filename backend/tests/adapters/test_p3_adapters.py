@@ -73,7 +73,7 @@ def test_descriptors_carry_connection_type_secret_fields_and_schema() -> None:
         assert d.config_schema["type"] == "object"
         assert "validated" not in (d.declared_maturity,)  # code can never claim `validated`
     assert REGISTRY.descriptor("postgres").secret_fields == ("password",)  # type: ignore[union-attr]
-    assert not REGISTRY.descriptor("databricks").implemented  # type: ignore[union-attr]
+    assert not REGISTRY.descriptor("fabric").implemented  # type: ignore[union-attr]
     assert REGISTRY.descriptor("anthropic").declared_maturity == "experimental"  # type: ignore[union-attr]
 
 
@@ -89,8 +89,8 @@ def test_duplicate_or_malformed_adapters_are_refused() -> None:
 def test_planned_adapters_refuse_to_operate() -> None:
     from shifde.core.errors import AdapterNotImplemented
 
-    adapter = REGISTRY.get("snowflake")
-    cfg = ConnectionConfig(None, "x", "snowflake", {"account": "a"})
+    adapter = REGISTRY.get("fabric")
+    cfg = ConnectionConfig(None, "x", "fabric", {"endpoint": "e"})
     for call in (adapter.test, adapter.discover, adapter.open):
         with pytest.raises(AdapterNotImplemented):
             call(None, cfg)  # type: ignore[arg-type]
@@ -116,7 +116,7 @@ def _run(
 
 def test_maturity_is_derived_only_from_evidence() -> None:
     rest = REGISTRY.descriptor("rest.http")
-    db = REGISTRY.descriptor("databricks")
+    db = REGISTRY.descriptor("fabric")
     assert rest is not None and db is not None
     # planned: no implementation, whatever the evidence says
     forged = _run(caps=("query.sql",))

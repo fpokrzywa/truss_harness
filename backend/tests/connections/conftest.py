@@ -3,8 +3,9 @@ an egress policy and a private vendor written as the schema owner; the assertion
 `shifde_app` under row-level security (`tests.tenancy.conftest.app_session` asserts the role).
 
 Rows the tests add are removed before and after each test, as the schema owner: every connection,
-test and discovery, every client egress policy (the seeded installation default stays), every
-private vendor (the seeded global catalog stays) and the secrets these tests created.
+invocation, test and discovery, every client egress policy (the seeded installation default
+stays), every private vendor (the seeded global catalog stays) and the secrets these tests
+created.
 """
 
 from __future__ import annotations
@@ -166,6 +167,7 @@ def discovery_values(tenant: UUID, connection: UUID) -> dict[str, Any]:
 
 def _clean(owner_db: Database) -> None:
     with owner_db.session() as s:
+        s.execute(text("DELETE FROM shifde.connection_invocations"))
         s.execute(text("DELETE FROM shifde.connection_discoveries"))
         s.execute(text("DELETE FROM shifde.connection_tests"))
         s.execute(text("DELETE FROM shifde.connections"))

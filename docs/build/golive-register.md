@@ -11,8 +11,8 @@ it; preflight refuses).
 
 | id | state | evidence |
 |---|---|---|
-| Item 5a | open | F-14 and ARCH m8, no security headers: closes when SP4-2 #124 and SP4-3 #125 merge. |
-| Item 20 delete | open | ARCH M4 / F-11 retention, deleting old ended runs: closes when SP4-8 #126 merges (the content-purge notes were closed by #46). |
+| Item 5a | closed | F-14 and ARCH m8, no security headers: closed by SP4-2 #124 (PR #169) and SP4-3 #125 (PR #172). |
+| Item 20 delete | closed | ARCH M4 / F-11 retention, deleting old ended runs: closed by SP4-8 #126 (PR #173); the content-purge notes were closed by #46. |
 | Item 20 audit-retention | pending-owner | The owner must accept in writing that audit events are never deleted and not partitioned: the audit hash chain is kept for life, and `docs/build/perf.md` shows no need to partition at test scale. |
 | Item 21 | closed | ARCH M2, adapters inline in the API: closed by #47. |
 | Item 23 | pending-owner | F-23 traceability: the owner must accept not mapping SETH's PRD ids, which belong to a document the unified design replaced; mapping them adds no assurance, and the design 5.3 matrix stays enforced by `scripts/traceability.py --check`. |

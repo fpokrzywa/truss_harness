@@ -30,12 +30,15 @@ from sqlalchemy.orm import Session
 from shifde.adapters.base import (
     AdapterDescriptor,
     AdapterFailure,
+    AdapterRules,
+    ConfigRefused,
     ConnectionConfig,
     ConnectionSession,
     Credential,
     ErrorClass,
     ExecContext,
 )
+from shifde.adapters.httputil import FORBIDDEN_HEADERS
 from shifde.adapters.runtime import IntegrationRuntime
 from shifde.audit import service as audit
 from shifde.authz import service as authz
@@ -54,13 +57,17 @@ from shifde.core.errors import (
     ConnectionDiscoveryBusy,
     ConnectionTestBusy,
     EgressDenied,
+    EgressPolicyMismatch,
     Forbidden,
+    IdempotencyConflict,
     NotFound,
     RateLimited,
     ScopeArchived,
+    SecretScopeMismatch,
     UpstreamError,
     UseModelsEndpoint,
     ValidationFailed,
+    VendorNotVisible,
 )
 from shifde.core.ids import uuid7
 from shifde.core.pagination import Page, decode_cursor, encode_cursor, paginate
@@ -84,7 +91,53 @@ CONFIG_AFFECTING = frozenset(
 TEST_VALIDITY = timedelta(hours=24)
 TEST_JOB_KIND = "connection.test"  # `shifde.jobs.kind` of a queued connection test (B-2610)
 DISCOVER_JOB_KIND = "connection.discover"  # `shifde.jobs.kind` of a queued discovery (B-2971)
+INVOKE_JOB_KIND = "connection.invoke"  # `shifde.jobs.kind` of a queued connection invoke (#190)
+# an invoke request header refused at enqueue (B-2999): a forbidden header, or a name holding one
+CREDENTIAL_HEADER_PARTS = ("auth", "token", "key", "secret", "password", "passwd", "cookie",
+                           "session", "signature", "credential", "bearer")  # fmt: skip
+CREDENTIAL_HEADER_REFUSED = "credentials come from the connection, not the request"
 ERROR_CODE = re.compile(r"[a-z][a-z_]*")  # an `AppError.code` the worker stored as `last_error`
+SCOPE_MISMATCH = "the secret must have the connection's scope"
+# the kind of a connection's own secret (`connection-<id>`) per auth method (rule 4.7, B-2747)
+CREDENTIAL_KINDS: dict[str, str] = {
+    "bearer": "token",
+    "oauth2_client_credentials": "token",
+    "key_pair": "pem",
+    "mtls": "pem",
+    "api_key": "api_key",
+    "basic": "password",
+}
+NO_SECRET_FOR_NONE = "a secret cannot be attached when auth_method is 'none'"
+# the fixed RAISE texts of `shifde.connections_guard()` (connections_0001, connections_0002)
+GUARD_SECRET_TENANT = "secret must belong to the connection tenant"
+GUARD_SECRET_SCOPE = "secret scope must match the connection scope"
+GUARD_EGRESS_TENANT = "egress policy must belong to the connection tenant"
+GUARD_VENDOR_TENANT = "vendor is not visible to the connection tenant"
+CHECK_FAILED = "the connection does not meet a database check"
+
+
+def integrity_error(exc: IntegrityError) -> AppError | None:
+    """HTTP mapping of a database refusal by SQLSTATE (#156 rule 4.5, B-2745, B-3121): a duplicate
+    name in one scope is 409; a `connections_guard` refusal (23514) is 422 with the code of the
+    guard its fixed RAISE text names, any other 23514 (a plain CHECK) 422 `validation_error`; the
+    message is always a constant here, never ids or values; None for anything else, which the
+    caller re-raises."""
+    state = getattr(exc.orig, "sqlstate", None)
+    if state == "23505":
+        return Conflict("a connection with this name already exists in this scope")
+    if state == "23514":
+        diag = getattr(exc.orig, "diag", None)
+        message = getattr(diag, "message_primary", None)
+        if message == GUARD_SECRET_TENANT:
+            return SecretScopeMismatch(GUARD_SECRET_TENANT)
+        if message == GUARD_SECRET_SCOPE:
+            return SecretScopeMismatch(GUARD_SECRET_SCOPE)
+        if message == GUARD_EGRESS_TENANT:
+            return EgressPolicyMismatch(GUARD_EGRESS_TENANT)
+        if message == GUARD_VENDOR_TENANT:
+            return VendorNotVisible(GUARD_VENDOR_TENANT)
+        return ValidationFailed(CHECK_FAILED)
+    return None
 
 
 def failure_to_error(exc: AdapterFailure) -> AppError:
@@ -109,9 +162,14 @@ class ConnectionPlacement:
 
 
 class ConnectionService:
-    def __init__(self, scope: TenantScope, runtime: IntegrationRuntime) -> None:
+    def __init__(
+        self, scope: TenantScope, runtime: IntegrationRuntime, rules: AdapterRules | None = None
+    ) -> None:
         self.sc = scope
         self.runtime = runtime
+        # the installation rules `normalize_config` applies on create/update; without them the
+        # built-in rules only (fail closed, B-2753)
+        self.rules = rules or AdapterRules()
 
     # ================================================================== helpers
     @property
@@ -194,12 +252,37 @@ class ConnectionService:
             details=details,
         )
 
+    def _audit_secret(
+        self,
+        action: str,
+        sec: secrets_service.SecretMeta,
+        details: dict[str, object],
+        row: Mapping[str, Any],
+    ) -> None:
+        """A `secret.*` event of the connection `row`'s own credential (B-2752): the admin
+        route's target and details, with the connection's workspace and project."""
+        audit.record(
+            self._session,
+            self.sc.ctx,
+            action=action,
+            tenant_id=self.sc.tenant_id,
+            target_type="secret",
+            target_id=sec.id,
+            target_label=f"secret:{sec.name}",
+            workspace_id=row["workspace_id"],
+            project_id=row["project_id"],
+            details=details,
+        )
+
     def _commit(self) -> None:
         try:
             self._session.commit()
         except IntegrityError as exc:
             self._session.rollback()
-            raise Conflict("connection conflicts with an existing resource") from exc
+            mapped = integrity_error(exc)
+            if mapped is None:
+                raise
+            raise mapped from exc
 
     def _out(
         self,
@@ -234,6 +317,7 @@ class ConnectionService:
             health_status=row["health_status"],
             health=row["health_status"],
             last_tested_at=row["last_tested_at"],
+            last_test_outcome=row["last_test_outcome"],
             row_version=row["row_version"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
@@ -248,6 +332,7 @@ class ConnectionService:
         config: dict[str, Any],
         auth_method: str,
         secret_id: UUID | None,
+        credential: bool = False,
     ) -> AdapterDescriptor:
         desc = self._descriptor(adapter_key)
         if desc.connection_type != connection_type:
@@ -260,8 +345,8 @@ class ConnectionService:
                 f"auth_method {auth_method!r} is not supported by {adapter_key!r} "
                 f"(supported: {', '.join(desc.auth_methods)})"
             )
-        if auth_method == "none" and secret_id is not None:
-            raise ValidationFailed("a secret cannot be attached when auth_method is 'none'")
+        if auth_method == "none" and (secret_id is not None or credential):
+            raise ValidationFailed(NO_SECRET_FOR_NONE)
         misplaced = sorted(
             f
             for f, methods in desc.auth_only_fields.items()
@@ -297,6 +382,43 @@ class ConnectionService:
             )
         return desc
 
+    def _normalized(self, adapter_key: str, config: dict[str, Any]) -> dict[str, Any]:
+        """The adapter's `normalize_config` of `config` (create, and PATCH with `config`; never on
+        a read, test, discover or invoke path); unchanged when the adapter has no such hook."""
+        normalize = getattr(self.runtime.registry.get(adapter_key), "normalize_config", None)
+        if normalize is None:
+            return config
+        try:
+            normalized: dict[str, Any] = normalize(config, self.rules)
+        except ConfigRefused as exc:
+            raise ValidationFailed(
+                "connection config was refused",
+                errors=[
+                    {
+                        "loc": ["body", "config", *e.path.split("/")],
+                        "msg": e.message,
+                        "type": "config",
+                    }
+                    for e in exc.errors
+                ],
+            ) from exc
+        return normalized
+
+    def _check_credential(
+        self, adapter_key: str, auth_method: str, value: str, loc: list[str]
+    ) -> None:
+        """The adapter's `validate_credential` of an inline credential value (422 at `loc`; the
+        messages are the adapter's fixed text, never the value)."""
+        check = getattr(self.runtime.registry.get(adapter_key), "validate_credential", None)
+        if check is None:
+            return
+        errors = check(auth_method, value)
+        if errors:
+            raise ValidationFailed(
+                "the credential is not valid for this connection",
+                errors=[{"loc": loc, "msg": e.message, "type": "credential"} for e in errors],
+            )
+
     def _secret_ref(self, sec: secrets_service.SecretMeta) -> ResourceRef:
         if sec.scope_id is None:
             return self.sc.tenant_ref
@@ -304,9 +426,9 @@ class ConnectionService:
             return ResourceRef(self.sc.tenant_id, workspace_id=sec.scope_id)
         return tenancy.resolve_scope_ref(self.sc, "project", sec.scope_id)
 
-    def _check_secret(self, secret_id: UUID | None) -> None:
+    def _check_secret(self, secret_id: UUID | None) -> secrets_service.SecretMeta | None:
         if secret_id is None:
-            return
+            return None
         sec = secrets_service.get_secret(self._session, secret_id, tenant_id=self.sc.tenant_id)
         if sec is None or sec.tenant_id != self.sc.tenant_id or sec.status != "active":
             raise NotFound("secret not found")
@@ -314,6 +436,27 @@ class ConnectionService:
             self.sc.pdp.require("secret:use", self._secret_ref(sec), hide_unless="secret:read")
         except NotFound as exc:  # hidden: the same answer as an id that does not exist (B-1508)
             raise NotFound("secret not found") from exc
+        return sec
+
+    @staticmethod
+    def _check_secret_scope(
+        sec: secrets_service.SecretMeta | None,
+        workspace_id: UUID | None,
+        project_id: UUID | None,
+    ) -> None:
+        """#156 rule 4.4 (B-2746): a project connection takes only a secret of its project, a
+        workspace connection only one of its workspace, a client connection only a client one.
+        Runs after `_check_secret`, so its 404/403 answers come first."""
+        if sec is None:
+            return
+        if project_id is not None:
+            ok = sec.scope_type == "project" and sec.scope_id == project_id
+        elif workspace_id is not None:
+            ok = sec.scope_type == "workspace" and sec.scope_id == workspace_id
+        else:
+            ok = sec.scope_type == "tenant"
+        if not ok:
+            raise SecretScopeMismatch(SCOPE_MISMATCH)
 
     def _destination_changed(
         self,
@@ -381,6 +524,33 @@ class ConnectionService:
                 ],
             )
 
+    def _create_owned_secret(
+        self,
+        connection_id: UUID,
+        auth_method: str,
+        workspace_id: UUID | None,
+        project_id: UUID | None,
+        value: str,
+    ) -> secrets_service.SecretMeta:
+        """The connection's own secret `connection-<id>`, in the connection's scope (B-2747)."""
+        if project_id is not None:
+            scope_type, scope_id = "project", project_id
+        elif workspace_id is not None:
+            scope_type, scope_id = "workspace", workspace_id
+        else:
+            scope_type, scope_id = "tenant", None
+        return secrets_service.create_secret(
+            self._session,
+            self.runtime.settings.keyring,
+            tenant_id=self.sc.tenant_id,
+            name=f"connection-{connection_id}",
+            value=value,
+            kind=CREDENTIAL_KINDS[auth_method],
+            scope_type=scope_type,
+            scope_id=scope_id,
+            created_by=self.sc.principal.principal_id,
+        )
+
     def _check_vendor(self, vendor_id: UUID | None, *, current: UUID | None = None) -> None:
         """A connection may only NAME an active vendor. Keeping the vendor it already names is
         always allowed (existing objects keep working)."""
@@ -395,6 +565,7 @@ class ConnectionService:
         status: str | None,
         workspace: str | None,
         project: str | None,
+        include_shared: bool,
         limit: int,
         cursor: str | None,
     ) -> Page[s.ConnectionOut]:
@@ -405,6 +576,8 @@ class ConnectionService:
         ws_id = pr_id = None
         if project and not workspace:
             raise ValidationFailed("`project` requires `workspace`")
+        if include_shared and not workspace:
+            raise ValidationFailed("`include_shared` requires `workspace`")
         if workspace:
             ref = tenancy.scope_ref_from_slugs(self.sc, workspace, project)
             ws_id, pr_id = ref.workspace_id, ref.project_id
@@ -415,6 +588,7 @@ class ConnectionService:
             status=status,
             workspace_id=ws_id,
             project_id=pr_id,
+            include_shared=include_shared,
             tenant_wide=flt.tenant_wide,
             visible_workspaces=sorted(flt.workspace_ids),
             visible_projects=sorted(flt.project_ids),
@@ -438,24 +612,47 @@ class ConnectionService:
         return self._out(row)
 
     def create(self, body: s.ConnectionCreate) -> s.ConnectionOut:
+        if body.credential is not None and body.secret_id is not None:
+            raise ValidationFailed("send either credential or secret_id, not both")
         ref = tenancy.scope_ref_from_slugs(self.sc, body.scope.workspace, body.scope.project)
         self.sc.pdp.require("connection:manage", ref)
+        if body.credential is not None:  # the connection's own secret is created (B-2748)
+            self.sc.pdp.require("secret:manage", ref)
         self._active_tenant()
         self._active_scope(body.scope.workspace, body.scope.project)
+        config = self._normalized(body.adapter_key, body.config)
         self._validate_definition(
             connection_type=body.connection_type,
             adapter_key=body.adapter_key,
-            config=body.config,
+            config=config,
             auth_method=body.auth_method,
             secret_id=body.secret_id,
+            credential=body.credential is not None,
         )
-        self._check_secret(body.secret_id)
-        confirm = body.secret_id is not None and body.access_mode == "read"
+        if body.credential is not None:
+            value = body.credential.value.get_secret_value()
+            secrets_service.check_value(value)  # the byte limit answers first
+            self._check_credential(
+                body.adapter_key, body.auth_method, value, ["body", "credential", "value"]
+            )
+        sec = self._check_secret(body.secret_id)
+        self._check_secret_scope(sec, ref.workspace_id, ref.project_id)
+        bound = body.secret_id is not None or body.credential is not None
+        confirm = bound and body.access_mode == "read"
         if confirm:
             self._require_read_only_confirmation(body.read_only_confirmed)
         self._check_egress_policy(body.egress_policy_id)
         self._check_vendor(body.vendor_id)
         connection_id = uuid7()
+        owned = None
+        if body.credential is not None:
+            owned = self._create_owned_secret(
+                connection_id,
+                body.auth_method,
+                ref.workspace_id,
+                ref.project_id,
+                body.credential.value.get_secret_value(),
+            )
         try:
             repository.insert_connection(
                 self._session,
@@ -468,9 +665,9 @@ class ConnectionService:
                     "connection_type": body.connection_type,
                     "adapter_key": body.adapter_key,
                     "vendor_id": body.vendor_id,
-                    "config": body.config,
+                    "config": config,
                     "auth_method": body.auth_method,
-                    "secret_ref_id": body.secret_id,
+                    "secret_ref_id": owned.id if owned is not None else body.secret_id,
                     "egress_policy_id": body.egress_policy_id,
                     "access_mode": body.access_mode,
                     "created_by": self.sc.principal.principal_id,
@@ -479,7 +676,10 @@ class ConnectionService:
             self._session.flush()
         except IntegrityError as exc:
             self._session.rollback()
-            raise Conflict("a connection with this name already exists") from exc
+            mapped = integrity_error(exc)
+            if mapped is None:
+                raise
+            raise mapped from exc
         row = self._get_row(connection_id)
         self._audit(
             "connection.created",
@@ -493,6 +693,13 @@ class ConnectionService:
                 **({"read_only_confirmed": True} if confirm else {}),
             },
         )
+        if owned is not None:
+            self._audit_secret(
+                "secret.created",
+                owned,
+                {"name": owned.name, "kind": owned.kind, "scope_type": owned.scope_type},
+                row,
+            )
         self._commit()
         return self._out(row)
 
@@ -510,7 +717,7 @@ class ConnectionService:
         if "name" in sent and body.name is not None:
             values["name"] = body.name
         if "config" in sent and body.config is not None:
-            values["config"] = body.config
+            values["config"] = self._normalized(row["adapter_key"], body.config)
         if "auth_method" in sent and body.auth_method is not None:
             values["auth_method"] = body.auth_method
         if "secret_id" in sent:
@@ -531,7 +738,8 @@ class ConnectionService:
             secret_id=merged_secret,
         )
         if "secret_ref_id" in values and values["secret_ref_id"] != row["secret_ref_id"]:
-            self._check_secret(values["secret_ref_id"])
+            sec = self._check_secret(values["secret_ref_id"])
+            self._check_secret_scope(sec, row["workspace_id"], row["project_id"])
         if (
             merged_secret is not None
             and merged_secret == row["secret_ref_id"]
@@ -573,7 +781,10 @@ class ConnectionService:
             self._session.flush()
         except IntegrityError as exc:
             self._session.rollback()
-            raise Conflict("a connection with this name already exists") from exc
+            mapped = integrity_error(exc)
+            if mapped is None:
+                raise
+            raise mapped from exc
         if updated is None:
             raise Conflict("row_version mismatch: the connection was modified; reload and retry")
         self._audit(
@@ -586,8 +797,9 @@ class ConnectionService:
                 **({"read_only_confirmed": True} if reconfirm else {}),
             },
         )
+        fresh = self._get_row(connection_id)  # RETURNING has no `last_test_outcome`
         self._commit()
-        return self._out(updated)
+        return self._out(fresh)
 
     def set_status(self, connection_id: UUID, body: s.ConnectionStatusChange) -> s.ConnectionOut:
         row = self._get_row(connection_id)
@@ -626,8 +838,107 @@ class ConnectionService:
         if updated is None:
             raise Conflict("row_version mismatch: the connection was modified; reload and retry")
         self._audit("connection.status_changed", updated, {"from": current, "to": target})
+        if target == "retired" and updated["secret_ref_id"] is not None:
+            self._disable_owned_secret(updated)
+        fresh = self._get_row(connection_id)  # RETURNING has no `last_test_outcome`
         self._commit()
-        return self._out(updated)
+        return self._out(fresh)
+
+    def _disable_owned_secret(self, row: Mapping[str, Any]) -> None:
+        """Archive (B-2751): the retired connection's own active secret is disabled unless
+        another connection that is not retired binds it; any other secret is left unchanged."""
+        sec = secrets_service.get_secret(
+            self._session, row["secret_ref_id"], tenant_id=self.sc.tenant_id
+        )
+        if sec is None or sec.name != f"connection-{row['id']}" or sec.status != "active":
+            return
+        if repository.count_live_bindings(
+            self._session, sec.id, tenant_id=self.sc.tenant_id, exclude=row["id"]
+        ):
+            return
+        disabled = secrets_service.disable_secret(
+            self._session, sec, expected_version=sec.row_version
+        )
+        self._audit_secret("secret.disabled", disabled, {}, row)
+
+    def set_credential(
+        self, connection_id: UUID, body: s.ConnectionCredentialSet
+    ) -> s.ConnectionOut:
+        """`PUT .../credential` (B-2749): with no secret bound, create and bind the connection's
+        own `connection-<id>`; with one bound, rotate it in place. Either way the health is
+        unknown again; status, last test and binding are otherwise unchanged."""
+        row = self._get_row(connection_id)
+        self._require("connection:manage", row)
+        ref = ResourceRef(self.sc.tenant_id, row["workspace_id"], row["project_id"])
+        self.sc.pdp.require("secret:manage", ref)
+        self._active_tenant()
+        if row["status"] == "retired":
+            raise Conflict("a retired connection cannot be modified")
+        if row["auth_method"] == "none":
+            raise ValidationFailed(NO_SECRET_FOR_NONE)
+        value = body.value.get_secret_value()
+        secrets_service.check_value(value)
+        self._check_credential(row["adapter_key"], row["auth_method"], value, ["body", "value"])
+        expected = self._checked_version(body.row_version, row)
+        if row["access_mode"] == "read":
+            self._require_read_only_confirmation(body.read_only_confirmed)
+        values: dict[str, Any] = {"health_status": "unknown"}
+        bound = row["secret_ref_id"]
+        if bound is None:
+            sec = self._create_owned_secret(
+                connection_id, row["auth_method"], row["workspace_id"], row["project_id"], value
+            )
+            values["secret_ref_id"] = sec.id
+        else:
+            current = secrets_service.get_secret(self._session, bound, tenant_id=self.sc.tenant_id)
+            if current is None:
+                raise NotFound("secret not found")
+            sec = secrets_service.rotate_secret(
+                self._session,
+                self.runtime.settings.keyring,
+                current,
+                value=value,
+                expected_version=current.row_version,
+            )
+        try:
+            updated = repository.update_connection(
+                self._session, connection_id, expected, values, tenant_id=self.sc.tenant_id
+            )
+            self._session.flush()
+        except IntegrityError as exc:
+            self._session.rollback()
+            mapped = integrity_error(exc)
+            if mapped is None:
+                raise
+            raise mapped from exc
+        if updated is None:
+            self._session.rollback()  # neither the secret nor the connection changes
+            raise Conflict("row_version mismatch: the connection was modified; reload and retry")
+        if bound is None:
+            self._audit(
+                "connection.credential_set",
+                updated,
+                {"secret_id": str(sec.id), "version": sec.secret_version},
+            )
+            self._audit_secret(
+                "secret.created",
+                sec,
+                {"name": sec.name, "kind": sec.kind, "scope_type": sec.scope_type},
+                updated,
+            )
+        else:
+            shared = repository.count_live_bindings(
+                self._session, sec.id, tenant_id=self.sc.tenant_id, exclude=connection_id
+            )
+            self._audit(
+                "connection.credential_rotated",
+                updated,
+                {"secret_id": str(sec.id), "version": sec.secret_version, "shared_with": shared},
+            )
+            self._audit_secret("secret.rotated", sec, {"version": sec.secret_version}, updated)
+        fresh = self._get_row(connection_id)  # RETURNING has no `last_test_outcome`
+        self._commit()
+        return self._out(fresh)
 
     # ================================================================== runtime plumbing
     def _credential(self, row: Mapping[str, Any], purpose: str) -> Credential | None:
@@ -650,7 +961,11 @@ class ConnectionService:
 
     def _exec_ctx(self, row: Mapping[str, Any], deadline: float | None = None) -> ExecContext:
         guard = egress.build_guard(
-            self._session, self.runtime, row["tenant_id"], row["egress_policy_id"]
+            self._session,
+            self.runtime,
+            row["tenant_id"],
+            row["egress_policy_id"],
+            adapter_key=row["adapter_key"],
         )
         if deadline is not None:
             guard.set_deadline(deadline)
@@ -995,6 +1310,20 @@ class ConnectionService:
     ) -> Iterator[ConnectionSession]:
         """Status / adapter / egress / secret gates, without a PDP check (the caller authorized
         the use through its own permission, e.g. `model:invoke`)."""
+        adapter = self._usable(row, write)
+        try:
+            session = adapter.open(self._exec_ctx(row, deadline), self._config(row, purpose))
+        except AdapterFailure as exc:
+            raise failure_to_error(exc) from exc
+        self._session.commit()  # secret-access rows are written; never held across the call
+        try:
+            yield session
+        finally:
+            session.close()
+
+    def _usable(self, row: Mapping[str, Any], write: bool) -> Any:  # Any: adapter instance
+        """`open_trusted`'s gates before the adapter is opened (no secret, no network): own row,
+        no model connection, adapter implemented, active, read_write for a write."""
         self._own(row)
         if row["connection_type"] == "model_api":
             raise UseModelsEndpoint(
@@ -1008,15 +1337,7 @@ class ConnectionService:
             )
         if write and row["access_mode"] != "read_write":
             raise Forbidden("the connection is read-only")
-        try:
-            session = adapter.open(self._exec_ctx(row, deadline), self._config(row, purpose))
-        except AdapterFailure as exc:
-            raise failure_to_error(exc) from exc
-        self._session.commit()  # secret-access rows are written; never held across the call
-        try:
-            yield session
-        finally:
-            session.close()
+        return adapter
 
     @contextmanager
     def open_for_use(
@@ -1073,8 +1394,11 @@ class ConnectionService:
         *,
         error_class: str | None = None,
         truncated: bool | None = None,
+        invocation_id: UUID | None = None,
     ) -> None:
         details: dict[str, object] = {**_redacted_request(request), "write": write}
+        if invocation_id is not None:
+            details["invocation_id"] = str(invocation_id)
         if error_class:
             details["error_class"] = error_class
         if truncated is not None:
@@ -1084,12 +1408,18 @@ class ConnectionService:
         )
         self._session.commit()
 
-    def invoke(self, connection_id: UUID, body: dict[str, Any]) -> s.InvokeOut:
+    def enqueue_invoke(
+        self, connection_id: UUID, body: dict[str, Any], idempotency_key: str | None
+    ) -> tuple[s.InvocationOut, bool]:
+        """Queue the invoke on the worker (issue #190): the API process never opens an adapter
+        session. The inline invoke's checks before the adapter is opened run here, in its order;
+        a refusal is audited as before. Returns the invocation and whether it is new: an
+        `Idempotency-Key` repeated by the same caller on the same connection answers the first
+        invocation, active or ended (409 with another body)."""
         row = self._get_row(connection_id)
         self._require("connection:use", row)
         request: dict[str, Any] = {}
         write = False
-        started = time.monotonic()
         try:
             if row["connection_type"] == "model_api":
                 raise UseModelsEndpoint(
@@ -1097,7 +1427,89 @@ class ConnectionService:
                     "(model:invoke, allowlists and limits), not as raw connections"
                 )
             request = self._parse_request(row, body)
+            if any(_credential_header(k) for k in request.get("headers") or {}):
+                raise ValidationFailed(CREDENTIAL_HEADER_REFUSED)
             write = bool(request.pop("write", False))
+            if write:
+                self._require("connection:write", row, hide=None)
+            self._usable(row, write)
+        except AppError as exc:
+            self._audit_invoke(row, request, write, error_class=type(exc).__name__)
+            raise
+        p = self.sc.principal
+        fingerprint = hashlib.sha256(
+            json.dumps(body, sort_keys=True, default=str).encode()
+        ).hexdigest()
+        invocation_id = uuid7()
+        if idempotency_key is None:
+            dedupe_key = f"connection-invoke:{invocation_id}"
+        else:  # per connection and caller: two users never share a key space
+            key_hash = hashlib.sha256(idempotency_key.encode()).hexdigest()
+            dedupe_key = f"connection-invoke:{connection_id}:{p.principal_id}:{key_hash}"
+        payload = {
+            "invocation_id": str(invocation_id),
+            "connection_id": str(connection_id),
+            "request": request,
+            "write": write,
+            "request_hash": fingerprint,
+            "principal_id": str(p.principal_id),
+            "principal_type": p.principal_type,
+            "api_key_id": str(p.api_key_id) if p.api_key_id else None,
+        }
+        job, created = repository.enqueue_invoke_job(
+            self._session,
+            tenant_id=self.sc.tenant_id,
+            kind=INVOKE_JOB_KIND,
+            job_id=uuid7(),
+            dedupe_key=dedupe_key,
+            payload=payload,
+            invocation_id=invocation_id,
+            connection_id=connection_id,
+            requested_by=p.principal_id,
+        )
+        if not created and job["payload"].get("request_hash") != fingerprint:
+            raise IdempotencyConflict("this Idempotency-Key was used with a different request")
+        found = repository.get_invocation_by_job(
+            self._session, job["id"], tenant_id=self.sc.tenant_id
+        )
+        if found is None or found["requested_by"] != p.principal_id:
+            raise NotFound("invocation not found")
+        if created:  # ids only, never request content (B-2999)
+            self._audit(
+                "connection.invoke_queued",
+                row,
+                {"invocation_id": str(found["id"]), "job_id": str(job["id"])},
+            )
+        self._session.commit()
+        return _invocation_out(found), created
+
+    def invocation(self, connection_id: UUID, invocation_id: UUID) -> s.InvocationOut:
+        """The caller's own invocation of a connection it may read or use (a use-only requester
+        reads its own, B-2999); any other id (another client's, another user's, another
+        connection's, unknown) gets the same 404."""
+        row = self._get_row(connection_id)
+        if not self.sc.pdp.authorize("connection:read", self.ref_of(row)).allowed:
+            self._require("connection:use", row, hide="connection:use")
+        found = repository.get_invocation(
+            self._session,
+            invocation_id,
+            tenant_id=self.sc.tenant_id,
+            connection_id=connection_id,
+            requested_by=self.sc.principal.principal_id,
+        )
+        if found is None:
+            raise NotFound("invocation not found")
+        return _invocation_out(found)
+
+    def execute_invoke(
+        self, connection_id: UUID, request: dict[str, Any], write: bool, invocation_id: UUID
+    ) -> s.InvokeOut:
+        """Run the adapter invoke (the worker side of `enqueue_invoke`): the permissions are
+        checked again, then the inline invoke's gates, call and audit."""
+        row = self._get_row(connection_id)
+        self._require("connection:use", row)
+        started = time.monotonic()
+        try:
             if write:
                 self._require("connection:write", row, hide=None)
             with self.open_trusted(
@@ -1108,16 +1520,24 @@ class ConnectionService:
             ) as session:
                 result = session.invoke(request, write=write)
         except AdapterFailure as exc:
-            self._audit_invoke(row, request, write, error_class=exc.error_class.value)
+            self._audit_invoke(
+                row, request, write, error_class=exc.error_class.value, invocation_id=invocation_id
+            )
             raise failure_to_error(exc) from exc
         except AppError as exc:
-            self._audit_invoke(row, request, write, error_class=type(exc).__name__)
+            self._audit_invoke(
+                row, request, write, error_class=type(exc).__name__, invocation_id=invocation_id
+            )
             raise
-        except Exception as exc:  # noqa: BLE001 - never a 500 with details; always audited
-            self._audit_invoke(row, request, write, error_class="unexpected")
+        except Exception as exc:  # noqa: BLE001 - never a message stored; always audited
+            self._audit_invoke(
+                row, request, write, error_class="unexpected", invocation_id=invocation_id
+            )
             raise UpstreamError(f"unexpected adapter error ({type(exc).__name__})") from exc
         duration_ms = int((time.monotonic() - started) * 1000)
-        self._audit_invoke(row, request, write, truncated=result.truncated)
+        self._audit_invoke(
+            row, request, write, truncated=result.truncated, invocation_id=invocation_id
+        )
         return s.InvokeOut(
             result=json.loads(json.dumps(scrub(result.result), default=str)),
             truncated=result.truncated,
@@ -1208,6 +1628,35 @@ class _Requester:
     api_key_id: UUID | None
 
 
+def _job_scope(
+    session: Session, tenant_id: UUID, request_id: str, payload: Mapping[str, Any]
+) -> TenantScope:
+    """The scope of a job's requester, re-derived from the database (`ExecutionDenied` when the
+    requester or the client is no longer available)."""
+    principal = authz.execution_principal(
+        session,
+        _Requester(
+            tenant_id,
+            UUID(payload["principal_id"]),
+            payload["principal_type"],
+            UUID(payload["api_key_id"]) if payload["api_key_id"] else None,
+        ),
+    )
+    header = tenancy.tenant_header(session, tenant_id)
+    if header is None:
+        raise authz.ExecutionDenied("the client is not available")
+    return TenantScope(
+        session=session,
+        ctx=RequestContext(request_id=request_id, principal=principal, tenant_id=tenant_id),
+        principal=principal,
+        tenant_id=tenant_id,
+        tenant_slug=header[0],
+        tenant_name=header[1],
+        tenant_status=header[2],
+        pdp=authz.new_pdp(session, principal, tenant_id),
+    )
+
+
 def run_test_job(
     database: Database, runtime: IntegrationRuntime, tenant_id: UUID, job_id: UUID
 ) -> str | None:
@@ -1229,7 +1678,7 @@ def run_test_job(
         if repository.get_test(session, test_id, tenant_id=tenant_id) is not None:
             return None
         try:
-            scope = _job_scope(session, tenant_id, payload, request_id)
+            scope = _job_scope(session, tenant_id, request_id, payload)
             ConnectionService(scope, runtime).execute_test(UUID(payload["connection_id"]), test_id)
         except (AppError, IntegrityError) as exc:
             session.rollback()
@@ -1265,7 +1714,7 @@ def run_discover_job(
         if repository.get_discovery(session, discovery_id, tenant_id=tenant_id) is not None:
             return None
         try:
-            scope = _job_scope(session, tenant_id, payload, request_id)
+            scope = _job_scope(session, tenant_id, request_id, payload)
             ConnectionService(scope, runtime).execute_discover(
                 UUID(payload["connection_id"]), discovery_id
             )
@@ -1282,33 +1731,113 @@ def run_discover_job(
         session.close()
 
 
-def _job_scope(
-    session: Session, tenant_id: UUID, payload: Mapping[str, Any], request_id: str
-) -> TenantScope:
-    """The scope a connection job runs in: its client, as its requester re-derived from the
-    database (`authz.ExecutionDenied` when either is no longer available)."""
-    principal = authz.execution_principal(
-        session,
-        _Requester(
-            tenant_id,
-            UUID(payload["principal_id"]),
-            payload["principal_type"],
-            UUID(payload["api_key_id"]) if payload["api_key_id"] else None,
-        ),
+def run_invoke_job(
+    database: Database, runtime: IntegrationRuntime, tenant_id: UUID, job_id: UUID
+) -> str | None:
+    """Execute the `connection.invoke` job `job_id` of `tenant_id` (called by `shifde-worker`).
+
+    At most once: the invocation is claimed (`queued -> running`, committed) before the adapter is
+    called. A redelivered job whose invocation is `running` (an earlier attempt died mid-call) is
+    marked `failed`/`worker_lost`, one already terminal is left alone; neither calls the adapter.
+    The requester is re-derived from the database and the permissions are checked again; a
+    refusal or failure is recorded as `failed` with an error code, never a message. Returns None
+    once the outcome is recorded, `not_found` (nothing written) when the job or its invocation is
+    missing, or when the payload names another connection or invocation than the claimed
+    invocation row (B-2999); the adapter is called for the row's own connection."""
+    request_id = f"connection-invoke-{job_id}"
+    session = database.session()
+    db.init_context(session, request_id)
+    try:
+        db.set_tenant(session, tenant_id)
+        job = repository.get_test_job(session, job_id, tenant_id=tenant_id, kind=INVOKE_JOB_KIND)
+        if job is None:
+            return NotFound.code
+        found = repository.get_invocation_by_job(session, job_id, tenant_id=tenant_id)
+        if found is None:
+            return NotFound.code
+        invocation_id = found["id"]
+        payload = job["payload"]
+        if (
+            str(found["connection_id"]) != payload["connection_id"]
+            or str(invocation_id) != payload["invocation_id"]
+        ):
+            return NotFound.code  # a payload naming another row: nothing is touched
+        if found["status"] != "queued":
+            if found["status"] == "running":
+                repository.move_invocation(
+                    session,
+                    invocation_id,
+                    tenant_id=tenant_id,
+                    expected="running",
+                    to="failed",
+                    error_code="worker_lost",
+                )
+                session.commit()
+            return None
+        if not repository.move_invocation(
+            session, invocation_id, tenant_id=tenant_id, expected="queued", to="running"
+        ):
+            session.rollback()  # another run of this job claimed it first
+            return None
+        session.commit()
+        try:
+            scope = _job_scope(session, tenant_id, request_id, payload)
+            out = ConnectionService(scope, runtime).execute_invoke(
+                found["connection_id"],
+                dict(payload["request"]),
+                bool(payload["write"]),
+                invocation_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - the outcome is a code, never a message
+            session.rollback()
+            code = exc.code if isinstance(exc, AppError) else UpstreamError.code
+            repository.move_invocation(
+                session,
+                invocation_id,
+                tenant_id=tenant_id,
+                expected="running",
+                to="failed",
+                error_code=code if ERROR_CODE.fullmatch(code) else UpstreamError.code,
+            )
+            session.commit()
+            return None
+        repository.move_invocation(
+            session,
+            invocation_id,
+            tenant_id=tenant_id,
+            expected="running",
+            to="succeeded",
+            result=out.model_dump(mode="json"),
+        )
+        session.commit()
+        return None
+    finally:
+        session.close()
+
+
+def _invocation_out(r: Mapping[str, Any]) -> s.InvocationOut:
+    """An invocation as its requester reads it: one still `queued` or `running` whose job ended
+    or is gone (read in the same snapshot) is reported `failed`/`worker_lost`; nothing is
+    written."""
+    status = r["status"]
+    error = r["error_code"]
+    if status in ("queued", "running") and r["job_status"] not in ("queued", "leased"):
+        status, error = "failed", "worker_lost"
+    return s.InvocationOut(
+        id=r["id"],
+        connection_id=r["connection_id"],
+        status=status,
+        result=s.InvokeOut.model_validate(r["result"]) if r["result"] is not None else None,
+        error=error,
+        created_at=r["created_at"],
+        finished_at=r["finished_at"],
     )
-    header = tenancy.tenant_header(session, tenant_id)
-    if header is None:
-        raise authz.ExecutionDenied("the client is not available")
-    return TenantScope(
-        session=session,
-        ctx=RequestContext(request_id=request_id, principal=principal, tenant_id=tenant_id),
-        principal=principal,
-        tenant_id=tenant_id,
-        tenant_slug=header[0],
-        tenant_name=header[1],
-        tenant_status=header[2],
-        pdp=authz.new_pdp(session, principal, tenant_id),
-    )
+
+
+def _credential_header(name: str) -> bool:
+    """Whether an invoke request header may carry a credential (refused at enqueue, B-2999)."""
+    lower = name.lower()
+    return lower in FORBIDDEN_HEADERS or any(part in lower for part in CREDENTIAL_HEADER_PARTS)
 
 
 def definition_fingerprint(row: Mapping[str, Any]) -> str:

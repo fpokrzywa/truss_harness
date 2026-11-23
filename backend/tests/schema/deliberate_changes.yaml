@@ -49,6 +49,11 @@
   path: [policies, write_own]
   reason: "ARCH m7 (B-701): SETH's INSERT check admitted tenant_id NULL for any caller; a NULL-tenant row now needs the platform-administrator context"
   migration: audit_0001
+
+- table: audit_events
+  path: [indexes, ix_audit_events__tenant_id_correlation_id]
+  reason: "the model-provider job result lookup (audit.repository.find_event) has no time bound (B-2861); without this index it scanned the client's whole audit history on every job status read and worker run (issue #183, DECISIONS B-2993). Leads with tenant_id like every other index of the table."
+  migration: audit_0002
 - table: role_permissions
   path: [constraints, ck_role_permissions__no_platform_only_in_client_role]
   reason: >-
@@ -752,8 +757,8 @@
 
 - table: artifact_versions
   path: [triggers, trg_artifact_versions_release_guard]
-  reason: "a published version pinned by a sealed, non-withdrawn release (its manifest's entrypoint or one of its pins) cannot be retired: the invoker-rights trigger refuses with 23514, the owner too, and build's set_state answers 409 (sub-project 3 design 12 item 11, issue #79)"
-  migration: packaging_0002
+  reason: "a published version pinned by a sealed, non-withdrawn release (its manifest's entrypoint or one of its pins) cannot be retired, and no version is retired outside its client's context: the invoker-rights trigger (artifact_versions_release_guard, replaced by packaging_0003) refuses with 23514 when the pinning release is visible to the caller, and also whenever current_tenant_id() is unset or is not the version's tenant_id, so the owner without a client context is refused even where row-level security hides the release; build's set_state answers 409 for the pinned case (sub-project 3 design 12 item 11, issues #79 and #158, DECISIONS B-2994)"
+  migration: packaging_0003
 
 - table: idp_configs
   path: [columns, profile]
@@ -873,3 +878,28 @@
   path: [triggers, trg_ontology_lineage_append_only]
   reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE UPDATE only, shifde.reject_mutation() unchanged, so every update is still refused; DELETE moved to trg_ontology_lineage_retention_delete, which admits only the rows of a run that ended before the retention cutoff (SETH: BEFORE UPDATE OR DELETE, append-only for every role)."
   migration: runtime_0006
+
+- table: connections
+  path: [constraints, uq_connections__tenant_name]
+  reason: "names are unique per scope, not per client (#156): replaced by the unique index uq_connections__scope_name on (tenant_id, workspace or zero, project or zero, name)."
+  migration: connections_0002
+
+- table: connections
+  path: [indexes, uq_connections__tenant_name]
+  reason: "index of uq_connections__tenant_name, dropped with it; names are unique per scope (#156)."
+  migration: connections_0002
+
+- table: connections
+  path: [indexes, uq_connections__scope_name]
+  reason: "names are unique within a connection's scope (client, workspace or project) (#156)."
+  migration: connections_0002
+
+- table: connections
+  path: [triggers, trg_connections_guard]
+  reason: "connections_guard also requires the bound secret's scope to equal the connection's scope (#156); the trigger also fires on workspace_id and project_id (defense in depth: shifde_app cannot update them)."
+  migration: connections_0002
+
+- table: model_providers
+  path: [triggers, trg_model_providers_connection_scope]
+  reason: "a client-level model provider cannot carry a workspace's or project's credential: its connection must be client-wide (#156)."
+  migration: models_admin_0004

@@ -114,6 +114,16 @@
             "title": "Auth Methods",
             "type": "array"
           },
+          "auth_only_fields": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Auth Only Fields",
+            "type": "object"
+          },
           "capabilities": {
             "items": {
               "$ref": "#/components/schemas/CapabilityOut"
@@ -136,6 +146,13 @@
               }
             ],
             "title": "Connection Type"
+          },
+          "destination_fields": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Destination Fields",
+            "type": "array"
           },
           "display_name": {
             "title": "Display Name",
@@ -170,7 +187,9 @@
           "capabilities",
           "config_schema",
           "secret_fields",
-          "auth_methods"
+          "auth_methods",
+          "auth_only_fields",
+          "destination_fields"
         ],
         "title": "AdapterOut",
         "type": "object"
@@ -2228,6 +2247,16 @@
             "title": "Connection Type",
             "type": "string"
           },
+          "credential": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConnectionCredential"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "egress_policy_id": {
             "anyOf": [
               {
@@ -2291,6 +2320,56 @@
           "adapter_key"
         ],
         "title": "ConnectionCreate",
+        "type": "object"
+      },
+      "ConnectionCredential": {
+        "additionalProperties": false,
+        "description": "A connection's own credential (B-2747). No length constraint here: the byte limit is the\nsecrets service's, whose refusal never echoes the value.",
+        "properties": {
+          "value": {
+            "format": "password",
+            "title": "Value",
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "title": "ConnectionCredential",
+        "type": "object"
+      },
+      "ConnectionCredentialSet": {
+        "additionalProperties": false,
+        "description": "`PUT .../credential` (B-2749): sets the connection's own secret, or rotates the bound one.",
+        "properties": {
+          "read_only_confirmed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Read Only Confirmed"
+          },
+          "row_version": {
+            "title": "Row Version",
+            "type": "integer"
+          },
+          "value": {
+            "format": "password",
+            "title": "Value",
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "value",
+          "row_version"
+        ],
+        "title": "ConnectionCredentialSet",
         "type": "object"
       },
       "ConnectionDiscoveryJobOut": {
@@ -2407,6 +2486,21 @@
             "title": "Id",
             "type": "string"
           },
+          "last_test_outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pass",
+                  "fail"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Test Outcome"
+          },
           "last_tested_at": {
             "anyOf": [
               {
@@ -2492,6 +2586,7 @@
           "health_status",
           "health",
           "last_tested_at",
+          "last_test_outcome",
           "row_version",
           "created_at",
           "updated_at"
@@ -6247,6 +6342,80 @@
           "egress_default_allow_private"
         ],
         "title": "InstallationSecurityOut",
+        "type": "object"
+      },
+      "InvocationOut": {
+        "description": "A connection invoke queued on the worker (issue #190): `result` once it has succeeded,\n`error` (a code, never a message) once it has failed.",
+        "properties": {
+          "connection_id": {
+            "format": "uuid",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/shifde__connections__schemas__InvokeOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "connection_id",
+          "status",
+          "result",
+          "error",
+          "created_at",
+          "finished_at"
+        ],
+        "title": "InvocationOut",
         "type": "object"
       },
       "InvokeIn": {
@@ -23958,6 +24127,16 @@
           },
           {
             "in": "query",
+            "name": "include_shared",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Shared",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
             "name": "limit",
             "required": false,
             "schema": {
@@ -24399,6 +24578,124 @@
         ]
       }
     },
+    "/api/v1/orgs/{org}/connections/{connection_id}/credential": {
+      "put": {
+        "operationId": "set_connection_credential_api_v1_orgs__org__connections__connection_id__credential_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "org",
+            "required": true,
+            "schema": {
+              "title": "Org",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectionCredentialSet"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "unauthenticated / invalid_credentials"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "forbidden / csrf_failed / auth_disabled"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "not_found (also for resources in other tenants)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "conflict / scope_archived"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "validation_error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "rate_limited"
+          }
+        },
+        "summary": "Set Connection Credential",
+        "tags": [
+          "connections"
+        ]
+      }
+    },
     "/api/v1/orgs/{org}/connections/{connection_id}/discover": {
       "post": {
         "operationId": "discover_connection_api_v1_orgs__org__connections__connection_id__discover_post",
@@ -24733,8 +25030,127 @@
         ]
       }
     },
+    "/api/v1/orgs/{org}/connections/{connection_id}/invocations/{invocation_id}": {
+      "get": {
+        "operationId": "get_connection_invocation_api_v1_orgs__org__connections__connection_id__invocations__invocation_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "invocation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Invocation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "org",
+            "required": true,
+            "schema": {
+              "title": "Org",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvocationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "unauthenticated / invalid_credentials"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "forbidden / csrf_failed / auth_disabled"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "not_found (also for resources in other tenants)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "conflict / scope_archived"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "validation_error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "rate_limited"
+          }
+        },
+        "summary": "Get Connection Invocation",
+        "tags": [
+          "connections"
+        ]
+      }
+    },
     "/api/v1/orgs/{org}/connections/{connection_id}/invoke": {
       "post": {
+        "description": "Queue the invoke on the worker (issue #190): 202 with the new invocation, 200 with the\nfirst one on a replay of the same `Idempotency-Key` by the same caller.",
         "operationId": "invoke_connection_api_v1_orgs__org__connections__connection_id__invoke_post",
         "parameters": [
           {
@@ -24755,6 +25171,22 @@
               "title": "Org",
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
           }
         ],
         "requestBody": {
@@ -24770,11 +25202,11 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/shifde__connections__schemas__InvokeOut"
+                  "$ref": "#/components/schemas/InvocationOut"
                 }
               }
             },

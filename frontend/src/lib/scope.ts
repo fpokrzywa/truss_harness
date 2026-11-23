@@ -25,7 +25,8 @@ export function parseScope(pathname: string): ScopePath {
     seg[2] === 'releases' ||
     seg[2] === 'evaluations' ||
     seg[2] === 'runs' ||
-    seg[2] === 'approvals'
+    seg[2] === 'approvals' ||
+    seg[2] === 'connections'
   )
     return { org, area: 'other' };
   if (seg[2] !== 'w' || !seg[3]) return { org, area: 'dashboard' };
@@ -66,6 +67,11 @@ export const evaluationsHref = (org: string, area = '') =>
   `${orgHref(org)}/evaluations${area ? `/${area}` : ''}`;
 export const datasetsHref = (org: string, ws?: string, proj?: string) =>
   `${evaluationsHref(org, 'datasets')}${projQuery(ws, proj)}`;
+/** The Connections space (CM-6); the scope comes from `?ws=&proj=`. */
+export const connectionsHref = (org: string, ws?: string, proj?: string) =>
+  `${orgHref(org)}/connections${projQuery(ws, proj)}`;
+export const connectionHref = (org: string, id: string, area = '') =>
+  `${orgHref(org)}/connections/${e(id)}${area ? `/${area}` : ''}`;
 export const workspacesHref = (org: string) => `${orgHref(org)}/workspaces`;
 export const projectsHref = (org: string, ws: string) => `${wsHref(org, ws)}/projects`;
 

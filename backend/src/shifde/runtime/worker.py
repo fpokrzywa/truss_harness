@@ -54,12 +54,13 @@ call may have started (marker set) and whose TTL has passed
 amount with one unknown-usage row attributed from the budgets and quotas it names. A failure is
 rolled back and logged, and the sweep moves on to the next client.
 
-Jobs are dispatched by `kind` (ARCH M2, B-2610, B-2720): `run.advance` advances its run;
-`connection.test` and `connection.discover` (no run) run `connections.service.run_test_job` and
-`run_discover_job` (B-2971), and `model.health_check` and `model.discover` (no run) run
-`models_admin.service.run_provider_job`, in the job's own client as
-its requester, re-derived from the database, and end `done`, or `dead` with the refusal's error
-code; any other kind ends `dead` without running.
+Jobs are dispatched by `kind` (ARCH M2, B-2610, B-2720, B-2971, issue #190): `run.advance`
+advances its run; `connection.test` and `connection.discover` (no run) run
+`connections.service.run_test_job` and `run_discover_job`, `connection.invoke` (no run) runs
+`connections.service.run_invoke_job`, and `model.health_check` and `model.discover` (no run) run
+`models_admin.service.run_provider_job`, in the job's own client as its requester, re-derived
+from the database, and end `done`, or `dead` with the refusal's error code (an invoke records its
+refusal on its invocation and ends `done`); any other kind ends `dead` without running.
 """
 
 from __future__ import annotations
@@ -421,6 +422,9 @@ class Worker:
         elif job.kind == connections.DISCOVER_JOB_KIND:
             # the same, for a connection discovery (B-2971)
             job.error = connections.run_discover_job(self.db, self.runtime, job.tenant_id, job.id)
+        elif job.kind == connections.INVOKE_JOB_KIND:
+            # the same, at most once: the outcome is recorded on its invocation (issue #190)
+            job.error = connections.run_invoke_job(self.db, self.runtime, job.tenant_id, job.id)
         elif job.kind in (models_admin.HEALTH_JOB_KIND, models_admin.DISCOVER_JOB_KIND):
             # the same, for a provider health check or model discovery (B-2720)
             job.error = models_admin.run_provider_job(self.db, self.runtime, job.tenant_id, job.id)

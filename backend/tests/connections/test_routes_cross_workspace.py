@@ -19,7 +19,7 @@ from shifde.adapters.testservers import RestTestServer
 from shifde.core.db import Database, set_tenant
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
-from tests._support.conntests import discovery_of
+from tests._support.conntests import discovery_of, run_invoke
 from tests.connections.routes import (
     REST_TOKEN,
     activate,
@@ -81,7 +81,13 @@ def _state(owner_db: Database, world: World, cid: str) -> tuple[Any, ...]:
             ),
             {"i": cid},
         ).all()
-    return (tuple(row), tests, found, [tuple(j) for j in jobs])
+        invocations = o.execute(  # its invoke results (issue #190): none is added by the member
+            text(
+                "SELECT * FROM shifde.connection_invocations WHERE connection_id = :i ORDER BY id"
+            ),
+            {"i": cid},
+        ).all()
+    return (tuple(row), tests, found, [tuple(j) for j in jobs], [tuple(i) for i in invocations])
 
 
 def test_a_connection_in_an_unreadable_workspace_answers_like_an_unknown_id(
@@ -96,10 +102,18 @@ def test_a_connection_in_an_unreadable_workspace_answers_like_an_unknown_id(
 ) -> None:
     a, A = world.a, org(world.a.slug)
     owner = as_user(client, people.owner_a)
-    sid = secret(app_db, settings, a.tenant, REST_TOKEN)
+    # a workspace connection takes a secret of its own workspace (connections_0002, #156)
+    sids = {
+        ws_slug(a): secret(
+            app_db, settings, a.tenant, REST_TOKEN, scope_type="workspace", scope_id=a.ws
+        ),
+        ws2_slug(a): secret(
+            app_db, settings, a.tenant, REST_TOKEN, scope_type="workspace", scope_id=a.ws2
+        ),
+    }
 
     def made(server: RestTestServer, name: str, workspace: str) -> str:
-        body = {**rest_body(server, sid, name=name), "scope": {"workspace": workspace}}
+        body = {**rest_body(server, sids[workspace], name=name), "scope": {"workspace": workspace}}
         cid = str(connection(client, owner, body, A)["id"])
         activate(client, owner, cid, A)
         discovery_of(client, owner, A, cid)
@@ -107,6 +121,8 @@ def test_a_connection_in_an_unreadable_workspace_answers_like_an_unknown_id(
 
     own = made(rest_server, "in-ws1", ws_slug(a))
     hidden = made(evil, "in-ws2", ws2_slug(a))
+    invoke = {"method": "GET", "path": "/health"}
+    hidden_inv = run_invoke(client, owner, A, hidden, invoke, tenant_id=a.tenant)["id"]
     member, member_id = limited_user(owner_db, a.tenant, [], label="ws1-member")
     grant(owner_db, a.tenant, member_id, WORKSPACE_PERMS, scope_type="workspace", scope_id=a.ws)
     h = as_user(client, member)
@@ -117,13 +133,12 @@ def test_a_connection_in_an_unreadable_workspace_answers_like_an_unknown_id(
 
     before, evil_before = _state(owner_db, world, hidden), len(evil.requests)
     nobody = str(uuid7())
-    invoke = {"method": "GET", "path": "/health"}
     cases: list[tuple[str, str, Any, int]] = [
         ("GET", "", None, 200),
         ("GET", "/tests", None, 200),
         ("GET", "/discoveries/latest", None, 200),
         ("POST", "/discover", None, 202),
-        ("POST", "/invoke", invoke, 200),
+        ("POST", "/invoke", invoke, 202),
         ("POST", "/test", None, 202),
         ("PATCH", "", {"name": "renamed"}, 200),
         ("POST", "/status", {"status": "disabled"}, 200),
@@ -147,6 +162,11 @@ def test_a_connection_in_an_unreadable_workspace_answers_like_an_unknown_id(
             client.get(f"{A}/connections/{hidden}/{path}/{hidden_jobs[kind]}", headers=h),
             client.get(f"{A}/connections/{nobody}/{path}/{hidden_jobs[kind]}", headers=h),
         )
+    # ... and of its invocation (issue #190)
+    _same_404(
+        client.get(f"{A}/connections/{hidden}/invocations/{hidden_inv}", headers=h),
+        client.get(f"{A}/connections/{nobody}/invocations/{hidden_inv}", headers=h),
+    )
     assert _state(owner_db, world, hidden) == before  # unchanged, no test or discovery added
     assert len(evil.requests) == evil_before  # the hidden connection was never driven
     assert any(r["path"] == "/health" for r in rest_server.requests)  # the member's own were

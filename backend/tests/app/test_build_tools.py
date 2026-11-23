@@ -11,9 +11,9 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from shifde.adapters.testservers import McpTestServer, RestTestServer
-from tests._support.conntests import discovery_of
+from tests._support.conntests import discovery_of, invoke_result
 from tests._support.fullapp import World
-from tests._support.p2util import login, post
+from tests._support.p2util import login
 from tests._support.p3util import (
     ADMIN,
     ADMIN_B,
@@ -546,32 +546,20 @@ def test_sql_tool_binds_parameters_and_stays_read_only(
         scope,
     )
     assert validate(client, h, t["id"])["valid"] is True
-    total = post(
-        client,
-        f"{A}/connections/{conn['id']}/invoke",
-        h,
-        {"sql": "SELECT count(*) FROM employees"},
-        200,
-    )["result"]["rows"][0][0]
-    dept = post(
-        client,
-        f"{A}/connections/{conn['id']}/invoke",
-        h,
-        {"sql": "SELECT department FROM employees ORDER BY id LIMIT 1"},
-        200,
+    total = invoke_result(client, h, A, conn["id"], {"sql": "SELECT count(*) FROM employees"})[
+        "result"
+    ]["rows"][0][0]
+    dept = invoke_result(
+        client, h, A, conn["id"], {"sql": "SELECT department FROM employees ORDER BY id LIMIT 1"}
     )["result"]["rows"][0][0]
     res = run_tool(client, h, t["id"], {"dept": dept})
     assert res["output"]["columns"] == ["name"] and 1 <= len(res["output"]["rows"]) <= 2
     # an injection attempt is just a (non-matching) value
     inj = run_tool(client, h, t["id"], {"dept": "x'; DROP TABLE employees; --"})
     assert inj["output"]["rows"] == []
-    after = post(
-        client,
-        f"{A}/connections/{conn['id']}/invoke",
-        h,
-        {"sql": "SELECT count(*) FROM employees"},
-        200,
-    )["result"]["rows"][0][0]
+    after = invoke_result(client, h, A, conn["id"], {"sql": "SELECT count(*) FROM employees"})[
+        "result"
+    ]["rows"][0][0]
     assert after == total
 
     def codes_of(spec: dict[str, Any], rv: int) -> set[str]:

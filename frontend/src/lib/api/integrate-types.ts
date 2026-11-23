@@ -39,10 +39,13 @@ export interface Adapter {
   key: string;
   kind: string;
   version: string;
+  display_name?: string | null;
   capabilities: AdapterCapability[];
   config_schema: JsonSchema;
   secret_fields: string[];
   auth_methods: string[];
+  auth_only_fields: Record<string, string[]>;
+  destination_fields: string[];
 }
 
 export interface ConformanceRun {
@@ -247,6 +250,10 @@ export interface Connection {
   status: ConnectionStatus;
   health?: string | null;
   last_tested_at?: string | null;
+  /** CM-1/CM-2: absent until the backend sends it. */
+  last_test_outcome?: string | null;
+  /** CM-1: whether a credential (own or shared secret) is bound; never its value. */
+  secret_set?: boolean;
   row_version: number;
 }
 
@@ -259,8 +266,25 @@ export interface ConnectionInput {
   config: Record<string, unknown>;
   auth_method: string;
   secret_id?: string;
+  /** Stored as the connection's own secret `connection-<id>`; never together with `secret_id`. */
+  credential?: { value: string };
   egress_policy_id?: string;
   access_mode: AccessMode;
+  /** Required true in `read` mode whenever a credential or secret is bound (design 7.4). */
+  read_only_confirmed?: boolean;
+}
+
+/** `PATCH .../connections/{id}`: a config change resets the connection to draft. */
+export interface ConnectionPatch {
+  name?: string;
+  vendor_id?: string | null;
+  config?: Record<string, unknown>;
+  auth_method?: string;
+  secret_id?: string | null;
+  egress_policy_id?: string | null;
+  access_mode?: AccessMode;
+  read_only_confirmed?: boolean;
+  row_version?: number;
 }
 
 export type CheckName = 'config' | 'egress' | 'dns' | 'tls' | 'auth' | 'capability';
@@ -322,6 +346,18 @@ export interface ConnectionInvokeResult {
   result: unknown;
   truncated: boolean;
   duration_ms: number;
+}
+
+/** A connection invocation queued on the worker (issue #190): `result` once it succeeded. */
+export interface ConnectionInvocation {
+  id: string;
+  connection_id: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  result: ConnectionInvokeResult | null;
+  /** Error code of a failed invocation (e.g. `forbidden`, `upstream_error`, `worker_lost`). */
+  error: string | null;
+  created_at: string;
+  finished_at: string | null;
 }
 
 /** Egress rule fields are not fixed by the contract (SECURITY_MODEL section 6); see frontend/README.md. */

@@ -87,6 +87,24 @@ class ConnectionDisabled(AppError):
     status, code, title = 409, "connection_disabled", "Conflict"
 
 
+class SecretScopeMismatch(AppError):
+    """A connection's secret must have exactly the connection's scope (#156 rule 4.4)."""
+
+    status, code, title = 422, "secret_scope_mismatch", "Unprocessable Entity"
+
+
+class EgressPolicyMismatch(AppError):
+    """A connection's egress policy must belong to the connection's client."""
+
+    status, code, title = 422, "egress_policy_mismatch", "Unprocessable Entity"
+
+
+class VendorNotVisible(AppError):
+    """A connection's or model provider's vendor must be global or the client's own."""
+
+    status, code, title = 422, "vendor_not_visible", "Unprocessable Entity"
+
+
 class ConnectionTestBusy(AppError):
     """No active test job could be queued or read back (ARCH M2): retryable."""
 

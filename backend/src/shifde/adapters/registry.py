@@ -30,8 +30,8 @@ BUILTIN: dict[str, str] = {
     "fake": "shifde.adapters.model_providers:FakeProvider",
     "openai_compatible": "shifde.adapters.model_providers:OpenAICompatibleProvider",
     "anthropic": "shifde.adapters.model_providers:AnthropicProvider",
-    "databricks": "shifde.adapters.planned:DatabricksPlanned",
-    "snowflake": "shifde.adapters.planned:SnowflakePlanned",
+    "databricks": "shifde.adapters.dataplatforms.databricks:DatabricksAdapter",
+    "snowflake": "shifde.adapters.dataplatforms.snowflake:SnowflakeAdapter",
     "fabric": "shifde.adapters.planned:FabricPlanned",
 }
 

@@ -187,9 +187,19 @@ def test_capabilities_come_from_the_registry_and_recorded_evidence(
     assert pg["query.sql"]["maturity"] == "experimental"  # implemented, no evidence yet
     assert pg["query.pushdown_join"]["maturity"] == "planned"  # declared, not built
     adapters = {a["key"]: a for a in client.get("/api/v1/adapters").json()["items"]}
-    assert {a["maturity"] for a in adapters["databricks"]["capabilities"]} == {"planned"}
+    assert {a["maturity"] for a in adapters["fabric"]["capabilities"]} == {"planned"}
     assert adapters["postgres"]["connection_type"] == "database"
     assert adapters["rest.http"]["secret_fields"] and "config_schema" in adapters["rest.http"]
+    oauth2 = ["oauth2_client_credentials"]
+    assert adapters["rest.http"]["destination_fields"] == ["base_url", "oauth2_url"]
+    assert adapters["rest.http"]["auth_only_fields"] == {
+        "oauth2_url": oauth2,
+        "client_id": oauth2,
+        "scope": oauth2,
+    }
+    assert adapters["databricks"]["destination_fields"] == ["host"]
+    assert adapters["databricks"]["auth_only_fields"] == {"client_id": oauth2}
+    assert adapters["postgres"]["auth_only_fields"] == {}
 
     run = evidence.ConformanceRun(
         adapter_key="postgres",

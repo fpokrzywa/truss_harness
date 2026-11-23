@@ -16,7 +16,7 @@ results never include B's rows, and none of B's rows changes.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -157,13 +157,18 @@ def _client(o: Session, t: UUID) -> Client:
 
 
 @pytest.fixture
-def pair(owner_db: Database) -> tuple[Client, Client]:
+def pair(owner_db: Database) -> Iterator[tuple[Client, Client]]:
     ta, tb = uuid7(), uuid7()
     with owner_db.session() as o:
         add_tenants(o, ta, tb)
         a, b = _client(o, ta), _client(o, tb)
         o.commit()
-    return a, b
+    yield a, b
+    # A `suspended` client left behind makes the `tenancy_0005` downgrade fail (issue #229).
+    with owner_db.session() as o:
+        o.execute(text("UPDATE shifde.tenants SET status = 'active' WHERE id IN (:a, :b)"),
+                  {"a": ta, "b": tb})  # fmt: skip
+        o.commit()
 
 
 def _services(s: Session, c: Client, settings: Settings) -> tuple[RunService, ApprovalService]:

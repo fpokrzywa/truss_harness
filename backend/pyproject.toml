@@ -36,8 +36,8 @@ postgres = "shifde.adapters.postgres:PostgresAdapter"
 fake = "shifde.adapters.model_providers:FakeProvider"
 openai_compatible = "shifde.adapters.model_providers:OpenAICompatibleProvider"
 anthropic = "shifde.adapters.model_providers:AnthropicProvider"
-databricks = "shifde.adapters.planned:DatabricksPlanned"
-snowflake = "shifde.adapters.planned:SnowflakePlanned"
+databricks = "shifde.adapters.dataplatforms.databricks:DatabricksAdapter"
+snowflake = "shifde.adapters.dataplatforms.snowflake:SnowflakeAdapter"
 fabric = "shifde.adapters.planned:FabricPlanned"
 
 [dependency-groups]
@@ -88,7 +88,7 @@ testpaths = ["tests"]
 norecursedirs = ["*.egg", ".*", "_darcs", "CVS", "dist", "node_modules", "venv", "{arch}"]
 addopts = "-ra"
 markers = [
-    "live: runs against a real Databricks development workspace or a real Entra tenant (opt-in, see docs/runbooks/databricks-live-validation.md and docs/runbooks/entra-live-validation.md)",
+    "live: runs against a real Databricks development workspace, a real Snowflake development account or a real Entra tenant (opt-in, see docs/runbooks/databricks-live-validation.md, docs/runbooks/snowflake-live-validation.md and docs/runbooks/entra-live-validation.md)",
 ]
 
 # Line coverage of the shifde package; CI runs the full suite with `--cov` (F-17).
@@ -230,6 +230,8 @@ source_modules = [
   "shifde.adapters.mcp_http",
   "shifde.adapters.postgres", "shifde.adapters.model_providers", "shifde.adapters.registry",
   "shifde.adapters.evidence", "shifde.adapters.maturity", "shifde.adapters.conformance",
+  "shifde.adapters.dataplatforms.sqlapi", "shifde.adapters.dataplatforms.databricks",
+  "shifde.adapters.dataplatforms.snowflake",
   "shifde.core.egress", "shifde.core.ssrf",
   "shifde.governance.service", "shifde.governance.repository", "shifde.governance.validation",
   "shifde.ledger.pricing", "shifde.ledger.usage", "shifde.ledger.budgeting",
