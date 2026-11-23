@@ -449,6 +449,15 @@ REFUSED: dict[str, Callable[[dict[str, bytes]], None]] = {
     ),
     "alias-cycle": _alias_cycle,
     "label-alias-cycle": _label_alias_cycle,
+    "compose-label-other": _service(lambda s: s["labels"].update({"org.example.note": "x"})),
+    "compose-label-compose": _service(
+        lambda s: s["labels"].update({"com.docker.compose.project": "shifde-other"})
+    ),
+    "dockerfile-label-other": _dockerfile(lambda text: text + 'LABEL org.example.note="x"\n'),
+    "dockerfile-label-compose": _dockerfile(
+        lambda text: text + "LABEL com.docker.compose.project=shifde-other\n"
+    ),
+    "dockerfile-label-legacy": _dockerfile(lambda text: text + "LABEL maintainer someone\n"),
     "extra-environment": _service(lambda s: s["environment"].update(DATABRICKS_TOKEN="x")),
     "second-service": _second_service,
     "top-level": _top_level,
@@ -488,6 +497,11 @@ def test_docker_bundle_validation_refuses(docker: DockerSetup, case: str) -> Non
         ("set-environment", "compose_yaml"),
         ("alias-cycle", "compose_yaml"),
         ("label-alias-cycle", "compose_yaml"),
+        ("compose-label-other", "compose_labels"),
+        ("compose-label-compose", "compose_labels"),
+        ("dockerfile-label-other", "dockerfile_label"),
+        ("dockerfile-label-compose", "dockerfile_label"),
+        ("dockerfile-label-legacy", "dockerfile_label"),
     ],
 )
 def test_docker_bundle_refusal_names_the_rule(docker: DockerSetup, case: str, code: str) -> None:

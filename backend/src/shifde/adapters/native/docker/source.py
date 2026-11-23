@@ -142,8 +142,10 @@ def dockerfile_labels(text: str) -> dict[str, str]:
                 raise BundleInvalid("dockerfile_label", "a Dockerfile LABEL is malformed") from None
             for token in tokens:
                 key, sep, value = token.partition("=")
-                if sep:
-                    labels[key] = value
+                if not sep:
+                    # The legacy `LABEL key value` form; only `key=value` is accepted.
+                    raise BundleInvalid("dockerfile_label", "a Dockerfile LABEL must be key=value")
+                labels[key] = value
     return labels
 
 
@@ -189,7 +191,10 @@ def _validate_dockerfile(text: str, release_digest: str) -> None:
             raise BundleInvalid("dockerfile_copy_from", "Dockerfile COPY --from is refused")
     if froms != 1:
         raise BundleInvalid("dockerfile_from", "the Dockerfile must have exactly one FROM")
-    if dockerfile_labels(text).get(RELEASE_LABEL) != release_digest:
+    labels = dockerfile_labels(text)
+    if set(labels) != {RELEASE_LABEL}:
+        raise BundleInvalid("dockerfile_label", "the Dockerfile may only set the release label")
+    if labels[RELEASE_LABEL] != release_digest:
         raise BundleInvalid(
             "dockerfile_label", "the Dockerfile must label the image with the release digest"
         )
@@ -274,6 +279,8 @@ def _validate_compose(data: bytes) -> tuple[dict[str, Any], dict[str, str], dict
             "compose_environment", "the compose environment holds a refused variable"
         )
     labels = _string_map(service.get("labels"), "compose_labels", "compose labels are malformed")
+    if not set(labels) <= {TARGET_LABEL}:
+        raise BundleInvalid("compose_labels", "the compose labels may only hold the target label")
     return service, environment, labels
 
 
