@@ -32,6 +32,7 @@ from shifde.adapters.native.contracts import (
     Capability,
     CapabilityReport,
     Check,
+    DatabricksApplicationSpec,
     DeploymentPlan,
     Diagnostic,
     EnvironmentSnapshot,
@@ -95,6 +96,12 @@ def identity(app: dict[str, Any] | None) -> dict[str, Any]:
         "deployment_id": (app.get("active_deployment") or {}).get("deployment_id"),
         "resources": app.get("resources", []),
     }
+
+
+def databricks_spec(spec: object) -> DatabricksApplicationSpec:
+    if not isinstance(spec, DatabricksApplicationSpec):
+        raise ValueError("the artifact is not a Databricks application")
+    return spec
 
 
 class DatabricksAdapter:
@@ -185,6 +192,15 @@ class DatabricksAdapter:
         return ctx.artifacts.put(ctx.tenant_id, create_archive(scaffold_files(request.spec)))
 
     def validate(self, request: ValidateRequest, ctx: BuildContext) -> ValidationReport:
+        if not isinstance(request.spec, DatabricksApplicationSpec):
+            return ValidationReport(
+                passed=False,
+                diagnostics=[
+                    Diagnostic(
+                        code="UNSUPPORTED_SPEC", message="the spec is not a Databricks application"
+                    )
+                ],
+            )
         try:
             contents = read_archive(ctx.artifacts.read(request.source, ctx.tenant_id))
             validate_source(contents, request.spec)
@@ -212,7 +228,7 @@ class DatabricksAdapter:
 
     def plan(self, request: PlanRequest, ctx: ReadContext) -> DeploymentPlan:
         artifact = request.artifact
-        spec = artifact.spec
+        spec = databricks_spec(artifact.spec)
         self._check_artifact(artifact, ctx)
         if not ctx.target.bindings.get(spec.warehouse_binding):
             raise ValueError("required warehouse binding is missing")
@@ -260,7 +276,7 @@ class DatabricksAdapter:
         principal = ctx.target.bindings.get(PRINCIPAL_BINDING)
         if not principal:
             raise ValueError("required service principal binding is missing")
-        warehouse = ctx.target.bindings.get(artifact.spec.warehouse_binding)
+        warehouse = ctx.target.bindings.get(databricks_spec(artifact.spec).warehouse_binding)
         if not warehouse:
             raise ValueError("required warehouse binding is missing")
         return {
@@ -275,7 +291,10 @@ class DatabricksAdapter:
         """The app's binding when `ctx` owns it; refuses an unowned app and a vanished owned one."""
         if app:
             binding = self._resource(
-                app, artifact.spec.app_resource_key, artifact.application_id, ctx.target.id
+                app,
+                databricks_spec(artifact.spec).app_resource_key,
+                artifact.application_id,
+                ctx.target.id,
             )
             if binding not in ctx.owned_resources:
                 raise PermissionError("refusing to adopt an unowned native app by name")
@@ -298,7 +317,7 @@ class DatabricksAdapter:
 
     def apply(self, request: ApplyRequest, ctx: DeployContext) -> ApplyReceipt:
         artifact, plan = request.artifact, request.plan
-        spec = artifact.spec
+        spec = databricks_spec(artifact.spec)
         validate_plan(plan, ctx.target, check_start_ttl=False)
         if ctx.toolchain_digest != plan.toolchain_digest:
             raise ValueError("executing toolchain does not match the deployment plan")

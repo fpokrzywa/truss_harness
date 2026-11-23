@@ -6,6 +6,7 @@ over a limit is refused with 422 before anything is stored."""
 
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal, Self  # Any: arbitrary JSON values to hash
@@ -91,6 +92,14 @@ class Entity(Model):
     tenant_id: UUID
 
 
+# A Docker daemon id: a lowercase UUID or the legacy twelve colon-joined base32 groups.
+DAEMON_ID = (
+    r"(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"|[A-Z2-7]{4}(?::[A-Z2-7]{4}){11})"
+)
+DOCKER_HOST = re.compile(rf"docker://({DAEMON_ID})")
+
+
 # --------------------------------------------------------------------------- common
 class Target(Entity):
     revision: int = Field(default=1, ge=1)
@@ -101,6 +110,8 @@ class Target(Entity):
     @field_validator("host")
     @classmethod
     def _validate_host(cls, value: str) -> str:
+        if DOCKER_HOST.fullmatch(value):
+            return value
         parsed = urlsplit(value)
         if (
             parsed.scheme != "https"
@@ -170,13 +181,22 @@ class DatabricksApplicationSpec(Model):
     health_path: Literal["/health"] = "/health"
 
 
+class DockerComposeSpec(Model):
+    kind: Literal["docker.compose/v1"] = "docker.compose/v1"
+    health_path: Literal["/health"] = "/health"
+
+
+# Untagged, Databricks first: stored JSON without `kind` still parses as Databricks.
+ApplicationSpec = DatabricksApplicationSpec | DockerComposeSpec
+
+
 # --------------------------------------------------------------------------- builds
 class BuildArtifact(Entity):
     application_id: UUID
     archive: SourceArchive
     source_digest: Digest
     spec_digest: Digest
-    spec: DatabricksApplicationSpec
+    spec: ApplicationSpec
     adapter_version: str
     toolchain_digest: Digest
     template_version: str = "0.1.0"
@@ -188,7 +208,7 @@ class ScaffoldRequest(Model):
 
 
 class ValidateRequest(Model):
-    spec: DatabricksApplicationSpec
+    spec: ApplicationSpec
     source: SourceArchive
 
 
