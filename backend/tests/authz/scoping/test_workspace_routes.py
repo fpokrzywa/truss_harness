@@ -575,6 +575,9 @@ ROUTES: dict[Op, tuple[str, str]] = {
     ("POST", EVALUATIONS): (SCOPED, "evaluation"),
     ("GET", EVALUATIONS): (SCOPED, "evaluation"),
     ("GET", "/api/v1/orgs/{org}/evaluation-runs/{run_id}"): (SCOPED, "evaluation"),
+    # ------------------------------------------------------------------ board
+    ("GET", "/api/v1/orgs/{org}/board"): (SCOPED, "board"),
+    ("GET", "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/board"): (SCOPED, "board"),
     # ------------------------------------------------------------------ models
     ("GET", "/api/v1/orgs/{org}/model-allowlists"): (SCOPED, "models"),
     ("PUT", "/api/v1/orgs/{org}/model-allowlists"): (SCOPED, "models"),
@@ -1596,6 +1599,26 @@ _register(
 )
 
 
+# ---------------------------------------------------------------------- board
+# the organization board filtered to each side's workspace lists that side's project; the
+# single-project board reads it
+_register(
+    "board",
+    {
+        ("GET", ORG + "/board"): lambda w: _case(
+            LIST,
+            "GET",
+            lambda n: "/board",
+            params=lambda n: {"workspace": f"w{n}"},
+            ids=lambda n: w("proj", n),
+        ),
+        ("GET", ORG + "/workspaces/{ws}/projects/{proj}/board"): lambda w: _case(
+            READ, "GET", lambda n: f"/workspaces/w{n}/projects/p{n}/board"
+        ),
+    },
+)
+
+
 def _rest_connection(base_url: str, n: int, name: str) -> dict[str, Any]:  # Any: JSON body
     return {
         "name": name,
@@ -2277,6 +2300,11 @@ def test_evaluation_datasets_and_runs(
     for n in (1, 2):
         w.set("evaluation_run", n, w.post(f"/releases/{w('release', n)}/evaluations", {})["id"])
     _check(w, "evaluation")
+
+
+def test_board(client: TestClient, world: World, owner_session: Session) -> None:
+    w = _world(client, owner_session, world.passwords)
+    _check(w, "board")
 
 
 def test_models(client: TestClient, world: World, owner_session: Session) -> None:

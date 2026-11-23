@@ -502,21 +502,22 @@ def test_docker_target_host_refuses_other_forms(host: str) -> None:
         Target(tenant_id=uuid4(), host=host)
 
 
-def test_docker_union_reloads_a_databricks_artifact_as_databricks(setup: Setup) -> None:
+def test_docker_union_reloads_each_spec_by_kind(setup: Setup) -> None:
     artifact = setup.artifact()
     reloaded = BuildArtifact.model_validate_json(artifact.model_dump_json())
     assert isinstance(reloaded.spec, DatabricksApplicationSpec)
-    stored = artifact.model_dump(mode="json")
-    del stored["spec"]["kind"]
-    assert isinstance(BuildArtifact.model_validate(stored).spec, DatabricksApplicationSpec)
+    docker = artifact.model_copy(update={"spec": DockerComposeSpec()})
+    assert isinstance(
+        BuildArtifact.model_validate_json(docker.model_dump_json()).spec, DockerComposeSpec
+    )
 
 
 def test_docker_spec_artifact_is_refused_by_the_databricks_adapter(setup: Setup) -> None:
     artifact = setup.artifact().model_copy(update={"spec": DockerComposeSpec()})
     with pytest.raises(ValueError, match="Databricks"):
         setup.adapter.plan(PlanRequest(artifact=artifact), setup.read)
-    report = setup.adapter.validate(
-        ValidateRequest(spec=DockerComposeSpec(), source=artifact.archive), setup.build
-    )
-    assert not report.passed
+    with pytest.raises(ValueError, match="Databricks"):
+        setup.adapter.validate(
+            ValidateRequest(spec=DockerComposeSpec(), source=artifact.archive), setup.build
+        )
     assert setup.platform.actions == []

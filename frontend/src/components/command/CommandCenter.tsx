@@ -1,6 +1,7 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
+import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import type { ReactNode } from 'react';
 import { endpoints } from '@/lib/api/endpoints';
@@ -8,6 +9,7 @@ import { ApiError } from '@/lib/api/errors';
 import type { Run } from '@/lib/api/operate-types';
 import {
   adminGroups,
+  boardCardHref,
   buildNodes,
   buildReadout,
   buildWorkerNodes,
@@ -44,6 +46,7 @@ export function CommandCenterContent({
   runs,
   runsUnavailable,
   admin,
+  board,
   updatedAt,
 }: {
   org: string;
@@ -51,6 +54,8 @@ export function CommandCenterContent({
   runs: readonly Run[] | undefined;
   runsUnavailable?: string;
   admin: readonly AdminGroup[];
+  /** The Board link when the user may see the board; absent hides the card. */
+  board?: string;
   updatedAt: number;
 }) {
   const nodes = buildNodes(system);
@@ -136,6 +141,21 @@ export function CommandCenterContent({
         </h2>
         <AdminPanel groups={admin} />
       </section>
+
+      {board && (
+        <section aria-labelledby="board" className="mt-6">
+          <h2 id="board" className="mb-2 font-lora text-2xl font-medium">
+            Board
+          </h2>
+          <p className="mb-3 max-w-[70ch] text-sm text-shi-tint">
+            What is deployed where: each solution&apos;s current release, last deployment and open
+            plan per target.
+          </p>
+          <Link href={board} className="cc-admin-button">
+            Open the board
+          </Link>
+        </section>
+      )}
     </div>
   );
 }
@@ -153,6 +173,11 @@ export function CommandCenter() {
   const session = useSession();
   const permissions = usePermissions(org);
   const live = { refetchInterval: REFRESH_MS };
+  const navOpts = {
+    isPlatformAdmin: !!session.data?.user.is_platform_admin,
+    permissions: permissions.data,
+    features: session.data?.features,
+  };
 
   const status = useQuery({
     queryKey: keys.platformStatus,
@@ -224,11 +249,8 @@ export function CommandCenter() {
       }}
       runs={runs.data?.items}
       runsUnavailable={runsMessage(runs.error)}
-      admin={adminGroups(org, {
-        isPlatformAdmin: !!session.data?.user.is_platform_admin,
-        permissions: permissions.data,
-        features: session.data?.features,
-      })}
+      admin={adminGroups(org, navOpts)}
+      board={boardCardHref(org, navOpts)}
       updatedAt={status.dataUpdatedAt}
     />
   );

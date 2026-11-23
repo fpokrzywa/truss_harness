@@ -105,3 +105,35 @@ def test_main_routes_p95_within_budget(
 
     over = {name: round(lat.p95_ms, 1) for name, lat, budget in results if lat.p95_ms > budget}
     assert not over, f"p95 over budget (ms): {over}"
+
+
+def test_board_routes_p95_within_budget(client: TestClient, world: World) -> None:
+    """The organization board and one project's board (sub-project 7 design 7.2)."""
+    iterations = _iterations()
+    h = login(client, world.passwords, ADMIN)
+
+    def get(url: str) -> Callable[[], httpx.Response]:
+        return lambda: client.get(f"{A}{url}", headers=h)
+
+    routes = [
+        ("GET /board", get("/board")),
+        (
+            "GET /workspaces/main/projects/sample/board",
+            get("/workspaces/main/projects/sample/board"),
+        ),
+    ]
+    results = [(name, measure(call, 200, iterations)) for name, call in routes]
+
+    lines = [f"{'route':<42} {'iterations':>10} {'p50 ms':>9} {'p95 ms':>9} {'budget ms':>10}"] + [
+        f"{name:<42} {lat.iterations:>10} {lat.p50_ms:>9.1f} {lat.p95_ms:>9.1f} "
+        f"{READ_BUDGET_MS:>10.0f}"
+        for name, lat in results
+    ]
+    print("\n" + "\n".join(lines))
+    REPORT.parent.mkdir(parents=True, exist_ok=True)
+    with REPORT.open("a", encoding="utf-8") as fh:
+        fh.write(f"{utcnow().isoformat()} F-16 API latency (board), warm-up 3\n")
+        fh.write("".join(f"  {line}\n" for line in lines))
+
+    over = {name: round(lat.p95_ms, 1) for name, lat in results if lat.p95_ms > READ_BUDGET_MS}
+    assert not over, f"p95 over budget (ms): {over}"

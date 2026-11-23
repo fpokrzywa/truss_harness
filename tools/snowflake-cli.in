@@ -1,0 +1,5 @@
+# The pinned Snowflake CLI for Native App stage uploads (SP6 design 6.2, Call S6-C). It runs from
+# its own virtual environment made from the hashed lock `tools/snowflake-cli.txt`, never from the
+# backend's environment. Keep this pin equal to `CLI_VERSION` in
+# `backend/src/shifde/adapters/native/snowflake/source.py`.
+snowflake-cli==3.33.0
