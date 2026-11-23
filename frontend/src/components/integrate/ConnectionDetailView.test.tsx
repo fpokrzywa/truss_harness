@@ -249,6 +249,8 @@ describe('Connection console', () => {
             config_schema: { properties: {} },
             secret_fields: [],
             auth_methods: ['password'],
+            auth_only_fields: {},
+            destination_fields: ['host', 'port', 'sslmode'],
           },
         ]),
       'POST /api/v1/orgs/acme/connections/c-1/invoke': () =>
@@ -359,6 +361,8 @@ const DBX_ADAPTER = {
   },
   secret_fields: ['token', 'client_secret'],
   auth_methods: ['none', 'bearer', 'oauth2_client_credentials'],
+  auth_only_fields: { client_id: ['oauth2_client_credentials'] },
+  destination_fields: ['host'],
 };
 const DBX = {
   connection_type: 'data_platform',

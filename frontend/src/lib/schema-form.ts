@@ -1,5 +1,5 @@
 import type { ProblemFieldError } from './api/errors';
-import type { JsonSchema, JsonSchemaProperty } from './api/integrate-types';
+import type { Adapter, JsonSchema, JsonSchemaProperty } from './api/integrate-types';
 
 export type FieldKind = 'string' | 'number' | 'integer' | 'boolean' | 'enum' | 'stringArray';
 
@@ -169,4 +169,28 @@ export function mapServerErrors(
     else other.push(e);
   }
   return { byField, other };
+}
+
+/** The fields shown under `authMethod`: an auth-only field only when that method is listed for it. */
+export function visibleConfigFields(
+  adapter: Pick<Adapter, 'auth_only_fields'> | undefined,
+  authMethod: string,
+  fields: FieldDef[],
+): FieldDef[] {
+  const only = adapter?.auth_only_fields ?? {};
+  return fields.filter((f) => {
+    const methods = only[f.key];
+    return methods === undefined || methods.includes(authMethod);
+  });
+}
+
+/** Whether any destination field of the adapter differs between two configs. */
+export function destinationChanged(
+  adapter: Pick<Adapter, 'destination_fields'> | undefined,
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): boolean {
+  return (adapter?.destination_fields ?? []).some(
+    (f) => JSON.stringify(before[f]) !== JSON.stringify(after[f]),
+  );
 }
