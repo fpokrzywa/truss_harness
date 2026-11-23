@@ -20,6 +20,7 @@ from shifde import __version__
 from shifde.adapters.registry import AdapterRegistry
 from shifde.adapters.runtime import IntegrationRuntime
 from shifde.admin import api as admin_api
+from shifde.board import api as board_api
 from shifde.build import api as build_api
 from shifde.connections import api as connections_api
 from shifde.core.bodylimit import MaxBodySizeMiddleware
@@ -171,6 +172,7 @@ def create_app(
     app.include_router(packaging_api.router, dependencies=guard)
     app.include_router(evaluation_api.router, dependencies=guard)
     app.include_router(delivery_api.router, dependencies=guard)
+    app.include_router(board_api.router, dependencies=guard)
     # the executor gateway authenticates `shx_` executor tokens itself: no user session (B-2664)
     app.include_router(delivery_gateway_api.router)
     return app
