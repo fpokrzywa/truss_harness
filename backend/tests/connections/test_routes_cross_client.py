@@ -366,6 +366,52 @@ def test_b_cannot_set_rotate_or_archive_as_credential(
     assert _a_credential_state(owner_db, two, ids) == before
 
 
+def test_b_cannot_bind_as_owned_connection_secret(
+    client: TestClient, owner_db: Database, two: Two, rest_server: RestTestServer
+) -> None:
+    """CM-2 (issue #208): B's PATCH of its own connection with `secret_id` = A's owned
+    `connection-<id>` secret gets exactly the answer an unknown secret id gets; A's connection
+    and secret rows and B's state stay byte-identical."""
+    A, h = two.a.base, as_user(client, two.a.email)
+    owned = connection(
+        client,
+        h,
+        {
+            **rest_body(rest_server, None, name="a-owned-bind"),
+            "auth_method": "bearer",
+            "access_mode": "read_write",
+            "credential": {"value": REST_TOKEN},
+        },
+        A,
+    )
+    assert owned["secret_id"]
+    with owner_db.session() as o:
+        name, tenant = o.execute(
+            text("SELECT name, tenant_id FROM shifde.secrets WHERE id = :i"),
+            {"i": owned["secret_id"]},
+        ).one()
+    assert name == f"connection-{owned['id']}" and tenant == two.a.tenant
+    ids = [two.a.connection, owned["id"]]
+    before_a, before_b = _a_credential_state(owner_db, two, ids), _b_state(owner_db, two)
+    B, hb = two.b.base, as_user(client, two.b.email)
+    own = client.get(f"{B}/connections/{two.b.connection}", headers=hb)
+    assert own.status_code == 200, own.text
+    rv = own.json()["row_version"]
+    reference = client.patch(
+        f"{B}/connections/{two.b.connection}",
+        headers=hb,
+        json={"secret_id": str(uuid7()), "row_version": rv, "read_only_confirmed": True},
+    )
+    attack = client.patch(
+        f"{B}/connections/{two.b.connection}",
+        headers=hb,
+        json={"secret_id": owned["secret_id"], "row_version": rv, "read_only_confirmed": True},
+    )
+    _same_404(attack, reference)
+    assert _a_credential_state(owner_db, two, ids) == before_a
+    assert _b_state(owner_db, two) == before_b
+
+
 def test_a_lists_only_its_own_rows(client: TestClient, two: Two) -> None:
     for me, other in ((two.a, two.b), (two.b, two.a)):
         h = as_user(client, me.email)
