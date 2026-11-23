@@ -488,6 +488,8 @@ def rls_violations(conn: Connection) -> list[str]:
 # --------------------------------------------------------------------------- context writes
 _SCANNED_LANGUAGES = frozenset({"sql", "plpgsql", "c", "internal"})
 
+# The f-string queries below interpolate only `_system()` and `_HAS_TENANT`, module-constant
+# templates formatted with literal column names, never input: each carries `# nosec B608`.
 _SYSTEM = r"""{ns} NOT IN ('pg_catalog', 'information_schema')
           AND {ns} NOT LIKE 'pg\_toast%' AND {ns} NOT LIKE 'pg\_temp\_%'"""
 
@@ -512,7 +514,7 @@ _CONTEXT_FUNCTIONS = text(
          FROM pg_catalog.pg_proc p
          JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
          JOIN pg_catalog.pg_language l ON l.oid = p.prolang
-        WHERE {_system("n.nspname")}"""
+        WHERE {_system("n.nspname")}"""  # nosec B608  # constant templates, literal columns
 )
 
 _EXPRESSIONS: dict[str, str] = {
@@ -530,10 +532,12 @@ _EXPRESSIONS: dict[str, str] = {
          FROM pg_catalog.pg_aggregate a
          JOIN pg_catalog.pg_proc p ON p.oid = a.aggfnoid
          JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
-        WHERE {_system("n.nspname")}""",
+        WHERE {_system("n.nspname")}""",  # nosec B608  # constant templates, literal columns
+    # B608 reviewed (marker on the closing line): constant templates, literal columns
     "view": f"""SELECT n.nspname || '.' || c.relname, pg_catalog.pg_get_viewdef(c.oid)
          FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-        WHERE c.relkind IN ('v', 'm') AND {_system("n.nspname")}""",
+        WHERE c.relkind IN ('v', 'm') AND {_system("n.nspname")}""",  # nosec B608
+    # B608 reviewed (marker on the closing line): constant templates, literal columns
     "policy": f"""SELECT p.polname || ' on ' || n.nspname || '.' || c.relname || ' ' || x.clause,
               x.expr
          FROM pg_catalog.pg_policy p
@@ -542,40 +546,41 @@ _EXPRESSIONS: dict[str, str] = {
          CROSS JOIN LATERAL (VALUES
              ('USING', pg_catalog.pg_get_expr(p.polqual, p.polrelid)),
              ('WITH CHECK', pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid))) x(clause, expr)
-        WHERE x.expr IS NOT NULL AND {_system("n.nspname")}""",
+        WHERE x.expr IS NOT NULL AND {_system("n.nspname")}""",  # nosec B608
     "default": f"""SELECT n.nspname || '.' || c.relname || '.' || a.attname,
               pg_catalog.pg_get_expr(d.adbin, d.adrelid)
          FROM pg_catalog.pg_attrdef d
          JOIN pg_catalog.pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum
          JOIN pg_catalog.pg_class c ON c.oid = d.adrelid
          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-        WHERE {_system("n.nspname")}""",
+        WHERE {_system("n.nspname")}""",  # nosec B608  # constant templates, literal columns
+    # B608 reviewed (marker on the closing line): constant templates, literal columns
     "domain default": f"""SELECT n.nspname || '.' || t.typname,
               pg_catalog.pg_get_expr(t.typdefaultbin, 0)
          FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
-        WHERE t.typdefaultbin IS NOT NULL AND {_system("n.nspname")}""",
+        WHERE t.typdefaultbin IS NOT NULL AND {_system("n.nspname")}""",  # nosec B608
     "constraint": f"""SELECT n.nspname || '.' || k.conname || ' on '
                 || CASE WHEN k.conrelid <> 0 THEN k.conrelid::pg_catalog.regclass::text
                         ELSE k.contypid::pg_catalog.regtype::text END,
               pg_catalog.pg_get_constraintdef(k.oid)
          FROM pg_catalog.pg_constraint k JOIN pg_catalog.pg_namespace n ON n.oid = k.connamespace
-        WHERE {_system("n.nspname")}""",
+        WHERE {_system("n.nspname")}""",  # nosec B608  # constant templates, literal columns
     "index": f"""SELECT n.nspname || '.' || c.relname, pg_catalog.pg_get_indexdef(i.indexrelid)
          FROM pg_catalog.pg_index i
          JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid
          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-        WHERE {_system("n.nspname")}""",
+        WHERE {_system("n.nspname")}""",  # nosec B608  # constant templates, literal columns
     "trigger": f"""SELECT t.tgname || ' on ' || n.nspname || '.' || c.relname,
               pg_catalog.pg_get_triggerdef(t.oid)
          FROM pg_catalog.pg_trigger t
          JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-        WHERE {_system("n.nspname")}""",
+        WHERE {_system("n.nspname")}""",  # nosec B608  # constant templates, literal columns
     "statistics": f"""SELECT n.nspname || '.' || s.stxname,
               pg_catalog.pg_get_statisticsobjdef(s.oid)
          FROM pg_catalog.pg_statistic_ext s
          JOIN pg_catalog.pg_namespace n ON n.oid = s.stxnamespace
-        WHERE {_system("n.nspname")}""",
+        WHERE {_system("n.nspname")}""",  # nosec B608  # constant templates, literal columns
 }
 
 _FLAGS = re.IGNORECASE
@@ -814,7 +819,7 @@ _CLIENT_FOREIGN_KEYS = text(
          JOIN pg_catalog.pg_namespace n ON n.oid = src.relnamespace
         WHERE k.contype = 'f' AND {_system("n.nspname")}
           AND {_HAS_TENANT.format(rel="k.conrelid")} AND {_HAS_TENANT.format(rel="k.confrelid")}
-        ORDER BY 1"""
+        ORDER BY 1"""  # nosec B608  # constant templates, literal columns
 )
 
 # schema.table.index -> why a unique key of a client table may leave `tenant_id` out (a
@@ -854,7 +859,7 @@ _CLIENT_UNIQUE_INDEXES = text(
          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
         WHERE x.indisunique AND NOT x.indisprimary AND {_system("n.nspname")}
           AND {_HAS_TENANT.format(rel="x.indrelid")}
-        ORDER BY 1"""
+        ORDER BY 1"""  # nosec B608  # constant templates, literal columns
 )
 
 # Client and principal key columns are uuid, so a key compared with current_tenant_id() /
@@ -868,7 +873,7 @@ _KEY_COLUMN_TYPES = text(
         WHERE c.relkind IN ('r', 'p') AND {_system("n.nspname")}
           AND a.attname IN ('tenant_id', 'user_id') AND a.attnum > 0 AND NOT a.attisdropped
           AND a.atttypid <> CAST('uuid' AS pg_catalog.regtype)
-        ORDER BY 1"""
+        ORDER BY 1"""  # nosec B608  # constant templates, literal columns
 )
 
 # On a client table, `shifde.is_platform_admin_ctx()` may only reach installation rows: every
