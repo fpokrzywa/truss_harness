@@ -89,6 +89,7 @@ norecursedirs = ["*.egg", ".*", "_darcs", "CVS", "dist", "node_modules", "venv",
 addopts = "-ra"
 markers = [
     "live: runs against a real Databricks development workspace, a real Snowflake development account or a real Entra tenant (opt-in, see docs/runbooks/databricks-live-validation.md, docs/runbooks/snowflake-live-validation.md and docs/runbooks/entra-live-validation.md)",
+    "docker: opt-in local Docker daemon harness (SHIFDE_TEST_DOCKER=1); never validation, never in checks or CI",
 ]
 
 # Line coverage of the shifde package; CI runs the full suite with `--cov` (F-17).

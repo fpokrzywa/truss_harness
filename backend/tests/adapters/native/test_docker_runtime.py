@@ -1,0 +1,294 @@
+"""`DockerCliRuntime` with a fake `subprocess.run`/`shutil.which` and an httpx mock transport:
+no Docker daemon is needed."""
+
+from __future__ import annotations
+
+import hashlib
+import shutil as stdlib_shutil
+import subprocess
+import tempfile
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any  # Any: subprocess.run keyword arguments
+
+import httpx
+import pytest
+
+import shifde.adapters.native.docker.runtime as runtime_module
+from shifde.adapters.native.docker.runtime import (
+    FORBIDDEN_FLAGS,
+    MAX_BODY,
+    DockerCliRuntime,
+    DockerRefused,
+)
+from tests.adapters.native.docker_bundle import DAEMON
+
+TAG = "shifde-shop:111111111111"
+
+
+class _Runs:
+    """A stand-in for `subprocess.run` that records each call and answers the version checks."""
+
+    def __init__(
+        self,
+        stdout: bytes = b"",
+        returncode: int = 0,
+        client: bytes = b"27.3.1\n",
+        compose: bytes = b"2.29.7\n",
+    ) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.stdout, self.returncode = stdout, returncode
+        self.client, self.compose = client, compose
+
+    def __call__(self, args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        self.calls.append({"args": args, **kwargs})
+        if args[1:3] == ["version", "--format"]:
+            return subprocess.CompletedProcess(args, 0, self.client, b"")
+        if args[1:3] == ["compose", "version"]:
+            return subprocess.CompletedProcess(args, 0, self.compose, b"")
+        if args[1] == "info":
+            return subprocess.CompletedProcess(args, 0, f"{DAEMON}\n".encode(), b"")
+        return subprocess.CompletedProcess(args, self.returncode, self.stdout, b"secret output")
+
+    @property
+    def commands(self) -> list[list[str]]:
+        """The recorded argv without the executable and the version checks."""
+        return [
+            call["args"][1:]
+            for call in self.calls
+            if call["args"][1:3] not in (["version", "--format"], ["compose", "version"])
+        ]
+
+
+@pytest.fixture
+def runs(monkeypatch: pytest.MonkeyPatch) -> _Runs:
+    fake = _Runs()
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    monkeypatch.setattr(runtime_module.shutil, "which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake)
+    return fake
+
+
+@pytest.fixture
+def staged() -> Iterator[Path]:
+    directory = Path(tempfile.mkdtemp(prefix="shifde-docker-"))
+    (directory / "Dockerfile").write_bytes(b"FROM x\n")
+    (directory / "compose.yaml").write_bytes(b"services: {}\n")
+    yield directory
+    stdlib_shutil.rmtree(directory)
+
+
+def _digests(directory: Path) -> dict[str, str]:
+    return {
+        name: hashlib.sha256((directory / name).read_bytes()).hexdigest()
+        for name in ("Dockerfile", "compose.yaml")
+    }
+
+
+@pytest.mark.parametrize(
+    "host", ["tcp://10.0.0.1:2375", "ssh://user@host", "fd://", "", "unix://relative.sock"]
+)
+def test_docker_host_not_local_is_refused_before_any_subprocess(
+    runs: _Runs, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    monkeypatch.setenv("DOCKER_HOST", host)
+    with pytest.raises(DockerRefused) as refused:
+        DockerCliRuntime().daemon_id()
+    assert refused.value.code == "docker_host_not_local"
+    assert runs.calls == []
+
+
+@pytest.mark.parametrize(
+    "host", ["unix:///run/user/1000/docker.sock", "npipe:////./pipe/dockerDesktopLinuxEngine"]
+)
+def test_docker_host_local_forms_are_passed_explicitly(
+    runs: _Runs, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    monkeypatch.setenv("DOCKER_HOST", host)
+    assert DockerCliRuntime().daemon_id() == DAEMON
+    assert all(call["env"]["DOCKER_HOST"] == host for call in runs.calls)
+
+
+def test_docker_cli_environment_holds_only_the_allow_list(
+    runs: _Runs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SHIFDE_TEST_LEAK", "must-not-reach-docker")
+    monkeypatch.setenv("DOCKER_CONTEXT", "remote")
+    monkeypatch.setenv("COMPOSE_FILE", "elsewhere.yaml")
+    monkeypatch.setenv("BUILDX_BUILDER", "remote")
+    monkeypatch.setenv("PATH", "/usr/bin")
+    assert DockerCliRuntime().daemon_id() == DAEMON
+    for call in runs.calls:
+        env = call["env"]
+        assert set(env) <= runtime_module.ALLOWED_ENV | {"DOCKER_HOST"}
+        assert "SHIFDE_TEST_LEAK" not in env
+        assert "DOCKER_CONTEXT" not in env
+        assert env["DOCKER_HOST"] in (
+            "unix:///var/run/docker.sock",
+            "npipe:////./pipe/docker_engine",
+        )
+        assert env["PATH"] == "/usr/bin"
+    assert runs.commands == [["info", "--format", "{{.ID}}"]]
+
+
+@pytest.mark.parametrize("flag", sorted(FORBIDDEN_FLAGS))
+def test_docker_run_guard_refuses_forbidden_flags(runs: _Runs, flag: str) -> None:
+    cli = DockerCliRuntime()
+    for argv in (["run", flag, "x"], ["run", f"{flag}=x"]):
+        with pytest.raises(DockerRefused) as refused:
+            cli._run(argv)
+        assert refused.value.code == "forbidden_flag"
+    assert runs.calls == []
+
+
+@pytest.mark.parametrize(
+    ("client", "compose"),
+    [(b"23.0.6", b"2.29.7"), (b"27.3.1", b"1.29.2"), (b"garbage", b"2.29.7"), (b"27.3.1", b"")],
+)
+def test_docker_version_check_refuses_old_docker_or_compose(
+    monkeypatch: pytest.MonkeyPatch, client: bytes, compose: bytes
+) -> None:
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    monkeypatch.setattr(runtime_module.shutil, "which", lambda name: "/usr/bin/docker")
+    fake = _Runs(client=client, compose=compose)
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake)
+    with pytest.raises(ValueError, match="required"):
+        DockerCliRuntime().daemon_id()
+    assert fake.commands == []
+
+
+@pytest.mark.parametrize("compose", [b"v2.20.2", b"2.29.7", b"5.6.1"])
+def test_docker_version_check_accepts_compose_v2_and_later(
+    monkeypatch: pytest.MonkeyPatch, compose: bytes
+) -> None:
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    monkeypatch.setattr(runtime_module.shutil, "which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(runtime_module.subprocess, "run", _Runs(compose=compose))
+    DockerCliRuntime().check_version()
+
+
+def test_docker_compose_up_argv(runs: _Runs, staged: Path) -> None:
+    DockerCliRuntime().compose_up(staged, project="shop")
+    assert runs.commands == [
+        ["compose", "-p", "shop", "-f", "compose.yaml", "up", "-d", "--no-build", "--pull", "never"]
+    ]
+    assert runs.calls[-1]["cwd"] == staged
+
+
+def test_docker_build_argv_after_the_sha256_check(runs: _Runs, staged: Path) -> None:
+    cli = DockerCliRuntime()
+    with pytest.raises(ValueError, match="differ"):
+        cli.build(staged, tag=TAG, expected_sha256={**_digests(staged), "Dockerfile": "0" * 64})
+    assert runs.calls == []
+    cli.build(staged, tag=TAG, expected_sha256=_digests(staged))
+    assert runs.commands == [
+        ["build", "--tag", TAG, "--file", str(staged / "Dockerfile"), str(staged)]
+    ]
+
+
+def test_docker_build_refuses_a_directory_outside_the_staging_area(
+    runs: _Runs, tmp_path: Path
+) -> None:
+    unprefixed = Path(tempfile.mkdtemp(prefix="other-"))
+    nested = tmp_path / "shifde-docker-nested"
+    nested.mkdir()
+    try:
+        for directory in (tmp_path, nested, unprefixed):
+            (directory / "Dockerfile").write_bytes(b"FROM x\n")
+            (directory / "compose.yaml").write_bytes(b"services: {}\n")
+            with pytest.raises(ValueError, match="staged"):
+                DockerCliRuntime().build(directory, tag=TAG, expected_sha256=_digests(directory))
+            with pytest.raises(ValueError, match="staged"):
+                DockerCliRuntime().compose_up(directory, project="shop")
+    finally:
+        stdlib_shutil.rmtree(unprefixed)
+    assert runs.calls == []
+
+
+def test_docker_failure_hides_output_and_a_timeout_becomes_timeout_error(
+    monkeypatch: pytest.MonkeyPatch, staged: Path
+) -> None:
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    monkeypatch.setattr(runtime_module.shutil, "which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(runtime_module.subprocess, "run", _Runs(returncode=3))
+    with pytest.raises(RuntimeError) as error:
+        DockerCliRuntime().compose_up(staged, project="shop")
+    assert "secret" not in str(error.value)
+    assert "3" in str(error.value)
+
+    def hang(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+
+    monkeypatch.setattr(runtime_module.subprocess, "run", hang)
+    with pytest.raises(TimeoutError):
+        DockerCliRuntime().daemon_id()
+
+
+def test_docker_image_labels_and_compose_ps(runs: _Runs) -> None:
+    cli = DockerCliRuntime()
+    runs.stdout = b""
+    assert cli.image_labels(TAG) is None
+    runs.stdout = b'{"org.shifde.release_digest": "abc"}'
+    assert cli.image_labels(TAG) == {"org.shifde.release_digest": "abc"}
+    runs.stdout = (
+        b'{"Name": "shop-app-1", "Image": "shifde-shop:111111111111", "State": "running", '
+        b'"Health": "healthy", "Labels": "org.shifde.target_id=t-1,other=x"}\n'
+    )
+    [container] = cli.compose_ps("shop")
+    assert (container.name, container.state, container.health) == (
+        "shop-app-1",
+        "running",
+        "healthy",
+    )
+    assert container.labels == {"org.shifde.target_id": "t-1", "other": "x"}
+    runs.stdout = b'[{"Name": "shop-app-1", "Image": "i", "State": "exited", "Health": ""}]'
+    assert cli.compose_ps("shop")[0].health is None
+    runs.stdout = b""
+    assert cli.compose_ps("shop") == []
+    assert ["compose", "-p", "shop", "ps", "--all", "--format", "json"] in runs.commands
+
+
+def test_docker_http_get_local_reads_loopback_health_without_redirects() -> None:
+    sent: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        if request.url.query:
+            return httpx.Response(302, headers={"location": "https://elsewhere.example/"})
+        return httpx.Response(200, json={"status": "ok"})
+
+    cli = DockerCliRuntime(transport=httpx.MockTransport(handler))
+    status, body = cli.http_get_local(8701, "/health")
+    assert (status, body) == (200, b'{"status":"ok"}')
+    assert str(sent[0].url) == "http://127.0.0.1:8701/health"
+    assert cli.http_get_local(8701, "/health?deep=1")[0] == 302
+    assert len(sent) == 2
+
+
+@pytest.mark.parametrize(
+    ("port", "path"),
+    [(8701, "/"), (8701, "/admin"), (8701, "/health?deep=2"), (80, "/health"), (70000, "/health")],
+)
+def test_docker_http_get_local_refuses_other_paths_and_ports(port: int, path: str) -> None:
+    sent: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(200)
+
+    with pytest.raises(ValueError):
+        DockerCliRuntime(transport=httpx.MockTransport(handler)).http_get_local(port, path)
+    assert sent == []
+
+
+def test_docker_http_get_local_caps_the_body() -> None:
+    cli = DockerCliRuntime(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, content=b"x" * (MAX_BODY + 1)))
+    )
+    with pytest.raises(ValueError, match="256 KiB"):
+        cli.http_get_local(8701, "/health")
+
+
+def test_docker_cli_runtime_has_no_destructive_operation() -> None:
+    for name in ("down", "rm", "prune", "pull"):
+        assert not hasattr(DockerCliRuntime, name)
