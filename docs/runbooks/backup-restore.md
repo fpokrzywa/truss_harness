@@ -65,6 +65,10 @@ passes, the target is empty and owned by `shifde_owner`, and both roles exist. I
 line each:
 
 - the catalog fingerprint equals the manifest's;
+- `catalog rules`: the restored catalog keeps the code's isolation rules (forced row-level
+  security and tenant-keyed policies, no forbidden grants for `shifde_app`, only allowlisted
+  SECURITY DEFINER functions, and the context helpers' definitions equal to the migrations');
+  it never reads the manifest, so a forged manifest cannot hide a weakened catalog;
 - the row counts equal the manifest's for every non-volatile table;
 - the migration state is `ok`;
 - `shifde_app` passes the startup role check against the target;
