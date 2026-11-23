@@ -22,7 +22,7 @@ describe('normalizeDiscovery', () => {
   });
 
   it('tolerates empty or unknown payloads', () => {
-    expect(normalizeDiscovery({})).toEqual({ paths: [], tools: [], tables: [] });
+    expect(normalizeDiscovery({})).toEqual({ paths: [], tools: [], tables: [], truncated: false });
   });
 });
 
@@ -44,5 +44,26 @@ describe('normalizeDiscovery (B4 payload shape)', () => {
     });
     expect(out.tables.map((t) => t.name)).toEqual(['customers']);
     expect(out.tables[0]?.columns[0]?.name).toBe('id');
+  });
+});
+
+describe('normalizeDiscovery (CM-7 catalogs)', () => {
+  it('keeps the catalog of each table and the truncated flag', () => {
+    const out = normalizeDiscovery({
+      payload: {
+        tables: [
+          { catalog: 'main', schema: 'sales', name: 'orders', columns: [{ name: 'id' }] },
+          { schema: 'public', name: 'plain', columns: [] },
+        ],
+        truncated: true,
+      },
+    });
+    expect(out.tables.map((t) => t.catalog)).toEqual(['main', undefined]);
+    expect(out.truncated).toBe(true);
+  });
+
+  it('is truncated only when the payload says exactly true', () => {
+    expect(normalizeDiscovery({ payload: { tables: [], truncated: 'yes' } }).truncated).toBe(false);
+    expect(normalizeDiscovery({ payload: { tables: [] } }).truncated).toBe(false);
   });
 });
