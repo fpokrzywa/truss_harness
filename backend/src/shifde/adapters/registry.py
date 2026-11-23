@@ -31,7 +31,7 @@ BUILTIN: dict[str, str] = {
     "openai_compatible": "shifde.adapters.model_providers:OpenAICompatibleProvider",
     "anthropic": "shifde.adapters.model_providers:AnthropicProvider",
     "databricks": "shifde.adapters.dataplatforms.databricks:DatabricksAdapter",
-    "snowflake": "shifde.adapters.planned:SnowflakePlanned",
+    "snowflake": "shifde.adapters.dataplatforms.snowflake:SnowflakeAdapter",
     "fabric": "shifde.adapters.planned:FabricPlanned",
 }
 
