@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
+import signal
 import sys
+from typing import Any
 
 import uvicorn
 from sqlalchemy.exc import SQLAlchemyError
@@ -12,6 +15,7 @@ from shifde.core.dbrole import UnsafeDatabaseRole, check_database_url
 from shifde.core.settings import Settings, settings_or_exit
 
 EXIT_UNSAFE_ROLE = 3
+EXIT_STOPPED = 0
 
 
 def refuse_unsafe_role(settings: Settings) -> None:
@@ -34,19 +38,48 @@ def refuse_unsafe_role(settings: Settings) -> None:
         raise SystemExit(EXIT_UNSAFE_ROLE) from None
 
 
+def _stop(_signum: int, _frame: object) -> None:
+    raise SystemExit(EXIT_STOPPED)
+
+
+def _install_stop_handlers() -> dict[int, Any]:
+    """Make a stop signal exit 0 ("stopped on request"), both before uvicorn serves and when it
+    re-raises the signal after its graceful shutdown: the default action would end the process
+    with 3 on Windows (SIGBREAK, SIGINT), the unsafe-role code. Returns the handlers replaced."""
+    previous: dict[int, Any] = {}
+    for name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            # not the main thread / unsupported here
+            with contextlib.suppress(ValueError, OSError):
+                previous[sig] = signal.signal(sig, _stop)
+    return previous
+
+
+def _restore_handlers(previous: dict[int, Any]) -> None:
+    for sig, handler in previous.items():
+        if handler is not None:  # None: installed outside Python, cannot be put back
+            signal.signal(sig, handler)
+
+
 def run() -> None:
-    settings = settings_or_exit()
-    refuse_unsafe_role(settings)
-    uvicorn.run(
-        create_app(settings),
-        host=settings.api_host,
-        port=settings.api_port,
-        proxy_headers=False,  # X-Forwarded-For is handled in-app, only from SHIFDE_TRUSTED_PROXIES
-        log_config=None,  # logging is configured by the app (observability port, as SETH)
-        access_log=False,  # the request middleware emits the access log (observability port)
-        # open requests get this long after a stop signal (SP4 design 6.2)
-        timeout_graceful_shutdown=settings.api_shutdown_grace_seconds,
-    )
+    previous = _install_stop_handlers()
+    try:
+        settings = settings_or_exit()
+        refuse_unsafe_role(settings)
+        uvicorn.run(
+            create_app(settings),
+            host=settings.api_host,
+            port=settings.api_port,
+            # X-Forwarded-For is handled in-app, only from SHIFDE_TRUSTED_PROXIES
+            proxy_headers=False,
+            log_config=None,  # logging is configured by the app (observability port, as SETH)
+            access_log=False,  # the request middleware emits the access log (observability port)
+            # open requests get this long after a stop signal (SP4 design 6.2)
+            timeout_graceful_shutdown=settings.api_shutdown_grace_seconds,
+        )
+    finally:
+        _restore_handlers(previous)
 
 
 if __name__ == "__main__":
