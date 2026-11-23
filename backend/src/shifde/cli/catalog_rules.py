@@ -1,16 +1,22 @@
 """The isolation rules of the schema tests, applied to a live catalog (restore check
-`catalog rules`, issue #197).
+`catalog rules`, issues #197 and #233).
 
 This module mirrors, with the same semantics and the same problem strings:
 
 * `tests/schema/test_rls_schema.py`: `rls_violations` (forced row-level security, at least one
   policy, tenant-keyed permissive policies with an explicit WITH CHECK, views with
-  `security_invoker`, no materialized view or foreign table, no rewrite rule) and
-  `privilege_problems` (no REFERENCES, TRIGGER or TRUNCATE for the app role);
+  `security_invoker`, no materialized view or foreign table, no rewrite rule, no policy that
+  writes the client context) and `privilege_problems` (no REFERENCES, TRIGGER or TRUNCATE for
+  the app role);
 * `tests/schema/test_function_schema.py`: `definer_violations` (every SECURITY DEFINER function
   allowlisted by full signature, search_path pinned without `public`/`$user` and `pg_temp` last,
   owned by the schema owner, EXECUTE for nobody but the owner and the app role);
-* `tests/schema/catalog_scan.py`: the context-write scan of policy expressions.
+* `tests/schema/catalog_scan.py`: `context_write_violations`, the full context-write scan over
+  `ALL_KINDS`: function bodies, SET clauses and argument defaults, views, policies, column and
+  domain defaults, constraints, indexes, triggers, statistics and aggregates.
+
+Not ported, so not part of this module or of the restore check: the schema tests' tenant
+foreign/unique key checks, admin-flag checks and principal-table checks.
 
 `helper_violations` (issue #215) pins the context helpers' `pg_get_functiondef` texts to
 `CONTEXT_HELPER_DEFINITIONS`, so a dump that weakens `current_tenant_id()` fails restore. It has
@@ -28,7 +34,7 @@ section 3). Everything is read from the catalog; the only write is the transacti
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, replace
 
 from sqlalchemy import Connection, text
@@ -147,7 +153,7 @@ SECURITY_DEFINER_ALLOWLIST = frozenset(
     }
 )
 
-# The context helpers, exempt by oid from the full-catalog scan of the tests, and the labels
+# The context helpers, exempt by oid from the context-write scan, and the labels
 # allowed to write the client context (empty: nothing may).
 CONTEXT_HELPERS = ("current_tenant_id", "current_principal_id", "is_platform_admin_ctx")
 CONTEXT_WRITE_ALLOWLIST: dict[str, str] = {}
@@ -177,6 +183,22 @@ CONTEXT_HELPER_DEFINITIONS: dict[str, str] = {
         "\n                OPERATOR(pg_catalog.=) 'on' $function$\n"
     ),
 }
+
+# The kinds of catalog object the context-write scan reads.
+ALL_KINDS = frozenset(
+    {
+        "function",
+        "view",
+        "policy",
+        "default",
+        "domain default",
+        "constraint",
+        "index",
+        "trigger",
+        "statistics",
+        "aggregate",
+    }
+)
 
 _PIN_SEARCH_PATH = text("SELECT pg_catalog.set_config('search_path', 'pg_catalog', true)")
 
@@ -452,13 +474,60 @@ def rls_violations(conn: Connection) -> list[str]:
     problems += [
         f"{schema}.{table}: rewrite rule {rule}" for schema, table, rule in conn.execute(_RULES)
     ]
-    problems += _policy_context_writes(conn)
+    problems += context_write_violations(conn, kinds={"policy"})
     return sorted(problems)
 
 
 # --------------------------------------------------------------------------- context writes
-_POLICY_EXPRESSIONS = text(
-    r"""SELECT p.polname || ' on ' || n.nspname || '.' || c.relname || ' ' || x.clause,
+_SCANNED_LANGUAGES = frozenset({"sql", "plpgsql", "c", "internal"})
+
+_SYSTEM = r"""{ns} NOT IN ('pg_catalog', 'information_schema')
+          AND {ns} NOT LIKE 'pg\_toast%' AND {ns} NOT LIKE 'pg\_temp\_%'"""
+
+
+def _system(column: str) -> str:
+    return _SYSTEM.format(ns=column)
+
+
+_HELPER_OIDS = text(
+    "SELECT pg_catalog.to_regprocedure(n)::oid FROM pg_catalog.unnest(CAST(:names AS text[])) n"
+)
+
+_CONTEXT_FUNCTIONS = text(
+    f"""SELECT p.oid,
+              n.nspname || '.' || p.proname
+                || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')' AS label,
+              l.lanname, p.prosrc,
+              CASE WHEN p.prosqlbody IS NOT NULL
+                   THEN pg_catalog.pg_get_function_sqlbody(p.oid) END AS sqlbody,
+              pg_catalog.array_to_string(p.proconfig, ' ') AS config,
+              pg_catalog.pg_get_function_arguments(p.oid) AS args
+         FROM pg_catalog.pg_proc p
+         JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+         JOIN pg_catalog.pg_language l ON l.oid = p.prolang
+        WHERE {_system("n.nspname")}"""
+)
+
+_EXPRESSIONS: dict[str, str] = {
+    # An aggregate's pg_proc row has no body (`aggregate_dummy`): read its support functions
+    # (schema-qualified names) and initial states from pg_aggregate.
+    "aggregate": f"""SELECT n.nspname || '.' || p.proname
+                || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')',
+              pg_catalog.concat_ws(' ', a.agginitval, a.aggminitval,
+                (SELECT pg_catalog.string_agg(fn.pronamespace::pg_catalog.regnamespace::text
+                                              || '.' || fn.proname, ' ')
+                   FROM pg_catalog.pg_proc fn
+                  WHERE fn.oid IN (a.aggtransfn, a.aggfinalfn, a.aggcombinefn, a.aggserialfn,
+                                   a.aggdeserialfn, a.aggmtransfn, a.aggminvtransfn,
+                                   a.aggmfinalfn)))
+         FROM pg_catalog.pg_aggregate a
+         JOIN pg_catalog.pg_proc p ON p.oid = a.aggfnoid
+         JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+        WHERE {_system("n.nspname")}""",
+    "view": f"""SELECT n.nspname || '.' || c.relname, pg_catalog.pg_get_viewdef(c.oid)
+         FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relkind IN ('v', 'm') AND {_system("n.nspname")}""",
+    "policy": f"""SELECT p.polname || ' on ' || n.nspname || '.' || c.relname || ' ' || x.clause,
               x.expr
          FROM pg_catalog.pg_policy p
          JOIN pg_catalog.pg_class c ON c.oid = p.polrelid
@@ -466,9 +535,41 @@ _POLICY_EXPRESSIONS = text(
          CROSS JOIN LATERAL (VALUES
              ('USING', pg_catalog.pg_get_expr(p.polqual, p.polrelid)),
              ('WITH CHECK', pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid))) x(clause, expr)
-        WHERE x.expr IS NOT NULL AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-          AND n.nspname NOT LIKE 'pg\_toast%' AND n.nspname NOT LIKE 'pg\_temp\_%'"""
-)
+        WHERE x.expr IS NOT NULL AND {_system("n.nspname")}""",
+    "default": f"""SELECT n.nspname || '.' || c.relname || '.' || a.attname,
+              pg_catalog.pg_get_expr(d.adbin, d.adrelid)
+         FROM pg_catalog.pg_attrdef d
+         JOIN pg_catalog.pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum
+         JOIN pg_catalog.pg_class c ON c.oid = d.adrelid
+         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE {_system("n.nspname")}""",
+    "domain default": f"""SELECT n.nspname || '.' || t.typname,
+              pg_catalog.pg_get_expr(t.typdefaultbin, 0)
+         FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typdefaultbin IS NOT NULL AND {_system("n.nspname")}""",
+    "constraint": f"""SELECT n.nspname || '.' || k.conname || ' on '
+                || CASE WHEN k.conrelid <> 0 THEN k.conrelid::pg_catalog.regclass::text
+                        ELSE k.contypid::pg_catalog.regtype::text END,
+              pg_catalog.pg_get_constraintdef(k.oid)
+         FROM pg_catalog.pg_constraint k JOIN pg_catalog.pg_namespace n ON n.oid = k.connamespace
+        WHERE {_system("n.nspname")}""",
+    "index": f"""SELECT n.nspname || '.' || c.relname, pg_catalog.pg_get_indexdef(i.indexrelid)
+         FROM pg_catalog.pg_index i
+         JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid
+         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE {_system("n.nspname")}""",
+    "trigger": f"""SELECT t.tgname || ' on ' || n.nspname || '.' || c.relname,
+              pg_catalog.pg_get_triggerdef(t.oid)
+         FROM pg_catalog.pg_trigger t
+         JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE {_system("n.nspname")}""",
+    "statistics": f"""SELECT n.nspname || '.' || s.stxname,
+              pg_catalog.pg_get_statisticsobjdef(s.oid)
+         FROM pg_catalog.pg_statistic_ext s
+         JOIN pg_catalog.pg_namespace n ON n.oid = s.stxnamespace
+        WHERE {_system("n.nspname")}""",
+}
 
 _FLAGS = re.IGNORECASE
 _PATTERNS = (
@@ -483,30 +584,71 @@ _PATTERNS = (
         "runs a query given as text",
     ),
 )
+_BODY_PATTERNS = (
+    (re.compile(r"\bEXECUTE\b", _FLAGS), "EXECUTE (dynamic SQL)"),
+    (re.compile(r"\bU&", _FLAGS), "U& escape"),
+)
 _BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 _LINE_COMMENT = re.compile(r"--[^\n]*")
 
 
-def _context_reasons(source: str) -> list[str]:
-    """Why `source` may write the client context, read as written and with comments and double
-    quotes removed (empty if it cannot be seen to)."""
+def _variants(source: str) -> list[str]:
+    """`source` as written and with comments and double quotes removed (either form can hide a
+    name: a comment or quotes may split it, and stripping a comment may eat code)."""
     stripped = _LINE_COMMENT.sub(" ", _BLOCK_COMMENT.sub(" ", source))
-    variants = [source, stripped.replace('"', "")]
-    return [why for pattern, why in _PATTERNS if any(pattern.search(v) for v in variants)]
+    return [source, stripped.replace('"', "")]
 
 
-def _policy_context_writes(conn: Connection) -> list[str]:
-    """`policy <name> on <relation> <clause>: <reasons>` for every policy expression that may
-    write the client context."""
+def context_reasons(source: str, *, body: bool = False) -> list[str]:
+    """Why `source` may write the client context (empty if it cannot be seen to)."""
+    patterns = _PATTERNS + _BODY_PATTERNS if body else _PATTERNS
+    variants = _variants(source)
+    return [why for pattern, why in patterns if any(pattern.search(v) for v in variants)]
+
+
+def _function_findings(conn: Connection, exempt: set[int]) -> Iterable[tuple[str, list[str]]]:
+    for row in conn.execute(_CONTEXT_FUNCTIONS):
+        if row.oid in exempt:
+            continue
+        reasons: list[str] = []
+        if row.lanname not in _SCANNED_LANGUAGES:
+            reasons.append(f"language {row.lanname} is not scanned")
+        reasons += context_reasons(row.sqlbody or row.prosrc or "", body=True)
+        reasons += [f"{why} in SET clause" for why in context_reasons(row.config or "")]
+        reasons += [f"{why} in an argument default" for why in context_reasons(row.args or "")]
+        yield f"function {row.label}", reasons
+
+
+def context_write_violations(
+    conn: Connection,
+    *,
+    kinds: Collection[str] = ALL_KINDS,
+    allowlist: Mapping[str, str] | None = None,
+) -> list[str]:
+    """`<kind> <object>: <reasons>` for every object of `kinds` that may write the context."""
+    allowed = CONTEXT_WRITE_ALLOWLIST if allowlist is None else allowlist
+    # Pin the search path for the deparsers (transaction-local; the caller's transaction ends it).
     conn.execute(_PIN_SEARCH_PATH)
-    found = [
-        (f"policy {label}", _context_reasons(source or ""))
-        for label, source in conn.execute(_POLICY_EXPRESSIONS)
-    ]
+    exempt = {
+        oid
+        for oid in conn.execute(
+            _HELPER_OIDS, {"names": [f"shifde.{name}()" for name in CONTEXT_HELPERS]}
+        ).scalars()
+        if oid is not None
+    }
+    found: list[tuple[str, list[str]]] = []
+    if "function" in kinds:
+        found += _function_findings(conn, exempt)
+    for kind, query in _EXPRESSIONS.items():
+        if kind in kinds:
+            found += [
+                (f"{kind} {label}", context_reasons(source or ""))
+                for label, source in conn.execute(text(query))
+            ]
     return sorted(
         f"{label}: {', '.join(reasons)}"
         for label, reasons in found
-        if reasons and label not in CONTEXT_WRITE_ALLOWLIST
+        if reasons and label not in allowed
     )
 
 
