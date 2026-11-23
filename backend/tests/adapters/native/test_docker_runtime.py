@@ -44,18 +44,20 @@ class _Runs:
         returncode: int = 0,
         client: bytes = b"27.3.1\n",
         compose: bytes = b"2.29.7\n",
+        server: bytes = b"28.5.1\n",
     ) -> None:
         self.calls: list[dict[str, Any]] = []
         self.configs: list[dict[str, bytes]] = []  # the DOCKER_CONFIG files seen by each call
         self.stdout, self.returncode = stdout, returncode
-        self.client, self.compose = client, compose
+        self.client, self.compose, self.server = client, compose, server
 
     def __call__(self, args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
         self.calls.append({"args": args, **kwargs})
         config = Path(kwargs["env"]["DOCKER_CONFIG"])
         self.configs.append({path.name: path.read_bytes() for path in config.iterdir()})
         if args[1:3] == ["version", "--format"]:
-            return subprocess.CompletedProcess(args, 0, self.client, b"")
+            version = self.server if "Server" in args[3] else self.client
+            return subprocess.CompletedProcess(args, 0, version, b"")
         if args[1:3] == ["compose", "version"]:
             return subprocess.CompletedProcess(args, 0, self.compose, b"")
         if args[1] == "info":
@@ -154,10 +156,10 @@ def test_docker_cli_config_is_a_fresh_empty_directory(
     monkeypatch.setenv("HOME", str(tmp_path))
     DockerCliRuntime().daemon_id()
     configs = [call["env"]["DOCKER_CONFIG"] for call in runs.calls]
-    assert len(set(configs)) == len(configs) == 3  # one per command
+    assert len(set(configs)) == len(configs) == 4  # one per command
     assert str(tmp_path) not in configs
     assert all(Path(config).name.startswith("shifde-docker-config-") for config in configs)
-    assert runs.configs == [{}, {}, {}]
+    assert runs.configs == [{}, {}, {}, {}]
     assert not any(os.path.exists(config) for config in configs)  # removed after each command
 
 
@@ -204,6 +206,39 @@ def test_docker_version_check_accepts_compose_v2_and_later(
     monkeypatch.setattr(runtime_module.shutil, "which", lambda name: "/usr/bin/docker")
     monkeypatch.setattr(runtime_module.subprocess, "run", _Runs(compose=compose))
     DockerCliRuntime().check_version()
+
+
+@pytest.mark.parametrize("server", [b"27.5.1", b"27.99.0", b"20.10.24", b"garbage", b""])
+def test_docker_engine_older_than_28_is_refused_before_any_command(
+    monkeypatch: pytest.MonkeyPatch, staged: Path, server: bytes
+) -> None:
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    monkeypatch.setattr(runtime_module.shutil, "which", lambda name: "/usr/bin/docker")
+    fake = _Runs(server=server)
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake)
+    cli = DockerCliRuntime()
+    for call in (
+        cli.daemon_id,
+        lambda: cli.build(staged, tag=TAG, expected_sha256=_digests(staged)),
+        lambda: cli.compose_up(staged, project=PROJECT),
+        lambda: cli.compose_ps(PROJECT),
+        lambda: cli.image_labels(TAG),
+    ):
+        with pytest.raises(DockerRefused) as refused:
+            call()
+        assert refused.value.code == "docker_engine_too_old"
+    assert fake.commands == []
+    assert ["version", "--format", "{{.Server.Version}}"] in [c["args"][1:] for c in fake.calls]
+
+
+@pytest.mark.parametrize("server", [b"28.0.0", b"28.0.4-rc.1", b"28.5.1", b"29.9.2"])
+def test_docker_engine_28_or_later_is_accepted(
+    monkeypatch: pytest.MonkeyPatch, server: bytes
+) -> None:
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    monkeypatch.setattr(runtime_module.shutil, "which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(runtime_module.subprocess, "run", _Runs(server=server))
+    assert DockerCliRuntime().daemon_id() == DAEMON
 
 
 def test_docker_compose_up_argv(runs: _Runs, staged: Path) -> None:
@@ -337,6 +372,25 @@ def test_docker_http_get_local_refuses_a_port_the_project_does_not_publish(
     with pytest.raises(ConnectionError):
         cli.http_get_local(PROJECT, port, "/health")
     assert sent == []
+
+
+def test_docker_http_get_local_discards_the_answer_when_the_port_changed_hands(
+    runs: _Runs,
+) -> None:
+    sent: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        runs.stdout = b""  # the project's container is gone by the time the answer arrives
+        return httpx.Response(200, json={"status": "ok"})
+
+    runs.stdout = PUBLISHED
+    cli = DockerCliRuntime(transport=httpx.MockTransport(handler))
+    with pytest.raises(ConnectionError, match="no longer"):
+        cli.http_get_local(PROJECT, 8701, "/health")
+    assert len(sent) == 1
+    ps = ["compose", "-p", PROJECT, "ps", "--all", "--format", "json"]
+    assert runs.commands.count(ps) == 2
 
 
 @pytest.mark.parametrize(

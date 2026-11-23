@@ -126,7 +126,7 @@ class DockerComposeAdapter:
             item = Capability(operation="runtime", status="supported", reason="Docker reachable")
         except (FileNotFoundError, PermissionError, ValueError):
             item = Capability(
-                operation="runtime", status="unsupported", reason="Docker 24+ unavailable"
+                operation="runtime", status="unsupported", reason="Docker Engine 28+ unavailable"
             )
         except Exception:
             item = Capability(

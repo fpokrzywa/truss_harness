@@ -68,7 +68,7 @@ _TAG = re.compile(r"shifde-[0-9a-f]{32}:[a-f0-9]{12}")
 
 class DockerRefused(PermissionError):
     """A Docker refusal; `code` is `docker_host_mismatch`, `foreign_project`,
-    `docker_host_not_local` or `forbidden_flag`."""
+    `docker_host_not_local`, `docker_engine_too_old` or `forbidden_flag`."""
 
     def __init__(self, code: str) -> None:
         super().__init__(code)
@@ -145,7 +145,8 @@ def _labels(value: Any) -> dict[str, str]:
 
 
 class DockerCliRuntime:
-    """The host `docker` CLI (24 or later, compose v2 or later) against the local daemon."""
+    """The host `docker` CLI (24 or later, compose v2 or later) against the local daemon (Docker
+    Engine 28.0 or later)."""
 
     def __init__(
         self,
@@ -174,7 +175,7 @@ class DockerCliRuntime:
                 raise DockerRefused("forbidden_flag")
         executable = shutil.which(self.executable)
         if not executable:
-            raise FileNotFoundError("install Docker 24 or later or provide its executable path")
+            raise FileNotFoundError("install Docker 28 or later or provide its executable path")
         with tempfile.TemporaryDirectory(prefix="shifde-docker-config-") as config:
             env = self._env(Path(config))
             if self.plugin_dirs:
@@ -203,6 +204,12 @@ class DockerCliRuntime:
         match = re.match(r"(\d+)\.", client)
         if not match or int(match.group(1)) < 24:
             raise ValueError("Docker 24 or later is required")
+        server = self._run(["version", "--format", "{{.Server.Version}}"]).decode().strip()
+        match = re.match(r"(\d+)\.(\d+)", server)
+        # Before Engine 28.0 a container with NET_RAW on the bridge can reach ports another
+        # project publishes on 127.0.0.1 (`route_localnet`); an unreadable version is refused too.
+        if not match or (int(match.group(1)), int(match.group(2))) < (28, 0):
+            raise DockerRefused("docker_engine_too_old")
         compose = self._run(["compose", "version", "--short"]).decode().strip()
         match = re.match(r"v?(\d+)\.", compose)
         # Compose v2's successors kept its CLI and numbered on from 5; only v1 is refused.
@@ -308,4 +315,8 @@ class DockerCliRuntime:
                 body += chunk
                 if len(body) > MAX_BODY:
                     raise ValueError("the health response exceeds 256 KiB")
-            return response.status_code, body
+            status = response.status_code
+        # The port may have changed hands during the request; then the answer is not this project's.
+        if not any(port in container.ports for container in self.compose_ps(project)):
+            raise ConnectionError("the project no longer publishes that loopback port")
+        return status, body
