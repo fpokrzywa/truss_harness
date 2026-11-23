@@ -53,6 +53,8 @@ def test_a_head_named_in_depends_on_is_not_a_version_head() -> None:
     neither is a version head any more and evaluation_0001 is the evaluation head.
     delivery_0006 follows delivery_0005 and depends on evaluation_0001 (issue #81), so the
     delivery head is delivery_0006 and evaluation_0001 is not a version head any more.
+    delivery_0007 follows delivery_0006 with no depends_on (issue #270), so delivery_0007 is the
+    delivery head and delivery_0006 is not a version head any more.
     identity_0007 follows identity_0006 with no depends_on (issue #83), so it is a new version
     head; identity_0006 stays a non-head (delivery_0001 depends on it, and identity_0007 follows
     it). tenancy_0007 follows tenancy_0006 with no depends_on (issue #39), so it is a version
@@ -61,7 +63,8 @@ def test_a_head_named_in_depends_on_is_not_a_version_head() -> None:
     heads = code_heads()
     assert "identity_0007" in heads
     assert "identity_0006" not in heads
-    assert "delivery_0006" in heads
+    assert "delivery_0007" in heads
+    assert "delivery_0006" not in heads
     assert "evaluation_0001" not in heads
     assert "delivery_0005" not in heads
     assert "delivery_0004" not in heads
