@@ -35,7 +35,7 @@ Non-goals:
 - Microsoft Fabric (stays `planned`).
 - Ontology pushdown over the new adapters (they do not declare `query.pushdown_join`).
 - New permissions, role changes or permission relaxation (B-2748).
-- Moving connection invoke onto the worker (#190). Connection discover has moved (#144, B-2971); the new adapters run unchanged under it.
+- Moving connection discover and invoke onto the worker (#144, B-2971; #190). Both have moved; the new adapters run unchanged under them.
 
 ## 3. What exists and what is reused
 
@@ -219,7 +219,7 @@ Effects:
 
 **`POST /orgs/{org}/model-providers`** (CM-1): a non-client-wide connection gets 422 (4.6); a 23514 from L2 maps to the same 422.
 
-**Test, test-jobs, tests, discoveries/latest, invoke:** unchanged routes. **Discover** answers 202 with a job, polled at `discovery-jobs/{job_id}` (#144, B-2971). They now run the real `databricks` and `snowflake` adapters (CM-3, CM-4).
+**Test, test-jobs, tests, discoveries/latest:** unchanged routes. **Discover** answers 202 with a job, polled at `discovery-jobs/{job_id}` (#144, B-2971); **invoke** answers 202 with an invocation (#190). They now run the real `databricks` and `snowflake` adapters (CM-3, CM-4).
 
 **Audit (B-2752).** `connection.*` events go through `ConnectionService._audit` (`shifde.audit.service.record`). `shifde.connections.service` emits `secret.created`, `secret.rotated` and `secret.disabled` itself through `shifde.audit.service.record`, with the field shapes `shifde.admin.providers` uses:
 - `target_type="secret"`, `target_label=f"secret:{name}"`;
