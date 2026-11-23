@@ -14,6 +14,8 @@ tests' isolation rules (`catalog_rules`) to the restored catalog -- the row-leve
 the app role's privileges, the SECURITY DEFINER rules and the full context-write scan -- so a
 forged manifest cannot hide a catalog that breaks them. The schema tests' tenant key, admin-flag
 and principal-table checks are not ported (see `catalog_rules`).
+It also pins the context helper definitions (`current_tenant_id()` and the other two) to the
+texts reviewed in `catalog_rules`.
 
 The digests detect corruption and edits, not a deliberate forger: the manifest is unsigned, so
 anyone who can edit it can recompute them. The KEK ring (`SHIFDE_SECRET_KEYS`, only its key ids
@@ -648,6 +650,7 @@ def _check_catalog_rules(session: Session, owner_role: str, app_role: str) -> st
         *catalog_rules.rls_violations(conn),
         *catalog_rules.privilege_problems(conn, app_role),
         *catalog_rules.definer_violations(conn, owner_role, app_role),
+        *catalog_rules.helper_violations(conn),
         # policies are scanned by rls_violations
         *catalog_rules.context_write_violations(conn, kinds=catalog_rules.ALL_KINDS - {"policy"}),
     ]

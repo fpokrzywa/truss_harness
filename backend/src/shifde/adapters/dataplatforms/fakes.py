@@ -10,8 +10,9 @@ fake routes by that header; tests build the guard with `resolver=lambda host: ["
 every key-pair JWT against its registered public key.
 
 `dev_transport()` is the transport of the development switch `SHIFDE_DEV_FAKE_DATA_PLATFORMS`
-(B-2755): one lazily created workspace per host, accepting any non-empty bearer token and any
-OAuth client.
+(B-2755): one lazily created, permissive Databricks workspace or Snowflake account per host
+(`*.snowflakecomputing.com` gets the account), accepting any non-empty bearer token (a Snowflake
+key-pair JWT or PAT included) and any OAuth client.
 """
 
 from __future__ import annotations
@@ -264,6 +265,7 @@ class FakeDatabricksWorkspace:
 
 
 SNOWFLAKE_STATEMENTS = "/api/v2/statements"
+SNOWFLAKE_SUFFIX = ".snowflakecomputing.com"
 _COLUMNS_QUERY = re.compile(r'FROM "((?:[^"]|"")*)"\.INFORMATION_SCHEMA\.COLUMNS .* LIMIT (\d+)$')
 _SF_COLUMNS = ["TABLE_SCHEMA", "TABLE_NAME", "COLUMN_NAME", "DATA_TYPE", "IS_NULLABLE"]
 _SF_CURRENT = ["CURRENT_USER()", "CURRENT_ROLE()", "CURRENT_WAREHOUSE()", "CURRENT_VERSION()"]
@@ -286,12 +288,15 @@ def _b64url_decode(part: str) -> bytes:
 class FakeSnowflakeAccount:
     """A Snowflake account's SQL API v2. With `public_key` it accepts key-pair JWTs of `user`,
     checking the signature, `iss` (with the key fingerprint), `sub` and `exp` on every request;
-    with `pat` it accepts that programmatic access token. Anything else is 401."""
+    with `pat` it accepts that programmatic access token. Anything else is 401.
+    `accept_any_token` (the development switch) accepts any non-empty bearer token of either
+    token type, checking nothing else."""
 
     account: str = "acct1"
     user: str = "reader"
     public_key: rsa.RSAPublicKey | None = None
     pat: str | None = None
+    accept_any_token: bool = False
     warehouse: str = "COMPUTE_WH"
     tree: SfTree = field(default_factory=_sf_tree)
     # seeded answers of arbitrary statements: statement text -> (columns, rows)
@@ -378,6 +383,8 @@ class FakeSnowflakeAccount:
         if scheme != "Bearer" or not value:
             return False
         kind = request.headers.get("x-snowflake-authorization-token-type", "")
+        if self.accept_any_token:
+            return kind in ("KEYPAIR_JWT", "PROGRAMMATIC_ACCESS_TOKEN")
         if kind == "PROGRAMMATIC_ACCESS_TOKEN":
             return self.pat is not None and value == self.pat
         if kind == "KEYPAIR_JWT" and self.public_key is not None:
@@ -479,21 +486,28 @@ class FakeSnowflakeAccount:
 
 
 class _DevFakes:
-    """The development switch's handler: one permissive workspace per Databricks host."""
+    """The development switch's handler: one permissive Snowflake account per
+    `*.snowflakecomputing.com` host and one permissive Databricks workspace per other host."""
 
     def __init__(self) -> None:
-        self._workspaces: dict[str, FakeDatabricksWorkspace] = {}
+        self._fakes: dict[str, FakeDatabricksWorkspace | FakeSnowflakeAccount] = {}
         self._lock = threading.Lock()
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         host = request.headers.get("host", "").split(":")[0].lower()
         with self._lock:
-            workspace = self._workspaces.get(host)
-            if workspace is None:
-                workspace = self._workspaces[host] = FakeDatabricksWorkspace(
-                    host=host, record=False
-                )
-        return workspace.handle(request)
+            fake = self._fakes.get(host)
+            if fake is None:
+                if host.endswith(SNOWFLAKE_SUFFIX):
+                    fake = FakeSnowflakeAccount(
+                        account=host.removesuffix(SNOWFLAKE_SUFFIX),
+                        record=False,
+                        accept_any_token=True,
+                    )
+                else:
+                    fake = FakeDatabricksWorkspace(host=host, record=False)
+                self._fakes[host] = fake
+        return fake.handle(request)
 
 
 _DEV = _DevFakes()

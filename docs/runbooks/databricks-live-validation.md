@@ -32,6 +32,10 @@ not see the main checkout's file). One `KEY=value` per line, these keys exactly:
 - `DATABRICKS_SERVICE_PRINCIPAL`: the service principal's workspace user name (its application id)
 - `DATABRICKS_WORKSPACE_PURPOSE`: must be `development`; any other value refuses the run
 
+The same file may also hold `DATABRICKS_READ_TOKEN` for the read connection test (see "Read
+connection (data platform)" below). That key is optional for this deploy test, which never reads
+it.
+
 The test reads only this file, never process environment variables. A missing or empty key, a
 purpose other than `development` or a host outside the allow-list fails the test before any host
 is contacted; the failure names the key or rule, never a value.
@@ -126,6 +130,38 @@ makes the deployment `unknown_outcome`. It is never retried and never treated as
 resolved only by a person: **Reconcile** (a read-only job whose evidence is shown; for Databricks
 it is always `ambiguous`), then **Mark as failed** with a note. Until then the target refuses new
 plans.
+
+## Read connection (data platform)
+
+`backend/tests/adapters/dataplatforms/test_databricks_live.py` is a read-only check of the
+`databricks` connection adapter (SQL warehouse and Unity Catalog reads, not the deploy adapter
+above). It reads the same `.devdata/databricks.env` and needs these keys:
+
+- `DATABRICKS_HOST`: the workspace URL, on the same allow-list as above
+- `DATABRICKS_WAREHOUSE_ID`: the SQL warehouse id
+- `DATABRICKS_READ_TOKEN`: a read-only token of a principal with only `CAN USE` on the warehouse
+  and read grants (`USE CATALOG`, `USE SCHEMA`, `SELECT`) in Unity Catalog. It is never the
+  deploy token `DATABRICKS_TOKEN`; the test never reads that token.
+
+The test skips when `DATABRICKS_READ_TOKEN` is absent or empty, with "DATABRICKS_READ_TOKEN is
+missing or empty in the live env file", and skips without the file or without `-m live` as the
+deploy test does. A host outside the allow-list fails before any host is contacted.
+
+```powershell
+cd backend; uv run pytest tests/adapters/dataplatforms/test_databricks_live.py -m live -q
+```
+
+It runs the adapter behind the strict production egress policy (https on port 443, public
+addresses only), in this order:
+
+1. `test`: the configuration, egress, DNS, TLS, authentication and Unity Catalog / warehouse
+   checks must all pass
+2. `discover`: a schema of the catalogs, schemas and tables the principal can see
+3. `SELECT 1` on the warehouse must answer `1`
+
+`SELECT 1` may start a stopped warehouse (and use its compute). Nothing is written to the
+workspace and nothing needs cleanup. Record the date, the commit and pass or fail of each step,
+never a value.
 
 ## Status
 

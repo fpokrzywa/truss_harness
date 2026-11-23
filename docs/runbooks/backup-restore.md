@@ -66,8 +66,9 @@ line each:
 
 - the catalog fingerprint equals the manifest's;
 - `catalog rules`: the restored catalog passes the code's isolation rules (row-level security,
-  app-role privileges, the SECURITY DEFINER allowlist, no object that writes the client context),
-  read from the catalog and never from the manifest;
+  app-role privileges, the SECURITY DEFINER allowlist, no object that writes the client context,
+  and the context helpers' definitions equal to the migrations'), read from the catalog and never
+  from the manifest;
 - the row counts equal the manifest's for every non-volatile table;
 - the migration state is `ok`;
 - `shifde_app` passes the startup role check against the target;
