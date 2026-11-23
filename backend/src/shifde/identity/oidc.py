@@ -202,7 +202,8 @@ class OidcClient:
         self._discovery[url] = (self._clock(), disc)
         return disc
 
-    def _fetch_jwks(self, jwks_uri: str) -> KeySet:
+    def _load_jwks(self, jwks_uri: str) -> tuple[float, KeySet]:
+        """Fetch and parse the JWKS and work out its lifetime; stores nothing."""
         try:
             doc, headers = self._http.get_json_with_headers(jwks_uri)
             # the document is dict[str, Any]; joserfc types the argument as its JWKS TypedDict
@@ -212,6 +213,10 @@ class OidcClient:
         max_age = cache_max_age(headers.get("cache-control"))
         ttl = self._settings.oidc_jwks_cache_seconds if max_age is None else max_age
         lifetime = min(self._settings.oidc_jwks_max_cache_seconds, max(JWKS_MIN_TTL, ttl))
+        return lifetime, keys
+
+    def _fetch_jwks(self, jwks_uri: str) -> KeySet:
+        lifetime, keys = self._load_jwks(jwks_uri)
         self._jwks[jwks_uri] = (self._clock(), lifetime, keys)
         return keys
 
@@ -231,7 +236,9 @@ class OidcClient:
         return keys
 
     def run_checks(self, discovery_url: str, issuer: str) -> list[tuple[str, bool, str]]:
-        """Uncached connectivity checks for the IdP `test` endpoint: (name, ok, detail)."""
+        """Uncached connectivity checks for the IdP `test` endpoint: (name, ok, detail). The JWKS
+        is fetched fresh and never stored, so a test neither touches the shared JWKS cache nor
+        the `kid`-miss refresh rate limit (issue #140)."""
         checks: list[tuple[str, bool, str]] = []
         self._discovery.pop(discovery_url, None)
         try:
@@ -241,7 +248,7 @@ class OidcClient:
             return checks
         checks.append(("discovery", True, "discovery document fetched; issuer matches"))
         try:
-            keys = self._fetch_jwks(disc.jwks_uri)
+            _, keys = self._load_jwks(disc.jwks_uri)
             checks.append(("jwks", True, f"{len(keys.keys)} signing key(s) available"))
         except OidcFailure as exc:
             checks.append(("jwks", False, exc.reason))
