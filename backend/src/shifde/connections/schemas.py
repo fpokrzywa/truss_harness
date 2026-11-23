@@ -240,6 +240,8 @@ class SqlInvokeIn(BaseModel):
     sql: str = Field(min_length=1, max_length=100_000)
     params: list[Any] | dict[str, Any] | None = None  # Any: bound parameter values
     write: bool = False
+    # data_platform: the SQL type of a named parameter (Databricks `parameters[].type`)
+    param_types: dict[str, Literal["STRING", "BIGINT", "DOUBLE", "BOOLEAN", "DATE"]] | None = None
 
 
 INVOKE_MODELS: dict[str, type[BaseModel]] = {

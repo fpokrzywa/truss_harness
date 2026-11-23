@@ -1,8 +1,8 @@
 {
-  "session_id": "eb9319b4-e864-4aa2-9ed7-b988cca13868",
-  "head_sha": "2686e1d9804ac9e47c614509afa9fd1682102aa3",
+  "session_id": "2335cf47-ff07-4f2f-b991-87f6f64d5744",
+  "head_sha": "655126935e39a877bc0204d235fd6849ac14880d",
   "branch": "main",
-  "unit_in_progress": "none (charter 7 factory run; queue: #253 new)",
-  "next_step": "PYTHONUTF8=1 factory/bin/job queue and start the new line for #253; then lead work for #174/#147 and write SP5-8 designs per docs/build/HANDOFF.md",
-  "written_at": "2026-11-23T11:46:44Z"
+  "unit_in_progress": "none (factory jobs: 132 at approve, gates.py needed before job merge)",
+  "next_step": "PYTHONUTF8=1 factory/bin/job queue; gates.py on job 132 then job merge; start #255 SP5-2 and #267; see docs/build/HANDOFF.md",
+  "written_at": "2026-11-23T13:41:08Z"
 }

@@ -102,6 +102,9 @@ class RepoEnv:
     def executor_maturity(self, executor: str) -> str:
         return "ready"
 
+    def adapter_maturity(self, adapter_key: str, capability: str) -> str:
+        return "ready"
+
     def permits(self, action: str, ref: VersionRef) -> bool:
         """The principal's own permission is the service's decision. What this env decides is that
         `ref` names an artifact of the caller's client, in the scope `ref` claims: the artifact is
@@ -149,6 +152,9 @@ class Overriding:
 
     def executor_maturity(self, executor: str) -> str:
         return self.inner.executor_maturity(executor)
+
+    def adapter_maturity(self, adapter_key: str, capability: str) -> str:
+        return self.inner.adapter_maturity(adapter_key, capability)
 
     def permits(self, action: str, ref: VersionRef) -> bool:
         return self.inner.permits(action, ref)

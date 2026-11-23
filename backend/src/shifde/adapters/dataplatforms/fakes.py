@@ -6,6 +6,16 @@ each request aimed at the pinned address with the original `Host` header (`_pinn
 fake routes by that header; tests build the guard with `resolver=lambda host: ["127.0.0.1"]` and
 `inner=fake.transport()`, and the real policy layers still decide. It serves the endpoints the
 `databricks` adapter calls, records every request, and has the eight fault switches of 7.5.
+
+With `sample_data=True` the workspace answers statements from an in-memory, read-only SQLite
+database (`main.default.customers`, `main.default.orders`, `main.sales.invoices`, synthetic rows):
+a three-part name `a.b.c` is read as the table `a__b__c`, `:name` parameters are bound by their
+`type`, and a statement SQLite refuses (a write included) or one naming an unknown table answers
+`FAILED`. `serving={name: [{match, reply}]}` serves `POST /serving-endpoints/{name}/invocations`
+(OpenAI chat, the `FakeProvider` matching rule, word-counted usage) and
+`GET /api/2.0/serving-endpoints/{name}`. Two more switches: `table_denied:<c.s.t>` answers a
+statement naming that table `FAILED` with `PERMISSION_DENIED`, and `endpoint_not_ready` reports
+every endpoint `NOT_READY` and answers its invocations 503.
 `FakeSnowflakeAccount` does the same for the `snowflake` adapter's SQL API v2 calls and verifies
 every key-pair JWT against its registered public key.
 
@@ -22,6 +32,7 @@ import hashlib
 import itertools
 import json
 import re
+import sqlite3
 import threading
 import time
 import uuid
@@ -47,6 +58,8 @@ FAULTS = frozenset(
         "warehouse_missing",
     }
 )
+DATABRICKS_FAULTS = FAULTS | {"endpoint_not_ready"}
+TABLE_DENIED = "table_denied:"
 SELECT_ONE = "SELECT 1"
 ROWS_STATEMENT = "SELECT * FROM fake_rows"  # answers `row_count` rows (the row-cap tests)
 TOKEN_PATH = "/oidc/v1/token"
@@ -57,6 +70,96 @@ def _tree() -> dict[str, dict[str, list[str]]]:
         "main": {"default": ["customers", "orders"], "sales": ["invoices"]},
         "samples": {"nyctaxi": ["trips"]},
     }
+
+
+# sample data: table -> ([(column, Databricks type)], rows), visibly synthetic
+SampleTable = tuple[list[tuple[str, str]], list[tuple[Any, ...]]]  # Any: column values
+SERVING = "/serving-endpoints/"
+INVOCATIONS = "/invocations"
+SERVING_STATE = "/api/2.0/serving-endpoints/"
+_TYPE_NAMES = {"bigint": "LONG", "string": "STRING", "double": "DOUBLE", "date": "DATE"}
+_SQLITE_TYPES = {"bigint": "INTEGER", "double": "REAL", "string": "TEXT", "date": "TEXT"}
+_NAME_PART = r"(?:`[^`]*`|[A-Za-z_][A-Za-z0-9_]*)"
+_THREE_PART = re.compile(rf"(?<![\w`.]){_NAME_PART}\s*\.\s*{_NAME_PART}\s*\.\s*{_NAME_PART}")
+_QUOTED = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"")
+
+
+def _sample_tables() -> dict[str, SampleTable]:
+    regions = ["North", "South", "East", "West"]
+    customers = [(i, f"Sample Customer {i}", regions[(i - 1) % 4]) for i in range(1, 7)]
+    orders = [
+        (i, (i - 1) % 6 + 1, 25.0 * i + 0.5, f"2026-0{(i - 1) // 4 + 1}-{10 + i:02d}")
+        for i in range(1, 13)
+    ]
+    invoices = [(i, i, 25.0 * i + 2.5) for i in range(1, 13)]
+    return {
+        "main.default.customers": (
+            [("id", "bigint"), ("name", "string"), ("region", "string")],
+            customers,
+        ),
+        "main.default.orders": (
+            [
+                ("id", "bigint"),
+                ("customer_id", "bigint"),
+                ("amount", "double"),
+                ("ordered_on", "date"),
+            ],
+            orders,
+        ),
+        "main.sales.invoices": (
+            [("id", "bigint"), ("order_id", "bigint"), ("total", "double")],
+            invoices,
+        ),
+    }
+
+
+def _sample_db(tables: dict[str, SampleTable]) -> sqlite3.Connection:
+    """The sample tables in an in-memory SQLite database, read-only once loaded."""
+    db = sqlite3.connect(":memory:", check_same_thread=False)
+    for name, (columns, rows) in tables.items():
+        flat = name.replace(".", "__")
+        spec = ", ".join(f"{c} {_SQLITE_TYPES[t]}" for c, t in columns)
+        marks = ", ".join("?" for _ in columns)
+        db.execute(f"CREATE TABLE {flat} ({spec})")  # nosec B608 - fixed sample names
+        db.executemany(f"INSERT INTO {flat} VALUES ({marks})", rows)  # nosec B608 - fixed names
+    db.commit()
+    db.execute("PRAGMA query_only = ON")
+    return db
+
+
+def _flat(match: re.Match[str]) -> str:
+    return "__".join(p.strip().strip("`").lower() for p in match.group(0).split("."))
+
+
+def _sqlite_statement(statement: str) -> tuple[str, set[str]]:
+    """The statement with every three-part name outside a quoted string as `a__b__c`, and the
+    `a.b.c` names it rewrote."""
+    out: list[str] = []
+    names: set[str] = set()
+
+    def rewrite(text: str) -> str:
+        names.update(_flat(m).replace("__", ".") for m in _THREE_PART.finditer(text))
+        return _THREE_PART.sub(_flat, text)
+
+    last = 0
+    for quoted in _QUOTED.finditer(statement):
+        out += [rewrite(statement[last : quoted.start()]), quoted.group(0)]
+        last = quoted.end()
+    out.append(rewrite(statement[last:]))
+    return "".join(out), names
+
+
+def _bound(param: dict[str, Any]) -> Any:  # Any: a request parameter / SQLite value
+    value, kind = param.get("value"), str(param.get("type") or "STRING")
+    if value is None:
+        return None
+    if kind == "BIGINT":
+        return int(value)
+    if kind == "DOUBLE":
+        return float(value)
+    if kind == "BOOLEAN":
+        return str(value).lower() == "true"
+    return str(value)
 
 
 def _json(status: int, doc: Any, headers: dict[str, str] | None = None) -> httpx.Response:  # Any
@@ -79,19 +182,34 @@ class FakeDatabricksWorkspace:
     token_lifetime: int = 3600
     faults: set[str] = field(default_factory=set)
     record: bool = True  # keep every request in `requests` (the development switch does not)
+    sample_data: bool = False  # answer statements from the SQLite sample tables
+    serving: dict[str, list[dict[str, str]]] = field(default_factory=dict)  # endpoint -> script
     requests: list[httpx.Request] = field(default_factory=list)
     issued: list[str] = field(default_factory=list)  # access tokens the OAuth endpoint sent
     _statements: dict[str, dict[str, Any]] = field(default_factory=dict)  # Any: statement doc
     _ids: itertools.count[int] = field(default_factory=itertools.count)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    _samples: dict[str, SampleTable] = field(default_factory=dict)
+    _db: sqlite3.Connection | None = None
 
     def __post_init__(self) -> None:
-        unknown = set(self.faults) - FAULTS
+        unknown = {
+            f for f in self.faults if f not in DATABRICKS_FAULTS and not f.startswith(TABLE_DENIED)
+        }
         if unknown:
             raise ValueError(f"unknown fault switches: {sorted(unknown)}")
+        if self.sample_data:
+            self._samples = _sample_tables()
+            self._db = _sample_db(self._samples)
 
     def __repr__(self) -> str:
         return f"FakeDatabricksWorkspace({self.host})"
+
+    def denied_tables(self) -> set[str]:
+        """The `c.s.t` names of the `table_denied:` switches, lowercased."""
+        return {
+            f.removeprefix(TABLE_DENIED).lower() for f in self.faults if f.startswith(TABLE_DENIED)
+        }
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handle)
@@ -191,7 +309,16 @@ class FakeDatabricksWorkspace:
             if path.startswith("/api/2.0/sql/statements/"):
                 doc = self._statements.get(path.rsplit("/", 1)[1])
                 return _json(200, doc) if doc else _json(404, {"error_code": "NOT_FOUND"})
+            if path.startswith(SERVING_STATE):
+                name = path.removeprefix(SERVING_STATE)
+                if name not in self.serving:
+                    return _json(404, {"error_code": "RESOURCE_DOES_NOT_EXIST"})
+                ready = "NOT_READY" if "endpoint_not_ready" in self.faults else "READY"
+                return _json(200, {"name": name, "state": {"ready": ready}})
         if request.method == "POST":
+            if path.startswith(SERVING) and path.endswith(INVOCATIONS):
+                name = path.removeprefix(SERVING).removesuffix(INVOCATIONS)
+                return self._invocation(name, json.loads(request.content or b"{}"))
             if path == "/api/2.0/sql/statements":
                 return self._submit(json.loads(request.content or b"{}"))
             if path.startswith("/api/2.0/sql/statements/") and path.endswith("/cancel"):
@@ -209,27 +336,72 @@ class FakeDatabricksWorkspace:
             doc["next_page_token"] = str(start + size)
         return _json(200, doc)
 
-    @staticmethod
-    def _table(catalog: str, schema: str, name: str) -> dict[str, Any]:  # Any: JSON table
+    def _table(self, catalog: str, schema: str, name: str) -> dict[str, Any]:  # Any: JSON table
+        sample = self._samples.get(f"{catalog}.{schema}.{name}")
+        columns = sample[0] if sample else [("id", "bigint"), ("label", "string")]
         return {
             "name": name,
             "catalog_name": catalog,
             "schema_name": schema,
             "table_type": "MANAGED",
             "columns": [
-                {"name": "id", "type_text": "bigint", "type_name": "LONG", "nullable": False},
-                {"name": "label", "type_text": "string", "type_name": "STRING", "nullable": True},
+                {"name": c, "type_text": t, "type_name": _TYPE_NAMES[t], "nullable": c != "id"}
+                for c, t in columns
             ],
         }
+
+    def _invocation(self, name: str, body: dict[str, Any]) -> httpx.Response:  # Any: JSON
+        """An OpenAI chat answer from the endpoint's `{match, reply}` script."""
+        script = self.serving.get(name)
+        if script is None:
+            return _json(404, {"error_code": "RESOURCE_DOES_NOT_EXIST"})
+        if "endpoint_not_ready" in self.faults:
+            return _json(503, {"error_code": "TEMPORARILY_UNAVAILABLE"})
+        messages = [m for m in body.get("messages") or [] if isinstance(m, dict)]
+        last = next(
+            (str(m.get("content") or "") for m in reversed(messages) if m.get("role") == "user"),
+            "",
+        )
+        reply = next((e["reply"] for e in script if e["match"] in last), f"fake: {last}")
+        prompt = sum(len(str(m.get("content") or "").split()) for m in messages)
+        completion = len(reply.split())
+        choice = {
+            "index": 0,
+            "message": {"role": "assistant", "content": reply},
+            "finish_reason": "stop",
+        }
+        usage = {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": prompt + completion,
+        }
+        return _json(200, {"choices": [choice], "usage": usage})
 
     def _submit(self, body: dict[str, Any]) -> httpx.Response:  # Any: request JSON
         if "warehouse_missing" in self.faults or body.get("warehouse_id") != self.warehouse_id:
             return _json(404, {"error_code": "RESOURCE_DOES_NOT_EXIST"})
         statement_id = f"stmt-{next(self._ids)}"
+        statement = str(body.get("statement", ""))
+        text = statement.strip().rstrip(";").strip()
         if "slow" in self.faults:
             doc: dict[str, Any] = {"statement_id": statement_id, "status": {"state": "PENDING"}}
+        elif (self._db is not None or self.denied_tables()) and (
+            text.upper() != SELECT_ONE and text != ROWS_STATEMENT
+        ):
+            parameters = [p for p in body.get("parameters") or [] if isinstance(p, dict)]
+            answered = self._query(text, parameters)
+            if isinstance(answered, str):
+                doc = {
+                    "statement_id": statement_id,
+                    "status": {
+                        "state": "FAILED",
+                        "error": {"error_code": answered, "message": "the statement failed"},
+                    },
+                }
+            else:
+                doc = _succeeded(statement_id, *answered, body.get("row_limit"))
         else:
-            doc = self._result(statement_id, str(body.get("statement", "")), body.get("row_limit"))
+            doc = self._result(statement_id, statement, body.get("row_limit"))
         self._statements[statement_id] = doc
         return _json(200, doc)
 
@@ -242,26 +414,57 @@ class FakeDatabricksWorkspace:
             rows = [[str(i), f"row {i}"] for i in range(self.row_count)]
         else:
             columns, rows = [], []
-        limit = row_limit if isinstance(row_limit, int) else len(rows)
-        truncated = len(rows) > limit
-        rows = rows[:limit]
-        return {
-            "statement_id": statement_id,
-            "status": {"state": "SUCCEEDED"},
-            "manifest": {
-                "format": "JSON_ARRAY",
-                "schema": {
-                    "column_count": len(columns),
-                    "columns": [
-                        {"name": n, "type_name": t, "position": i}
-                        for i, (n, t) in enumerate(columns)
-                    ],
-                },
-                "total_row_count": len(rows),
-                "truncated": truncated,
+        return _succeeded(statement_id, columns, rows, row_limit)
+
+    def _query(
+        self, statement: str, parameters: list[dict[str, Any]]
+    ) -> tuple[list[tuple[str, str]], list[list[Any]]] | str:  # Any: parameter and row values
+        """The sample-data answer (columns, rows), or the `error_code` of a FAILED statement."""
+        rewritten, names = _sqlite_statement(statement)
+        if names & self.denied_tables():
+            return "PERMISSION_DENIED"
+        if self._db is None:
+            return [], []
+        if names - set(self._samples):
+            return "TABLE_OR_VIEW_NOT_FOUND"
+        known = {c: t.upper() for columns, _ in self._samples.values() for c, t in columns}
+        try:
+            cursor = self._db.execute(
+                rewritten, {str(p.get("name")): _bound(p) for p in parameters}
+            )
+            found = cursor.fetchall()
+        except (sqlite3.Error, ValueError, OverflowError):
+            return "BAD_REQUEST"
+        columns = [(str(d[0]), known.get(str(d[0]), "STRING")) for d in cursor.description or []]
+        rows = [[None if v is None else str(v) for v in row] for row in found]
+        return columns, rows
+
+
+def _succeeded(
+    statement_id: str,
+    columns: list[tuple[str, str]],
+    rows: list[list[Any]],  # Any: JSON_ARRAY values
+    row_limit: Any,  # Any: the request's row_limit
+) -> dict[str, Any]:  # Any: statement doc
+    limit = row_limit if isinstance(row_limit, int) else len(rows)
+    truncated = len(rows) > limit
+    rows = rows[:limit]
+    return {
+        "statement_id": statement_id,
+        "status": {"state": "SUCCEEDED"},
+        "manifest": {
+            "format": "JSON_ARRAY",
+            "schema": {
+                "column_count": len(columns),
+                "columns": [
+                    {"name": n, "type_name": t, "position": i} for i, (n, t) in enumerate(columns)
+                ],
             },
-            "result": {"row_count": len(rows), "data_array": rows},
-        }
+            "total_row_count": len(rows),
+            "truncated": truncated,
+        },
+        "result": {"row_count": len(rows), "data_array": rows},
+    }
 
 
 SNOWFLAKE_STATEMENTS = "/api/v2/statements"

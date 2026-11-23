@@ -66,6 +66,11 @@ class Env(Protocol):
 
     def executor_maturity(self, executor: str) -> str: ...
 
+    def adapter_maturity(self, adapter_key: str, capability: str) -> str:
+        """The derived maturity of an adapter's capability (a `connection.sql` tool on a
+        data_platform connection inherits its platform adapter's `query.sql`)."""
+        ...
+
     def permits(self, action: str, ref: VersionRef) -> bool:
         """May the validating principal `action` the artifact of `ref` (execute / invoke / read)?"""
         ...

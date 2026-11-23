@@ -37,6 +37,7 @@ from shifde.adapters.base import (
     Credential,
     ErrorClass,
     ExecContext,
+    InvokeResult,
 )
 from shifde.adapters.httputil import FORBIDDEN_HEADERS
 from shifde.adapters.runtime import IntegrationRuntime
@@ -159,6 +160,21 @@ class ConnectionPlacement:
     workspace_id: UUID | None
     project_id: UUID | None
     adapter_key: str
+
+
+@dataclass(frozen=True)
+class UseSession:
+    """An `open_for_use` session: the adapter session and the type of the connection row the open
+    re-read (a caller shapes its request by it, never by a value from a spec or arguments)."""
+
+    inner: ConnectionSession
+    connection_type: str
+
+    def invoke(self, request: dict[str, Any], *, write: bool = False) -> InvokeResult:
+        return self.inner.invoke(request, write=write)
+
+    def close(self) -> None:
+        self.inner.close()
 
 
 class ConnectionService:
@@ -1348,7 +1364,7 @@ class ConnectionService:
         deadline: float | None = None,
         *,
         at: tuple[UUID | None, UUID | None] | None = None,
-    ) -> Iterator[ConnectionSession]:
+    ) -> Iterator[UseSession]:
         """Authorized, audited adapter session for server-side callers (agents, pipelines, tools).
 
         ``connection:use`` is evaluated on the connection resource (a resource-level binding grants
@@ -1368,7 +1384,7 @@ class ConnectionService:
         with self.open_trusted(row, purpose, write=write, deadline=deadline) as session:
             self._audit("connection.used", row, {"purpose": purpose[:200], "write": write})
             self._session.commit()
-            yield session
+            yield UseSession(session, str(row["connection_type"]))
 
     def _parse_request(self, row: Mapping[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         """Validate the invoke body against the connection type's request model (422)."""

@@ -1682,6 +1682,11 @@ class _Env:
     def executor_maturity(self, executor: str) -> str:
         return self.svc.executor_maturities().get(executor, "planned")
 
+    def adapter_maturity(self, adapter_key: str, capability: str) -> str:
+        return catalog.adapter_maturity(
+            self.svc.session, self.svc.runtime.registry, adapter_key, capability
+        )
+
     def permits(self, action: str, ref: VersionRef) -> bool:
         """`action` on the artifact `ref` names, decided at the artifact's own workspace and
         project as stored (never the ones `ref` carries): a forged or foreign `VersionRef`, or one
