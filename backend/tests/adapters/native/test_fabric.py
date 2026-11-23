@@ -43,6 +43,7 @@ from shifde.adapters.native.contracts import (
     PlanRequest,
     ReconcileRequest,
     ScaffoldRequest,
+    SnowflakeApplicationSpec,
     ValidateRequest,
     VerifyRequest,
     digest,
@@ -52,6 +53,7 @@ from shifde.adapters.native.databricks.fake import FakeDatabricksPlatform
 from shifde.adapters.native.fabric.adapter import FabricAdapter, ForeignItem, validate_receipt
 from shifde.adapters.native.fabric.fake import FakeFabricWorkspace
 from shifde.adapters.native.fabric.source import exit_cell, fabric_step, template_spec
+from tests.adapters.native.conftest import SfSetup
 from tests.adapters.native.fabric_support import (
     LAKE,
     NOTEBOOK,
@@ -260,6 +262,26 @@ def test_fabric_and_databricks_adapters_refuse_each_others_spec(fabric: FabricSe
     with pytest.raises(ValueError):
         other.plan(PlanRequest(artifact=artifact), fabric.read)
     assert fabric.fake.requests == [] and platform.actions == []
+
+
+def test_fabric_and_snowflake_adapters_refuse_each_others_spec(
+    fabric: FabricSetup, sf: SfSetup
+) -> None:
+    snowflake = SnowflakeApplicationSpec()
+    with pytest.raises(ValueError, match="another kind"):
+        fabric.adapter.scaffold(ScaffoldRequest(spec=snowflake), fabric.build)
+    source = fabric.adapter.scaffold(ScaffoldRequest(spec=template_spec(RELEASE)), fabric.build)
+    with pytest.raises(ValueError, match="another kind"):
+        fabric.adapter.validate(ValidateRequest(spec=snowflake, source=source), fabric.build)
+    with pytest.raises(ValueError, match="snowflake.native-app/v1"):
+        sf.adapter.validate(
+            ValidateRequest(spec=template_spec(RELEASE), source=source), fabric.build
+        )
+    with pytest.raises(ValueError, match="snowflake.native-app/v1"):
+        sf.adapter.plan(PlanRequest(artifact=fabric.artifact()), fabric.read)
+    with pytest.raises(ValueError, match="another kind"):
+        fabric.adapter.plan(PlanRequest(artifact=sf.artifact()), sf.read)
+    assert fabric.fake.requests == [] and sf.platform.log == []
 
 
 def test_fabric_spec_round_trips_through_the_kind_discriminator(fabric: FabricSetup) -> None:
