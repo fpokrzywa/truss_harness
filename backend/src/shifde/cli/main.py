@@ -315,6 +315,8 @@ def secrets_check() -> None:
         with _owner_session(settings) as session:
             ok, failed = secrets_service.check_all(session, settings.keyring)
             session.rollback()
+    except secrets_service.RowSecurityHidesSecrets as exc:
+        raise _fail(secrets_service.ROW_SECURITY_HIDES_SECRETS) from exc
     except SQLAlchemyError as exc:
         raise _fail(f"database error: {exc.__class__.__name__}") from exc
     typer.echo(f"ok {ok}, failed {len(failed)}")
