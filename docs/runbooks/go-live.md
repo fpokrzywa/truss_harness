@@ -91,6 +91,10 @@ enforce. A startup refusal exits 2.
 | `SHIFDE_EXECUTOR_HEALTH_HOST`, `SHIFDE_EXECUTOR_HEALTH_PORT` | The executor's `/healthz` and `/readyz` (port 0 = off). |
 | `SHIFDE_EXECUTOR_SHUTDOWN_GRACE_SECONDS` | Grace for the step in flight on a stop (default 60). |
 | `SHIFDE_PG_BIN_DIR` | Directory of `pg_dump`/`pg_restore` when they are not on `PATH`. |
+| `SHIFDE_MCP_ENABLED` | `false` (the default): `/mcp` is not mounted. `true` mounts the MCP endpoint (bearer `shf_` keys with `mcp:access`, each organization switched on in its MCP settings); preflight prints `ok: mcp access` when it is off, or on with allowed hosts. |
+| `SHIFDE_MCP_ALLOWED_HOSTS` | Comma-separated `Host` values `/mcp` answers (`host:*` admits any port); any other host gets 421. Empty while `SHIFDE_MCP_ENABLED` is true is `refused: mcp access`. |
+| `SHIFDE_MCP_MAX_RATE_PER_MINUTE` | Installation ceiling of one key's MCP tool calls per minute (default 600); an organization's own rate is capped by it, and its client ceiling is 4x the key rate. |
+| `SHIFDE_MCP_PUBLIC_URL` | The MCP endpoint URL shown on the MCP settings screen (unset: "not configured"). |
 
 Secrets can also be given as `SHIFDE_<NAME>_FILE` (a path to a file holding the value), never both
 forms.

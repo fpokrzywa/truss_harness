@@ -581,6 +581,9 @@ ROUTES: dict[Op, tuple[str, str]] = {
     ("POST", APP_REQUEST + "/drafts"): (SCOPED, "appgen"),
     ("POST", APP_REQUEST + "/discard"): (SCOPED, "appgen"),
     ("POST", APP_REQUEST + "/retry"): (SCOPED, "appgen"),
+    # ------------------------------------------------------------------ mcp
+    ("GET", "/api/v1/orgs/{org}/mcp/settings"): (CLIENT, "mcp:settings:read at the organization"),
+    ("PUT", "/api/v1/orgs/{org}/mcp/settings"): (CLIENT, "mcp:settings:write at the organization"),
     # ------------------------------------------------------------------ evaluation
     ("GET", DATASETS): (SCOPED, "evaluation"),
     ("POST", DATASETS): (SCOPED, "evaluation"),
