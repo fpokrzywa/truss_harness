@@ -44,6 +44,7 @@ export function ConnectionConsole({
   const [params, setParams] = useState('');
   const [problem, setProblem] = useState<string | null>(null);
   const [result, setResult] = useState<ConnectionInvokeResult | null>(null);
+  const [pending, setPending] = useState<'queued' | 'running' | null>(null);
   const disabled = blockedReason !== null;
   const t = connection.connection_type;
   const readOnlyDb = t === 'database' && connection.access_mode !== 'read_write';
@@ -77,7 +78,11 @@ export function ConnectionConsole({
     }
     setProblem(null);
     setResult(null);
-    const res = await action.run(() => endpoints.invokeConnection(org, connection.id, payload));
+    // the invocation runs on the worker: poll it until it has a result or an error
+    const res = await action.run(() =>
+      endpoints.invokeConnection(org, connection.id, payload, setPending),
+    );
+    setPending(null);
     if (res.ok) setResult(res.value);
   }
 
@@ -208,6 +213,11 @@ export function ConnectionConsole({
           {problem && (
             <p role="alert" className="text-sm text-red-700">
               {problem}
+            </p>
+          )}
+          {pending && (
+            <p role="status" className="text-sm text-slate-600">
+              {pending === 'queued' ? 'Invocation queued...' : 'Invocation running...'}
             </p>
           )}
           <ActionError error={action.error} title="Invocation failed" />
