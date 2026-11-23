@@ -12,6 +12,7 @@ job function on a job leased only if it is still queued.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from typing import Any  # Any: JSON bodies, row values
 from uuid import UUID
@@ -29,6 +30,7 @@ from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.core.redaction import REDACTED
 from shifde.core.settings import Settings
+from shifde.observability.logging import configure_logging
 from tests._support.conntests import (
     execute_invocation,
     invocation_job,
@@ -535,6 +537,11 @@ def test_no_result_value_reaches_audit_details_or_logs(
     capsys: pytest.CaptureFixture[str],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """Whatever ran before: the product's logging setup is applied, the root logger is at INFO
+    and the capture sees every record (B-3901: httpx would log the URL with its query)."""
+    configure_logging(settings.log_level, settings.log_format)
+    logging.getLogger().addHandler(caplog.handler)
+    caplog.set_level(logging.INFO)
     a, A, h = world.a, org(world.a.slug), as_user(client, people.owner_a)
     cid = _active_rest(client, h, A, app_db, settings, a.tenant, rest_server)
     marker = f"marker-{uuid7().hex}"

@@ -11,6 +11,7 @@ import structlog
 from structlog.typing import EventDict, WrappedLogger
 
 from shifde.core.context import current_log_context
+from shifde.core.httplogs import quiet_http_client_logs
 from shifde.core.redaction import REDACTED, is_sensitive_key, scrub_text
 
 
@@ -99,3 +100,4 @@ def configure_logging(level: str = "INFO", fmt: str = "json") -> None:
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(numeric)
+    quiet_http_client_logs()  # no outbound request URL (query values) at INFO (B-3901)
