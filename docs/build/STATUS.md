@@ -102,7 +102,7 @@ Design for each in `docs/superpowers/specs/`; "done when" from design section 6 
 | 5 solution generator, Databricks | `2026-11-23-subproject-5-solution-generator-databricks-design.md` | in progress: design written and settled after builder read (B-3917); cut into issues #254-#262 (SP5-1..SP5-9, labels `factory`, `sp5`; run in dependency order, a dependent issue starts only after what it depends on has merged). Merged: #254 SP5-1 (job 131, PR #264, `91ff610`, B-3919). Next: #255 SP5-2. | |
 | 6 Snowflake Native App | `2026-11-23-subproject-6-snowflake-native-app-design.md` | in progress: design written and settled after builder read (B-3921); being cut into issues SP6-1..SP6-8 (label `sp6`); SP6-4..8 wait on SP5-9. | |
 | 7 supervisor and specialists; project and release board | `2026-11-23-subproject-7-supervisor-specialists-board-design.md` | in progress: design written and settled after builder read (B-3922); to be cut into SP7-1..SP7-8 (label `sp7`); SP7-1 depends on SP5-2, SP7-8 on SP5-9. | |
-| 8 | not written | todo | |
+| 8 MCP access; Fabric; Palantir; standalone Docker target | `2026-11-23-subproject-8-mcp-fabric-palantir-docker-design.md` | in progress: design written and settled after builder read (B-3923); to be cut into SP8-1..SP8-11 (label `sp8`). Fabric, Palantir and Docker are fake-only (no owner platform). | |
 
 ## Audit findings
 
