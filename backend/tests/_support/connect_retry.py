@@ -8,14 +8,20 @@ WARNING on `tests.connect_retry` so the rate stays visible in pytest output.
 `install_testclient()` does the same for `starlette.testclient.TestClient.__enter__` (issue #253,
 DECISIONS B-3321), where the event loop's socket pair can fail with the same two errors; only an
 `OSError` whose `winerror` is 10055 or 10048 is retried.
+
+`install_testclient_portal()` covers clients that are never entered (issue #265): starlette starts
+a new blocking portal for each of their requests and WebSocket sessions through
+`TestClient._portal_factory`. Only the portal start is retried, on the same two errors; errors
+raised while the request runs, and the portal's exit, go straight back.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import psycopg
@@ -100,3 +106,51 @@ def install_testclient() -> None:
     if getattr(client.__enter__, "_connect_retry", False):
         return
     client.__enter__ = retrying_enter(client.__enter__)  # type: ignore[method-assign]
+
+
+def retrying_portal(
+    portal_factory: Callable[[Any], contextlib.AbstractContextManager[Any]],
+) -> Callable[[Any], contextlib.AbstractContextManager[Any]]:
+    """`portal_factory` with up to `ATTEMPTS` portal starts on winerror 10055/10048."""
+
+    @contextlib.contextmanager
+    def portal_factory_with_retry(self: Any) -> Iterator[Any]:
+        if self.portal is not None:
+            yield self.portal
+            return
+        with contextlib.ExitStack() as stack:
+            attempt = 1
+            while True:
+                try:
+                    portal = stack.enter_context(portal_factory(self))
+                    break
+                except OSError as error:
+                    code = getattr(error, "winerror", None)
+                    if code not in _WINERROR_CODES or attempt >= ATTEMPTS:
+                        raise
+                    delay = BACKOFF_SECONDS[attempt - 1]
+                    logger.warning(
+                        "TestClient start failed with WinError %s on the per-request portal "
+                        "(attempt %d of %d), retrying in %ss",
+                        code,
+                        attempt,
+                        ATTEMPTS,
+                        delay,
+                    )
+                    _sleep(delay)
+                    attempt += 1
+            yield portal
+
+    portal_factory_with_retry.__wrapped__ = portal_factory  # type: ignore[attr-defined]
+    portal_factory_with_retry._connect_retry = True  # type: ignore[attr-defined]
+    return portal_factory_with_retry
+
+
+def install_testclient_portal() -> None:
+    """Point `TestClient._portal_factory` (an unentered client's per-request portal) at the
+    wrapper, once."""
+    client = starlette.testclient.TestClient
+    if getattr(client._portal_factory, "_connect_retry", False):
+        return
+    wrapper = retrying_portal(client._portal_factory)
+    client._portal_factory = wrapper  # type: ignore[method-assign,assignment]

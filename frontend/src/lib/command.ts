@@ -253,3 +253,11 @@ export function adminGroups(org: string, opts: Parameters<typeof visibleNav>[1])
     items: ids.flatMap((id) => visible.get(id) ?? []),
   })).filter((g) => g.items.length > 0);
 }
+
+/** The Board card's link, or undefined when visibleNav hides the Board item from this user. */
+export function boardCardHref(
+  org: string,
+  opts: Parameters<typeof visibleNav>[1],
+): string | undefined {
+  return visibleNav(parseScope(`/o/${org}`), opts).find((i) => i.id === 'deliver-board')?.href;
+}

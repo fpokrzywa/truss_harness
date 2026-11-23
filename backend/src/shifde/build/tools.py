@@ -6,7 +6,7 @@ usable by the publisher (`connection:use`), JSON Schemas must be valid draft 202
 without remote references, and the side-effect class must be consistent with the binding, retry
 policy and idempotency declaration (SYSTEM_ARCHITECTURE 6.7 is authoritative). A `connection.sql`
 tool on a Databricks `data_platform` connection also passes the SELECT-only statement rules of
-`build/sqlrules.py` on its template converted to the `:name` form.
+`core/sqlrules.py` on its template converted to the `:name` form.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ import re
 from typing import Any  # Any: stored JSON specs
 from uuid import UUID
 
-from shifde.build import sqlrules
 from shifde.build.env import Env
 from shifde.build.executors import (
     BUILTIN_FUNCTIONS,
@@ -27,6 +26,7 @@ from shifde.build.executors import (
     WRITE_CLASSES,
 )
 from shifde.build.issues import Report, check_json_schema, schema_properties
+from shifde.core import sqlrules
 
 AUDIT_LEVELS = ("metadata", "full")
 IDEMPOTENCY = ("none", "key_supported")

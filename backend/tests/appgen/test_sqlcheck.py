@@ -1,6 +1,6 @@
 """SP5-2 (design 5.3 and 5.4): the draft diagnostics and the validation of one model reply.
 
-`sqlcheck.validate` forwards every `build.sqlrules` issue of a tool as an error at
+`sqlcheck.validate` forwards every `core.sqlrules` issue of a tool as an error at
 `tools.<i>.sql` and adds `screen_tool_unknown`, `screen_input_unknown`, `duplicate_name` and the
 `case_trivial` warning; it never raises. `SAMPLE_DRAFT` over `SAMPLE_TABLES` has no error.
 `draft.parse_reply` strips one fenced block, refuses anything but one closed draft object (floats

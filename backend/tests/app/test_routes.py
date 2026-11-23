@@ -136,6 +136,11 @@ APPGEN = {
     ("POST", APP_REQUEST + "/discard"),
     ("POST", APP_REQUEST + "/retry"),
 }
+# the project and release board (sub-project 7 design 7.2, Call S7-F): not a SETH module
+BOARD = {
+    ("GET", "/api/v1/orgs/{org}/board"),
+    ("GET", "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/board"),
+}
 
 
 def _pairs(rows: list[list[str]]) -> set[tuple[str, str]]:
@@ -161,6 +166,7 @@ def test_the_mounted_route_table_is_sethss_minus_branding(
         | PACKAGING
         | EVALUATION
         | APPGEN
+        | BOARD
     )
     mounted = _mounted(client)
     assert mounted - expected == set(), "mounted but not in SETH"

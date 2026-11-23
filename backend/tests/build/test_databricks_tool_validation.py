@@ -1,6 +1,6 @@
 """SP5-1: publish-time validation of `connection.sql` tools on a Databricks `data_platform`
 connection (design 6.1): such a tool publishes, its derived maturity is the Databricks adapter's,
-the SELECT-only statement rules of `build/sqlrules.py` run on its template, a Snowflake connection
+the SELECT-only statement rules of `core/sqlrules.py` run on its template, a Snowflake connection
 is `executor_adapter_unsupported`, postgres tools validate as before, and client B's Databricks
 connection is the unknown-id outcome. With `RepoEnv` and the production `Env`, as `shifde_app` and
 as the schema owner (no row-level security)."""
