@@ -16,7 +16,6 @@ result is `{"columns": [{"name", "type"}], "rows", "row_count"}`, the type being
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import re
@@ -25,11 +24,8 @@ from typing import Any, ClassVar  # Any: decoded JSON bodies, result values
 from urllib.parse import urlsplit
 
 import httpx
-from cryptography.exceptions import UnsupportedAlgorithm
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
-from shifde.adapters import oauth2
+from shifde.adapters import oauth2, snowflake_jwt
 from shifde.adapters.base import (
     AdapterDescriptor,
     AdapterFailure,
@@ -47,6 +43,8 @@ from shifde.adapters.base import (
 )
 from shifde.adapters.dataplatforms import sqlapi
 from shifde.adapters.httputil import classify_exception, standard_network_checks
+from shifde.adapters.snowflake_jwt import JWT_LIFETIME_S, jwt_subject, public_key_fingerprint
+from shifde.adapters.snowflake_jwt import private_key as _private_key
 from shifde.core.redaction import register_secret
 
 ACCOUNT_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,254}(\.[A-Za-z0-9-]{1,64}){0,2}$"
@@ -56,17 +54,12 @@ DEFAULT_MAX_ROWS = 1000
 DEFAULT_STATEMENT_TIMEOUT_S = 30
 MAX_DATABASES = 50
 MAX_COLUMN_ROWS = 20_000
-JWT_LIFETIME_S = 300
-MIN_KEY_BITS = 2048
 STATEMENTS = "/api/v2/statements"
 TEST_STATEMENT = "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_WAREHOUSE(), CURRENT_VERSION()"
 SHOW_DATABASES = "SHOW DATABASES"
 _HANDLE = re.compile(r"[A-Za-z0-9-]{1,128}")
 _VERSION = re.compile(r"[0-9][0-9.]{0,31}")
 
-PEM_PKCS8 = "-----BEGIN PRIVATE KEY-----"  # scan-secrets: allow, a PEM header, no key material
-PEM_ENCRYPTED = "-----BEGIN ENCRYPTED PRIVATE KEY-----"  # scan-secrets: allow, a PEM header
-PEM_PKCS1 = "-----BEGIN RSA PRIVATE KEY-----"  # scan-secrets: allow, a PEM header
 
 KEY_PAIR = "key_pair"
 TOKEN_TYPE = {KEY_PAIR: "KEYPAIR_JWT", "bearer": "PROGRAMMATIC_ACCESS_TOKEN"}
@@ -76,12 +69,6 @@ NEEDS_USER = "user is required"
 BAD_ACCOUNT = "the stored account is not a Snowflake account identifier; update it"
 BAD_HOST = "the account does not give a host under .snowflakecomputing.com"
 BAD_AUTH = "a Snowflake connection uses key_pair or bearer auth"
-NOT_PKCS8 = "the private key must be an unencrypted PKCS#8 PEM (BEGIN PRIVATE KEY)"
-ENCRYPTED = "passphrase-protected private keys are not supported"
-PKCS1 = "PKCS#1 keys (BEGIN RSA PRIVATE KEY) are not supported; convert the key to PKCS#8"
-UNREADABLE = "the private key could not be read as a PEM private key"
-NOT_RSA = "the private key must be an RSA key"
-TOO_SHORT = f"the RSA key must have at least {MIN_KEY_BITS} bits"
 EMPTY_TOKEN = "the programmatic access token must not be empty"
 SUBJECT = "the Snowflake account"
 
@@ -101,45 +88,6 @@ def host_of(account: str) -> str:
     if parts.netloc != hostname or not hostname.endswith(HOST_SUFFIX):
         raise AdapterFailure(ErrorClass.CONFIG, BAD_HOST)
     return url
-
-
-def _private_key(value: str) -> rsa.RSAPrivateKey | str:
-    """The RSA key of an unencrypted PKCS#8 PEM, or the fixed reason it is refused."""
-    text = value.strip()
-    if text.startswith(PEM_ENCRYPTED):
-        return ENCRYPTED
-    if text.startswith(PEM_PKCS1):
-        return PKCS1
-    if not text.startswith(PEM_PKCS8):
-        return NOT_PKCS8
-    try:
-        key = serialization.load_pem_private_key(text.encode(), password=None)
-    except TypeError:
-        return ENCRYPTED
-    except (ValueError, UnsupportedAlgorithm):
-        return UNREADABLE
-    if not isinstance(key, rsa.RSAPrivateKey):
-        return NOT_RSA
-    if key.key_size < MIN_KEY_BITS:
-        return TOO_SHORT
-    return key
-
-
-def _b64url(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
-
-
-def public_key_fingerprint(key: rsa.RSAPublicKey) -> str:
-    """`SHA256:<standard base64 of sha256(DER SubjectPublicKeyInfo)>`."""
-    der = key.public_bytes(
-        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
-    )
-    return "SHA256:" + base64.b64encode(hashlib.sha256(der).digest()).decode()
-
-
-def jwt_subject(account: str, user: str) -> str:
-    """`<ACCOUNT>.<USER>`: both uppercased, the account cut to its locator when a region follows."""
-    return f"{account.split('.', 1)[0].upper()}.{user.upper()}"
 
 
 class KeyPairJwt:
@@ -178,12 +126,13 @@ class KeyPairJwt:
 
     def _sign(self) -> str:
         iat = int(clock())
-        header = _b64url(json.dumps({"alg": "RS256", "typ": "JWT"}, separators=(",", ":")).encode())
-        claims = {"iss": self._iss, "sub": self._sub, "iat": iat, "exp": iat + JWT_LIFETIME_S}
-        payload = _b64url(json.dumps(claims, separators=(",", ":")).encode())
-        signing_input = f"{header}.{payload}".encode()
-        signature = self._key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
-        token = f"{header}.{payload}.{_b64url(signature)}"
+        claims: dict[str, str | int] = {
+            "iss": self._iss,
+            "sub": self._sub,
+            "iat": iat,
+            "exp": iat + JWT_LIFETIME_S,
+        }
+        token = snowflake_jwt.sign_claims(self._key, claims)
         register_secret(token)
         if self._cache_key is not None:
             expires = oauth2.clock() + JWT_LIFETIME_S - oauth2.EXPIRY_MARGIN_S

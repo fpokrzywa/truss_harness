@@ -24,7 +24,7 @@ dependencies = [
 
 [project.scripts]
 shifde-api = "shifde.main:run"
-shifde-worker = "shifde.runtime.worker:run"
+shifde-worker = "shifde.worker_main:run"
 shifde-admin = "shifde.cli.main:app"
 shifde-executor = "shifde.executor.main:run"
 # the "shifde.adapters" entry points below came back with the adapters port.
@@ -65,6 +65,8 @@ packages = ["src/shifde"]
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
+# The Fabric notebook template is the FDE SDK file byte for byte: never lint or reformat it.
+extend-exclude = ["src/shifde/adapters/native/fabric/templates/*.ipynb"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -113,10 +115,11 @@ include_external_packages = true
 name = "Modules are layered (higher may import lower, never the reverse)"
 type = "layers"
 layers = [
-  "shifde.main | shifde.executor",
+  "shifde.main | shifde.executor | shifde.worker_main",
   "shifde.app | shifde.cli",
   "shifde.board",
   "shifde.delivery",
+  "shifde.appgen",
   "shifde.evaluation",
   "shifde.packaging",
   "shifde.runtime",
@@ -155,6 +158,7 @@ containers = [
   "shifde.delivery",
   "shifde.evaluation",
   "shifde.packaging",
+  "shifde.appgen",
   "shifde.board",
 ]
 exhaustive = false
@@ -168,7 +172,7 @@ forbidden_modules = [
   "shifde.observability", "shifde.app", "shifde.cli", "shifde.main",
   "shifde.adapters", "shifde.vendors", "shifde.connections", "shifde.models_admin",
   "shifde.build", "shifde.ontology", "shifde.runtime", "shifde.governance", "shifde.ledger",
-  "shifde.evaluation", "shifde.packaging",
+  "shifde.evaluation", "shifde.packaging", "shifde.appgen", "shifde.worker_main",
   "shifde.board",
 ]
 
@@ -184,7 +188,7 @@ forbidden_modules = [
   "shifde.governance", "shifde.admin", "shifde.models_admin", "shifde.connections",
   "shifde.vendors", "shifde.installation", "shifde.tenancy", "shifde.identity", "shifde.secrets",
   "shifde.audit", "shifde.authz", "shifde.observability", "shifde.ledger", "shifde.evaluation",
-  "shifde.packaging",
+  "shifde.packaging", "shifde.appgen", "shifde.worker_main",
   "shifde.board",
 ]
 
@@ -198,8 +202,18 @@ forbidden_modules = [
   "shifde.governance", "shifde.admin", "shifde.models_admin", "shifde.connections",
   "shifde.vendors", "shifde.installation", "shifde.tenancy", "shifde.identity", "shifde.secrets",
   "shifde.audit", "shifde.authz", "shifde.observability", "shifde.ledger", "shifde.evaluation",
-  "shifde.packaging",
+  "shifde.packaging", "shifde.appgen", "shifde.worker_main",
   "shifde.board",
+]
+
+[[tool.importlinter.contracts]]
+name = "appgen.render is pure"
+type = "forbidden"
+source_modules = ["shifde.appgen.render"]
+forbidden_modules = [
+  "sqlalchemy", "psycopg", "httpx", "shifde.core.db", "shifde.build", "shifde.connections",
+  "shifde.models_admin", "shifde.packaging", "shifde.evaluation", "shifde.runtime",
+  "shifde.appgen.service", "shifde.appgen.repository",
 ]
 
 [[tool.importlinter.contracts]]
@@ -248,9 +262,20 @@ source_modules = [
   "shifde.packaging.canonical",
   "shifde.evaluation.service", "shifde.evaluation.repository", "shifde.evaluation.schemas",
   "shifde.evaluation.assertions", "shifde.evaluation.scoring",
+  "shifde.appgen.service", "shifde.appgen.repository", "shifde.appgen.schemas",
+  "shifde.appgen.draft", "shifde.appgen.sqlcheck", "shifde.appgen.render",
   "shifde.board.service", "shifde.board.repository", "shifde.board.schemas",
 ]
 forbidden_modules = ["fastapi", "starlette"]
+
+[[tool.importlinter.contracts]]
+name = "The Snowflake JWT helper is pure (shifde.adapters.snowflake_jwt)"
+type = "forbidden"
+source_modules = ["shifde.adapters.snowflake_jwt"]
+forbidden_modules = [
+  "httpx", "sqlalchemy", "psycopg", "shifde.core", "shifde.adapters.base",
+  "shifde.adapters.oauth2", "shifde.adapters.dataplatforms", "shifde.adapters.native",
+]
 
 [[tool.importlinter.contracts]]
 name = "Repositories/models are private to their module (cross-module calls use service)"
