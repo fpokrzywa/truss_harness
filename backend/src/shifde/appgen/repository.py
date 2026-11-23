@@ -45,12 +45,21 @@ def insert_request(session: Session, values: Mapping[str, Any]) -> None:
 def get_request(
     session: Session, request_id: UUID, *, tenant_id: UUID, lock: bool = False
 ) -> Row | None:
+    if lock:
+        # locked first, read after: a read in the locking statement keeps the snapshot from
+        # before the wait, so it would miss the revision the lock holder just committed
+        session.execute(
+            text(
+                "SELECT 1 FROM shifde.appgen_requests WHERE tenant_id = :t AND id = :id FOR UPDATE"
+            ),
+            {"t": tenant_id, "id": request_id},
+        )
     return (
         session.execute(
             text(
                 # columns are module constants; values are bound
                 f"SELECT {REQUEST_COLUMNS} FROM shifde.appgen_requests r "  # nosec B608
-                "WHERE r.tenant_id = :t AND r.id = :id" + (" FOR UPDATE OF r" if lock else "")
+                "WHERE r.tenant_id = :t AND r.id = :id"
             ),
             {"t": tenant_id, "id": request_id},
         )

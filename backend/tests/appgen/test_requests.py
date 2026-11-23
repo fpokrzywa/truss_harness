@@ -5,15 +5,16 @@ refusal of 5.1 queues nothing: another client's or another project's connection 
 unknown connection gets), a connection that is not Databricks, not read-only, not active or not
 discovered, a table not in its latest discovery (`loc` names it) and an unknown model. The list
 pages newest first and filters by status; an edit stores revision n+1 with its diagnostics (never
-blocking), refuses a stale base and a request that is not drafted, and 422s a schema error;
-discard and retry move only from their states (409 otherwise), and of two racing discards one
-wins.
+blocking), refuses a stale base (the loser of two racing edits too) and a request that is not
+drafted, and 422s a schema error; discard and retry move only from their states (409 otherwise),
+and of two racing discards one wins.
 """
 
 from __future__ import annotations
 
 import copy
 import threading
+import time
 from typing import Any  # Any: JSON bodies
 
 import pytest
@@ -184,6 +185,53 @@ def test_an_edit_adds_a_revision_with_its_diagnostics(admin: Hdr, owner_session:
     late = c.post(request_url(rid, tail="/drafts"), headers=admin,
                   json={"base_revision_no": 2, "draft": SAMPLE_DRAFT})  # fmt: skip
     _code(late, 409, "request_not_editable")
+
+
+def test_of_two_racing_edits_the_loser_gets_stale_revision(
+    admin: Hdr, owner_session: Session
+) -> None:
+    c = admin.client
+    cid, model = databricks(c, admin), drafting_model(c, admin)
+    rid = drafted(c, admin, owner_session, body(cid, model))["id"]
+    # the winner, uncommitted: holds the request row and has added revision 2
+    owner_session.rollback()
+    owner_session.execute(
+        text("SELECT 1 FROM shifde.appgen_requests WHERE id = :r FOR UPDATE"), {"r": rid}
+    )
+    owner_session.execute(
+        text(
+            "INSERT INTO shifde.appgen_drafts (tenant_id, id, request_id, revision_no, source, "
+            "draft, draft_hash, validation, created_by) SELECT tenant_id, :id, request_id, 2, "
+            "'edited', draft, draft_hash, validation, created_by FROM shifde.appgen_drafts "
+            "WHERE request_id = :r AND revision_no = 1"
+        ),
+        {"id": uuid7(), "r": rid},
+    )
+    owner_session.execute(
+        text("UPDATE shifde.appgen_requests SET status = 'drafted' WHERE id = :r"), {"r": rid}
+    )
+    answers: list[Any] = []  # Any: httpx responses
+    loser = threading.Thread(
+        target=lambda: answers.append(
+            c.post(
+                request_url(rid, tail="/drafts"),
+                headers=admin,
+                json={"base_revision_no": 1, "draft": SAMPLE_DRAFT},
+            )  # fmt: skip
+        )
+    )
+    loser.start()
+    deadline = time.monotonic() + 30
+    while not owner_session.execute(
+        text("SELECT count(*) FROM pg_stat_activity WHERE :me = ANY(pg_blocking_pids(pid))"),
+        {"me": owner_session.execute(text("SELECT pg_backend_pid()")).scalar_one()},
+    ).scalar_one():
+        assert time.monotonic() < deadline, "the second edit never waited on the first"
+        time.sleep(0.05)
+    owner_session.commit()
+    loser.join()
+    _code(answers[0], 409, "stale_revision")
+    assert [v["revision_no"] for v in get(c, admin, rid)["revisions"]] == [1, 2]
 
 
 def test_discard_and_retry_move_only_from_their_states(

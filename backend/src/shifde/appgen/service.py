@@ -169,9 +169,12 @@ class AppGenService:
     def _session(self) -> Session:
         return self.sc.session
 
-    def _request(self, request_id: UUID, action: str) -> Mapping[str, Any]:
-        """The request the caller may `action` on; anything else is `app request not found`."""
-        row = repository.get_request(self._session, request_id, tenant_id=self.sc.tenant_id)
+    def _request(self, request_id: UUID, action: str, *, lock: bool = False) -> Mapping[str, Any]:
+        """The request the caller may `action` on; anything else is `app request not found`.
+        `lock` holds its row until commit, so concurrent writers of it run one at a time."""
+        row = repository.get_request(
+            self._session, request_id, tenant_id=self.sc.tenant_id, lock=lock
+        )
         if row is None:
             raise NotFound(REQUEST_NOT_FOUND)
         try:
@@ -313,7 +316,8 @@ class AppGenService:
 
     # ================================================================== revise, discard, retry
     def revise(self, request_id: UUID, body: s.DraftEdit) -> s.DraftOut:
-        row = self._request(request_id, WRITE)
+        # locked: a second edit of the same base waits here, then sees the new revision
+        row = self._request(request_id, WRITE, lock=True)
         if row["status"] != s.RequestStatus.DRAFTED:
             raise RequestNotEditable("the request is not drafted")
         if body.base_revision_no != row["latest_revision_no"]:
@@ -345,13 +349,7 @@ class AppGenService:
             self._session.rollback()
             raise RequestNotEditable("the request is not drafted")
         self._audit("appgen.draft.revised", row, {"revision_no": revision_no})
-        try:
-            self._session.commit()
-        except Exception as exc:  # the unique revision number: a concurrent edit won
-            self._session.rollback()
-            if getattr(getattr(exc, "orig", None), "sqlstate", None) == "23505":
-                raise StaleRevision("the draft has a newer revision; reload and retry") from exc
-            raise
+        self._session.commit()
         out = next(
             d
             for d in repository.list_drafts(self._session, request_id, tenant_id=self.sc.tenant_id)
