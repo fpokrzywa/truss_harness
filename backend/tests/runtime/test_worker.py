@@ -1016,6 +1016,7 @@ def test_a_job_of_an_unknown_kind_ends_dead_and_is_never_run(
     ran: list[object] = []
     monkeypatch.setattr(worker_mod.lifecycle, "advance", lambda *a, **kw: ran.append(a) or "done")
     monkeypatch.setattr(worker_mod.connections, "run_test_job", lambda *a: ran.append(a))
+    monkeypatch.setattr(worker_mod.connections, "run_invoke_job", lambda *a: ran.append(a))
     monkeypatch.setattr(worker_mod.models_admin, "run_provider_job", lambda *a: ran.append(a))
     job = uuid7()
     with owner_db.session() as o:
@@ -1026,6 +1027,27 @@ def test_a_job_of_an_unknown_kind_ends_dead_and_is_never_run(
     done = "SELECT status, last_error FROM shifde.jobs WHERE id = :j"
     _until(lambda: _q(owner_db, done, j=job) == [("dead", worker_mod.UNKNOWN_KIND)])
     assert ran == []
+
+
+def test_a_connection_invoke_job_is_dispatched_in_its_own_client(
+    world: World,
+    owner_db: Database,
+    running: Callable[..., Worker],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #190: a `connection.invoke` job runs `connections.service.run_invoke_job` with the
+    claimed row's client and job id, and ends `done` when it returns None."""
+    ran: list[tuple[object, ...]] = []
+    monkeypatch.setattr(worker_mod.connections, "run_invoke_job", lambda *a: ran.append(a))
+    job = uuid7()
+    with owner_db.session() as o:
+        insert(o, "jobs", id=job, tenant_id=world.a.tenant, kind=connections.INVOKE_JOB_KIND,
+               dedupe_key=f"connection-invoke:{job}")  # fmt: skip
+        o.commit()
+    running("w-invoke")
+    done = "SELECT status, last_error FROM shifde.jobs WHERE id = :j"
+    _until(lambda: _q(owner_db, done, j=job) == [("done", None)])
+    assert [(a[2], a[3]) for a in ran] == [(world.a.tenant, job)]
 
 
 @pytest.mark.parametrize("mode", MODES)

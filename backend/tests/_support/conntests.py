@@ -5,6 +5,10 @@ posts it and executes exactly that job the way `shifde-worker` does: it leases t
 is still queued (never through `shifde_claim_jobs`, so another test's job is never picked up),
 runs it through `connections.service.run_test_job` on the app's own application-role database, and
 finishes it with the worker's `finish_job`. It returns the status route's body.
+
+`POST .../connections/{id}/invoke` answers 202 with a queued `connection.invoke` invocation
+(issue #190); `run_invoke` posts it and executes exactly that job the same way, through
+`connections.service.run_invoke_job`, and returns the status route's body.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ from shifde.adapters.runtime import IntegrationRuntime
 from shifde.connections import service as connections
 from shifde.core import db
 from shifde.core.db import Database
+from shifde.core.errors import AppError
 from shifde.core.ids import uuid7
 from shifde.runtime import repository as runtime_repo
 
@@ -109,3 +114,112 @@ def result_of(
     out = run_test(client, h, base, cid, tenant_id=tenant_id)
     assert out["status"] == "done", out
     return out["result"]
+
+
+# ------------------------------------------------------------------ invoke (issue #190)
+def invocation_job(database: Database, tenant_id: UUID, invocation_id: UUID) -> UUID:
+    """The `connection.invoke` job of the invocation `invocation_id` of `tenant_id`."""
+    with database.session() as s:
+        db.set_tenant(s, tenant_id)
+        job_id = s.execute(
+            text(
+                "SELECT job_id FROM shifde.connection_invocations WHERE tenant_id = :t AND id = :i"
+            ),
+            {"t": tenant_id, "i": invocation_id},
+        ).scalar_one()
+    return UUID(str(job_id))
+
+
+def invocation_status(
+    client: TestClient, h: dict[str, str], base: str, cid: str, invocation_id: str
+) -> Any:  # Any: the status route's JSON body
+    got = client.get(f"{base}/connections/{cid}/invocations/{invocation_id}", headers=h)
+    assert got.status_code == 200, got.text
+    return got.json()
+
+
+def execute_invocation(
+    client: TestClient, base: str, invocation_id: str, *, tenant_id: UUID | None = None
+) -> bool:
+    """Run the queued job of `invocation_id` as the worker does (False: no longer queued)."""
+    app: Any = client.app  # Any: the FastAPI app behind the test client
+    tenant = tenant_id or tenant_of(client, base)
+    job_id = invocation_job(app.state.db, tenant, UUID(invocation_id))
+    return execute_job(
+        app.state.db,
+        app.state.integration,
+        tenant,
+        job_id,
+        kind=connections.INVOKE_JOB_KIND,
+        runner=connections.run_invoke_job,
+    )
+
+
+def run_invoke(
+    client: TestClient,
+    h: dict[str, str],
+    base: str,
+    cid: str,
+    body: Any,  # Any: the invoke request's JSON body
+    *,
+    tenant_id: UUID | None = None,
+) -> Any:  # Any: the status route's JSON body
+    """POST the invoke (202), execute exactly that job, return the status route's body. A job a
+    running worker loop leased first is waited for instead."""
+    posted = client.post(f"{base}/connections/{cid}/invoke", json=body, headers=h)
+    assert posted.status_code == 202, posted.text
+    inv = posted.json()
+    assert inv["connection_id"] == cid and inv["status"] in ("queued", "running"), inv
+    execute_invocation(client, base, inv["id"], tenant_id=tenant_id)
+    end = time.monotonic() + 30
+    while True:
+        out = invocation_status(client, h, base, cid, inv["id"])
+        if out["status"] not in ("queued", "running") or time.monotonic() > end:
+            return out
+        time.sleep(0.05)
+
+
+def invoke_result(
+    client: TestClient,
+    h: dict[str, str],
+    base: str,
+    cid: str,
+    body: Any,  # Any: the invoke request's JSON body
+    *,
+    tenant_id: UUID | None = None,
+) -> Any:  # Any: the stored `InvokeOut` JSON
+    """`run_invoke`'s stored result (the invocation must end `succeeded`)."""
+    out = run_invoke(client, h, base, cid, body, tenant_id=tenant_id)
+    assert out["status"] == "succeeded", out
+    return out["result"]
+
+
+def _codes(cls: type[AppError]) -> dict[str, int]:
+    out = {cls.code: cls.status}
+    for sub in cls.__subclasses__():
+        out.update(_codes(sub))
+    return out
+
+
+def invoke_outcome(
+    client: TestClient,
+    h: dict[str, str],
+    base: str,
+    cid: str,
+    body: Any,  # Any: the invoke request's JSON body
+    *,
+    tenant_id: UUID | None = None,
+) -> tuple[int, Any]:  # Any: JSON bodies
+    """The inline invoke's answer, now through the queue: a refusal of the POST is returned as it
+    is; a queued invocation is executed, then `(200, stored result)` when it succeeded, else
+    `(status of its error code, status body)`, the status the inline invoke answered."""
+    posted = client.post(f"{base}/connections/{cid}/invoke", json=body, headers=h)
+    if posted.status_code != 202:
+        return posted.status_code, posted.json()
+    inv = posted.json()
+    execute_invocation(client, base, inv["id"], tenant_id=tenant_id)
+    out = invocation_status(client, h, base, cid, inv["id"])
+    if out["status"] == "succeeded":
+        return 200, out["result"]
+    assert out["status"] == "failed", out
+    return _codes(AppError)[out["error"]], out

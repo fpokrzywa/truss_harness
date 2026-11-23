@@ -2,21 +2,25 @@
 
 from __future__ import annotations
 
+import re
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, Query
+from fastapi import APIRouter, Body, Depends, Header, Query
+from fastapi.responses import JSONResponse
 
 from shifde.adapters.deps import RuntimeDep
 from shifde.connections import egress
 from shifde.connections import schemas as s
 from shifde.connections.service import ConnectionService
 from shifde.core.deps import RequestCtxDep, SessionDep
+from shifde.core.errors import ValidationFailed
 from shifde.core.pagination import DEFAULT_LIMIT, Page
 from shifde.identity.dependencies import AuthDep
 from shifde.tenancy.dependencies import CursorQuery, LimitQuery, ScopeDep
 
 router = APIRouter(prefix="/api/v1")
+IDEMPOTENCY_KEY = re.compile(r"^[\x21-\x7e]{1,200}$")  # as `runtime.api` (POST /runs)
 
 
 def _connections(scope: ScopeDep, runtime: RuntimeDep) -> ConnectionService:
@@ -115,11 +119,33 @@ def latest_discovery(svc: Connections, connection_id: UUID) -> s.DiscoveryOut:
     return svc.latest_discovery(connection_id)
 
 
-@router.post("/orgs/{org}/connections/{connection_id}/invoke", tags=["connections"])
+@router.post(
+    "/orgs/{org}/connections/{connection_id}/invoke",
+    status_code=202,
+    response_model=s.InvocationOut,
+    tags=["connections"],
+)
 def invoke_connection(
-    svc: Connections, connection_id: UUID, body: Annotated[dict[str, Any], Body()]
-) -> s.InvokeOut:
-    return svc.invoke(connection_id, body)
+    svc: Connections,
+    connection_id: UUID,
+    body: Annotated[dict[str, Any], Body()],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> JSONResponse:
+    """Queue the invoke on the worker (issue #190): 202 with the new invocation, 200 with the
+    first one on a replay of the same `Idempotency-Key` by the same caller."""
+    if idempotency_key is not None and not IDEMPOTENCY_KEY.match(idempotency_key):
+        raise ValidationFailed("Idempotency-Key must be 1-200 printable ASCII characters")
+    out, created = svc.enqueue_invoke(connection_id, body, idempotency_key)
+    return JSONResponse(out.model_dump(mode="json"), status_code=202 if created else 200)
+
+
+@router.get(
+    "/orgs/{org}/connections/{connection_id}/invocations/{invocation_id}", tags=["connections"]
+)
+def get_connection_invocation(
+    svc: Connections, connection_id: UUID, invocation_id: UUID
+) -> s.InvocationOut:
+    return svc.invocation(connection_id, invocation_id)
 
 
 # ---------------------------------------------------------------- egress policies

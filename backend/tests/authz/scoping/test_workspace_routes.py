@@ -39,7 +39,7 @@ from shifde.authz.pdp import PLATFORM_ONLY_ACTIONS
 from shifde.core.clock import utcnow
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
-from tests._support.conntests import run_test
+from tests._support.conntests import run_invoke, run_test
 from tests._support.fullapp import World, full_client
 from tests._support.p2util import login, new_user, post, tenant_id
 from tests._support.p3util import (
@@ -451,6 +451,10 @@ ROUTES: dict[Op, tuple[str, str]] = {
     ("PUT", "/api/v1/orgs/{org}/connections/{connection_id}/credential"): (SCOPED, "connections"),
     ("POST", "/api/v1/orgs/{org}/connections/{connection_id}/test"): (SCOPED, "connections"),
     ("GET", "/api/v1/orgs/{org}/connections/{connection_id}/test-jobs/{job_id}"): (
+        SCOPED,
+        "connections",
+    ),
+    ("GET", "/api/v1/orgs/{org}/connections/{connection_id}/invocations/{invocation_id}"): (
         SCOPED,
         "connections",
     ),
@@ -1254,6 +1258,9 @@ _register(
         ),
         ("GET", ORG + "/connections/{connection_id}/test-jobs/{job_id}"): lambda w: _case(
             READ, "GET", lambda n: _conn(w, n, f"/test-jobs/{w('job', n)}")
+        ),
+        ("GET", ORG + "/connections/{connection_id}/invocations/{invocation_id}"): lambda w: _case(
+            READ, "GET", lambda n: _conn(w, n, f"/invocations/{w('invocation', n)}")
         ),
         ("GET", ORG + "/connections/{connection_id}/discoveries/latest"): lambda w: _case(
             READ, "GET", lambda n: _conn(w, n, "/discoveries/latest")
@@ -2184,6 +2191,14 @@ def test_connections_and_delivery_targets(
             {"d": w("deployment", n), "p": w("plan", n)},
         )
         owner_session.commit()
+    # an invocation is read by its requester only (issue #190): W1's by U, W2's by the admin
+    tenant = tenant_id(owner_session, "demo-a")
+    for n, who in ((1, w.user), (2, w.admin)):
+        done = run_invoke(
+            who.client, who, A, w("conn", n), {"method": "GET", "path": "/health"}, tenant_id=tenant
+        )
+        assert done["status"] == "succeeded", done
+        w.set("invocation", n, done["id"])
     _check(w, "connections", "delivery")
 
 

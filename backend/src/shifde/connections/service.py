@@ -36,6 +36,7 @@ from shifde.adapters.base import (
     ErrorClass,
     ExecContext,
 )
+from shifde.adapters.httputil import FORBIDDEN_HEADERS
 from shifde.adapters.runtime import IntegrationRuntime
 from shifde.audit import service as audit
 from shifde.authz import service as authz
@@ -54,6 +55,7 @@ from shifde.core.errors import (
     EgressDenied,
     EgressPolicyMismatch,
     Forbidden,
+    IdempotencyConflict,
     NotFound,
     RateLimited,
     ScopeArchived,
@@ -84,6 +86,7 @@ CONFIG_AFFECTING = frozenset(
 )
 TEST_VALIDITY = timedelta(hours=24)
 TEST_JOB_KIND = "connection.test"  # `shifde.jobs.kind` of a queued connection test (B-2610)
+INVOKE_JOB_KIND = "connection.invoke"  # `shifde.jobs.kind` of a queued connection invoke (#190)
 ERROR_CODE = re.compile(r"[a-z][a-z_]*")  # an `AppError.code` the worker stored as `last_error`
 SCOPE_MISMATCH = "the secret must have the connection's scope"
 # the kind of a connection's own secret (`connection-<id>`) per auth method (rule 4.7, B-2747)
@@ -1178,6 +1181,20 @@ class ConnectionService:
     ) -> Iterator[ConnectionSession]:
         """Status / adapter / egress / secret gates, without a PDP check (the caller authorized
         the use through its own permission, e.g. `model:invoke`)."""
+        adapter = self._usable(row, write)
+        try:
+            session = adapter.open(self._exec_ctx(row, deadline), self._config(row, purpose))
+        except AdapterFailure as exc:
+            raise failure_to_error(exc) from exc
+        self._session.commit()  # secret-access rows are written; never held across the call
+        try:
+            yield session
+        finally:
+            session.close()
+
+    def _usable(self, row: Mapping[str, Any], write: bool) -> Any:  # Any: adapter instance
+        """`open_trusted`'s gates before the adapter is opened (no secret, no network): own row,
+        no model connection, adapter implemented, active, read_write for a write."""
         self._own(row)
         if row["connection_type"] == "model_api":
             raise UseModelsEndpoint(
@@ -1191,15 +1208,7 @@ class ConnectionService:
             )
         if write and row["access_mode"] != "read_write":
             raise Forbidden("the connection is read-only")
-        try:
-            session = adapter.open(self._exec_ctx(row, deadline), self._config(row, purpose))
-        except AdapterFailure as exc:
-            raise failure_to_error(exc) from exc
-        self._session.commit()  # secret-access rows are written; never held across the call
-        try:
-            yield session
-        finally:
-            session.close()
+        return adapter
 
     @contextmanager
     def open_for_use(
@@ -1256,8 +1265,11 @@ class ConnectionService:
         *,
         error_class: str | None = None,
         truncated: bool | None = None,
+        invocation_id: UUID | None = None,
     ) -> None:
         details: dict[str, object] = {**_redacted_request(request), "write": write}
+        if invocation_id is not None:
+            details["invocation_id"] = str(invocation_id)
         if error_class:
             details["error_class"] = error_class
         if truncated is not None:
@@ -1267,12 +1279,18 @@ class ConnectionService:
         )
         self._session.commit()
 
-    def invoke(self, connection_id: UUID, body: dict[str, Any]) -> s.InvokeOut:
+    def enqueue_invoke(
+        self, connection_id: UUID, body: dict[str, Any], idempotency_key: str | None
+    ) -> tuple[s.InvocationOut, bool]:
+        """Queue the invoke on the worker (issue #190): the API process never opens an adapter
+        session. The inline invoke's checks before the adapter is opened run here, in its order;
+        a refusal is audited as before. Returns the invocation and whether it is new: an
+        `Idempotency-Key` repeated by the same caller on the same connection answers the first
+        invocation, active or ended (409 with another body)."""
         row = self._get_row(connection_id)
         self._require("connection:use", row)
         request: dict[str, Any] = {}
         write = False
-        started = time.monotonic()
         try:
             if row["connection_type"] == "model_api":
                 raise UseModelsEndpoint(
@@ -1283,6 +1301,78 @@ class ConnectionService:
             write = bool(request.pop("write", False))
             if write:
                 self._require("connection:write", row, hide=None)
+            self._usable(row, write)
+        except AppError as exc:
+            self._audit_invoke(row, request, write, error_class=type(exc).__name__)
+            raise
+        p = self.sc.principal
+        fingerprint = hashlib.sha256(
+            json.dumps(body, sort_keys=True, default=str).encode()
+        ).hexdigest()
+        invocation_id = uuid7()
+        if idempotency_key is None:
+            dedupe_key = f"connection-invoke:{invocation_id}"
+        else:  # per connection and caller: two users never share a key space
+            key_hash = hashlib.sha256(idempotency_key.encode()).hexdigest()
+            dedupe_key = f"connection-invoke:{connection_id}:{p.principal_id}:{key_hash}"
+        payload = {
+            "invocation_id": str(invocation_id),
+            "connection_id": str(connection_id),
+            "request": _queued_request(request),
+            "write": write,
+            "request_hash": fingerprint,
+            "principal_id": str(p.principal_id),
+            "principal_type": p.principal_type,
+            "api_key_id": str(p.api_key_id) if p.api_key_id else None,
+        }
+        job, created = repository.enqueue_invoke_job(
+            self._session,
+            tenant_id=self.sc.tenant_id,
+            kind=INVOKE_JOB_KIND,
+            job_id=uuid7(),
+            dedupe_key=dedupe_key,
+            payload=payload,
+            invocation_id=invocation_id,
+            connection_id=connection_id,
+            requested_by=p.principal_id,
+        )
+        if not created and job["payload"].get("request_hash") != fingerprint:
+            raise IdempotencyConflict("this Idempotency-Key was used with a different request")
+        found = repository.get_invocation_by_job(
+            self._session, job["id"], tenant_id=self.sc.tenant_id
+        )
+        if found is None or found["requested_by"] != p.principal_id:
+            raise NotFound("invocation not found")
+        self._session.commit()
+        return _invocation_out(found), created
+
+    def invocation(self, connection_id: UUID, invocation_id: UUID) -> s.InvocationOut:
+        """The caller's own invocation of a connection it may read; any other id (another
+        client's, another user's, another connection's, unknown) gets the same 404."""
+        row = self._get_row(connection_id)
+        self._require("connection:read", row)
+        found = repository.get_invocation(
+            self._session,
+            invocation_id,
+            tenant_id=self.sc.tenant_id,
+            connection_id=connection_id,
+            requested_by=self.sc.principal.principal_id,
+        )
+        if found is None:
+            raise NotFound("invocation not found")
+        return _invocation_out(found)
+
+    def execute_invoke(
+        self, connection_id: UUID, request: dict[str, Any], write: bool, invocation_id: UUID
+    ) -> s.InvokeOut:
+        """Run the adapter invoke (the worker side of `enqueue_invoke`): the permissions are
+        checked again, then the inline invoke's gates, call and audit."""
+        row = self._get_row(connection_id)
+        self._require("connection:use", row)
+        started = time.monotonic()
+        try:
+            if write:
+                self._require("connection:write", row, hide=None)
             with self.open_trusted(
                 row,
                 "api.invoke",
@@ -1291,16 +1381,24 @@ class ConnectionService:
             ) as session:
                 result = session.invoke(request, write=write)
         except AdapterFailure as exc:
-            self._audit_invoke(row, request, write, error_class=exc.error_class.value)
+            self._audit_invoke(
+                row, request, write, error_class=exc.error_class.value, invocation_id=invocation_id
+            )
             raise failure_to_error(exc) from exc
         except AppError as exc:
-            self._audit_invoke(row, request, write, error_class=type(exc).__name__)
+            self._audit_invoke(
+                row, request, write, error_class=type(exc).__name__, invocation_id=invocation_id
+            )
             raise
-        except Exception as exc:  # noqa: BLE001 - never a 500 with details; always audited
-            self._audit_invoke(row, request, write, error_class="unexpected")
+        except Exception as exc:  # noqa: BLE001 - never a message stored; always audited
+            self._audit_invoke(
+                row, request, write, error_class="unexpected", invocation_id=invocation_id
+            )
             raise UpstreamError(f"unexpected adapter error ({type(exc).__name__})") from exc
         duration_ms = int((time.monotonic() - started) * 1000)
-        self._audit_invoke(row, request, write, truncated=result.truncated)
+        self._audit_invoke(
+            row, request, write, truncated=result.truncated, invocation_id=invocation_id
+        )
         return s.InvokeOut(
             result=json.loads(json.dumps(scrub(result.result), default=str)),
             truncated=result.truncated,
@@ -1385,6 +1483,35 @@ class _Requester:
     api_key_id: UUID | None
 
 
+def _job_scope(
+    session: Session, tenant_id: UUID, request_id: str, payload: Mapping[str, Any]
+) -> TenantScope:
+    """The scope of a job's requester, re-derived from the database (`ExecutionDenied` when the
+    requester or the client is no longer available)."""
+    principal = authz.execution_principal(
+        session,
+        _Requester(
+            tenant_id,
+            UUID(payload["principal_id"]),
+            payload["principal_type"],
+            UUID(payload["api_key_id"]) if payload["api_key_id"] else None,
+        ),
+    )
+    header = tenancy.tenant_header(session, tenant_id)
+    if header is None:
+        raise authz.ExecutionDenied("the client is not available")
+    return TenantScope(
+        session=session,
+        ctx=RequestContext(request_id=request_id, principal=principal, tenant_id=tenant_id),
+        principal=principal,
+        tenant_id=tenant_id,
+        tenant_slug=header[0],
+        tenant_name=header[1],
+        tenant_status=header[2],
+        pdp=authz.new_pdp(session, principal, tenant_id),
+    )
+
+
 def run_test_job(
     database: Database, runtime: IntegrationRuntime, tenant_id: UUID, job_id: UUID
 ) -> str | None:
@@ -1406,28 +1533,7 @@ def run_test_job(
         if repository.get_test(session, test_id, tenant_id=tenant_id) is not None:
             return None
         try:
-            principal = authz.execution_principal(
-                session,
-                _Requester(
-                    tenant_id,
-                    UUID(payload["principal_id"]),
-                    payload["principal_type"],
-                    UUID(payload["api_key_id"]) if payload["api_key_id"] else None,
-                ),
-            )
-            header = tenancy.tenant_header(session, tenant_id)
-            if header is None:
-                raise authz.ExecutionDenied("the client is not available")
-            scope = TenantScope(
-                session=session,
-                ctx=RequestContext(request_id=request_id, principal=principal, tenant_id=tenant_id),
-                principal=principal,
-                tenant_id=tenant_id,
-                tenant_slug=header[0],
-                tenant_name=header[1],
-                tenant_status=header[2],
-                pdp=authz.new_pdp(session, principal, tenant_id),
-            )
+            scope = _job_scope(session, tenant_id, request_id, payload)
             ConnectionService(scope, runtime).execute_test(UUID(payload["connection_id"]), test_id)
         except (AppError, IntegrityError) as exc:
             session.rollback()
@@ -1441,6 +1547,115 @@ def run_test_job(
         return None
     finally:
         session.close()
+
+
+def run_invoke_job(
+    database: Database, runtime: IntegrationRuntime, tenant_id: UUID, job_id: UUID
+) -> str | None:
+    """Execute the `connection.invoke` job `job_id` of `tenant_id` (called by `shifde-worker`).
+
+    At most once: the invocation is claimed (`queued -> running`, committed) before the adapter is
+    called. A redelivered job whose invocation is `running` (an earlier attempt died mid-call) is
+    marked `failed`/`worker_lost`, one already terminal is left alone; neither calls the adapter.
+    The requester is re-derived from the database and the permissions are checked again; a
+    refusal or failure is recorded as `failed` with an error code, never a message. Returns None
+    once the outcome is recorded, `not_found` (nothing written) when the job or its invocation is
+    missing."""
+    request_id = f"connection-invoke-{job_id}"
+    session = database.session()
+    db.init_context(session, request_id)
+    try:
+        db.set_tenant(session, tenant_id)
+        job = repository.get_test_job(session, job_id, tenant_id=tenant_id, kind=INVOKE_JOB_KIND)
+        if job is None:
+            return NotFound.code
+        found = repository.get_invocation_by_job(session, job_id, tenant_id=tenant_id)
+        if found is None:
+            return NotFound.code
+        invocation_id = found["id"]
+        if found["status"] != "queued":
+            if found["status"] == "running":
+                repository.move_invocation(
+                    session,
+                    invocation_id,
+                    tenant_id=tenant_id,
+                    expected="running",
+                    to="failed",
+                    error_code="worker_lost",
+                )
+                session.commit()
+            return None
+        if not repository.move_invocation(
+            session, invocation_id, tenant_id=tenant_id, expected="queued", to="running"
+        ):
+            session.rollback()  # another run of this job claimed it first
+            return None
+        session.commit()
+        payload = job["payload"]
+        try:
+            scope = _job_scope(session, tenant_id, request_id, payload)
+            out = ConnectionService(scope, runtime).execute_invoke(
+                UUID(payload["connection_id"]),
+                dict(payload["request"]),
+                bool(payload["write"]),
+                invocation_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - the outcome is a code, never a message
+            session.rollback()
+            code = exc.code if isinstance(exc, AppError) else UpstreamError.code
+            repository.move_invocation(
+                session,
+                invocation_id,
+                tenant_id=tenant_id,
+                expected="running",
+                to="failed",
+                error_code=code if ERROR_CODE.fullmatch(code) else UpstreamError.code,
+            )
+            session.commit()
+            return None
+        repository.move_invocation(
+            session,
+            invocation_id,
+            tenant_id=tenant_id,
+            expected="running",
+            to="succeeded",
+            result=out.model_dump(mode="json"),
+        )
+        session.commit()
+        return None
+    finally:
+        session.close()
+
+
+def _invocation_out(r: Mapping[str, Any]) -> s.InvocationOut:
+    """An invocation as its requester reads it: one still `queued` or `running` whose job ended
+    or is gone (read in the same snapshot) is reported `failed`/`worker_lost`; nothing is
+    written."""
+    status = r["status"]
+    error = r["error_code"]
+    if status in ("queued", "running") and r["job_status"] not in ("queued", "leased"):
+        status, error = "failed", "worker_lost"
+    return s.InvocationOut(
+        id=r["id"],
+        connection_id=r["connection_id"],
+        status=status,
+        result=s.InvokeOut.model_validate(r["result"]) if r["result"] is not None else None,
+        error=error,
+        created_at=r["created_at"],
+        finished_at=r["finished_at"],
+    )
+
+
+def _queued_request(request: Mapping[str, Any]) -> dict[str, Any]:
+    """The parsed request as it is queued in `jobs.payload`: headers the adapter never sends
+    (`FORBIDDEN_HEADERS`: authorization, cookies) are dropped, so the payload holds no
+    credential (B-2998); the connection's own secret is resolved only by the worker."""
+    out = dict(request)
+    if out.get("headers"):
+        out["headers"] = {
+            k: v for k, v in out["headers"].items() if str(k).lower() not in FORBIDDEN_HEADERS
+        }
+    return out
 
 
 def definition_fingerprint(row: Mapping[str, Any]) -> str:

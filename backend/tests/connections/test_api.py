@@ -2,16 +2,21 @@
 
 `test_p5_core.py::test_connection_call_deadline_applies_to_direct_invokes`: SETH's full app
 (`create_app`) becomes the connections route app (`routes.connections_client`) with the same
-settings change; SETH's world login and `/secrets` call become A's owner and `routes.secret`.
+settings change; SETH's world login and `/secrets` call become A's owner and `routes.secret`. The
+invoke runs on the worker (issue #190): the job is executed by `conntests.invoke_outcome`, and the
+failure's class, once in the response text, is read from its `connection.invoked` audit event.
 """
 
 from __future__ import annotations
 
 import time
 
+from sqlalchemy import text
+
 from shifde.adapters.testservers import RestTestServer
 from shifde.core.db import Database
 from shifde.core.settings import Settings
+from tests._support.conntests import invoke_outcome
 from tests.connections.routes import (
     REST_TOKEN,
     activate,
@@ -30,6 +35,7 @@ def test_connection_call_deadline_applies_to_direct_invokes(
     world: World,
     people: People,
     app_db: Database,
+    owner_db: Database,
     rest_server: RestTestServer,
     settings: Settings,
 ) -> None:
@@ -42,11 +48,17 @@ def test_connection_call_deadline_applies_to_direct_invokes(
         conn = connection(c, h, rest_body(rest_server, sid), A)
         activate(c, h, conn["id"], A)
         started = time.monotonic()
-        r = c.post(
-            f"{A}/connections/{conn['id']}/invoke",
-            headers=h,
-            json={"method": "GET", "path": "/slow"},
+        status, out = invoke_outcome(
+            c, h, A, conn["id"], {"method": "GET", "path": "/slow"}, tenant_id=world.a.tenant
         )
         assert time.monotonic() - started < 2.5
-        assert r.status_code in (502, 504, 422), r.text  # classified failure, never a hang
-        assert "timeout" in r.text.lower() or "deadline" in r.text.lower()
+        assert status in (502, 504, 422), out  # classified failure, never a hang
+        with owner_db.session() as o:
+            details = o.execute(
+                text(
+                    "SELECT details FROM shifde.audit_events WHERE action = 'connection.invoked' "
+                    "AND details->>'invocation_id' = :i"
+                ),
+                {"i": out["id"]},
+            ).scalar_one()
+        assert "timeout" in details["error_class"] or "deadline" in details["error_class"]

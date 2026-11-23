@@ -18,7 +18,7 @@ from shifde.core import db as dbmod
 from shifde.core.context import Principal, RequestContext
 from shifde.core.errors import ConnectionDisabled, Forbidden, NotFound
 from shifde.tenancy.scope import TenantScope
-from tests._support.conntests import result_of, run_test
+from tests._support.conntests import execute_invocation, invoke_outcome, result_of, run_test
 from tests._support.fullapp import World
 from tests._support.p2util import login, new_user, post, system_role
 from tests._support.p3util import (
@@ -69,29 +69,16 @@ def test_rest_writes_and_mcp_side_effects_need_write_permission(
     activate(client, h, rest["id"])
     activate(client, h, mcp["id"])
     post_req = {"method": "POST", "path": "/echo", "body": {"a": 1}}
-    assert (
-        client.post(f"{A}/connections/{rest['id']}/invoke", json=post_req, headers=h).status_code
-        == 422
-    )
-    assert (
-        client.post(
-            f"{A}/connections/{rest['id']}/invoke", json={**post_req, "write": True}, headers=h
-        ).status_code
-        == 403
-    )
+    assert invoke_outcome(client, h, A, rest["id"], post_req)[0] == 422
+    assert invoke_outcome(client, h, A, rest["id"], {**post_req, "write": True})[0] == 403
     wipe = {"tool": "wipe", "arguments": {"target": "x"}}
-    assert (
-        client.post(f"{A}/connections/{mcp['id']}/invoke", json=wipe, headers=h).status_code == 422
-    )
+    assert invoke_outcome(client, h, A, mcp["id"], wipe)[0] == 422
     assert "wipe" not in mcp_server.calls
-    ok = client.post(f"{A}/connections/{mcp['id']}/invoke", json={**wipe, "write": True}, headers=h)
-    assert ok.status_code == 200 and "wipe" in mcp_server.calls
+    ok = invoke_outcome(client, h, A, mcp["id"], {**wipe, "write": True})
+    assert ok[0] == 200 and "wipe" in mcp_server.calls
     # absolute URLs / scheme-relative paths cannot escape the configured base URL
     for path in ("http://evil.test/x", "//evil.test/x"):
-        r = client.post(
-            f"{A}/connections/{rest['id']}/invoke", json={"method": "GET", "path": path}, headers=h
-        )
-        assert r.status_code == 422
+        assert invoke_outcome(client, h, A, rest["id"], {"method": "GET", "path": path})[0] == 422
 
 
 def test_failed_tests_are_classified_and_never_leak_the_secret(
@@ -247,16 +234,10 @@ def test_activation_needs_a_fresh_passing_test_and_re_enable_needs_another(
         )
 
     assert set_status("active").status_code == 409  # never tested
-    assert (
-        client.post(f"{url}/invoke", json={"method": "GET", "path": "/echo"}, headers=h).status_code
-        == 409
-    )
+    assert invoke_outcome(client, h, A, cid, {"method": "GET", "path": "/echo"})[0] == 409
     activated = activate(client, h, cid)
     assert activated["status"] == "active" and activated["last_tested_at"] is not None
-    assert (
-        client.post(f"{url}/invoke", json={"method": "GET", "path": "/echo"}, headers=h).status_code
-        == 200
-    )
+    assert invoke_outcome(client, h, A, cid, {"method": "GET", "path": "/echo"})[0] == 200
     # a stale test (older than 24 h) cannot activate
     assert set_status("disabled").status_code == 200
     disabled = client.post(f"{url}/invoke", json={"method": "GET", "path": "/echo"}, headers=h)
@@ -286,10 +267,7 @@ def test_activation_needs_a_fresh_passing_test_and_re_enable_needs_another(
     )
     assert edited.status_code == 200 and edited.json()["status"] == "draft"
     assert edited.json()["last_tested_at"] is None
-    assert (
-        client.post(f"{url}/invoke", json={"method": "GET", "path": "/echo"}, headers=h).status_code
-        == 409
-    )
+    assert invoke_outcome(client, h, A, cid, {"method": "GET", "path": "/echo"})[0] == 409
     # invalid / terminal transitions
     activate(client, h, cid)
     assert set_status("retired").status_code == 200
@@ -379,7 +357,7 @@ def test_unauthorized_use_is_prevented_and_tenants_are_isolated(
     # viewer: connection:read only
     hv = login(client, world.passwords, VIEWER)
     assert client.get(f"{A}/connections/{cid}", headers=hv).status_code == 200
-    assert client.post(f"{A}/connections/{cid}/invoke", json=invoke, headers=hv).status_code == 403
+    assert invoke_outcome(client, hv, A, cid, invoke)[0] == 403
     assert client.post(f"{A}/connections/{cid}/test", headers=hv).status_code == 403
     assert client.post(f"{A}/connections/{cid}/discover", headers=hv).status_code == 403
     assert client.post(
@@ -436,22 +414,23 @@ def test_unauthorized_use_is_prevented_and_tenants_are_isolated(
     )
     assert bind.status_code == 201, bind.text
     hu = login(client, {"binder@demo-a.local": "Passw0rd!-test-1"}, "binder@demo-a.local")
-    ok = client.post(f"{A}/connections/{cid}/invoke", json=invoke, headers=hu)
-    assert ok.status_code == 200 and ok.json()["result"]["status"] == 200
+    # `connection:use` alone invokes; the status route also needs `connection:read` (issue #190),
+    # so the stored result is read from the table
+    queued = client.post(f"{A}/connections/{cid}/invoke", json=invoke, headers=hu)
+    assert queued.status_code == 202, queued.text
+    assert execute_invocation(client, A, queued.json()["id"])
+    ok = owner_session.execute(
+        text("SELECT status, result FROM shifde.connection_invocations WHERE id = :i"),
+        {"i": queued.json()["id"]},
+    ).one()
+    assert ok[0] == "succeeded" and ok[1]["result"]["status"] == 200
     for target in (other,):  # a sibling connection: not granted (404: not even visible)
-        assert client.post(
-            f"{A}/connections/{target}/invoke", json=invoke, headers=hu
-        ).status_code in (403, 404)
+        assert invoke_outcome(client, hu, A, target, invoke)[0] in (403, 404)
     assert client.post(f"{A}/connections/{cid}/test", headers=hu).status_code in (
         403,
         404,
     )  # only `use`
-    assert (
-        client.post(
-            f"{A}/connections/{cid}/invoke", json={**invoke, "write": True}, headers=hu
-        ).status_code
-        == 403
-    )
+    assert invoke_outcome(client, hu, A, cid, {**invoke, "write": True})[0] == 403
     assert client.get(f"{A}/connections", headers=hu).status_code == 403  # no list permission
 
     # developer: use + test, but no manage
@@ -462,7 +441,7 @@ def test_unauthorized_use_is_prevented_and_tenants_are_isolated(
         "dev@demo-a.local",
         [system_role(owner_session, "developer")],
     )
-    assert client.post(f"{A}/connections/{cid}/invoke", json=invoke, headers=hd).status_code == 200
+    assert invoke_outcome(client, hd, A, cid, invoke)[0] == 200
     assert run_test(client, hd, A, cid)["status"] == "done"
     assert client.patch(f"{A}/connections/{cid}", json={"name": "d"}, headers=hd).status_code == 403
     assert (
@@ -620,7 +599,7 @@ def test_egress_policy_api_shapes_and_enforcement(
     cid = connection(client, h, rest_body(rest_server, secret(client, h, "t", REST_TOKEN)))["id"]
     activate(client, h, cid)
     invoke = {"method": "GET", "path": "/echo"}
-    assert client.post(f"{A}/connections/{cid}/invoke", json=invoke, headers=h).status_code == 200
+    assert invoke_outcome(client, h, A, cid, invoke)[0] == 200
     narrow = post(
         client,
         f"{A}/egress-policies",
@@ -662,7 +641,7 @@ def test_egress_policy_api_shapes_and_enforcement(
         json={"egress_policy_id": loop["id"], "row_version": row["row_version"]},
     )
     activate(client, h, cid)
-    assert client.post(f"{A}/connections/{cid}/invoke", json=invoke, headers=h).status_code == 200
+    assert invoke_outcome(client, h, A, cid, invoke)[0] == 200
     deny_default = post(
         client,
         f"{A}/egress-policies",
@@ -670,8 +649,8 @@ def test_egress_policy_api_shapes_and_enforcement(
         {"name": "tenant-default", "is_default": True, "allowed_schemes": ["https"]},
     )
     assert deny_default["is_default"] is True
-    blocked = client.post(f"{A}/connections/{cid}/invoke", json=invoke, headers=h)
-    assert blocked.status_code == 422 and blocked.json()["code"] == "egress_denied"
+    blocked = invoke_outcome(client, h, A, cid, invoke)
+    assert blocked[0] == 422 and blocked[1]["error"] == "egress_denied"
     other_default = post(client, f"{A}/egress-policies", h, {"name": "d2", "is_default": True})
     assert (
         other_default["is_default"]
@@ -856,15 +835,14 @@ def test_audit_records_cover_the_connection_lifecycle(
     h = login(client, world.passwords, ADMIN)
     cid = connection(client, h, rest_body(rest_server, secret(client, h, "t", REST_TOKEN)))["id"]
     activate(client, h, cid)
-    client.post(
-        f"{A}/connections/{cid}/invoke",
-        json={"method": "GET", "path": "/echo", "query": {"k": "private-value-1"}},
-        headers=h,
+    assert (
+        invoke_outcome(
+            client, h, A, cid, {"method": "GET", "path": "/echo", "query": {"k": "private-value-1"}}
+        )[0]
+        == 200
     )
-    client.post(
-        f"{A}/connections/{cid}/invoke",
-        json={"method": "GET", "path": "http://evil.test/"},
-        headers=h,
+    assert (
+        invoke_outcome(client, h, A, cid, {"method": "GET", "path": "http://evil.test/"})[0] == 422
     )
     rows = owner_session.execute(
         text(
@@ -890,7 +868,7 @@ def test_audit_records_cover_the_connection_lifecycle(
         == 0
     )
     hv = login(client, world.passwords, VIEWER)
-    client.post(f"{A}/connections/{cid}/invoke", json={"method": "GET", "path": "/"}, headers=hv)
+    assert invoke_outcome(client, hv, A, cid, {"method": "GET", "path": "/"})[0] == 403
     owner_session.rollback()
     assert (
         owner_session.execute(
@@ -1002,33 +980,28 @@ def test_rest_mcp_and_postgres_connections_with_secret_references(
     # activate + invoke (read-only by default)
     for c in (rest, mcp, pg):
         activate(client, h, c["id"])
-    r = post(
-        client,
-        f"{A}/connections/{rest['id']}/invoke",
-        h,
-        {"method": "GET", "path": "/echo", "query": {"q": "1"}},
-        200,
+    status, r = invoke_outcome(
+        client, h, A, rest["id"], {"method": "GET", "path": "/echo", "query": {"q": "1"}}
     )
+    assert status == 200, r
     assert r["result"]["status"] == 200 and r["result"]["body"]["query"] == {"q": "1"}
     assert set(r) == {"result", "truncated", "duration_ms"} and r["truncated"] is False
-    m = post(
-        client,
-        f"{A}/connections/{mcp['id']}/invoke",
-        h,
-        {"tool": "add", "arguments": {"a": 40, "b": 2}},
-        200,
+    status, m = invoke_outcome(
+        client, h, A, mcp["id"], {"tool": "add", "arguments": {"a": 40, "b": 2}}
     )
+    assert status == 200, m
     assert m["result"]["is_error"] is False and "42" in json.dumps(m["result"])
-    q = post(
+    status, q = invoke_outcome(
         client,
-        f"{A}/connections/{pg['id']}/invoke",
         h,
+        A,
+        pg["id"],
         {
             "sql": "SELECT id, name FROM customers WHERE region = %s ORDER BY id",
             "params": ["north"],
         },
-        200,
     )
+    assert status == 200, q
     assert q["result"]["columns"] == ["id", "name"] and q["result"]["rows"]
     # list filters (B1 slugs + type/status)
     listed = client.get(f"{A}/connections?type=database&status=active", headers=h).json()
@@ -1044,7 +1017,6 @@ def test_database_invoke_is_read_only_unless_read_write_and_connection_write(
     pw = sample_db_url.split(":")[2].split("@")[0]
     cid = connection(client, h, pg_body(sample_db_url, secret(client, h, "pg", pw)))["id"]
     activate(client, h, cid)
-    url = f"{A}/connections/{cid}/invoke"
     ins = "INSERT INTO customers (id, name, email, region, segment, created_at) VALUES (900, 'n', 'e', 'north', 'consumer', now())"
     for stmt in (
         ins,
@@ -1052,11 +1024,10 @@ def test_database_invoke_is_read_only_unless_read_write_and_connection_write(
         "SELECT 1; SELECT 2",
         "WITH d AS (DELETE FROM customers RETURNING id) SELECT * FROM d",
     ):
-        r = client.post(url, json={"sql": stmt}, headers=h)
-        assert r.status_code == 422, (stmt, r.text)
+        r = invoke_outcome(client, h, A, cid, {"sql": stmt})
+        assert r[0] == 422, (stmt, r)
     # asking for write on a read-only connection is refused outright
-    denied = client.post(url, json={"sql": ins, "write": True}, headers=h)
-    assert denied.status_code == 403
+    assert invoke_outcome(client, h, A, cid, {"sql": ins, "write": True})[0] == 403
     # read_write + connection:write: the adapter allows it, the reader role's grants still refuse
     row = _row(client, h, cid)
     assert (
@@ -1069,8 +1040,8 @@ def test_database_invoke_is_read_only_unless_read_write_and_connection_write(
     )
     assert _row(client, h, cid)["status"] == "draft"  # a changed definition must be re-tested
     activate(client, h, cid)
-    r = client.post(url, json={"sql": ins, "write": True}, headers=h)
-    assert r.status_code == 422  # least privilege at the database: SELECT-only role
+    # least privilege at the database: SELECT-only role
+    assert invoke_outcome(client, h, A, cid, {"sql": ins, "write": True})[0] == 422
     # the row cap and statement timeout come from the connection config
     assert (
         client.patch(
@@ -1084,7 +1055,10 @@ def test_database_invoke_is_read_only_unless_read_write_and_connection_write(
         == 200
     )
     activate(client, h, cid)
-    capped = post(client, url, h, {"sql": "SELECT * FROM service_requests ORDER BY id"}, 200)
+    status, capped = invoke_outcome(
+        client, h, A, cid, {"sql": "SELECT * FROM service_requests ORDER BY id"}
+    )
+    assert status == 200, capped
     assert capped["truncated"] is True and len(capped["result"]["rows"]) == 3
     audit = (
         owner_session.execute(
@@ -1098,4 +1072,4 @@ def test_database_invoke_is_read_only_unless_read_write_and_connection_write(
     assert audit and all("params" not in json.dumps(a) for a in audit)
     # a principal without connection:use cannot invoke at all
     hv = login(client, world.passwords, VIEWER)
-    assert client.post(url, json={"sql": "SELECT 1"}, headers=hv).status_code == 403
+    assert invoke_outcome(client, hv, A, cid, {"sql": "SELECT 1"})[0] == 403
