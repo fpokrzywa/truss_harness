@@ -28,9 +28,9 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
 from shifde.adapters.native.addresses import (
-    SNOWFLAKE_HOST_SUFFIX,
     AddressRefused,
     normalize_address,
+    snowflake_claim_identity,
 )
 from shifde.adapters.native.contracts import CredentialGrant, utcnow
 from shifde.adapters.native.snowflake.clients import SnowflakeKeyPair
@@ -84,12 +84,10 @@ def _entry(raw: Any) -> Entry:  # Any: one raw JSON entry
 
 
 def snowflake_account(host: str) -> str:
-    """The account of a normalized Snowflake host: its labels before `snowflakecomputing.com`,
-    without `privatelink`."""
-    labels = host.removeprefix("https://").removesuffix("." + SNOWFLAKE_HOST_SUFFIX).split(".")
-    if len(labels) > 1 and labels[-1] == "privatelink":
-        labels = labels[:-1]
-    return ".".join(labels)
+    """The account of a Snowflake host: the organization-account name of its claim identity
+    (`snowflake_claim_identity`, B-3942), so the key pair names the account the target claims;
+    `SnowflakeAddressRefused` for a host that does not reduce to one (an account-locator form)."""
+    return snowflake_claim_identity(host).removeprefix("https://").split(".")[0]
 
 
 class CredentialBroker:
@@ -229,12 +227,18 @@ class CredentialBroker:
         target_id: UUID,
         tenant_id: UUID,
     ) -> SnowflakeKeyPair:
-        """The grant's Snowflake key pair, its key file read now (the account from the audience,
-        the entry's normalized host); a missing or unreadable key file, or on POSIX one open to
-        group or others, is `CredentialUnavailable`."""
+        """The grant's Snowflake key pair, its key file read now (the account is the claim
+        identity's organization-account name of the audience, the entry's normalized host; the
+        organization is the file's one organization, checked equal to the target's). An audience
+        that does not reduce to a claim identity, a missing or unreadable key file, or on POSIX
+        one open to group or others, is `CredentialUnavailable`."""
         entry = self.snowflake_entry_for(
             grant, job_id=job_id, executor_id=executor_id, target_id=target_id, tenant_id=tenant_id
         )
+        try:
+            account = snowflake_account(grant.audience)
+        except AddressRefused:
+            raise CredentialUnavailable from None
         path = Path(entry.private_key_file)
         try:
             too_open = POSIX and bool(os.stat(path).st_mode & 0o077)
@@ -244,8 +248,9 @@ class CredentialBroker:
         if too_open:
             raise CredentialUnavailable
         return SnowflakeKeyPair(
+            tenant_id=entry.tenant_id,
             host=grant.audience,
-            account=snowflake_account(grant.audience),
+            account=account,
             user=entry.user,
             role=entry.role,
             private_key_pem=pem,

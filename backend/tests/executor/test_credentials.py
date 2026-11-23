@@ -286,13 +286,29 @@ def test_a_snowflake_grant_gets_a_key_pair(tmp_path: Path) -> None:
     pair = _key_pair(broker, grant)
     assert pair.host == "https://acct-1.privatelink.snowflakecomputing.com"
     assert pair.account == "acct-1"
+    assert pair.tenant_id == TENANT
     assert (pair.user, pair.role) == (SNOWFLAKE_USER, SNOWFLAKE_ROLE)
     assert pair.private_key_pem == SF_PEM
-    region = _sf_broker(tmp_path, "https://xy12345.us-east-2.aws.snowflakecomputing.com")
-    located = _key_pair(
-        region, _sf_grant(audience="https://xy12345.us-east-2.aws.snowflakecomputing.com")
-    )
-    assert located.account == "xy12345.us-east-2.aws"
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "https://xy12345.us-east-2.aws.snowflakecomputing.com",
+        "https://xy12345.snowflakecomputing.com",
+        "https://xy12345.privatelink.snowflakecomputing.com",
+        "https://acct-1.us-east-1.snowflakecomputing.com",
+    ],
+    ids=["locator-region", "locator", "locator-privatelink", "org-account-region"],
+)
+def test_a_snowflake_host_without_a_claim_identity_gets_no_key_pair(
+    tmp_path: Path, host: str
+) -> None:
+    """The key pair's account is the claim identity's organization-account name (B-3942), so an
+    account-locator host, which no target can claim, gets no key pair."""
+    with pytest.raises(CredentialUnavailable) as raised:
+        _key_pair(_sf_broker(tmp_path, host), _sf_grant(audience=host))
+    _assert_fixed(raised.value, tmp_path)
 
 
 @pytest.mark.parametrize(

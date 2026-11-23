@@ -276,7 +276,9 @@ instance name is only a local label.
 3. Create the credentials file: JSON `credential_ref -> entry`, every entry carrying this
    organization's id as `tenant_id`. A Databricks target's entry is `{tenant_id, host, token,
    service_principal}`; a Snowflake target's entry is `{tenant_id, host, platform: "snowflake",
-   user, role, private_key_file}`, where `private_key_file` is the absolute path of the deploy
+   user, role, private_key_file}`, where `host` is the target's address (an organization-account
+   URL `https://<org>-<account>[.privatelink].snowflakecomputing.com`; account-locator URLs are
+   refused) and `private_key_file` is the absolute path of the deploy
    user's unencrypted PKCS#8 PEM key (for example `/etc/seth/executor/<org>.snowflake.p8`),
    owned by `seth-exec-<org>` with mode 0600 like the credentials file: the executor refuses a key
    file readable or writable by group or others, and reads it on every use.

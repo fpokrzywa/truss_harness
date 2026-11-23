@@ -168,6 +168,7 @@ def test_the_fake_platform_refuses_to_build_the_snowflake_fake_outside_developme
     environment: str,
 ) -> None:
     pair = SnowflakeKeyPair(
+        tenant_id=uuid4(),
         host="https://acct-1.snowflakecomputing.com",
         account="acct-1",
         user="deployer",

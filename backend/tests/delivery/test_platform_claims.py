@@ -19,7 +19,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
-from shifde.adapters.native.addresses import address_key
+from shifde.adapters.native.addresses import (
+    SnowflakeAddressRefused,
+    address_key,
+    snowflake_claim_identity,
+)
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
@@ -41,6 +45,7 @@ from tests.tenancy.routes import People, ws2_slug, ws_slug
 
 CLAIM = text("SELECT shifde.delivery_claim_platform('databricks', :k)")
 SNOWFLAKE_CLAIM = text("SELECT shifde.delivery_claim_platform('snowflake', :k)")
+SNOWFLAKE_REFUSED = str(SnowflakeAddressRefused())
 
 
 def _assert_fixed_409(r: Any, world: World, url: str) -> None:
@@ -425,6 +430,80 @@ def test_another_organization_registering_a_snowflake_account_gets_the_fixed_409
     }
     assert counts(owner_db, world.b.tenant) == (0, 0)
     assert counts(owner_db, world.a.tenant) == (2, 2)
+
+
+@pytest.mark.parametrize(
+    "form",
+    [
+        "https://{host}.privatelink.snowflakecomputing.com",
+        "https://{upper}.PRIVATELINK.snowflakecomputing.com:443/",
+        "https://{underscored}.snowflakecomputing.com",
+    ],
+    ids=["privatelink", "privatelink-upper", "underscore"],
+)
+def test_another_organization_claiming_a_snowflake_account_in_another_url_form_gets_the_409(
+    client: TestClient, world: World, people: People, owner_db: Database, form: str
+) -> None:
+    """A Snowflake claim keys on the account's claim identity (B-3942), so B claiming A's account
+    through its privatelink (or any other) URL form gets the fixed 409, not a second claim."""
+    url = snowflake_address()
+    host = url.removeprefix("https://").removesuffix(".snowflakecomputing.com")
+    ha = as_user(client, people.owner_a)
+    register(client, ha, world.a.slug, snowflake_body(ws_slug(world.a), url))
+    other = form.format(host=host, upper=host.upper(), underscored=host.replace("-", "_"))
+    hb = as_user(client, people.owner_b)
+    r = client.post(targets(world.b.slug), headers=hb, json=snowflake_body(ws_slug(world.b), other))
+    _assert_fixed_409(r, world, url)
+    assert address_key(snowflake_claim_identity(url)) not in r.text
+    assert counts(owner_db, world.b.tenant) == (0, 0)
+    assert counts(owner_db, world.a.tenant) == (1, 1)
+
+
+def test_a_privatelink_holder_refuses_another_organization_the_plain_url(
+    client: TestClient, world: World, people: People, owner_db: Database
+) -> None:
+    url = snowflake_address()
+    private = url.replace(".snowflakecomputing.com", ".privatelink.snowflakecomputing.com")
+    ha = as_user(client, people.owner_a)
+    made = register(client, ha, world.a.slug, snowflake_body(ws_slug(world.a), private))
+    assert made["address"] == private
+    hb = as_user(client, people.owner_b)
+    r = client.post(targets(world.b.slug), headers=hb, json=snowflake_body(ws_slug(world.b), url))
+    _assert_fixed_409(r, world, private)
+    assert counts(owner_db, world.b.tenant) == (0, 0)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://xy12345.snowflakecomputing.com",
+        "https://xy12345.privatelink.snowflakecomputing.com",
+        "https://xy12345.us-east-2.aws.snowflakecomputing.com",
+        "https://xy12345.us-east-2.aws.privatelink.snowflakecomputing.com",
+        "https://myorg-acct.us-east-1.snowflakecomputing.com",
+    ],
+    ids=["locator", "locator-privatelink", "locator-region", "locator-region-pl", "org-region"],
+)
+def test_a_snowflake_address_without_a_claim_identity_claims_nothing(
+    client: TestClient, world: World, people: People, owner_db: Database, url: str
+) -> None:
+    """An account-locator form cannot be shown to be the same account as an org-account name, so
+    it is refused before any claim (422 at `body.address`, the fixed message) for every
+    organization: B cannot reach A's account through its locator either."""
+    ha = as_user(client, people.owner_a)
+    register(client, ha, world.a.slug, snowflake_body(ws_slug(world.a), snowflake_address()))
+    for slug, person, ws in (
+        (world.a.slug, people.owner_a, ws2_slug(world.a)),
+        (world.b.slug, people.owner_b, ws_slug(world.b)),
+    ):
+        h = as_user(client, person)
+        r = client.post(targets(slug), headers=h, json=snowflake_body(ws, url))
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"] == SNOWFLAKE_REFUSED
+        assert r.json()["errors"][0]["loc"] == ["body", "address"]
+        assert url not in r.text
+    assert counts(owner_db, world.a.tenant) == (1, 1)
+    assert counts(owner_db, world.b.tenant) == (0, 0)
 
 
 def test_archiving_the_last_snowflake_target_releases_the_claim(
