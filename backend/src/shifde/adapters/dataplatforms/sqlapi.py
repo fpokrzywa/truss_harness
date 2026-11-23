@@ -1,7 +1,8 @@
 """Shared toolkit of the REST SQL-API adapters (design 2026-11-22 sections 7.1 and 7.4).
 
-* `check_read_only`: the keyword check a `read` invoke passes before any network call. It is
-  defense in depth; the read-only credential (B-1507) is the real control.
+* `check_read_only`: the keyword check a `read` invoke passes before any network call (a read
+  first keyword, no write keyword anywhere in the code). It is defense in depth; the read-only
+  credential (B-1507) is the real control.
 * `classify_status`: HTTP status -> `ErrorClass`, with fixed messages (never a body).
 * `send`: one request through an egress-guarded client, with one `Retry-After` retry on 429.
 * `run_statement`: submit, poll, cancel at the deadline.
@@ -24,6 +25,7 @@ import httpx
 from shifde.adapters.base import AdapterFailure, ErrorClass, ExecContext
 from shifde.adapters.httputil import classify_exception
 from shifde.core.egress import EgressViolation
+from shifde.core.sqlrules import WRITE_KEYWORDS
 
 JSON = dict[str, Any]  # Any: free-form JSON object
 
@@ -43,6 +45,9 @@ _AMBIGUOUS_DOLLARS = "a $$ directly after a name is not allowed"
 Dialect = Literal["databricks", "snowflake"]
 # Snowflake dialect: a word is a maximal run of letters, digits, `_` and `$`
 _WORD = re.compile(r"[\w$]+")
+# Databricks dialect: a word is a maximal run of ASCII letters, digits and `_` (as publish's
+# tokenizer splits identifiers)
+_DATABRICKS_WORD = re.compile(r"[A-Za-z0-9_]+")
 _SNOWFLAKE_REFUSED_WORDS = frozenset({"procedure", "call"})
 _QUOTES = ("'", '"', "`")
 # Snowflake has no backtick quoting and no raw literals; only `'` takes backslash escapes,
@@ -130,9 +135,11 @@ def _code_of(sql: str, dialect: Dialect = "databricks") -> tuple[str, list[int],
 
 
 def check_read_only(sql: str, *, dialect: Dialect = "databricks") -> None:
-    """Refuse (CAPABILITY, 422) anything but one statement whose first keyword is a read keyword;
-    comments are stripped first, quoted text is never read as code. The Snowflake dialect also
-    refuses a `procedure` or `call` word anywhere in the code (anonymous procedures)."""
+    """Refuse (CAPABILITY, 422) anything but one statement whose first keyword is a read keyword
+    and whose code holds no word of `WRITE_KEYWORDS` (the set publish refuses, shared through
+    `core/sqlrules.py`); comments are stripped first, quoted text is never read as code. The
+    Snowflake dialect also refuses a `procedure` or `call` word anywhere in the code (anonymous
+    procedures)."""
     code, semicolons, bare = _code_of(sql, dialect)
     stripped = code.rstrip()
     if semicolons:
@@ -142,9 +149,11 @@ def check_read_only(sql: str, *, dialect: Dialect = "databricks") -> None:
     first = _FIRST_WORD.match(stripped)
     if first is None or first.group(1).lower() not in READ_KEYWORDS:
         raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
-    if dialect == "snowflake" and any(
-        word.lower() in _SNOWFLAKE_REFUSED_WORDS for word in _WORD.findall(bare)
-    ):
+    word = _WORD if dialect == "snowflake" else _DATABRICKS_WORD
+    words = [w.lower() for w in word.findall(bare)]
+    if any(word in WRITE_KEYWORDS for word in words):
+        raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
+    if dialect == "snowflake" and any(word in _SNOWFLAKE_REFUSED_WORDS for word in words):
         raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
 
 
