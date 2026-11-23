@@ -9,6 +9,7 @@ import http.client
 import http.server
 import importlib.util
 import io
+import socket
 import sys
 import threading
 import unittest
@@ -100,7 +101,7 @@ class _Upstream(http.server.BaseHTTPRequestHandler):
 class EdgeProxy(unittest.TestCase):
     def test_the_upstream_sees_the_peer_address_and_the_answer_is_passed_through(self) -> None:
         _Upstream.seen = []
-        upstream = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Upstream)
+        upstream = golive.LoopbackServer(("127.0.0.1", 0), _Upstream)
         thread = threading.Thread(target=upstream.serve_forever, daemon=True)
         thread.start()
         self.addCleanup(upstream.server_close)
@@ -124,6 +125,13 @@ class EdgeProxy(unittest.TestCase):
         self.assertEqual(
             _Upstream.seen, [{"xff": ["127.0.0.1"], "body": b"{}", "path": "/api/x?y=1"}]
         )
+
+    def test_no_other_socket_can_bind_the_edge_port_while_it_is_open(self) -> None:
+        # Windows lets a SO_REUSEADDR socket share a port bound with SO_REUSEADDR
+        with golive.EdgeProxy(1) as edge, socket.socket() as other:
+            other.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            with self.assertRaises(OSError):
+                other.bind(("127.0.0.1", edge.port))
 
 
 class EnvFiles(unittest.TestCase):

@@ -286,8 +286,8 @@ def test_a_planned_adapter_is_refused_synchronously_and_queues_nothing(
     body = {
         "name": "planned",
         "connection_type": "data_platform",
-        "adapter_key": "snowflake",
-        "config": {"account": "a"},
+        "adapter_key": "fabric",
+        "config": {"endpoint": "e"},
     }
     cid = connection(client, h, body, A)["id"]
     values = provider_values(world.a.tenant, cid)

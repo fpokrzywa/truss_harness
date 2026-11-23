@@ -1,0 +1,7 @@
+# Isolation review: job 111 (PR #213, restore checks the restored catalog), head 56c3ada
+
+Reviewer: isolation-reviewer (lead session after 6975aeb6, 2026-11-22). Verdict: APPROVED, 0 blocking.
+
+1. Nothing removed or weakened. No file under `backend/tests/schema/*`, no cross-client test and no startup role check touched. In `tests/cli/test_restore.py` the only change to an existing test is the rename `..._passes_all_six_checks` -> `..._passes_all_checks`, assertions unchanged. The six earlier restore checks are unchanged; `catalog rules` is second, always runs and fails closed.
+2. The copied rules are no looser than the schema tests: `tests/cli/test_catalog_rules.py` checks the rule data equal and that `rls_violations`, `privilege_problems` and `definer_violations` return exactly what the test versions return, on the migrated database and on every probe. The owner role is the target URL's user, which `restore_backup` already requires to be the schema owner.
+3. Non-blocking: narrower than its docstrings say. The full-catalog context-write scan (`catalog_scan.context_write_violations` over `ALL_KINDS`) and the tenant key, admin-flag and principal-table checks are not ported, so a forged dump that puts `set_config('app.tenant_id', ...)` in a plain trigger function body would still print `RESTORE VERIFIED`. Follow-up #233 (port the scan, correct the docstrings). Helper body pinning is #215.

@@ -298,9 +298,8 @@ def test_planned_adapters_cannot_be_tested_discovered_or_invoked(
     client: TestClient, world: World
 ) -> None:
     h = login(client, world.passwords, ADMIN)
-    for key in ("snowflake", "fabric"):
+    for key in ("fabric",):
         cfg = {
-            "snowflake": {"account": "a"},
             "fabric": {"endpoint": "e"},
         }[key]
         c = connection(
@@ -323,7 +322,7 @@ def test_planned_adapters_cannot_be_tested_discovered_or_invoked(
         r = client.post(f"{A}/connections/{c['id']}/status", json={"status": "active"}, headers=h)
         assert r.status_code == 409
     adapters = {a["key"]: a for a in client.get("/api/v1/adapters", headers=h).json()["items"]}
-    for key in ("snowflake", "fabric"):
+    for key in ("fabric",):
         assert {c["maturity"] for c in adapters[key]["capabilities"]} == {"planned"}
     r = client.post(
         f"{A}/model-providers",

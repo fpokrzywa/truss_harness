@@ -13,11 +13,12 @@ left; invalid `--older-than` values and a privileged role are refused.
 
 Guards: as `shifde_app` in the client's own context and as the schema owner, a delete without a
 cutoff, of a run that is not terminal or ended after the cutoff, of a pending approval, a queued
-job or a held reservation is refused with 42501.
+job or a held reservation is refused with 42501, and so is a row with a NULL run_id.
 
 Isolation: with A deleted and B on legal hold (or with a longer stored `retain_days`), every row of
 B in the nine tables, `usage_events` and `audit_events` is byte-for-byte unchanged apart from B's
-own new event, and A's rows are really gone (the check is not vacuous).
+own new event, and A's rows are really gone (the check is not vacuous); as `shifde_app` with A's
+context and a valid cutoff, deleting B's run deletes 0 rows and B is unchanged.
 
 Data is seeded and read as the schema owner; the command itself connects as `shifde_app`.
 """
@@ -486,6 +487,36 @@ def test_guard_admits_a_decided_approval_of_an_old_run_with_a_cutoff(
     s.rollback()
 
 
+def test_guard_refuses_a_row_with_a_null_run_id(
+    guard_session: tuple[Session, Client], owner_db: Database
+) -> None:
+    """Only `jobs` and `ontology_query_lineage` allow a NULL run_id; the other seven tables have
+    it `NOT NULL` (`runs` uses its primary key). The job is done and the lineage row has no
+    status, so the NULL run is the only failing condition."""
+    s, c = guard_session
+    job, lineage = uuid7(), uuid7()
+    with owner_db.session() as o:
+        _, ontology_version = add_published(o, c.tenant, "ontologies", f"onto-{uuid7().hex}", {})
+        insert(o, "jobs", id=job, tenant_id=c.tenant, kind="run", run_id=None, status="done",
+               dedupe_key=f"null-run-{job}")  # fmt: skip
+        insert(o, "ontology_query_lineage", id=lineage, tenant_id=c.tenant, principal_id=uuid7(),
+               principal_type="user", ontology_id=uuid7(), ontology_version_id=ontology_version,
+               run_id=None, channel="agent", object_types=["x"], connection_ids=[],
+               compiled_query_hashes=[], duration_ms=1, outcome="success")  # fmt: skip
+        o.commit()
+    set_tenant(s, c.tenant)
+    _refused(s, "DELETE FROM shifde.jobs WHERE id = :i", 30, i=job)
+    set_tenant(s, c.tenant)
+    _refused(s, "DELETE FROM shifde.ontology_query_lineage WHERE id = :i", 30, i=lineage)
+    set_tenant(s, c.tenant)
+    with owner_db.session() as o:
+        for table, row in (("jobs", job), ("ontology_query_lineage", lineage)):
+            found = o.execute(
+                text(f"SELECT count(*) FROM shifde.{table} WHERE id = :i"), {"i": row}
+            )
+            assert found.scalar_one() == 1, table
+
+
 # ------------------------------------------------------------------ isolation (13 h)
 def _seed_audit(owner_db: Database, tenant: UUID) -> None:
     with owner_db.session() as o:
@@ -526,6 +557,39 @@ def test_deleting_a_leaves_b_byte_for_byte_unchanged(
     assert all(a_after[t] == [] for t in RUN_TABLES)
     assert all(_present(owner_db, r) == GONE for r in a_runs)
     assert len(_events(owner_db, b.tenant)) == 1
+
+
+def test_the_app_role_in_a_context_deletes_none_of_b_with_a_valid_cutoff(
+    app_db: Database, owner_db: Database
+) -> None:
+    """As `shifde_app` in A's context with a valid cutoff, a delete of B's old run reaches no row
+    of B in any of the nine tables; the same deletes of A's own old run do (not vacuous)."""
+    a, b = _client(owner_db), _client(owner_db)
+    a_run = _run(owner_db, a.tenant, ended_days_ago=OLD)
+    b_run = _run(owner_db, b.tenant, ended_days_ago=OLD)
+    b_before = _tenant_rows(owner_db, b.tenant)
+    with app_db.session() as s:
+        set_tenant(s, a.tenant)
+        s.execute(text(CUTOFF), {"c": (utcnow() - timedelta(days=30)).isoformat()})
+        for table in RUN_TABLES:
+            column = "id" if table == "runs" else "run_id"
+            deleted = s.execute(
+                text(f"DELETE FROM shifde.{table} WHERE {column} = :r"), {"r": b_run}
+            )
+            assert deleted.rowcount == 0, table  # type: ignore[attr-defined]
+        s.rollback()
+        assert _tenant_rows(owner_db, b.tenant) == b_before
+        assert _present(owner_db, b_run) == FULL
+        set_tenant(s, a.tenant)
+        s.execute(text(CUTOFF), {"c": (utcnow() - timedelta(days=30)).isoformat()})
+        for table in RUN_TABLES:
+            column = "id" if table == "runs" else "run_id"
+            deleted = s.execute(
+                text(f"DELETE FROM shifde.{table} WHERE {column} = :r"), {"r": a_run}
+            )
+            assert deleted.rowcount == 1, table  # type: ignore[attr-defined]
+        s.rollback()
+    assert _present(owner_db, a_run) == FULL
 
 
 # ------------------------------------------------------------------ audit, reruns, refusals

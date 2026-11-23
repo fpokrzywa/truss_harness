@@ -1,13 +1,15 @@
 """`shifde-admin backup restore` (go-live design 6.1, section 11 calls 15-20, SP4-5).
 
 Behaviour: two seeded organizations (people, runs, agent artifacts, secrets, audit events) are
-backed up with `backup create` and restored into an empty scratch database; the six checks print
+backed up with `backup create` and restored into an empty scratch database; the seven checks print
 `ok` and the command ends with `RESTORE VERIFIED`. Through the full app on the restored copy, as
 the app role, A's administrator lists only A's secrets and B's secret is a 404 like an unknown id.
 A tampered dump, a tampered manifest and a too-new revision are refused before the target is
 touched; a relation in `public`, a target owned by another role, a target URL of another user and
 a missing app role are each refused. A dropped policy fails the fingerprint check by name; a ring
-lacking the secrets' key fails the secrets check; the password reaches `pg_restore` only as
+lacking the secrets' key fails the secrets check; a weakened policy, unforced row-level security, a
+wide grant or an extra SECURITY DEFINER function behind a forged manifest passes the fingerprint
+but fails the catalog rules check by name; the password reaches `pg_restore` only as
 `PGPASSWORD`.
 
 The source is a clone of the run's migrated template, seeded once per module; each scratch target
@@ -233,9 +235,7 @@ def _assert_refused(result: Any, reason: str) -> None:  # Any: click Result
 
 
 # ------------------------------------------------------------------------------ happy path
-def test_create_then_restore_passes_all_six_checks(
-    cli: CliRunner, target: str, tmp_path: Path
-) -> None:
+def test_create_then_restore_passes_all_checks(cli: CliRunner, target: str, tmp_path: Path) -> None:
     out = tmp_path / "fresh"
     created = _create_cli(cli, out)
     assert created.exit_code == 0, created.output
@@ -436,6 +436,90 @@ def test_a_dropped_policy_fails_the_fingerprint_check_by_name(
     assert exited.value.exit_code == 1
     captured = capsys.readouterr()
     assert "FAILED fingerprint" in captured.out
+    assert "RESTORE VERIFIED" not in captured.out + captured.err
+
+
+FORGERIES = {
+    "weak policy": (
+        ["CREATE POLICY zz_forged_read ON shifde.runs FOR SELECT USING (true)"],
+        "shifde.runs: policy zz_forged_read (SELECT) USING constant true",
+    ),
+    "no forced rls": (
+        ["ALTER TABLE shifde.runs NO FORCE ROW LEVEL SECURITY"],
+        "shifde.runs: row level security not forced",
+    ),
+    "wide grant": (
+        [f"GRANT TRUNCATE ON shifde.runs TO {APP_ROLE}"],
+        f"shifde.runs: {APP_ROLE} holds TRUNCATE",
+    ),
+    "extra definer": (
+        [
+            "CREATE FUNCTION shifde.zz_forged() RETURNS int LANGUAGE sql SECURITY DEFINER"
+            " SET search_path = pg_catalog, pg_temp AS $$ SELECT 1 $$",
+            "REVOKE EXECUTE ON FUNCTION shifde.zz_forged() FROM PUBLIC",
+        ],
+        "shifde.zz_forged: SECURITY DEFINER but not on the allowlist",
+    ),
+    # a plain (not SECURITY DEFINER) trigger function that sets the client context
+    "set_updated_at writes the context": (
+        [
+            "CREATE OR REPLACE FUNCTION shifde.set_updated_at() RETURNS trigger LANGUAGE plpgsql"
+            " AS $$ BEGIN PERFORM pg_catalog.set_config('app.tenant_id',"
+            " '01900000-0000-7000-8000-0000000000bb', true);"
+            " NEW.updated_at = pg_catalog.now(); RETURN NEW; END $$"
+        ],
+        "function shifde.set_updated_at(): set_config, names app.<context setting>",
+    ),
+}
+
+
+@pytest.mark.parametrize(("statements", "named"), list(FORGERIES.values()), ids=list(FORGERIES))
+def test_a_forged_manifest_passes_the_fingerprint_but_not_the_catalog_rules(
+    cli: CliRunner,
+    made: Path,
+    target: str,
+    source: tuple[str, World, dict[str, str]],
+    capsys: pytest.CaptureFixture[str],
+    statements: list[str],
+    named: str,
+) -> None:
+    """The manifest is unsigned: a forger who weakens the restored catalog can recompute its
+    fingerprint and digest. The catalog rules check reads only the catalog, so it still fails."""
+    assert _restore_cli(cli, made).exit_code == 0
+    target_url = _with_db(OWNER_URL, target)
+    engine = create_engine(target_url, poolclass=NullPool)
+    try:
+        with engine.begin() as c:
+            for statement in statements:
+                c.execute(text(statement))
+    finally:
+        engine.dispose()
+    forged = _manifest(made)
+    owner = Database(target_url, pool_size=1, max_overflow=0, verify_role=False)
+    try:
+        with owner.session() as session:
+            fingerprint = backup.catalog_fingerprint(session, APP_ROLE)
+            session.rollback()
+    finally:
+        owner.dispose()
+    forged["catalog_fingerprint"] = json.loads(json.dumps(fingerprint))
+    forged["manifest_sha256"] = backup.manifest_digest(forged)
+    settings = _settings_for(source[0])
+    results = backup.restore_checks(
+        forged, target_url, settings.database_url, APP_ROLE, settings.keyring
+    )
+    by_name = {r.name: r for r in results}
+    assert by_name["fingerprint"].ok
+    assert not by_name["catalog rules"].ok
+    assert by_name["catalog rules"].detail.startswith("violates: ")
+    assert named in by_name["catalog rules"].detail
+    assert all(r.ok for r in results if r.name != "catalog rules")
+    with pytest.raises(typer.Exit) as exited:
+        cli_main._report_restore_checks(results)
+    assert exited.value.exit_code == 1
+    captured = capsys.readouterr()
+    assert "ok fingerprint" in captured.out
+    assert "FAILED catalog rules: violates: " in captured.out
     assert "RESTORE VERIFIED" not in captured.out + captured.err
 
 

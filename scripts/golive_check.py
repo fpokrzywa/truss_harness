@@ -240,6 +240,19 @@ def write_env_file(path: Path, values: Mapping[str, str]) -> Path:
     return path
 
 
+class LoopbackServer(http.server.ThreadingHTTPServer):
+    """A threading HTTP server whose port no other socket can bind while it is open. The base
+    sets SO_REUSEADDR, which on Windows lets a second socket bind the same port and take its
+    connections; SO_EXCLUSIVEADDRUSE (Windows only) refuses even such a socket."""
+
+    allow_reuse_address = False
+
+    def server_bind(self) -> None:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 class EdgeProxy:
     """A loopback reverse proxy in a thread: every request goes to `upstream_port` with
     `X-Forwarded-For` replaced by the connecting peer's address (the supported edge, design 5)."""
@@ -285,7 +298,7 @@ class EdgeProxy:
             def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - base signature
                 pass  # no request line on the terminal
 
-        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server = LoopbackServer(("127.0.0.1", 0), Handler)
         self.server.daemon_threads = True
         self.port = int(self.server.server_address[1])
         self._thread = threading.Thread(target=self.server.serve_forever, daemon=True)
