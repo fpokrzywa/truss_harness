@@ -10,6 +10,7 @@ import {
   projHref,
   projectsHref,
   securityHref,
+  settingsHref,
   solutionsHref,
   workspacesHref,
   wsHref,
@@ -129,6 +130,14 @@ export const NAV_ITEMS: readonly NavItem[] = [
     label: 'Projects',
     group: 'Administer',
     href: (s) => (s.org && s.ws ? projectsHref(s.org, s.ws) : null),
+  },
+  {
+    id: 'settings-mcp',
+    feature: 'tenancy',
+    label: 'MCP Access',
+    group: 'Administer',
+    href: (s) => (s.org ? settingsHref(s.org, 'mcp') : null),
+    requiresAny: ['mcp:settings:read'],
   },
   {
     id: 'organizations',

@@ -5,6 +5,7 @@ import { createEvaluationEndpoints } from './evaluation-endpoints';
 import { createOntologyEndpoints } from './ontology-endpoints';
 import { createGovernanceEndpoints } from './governance-endpoints';
 import { createIntegrateEndpoints } from './integrate-endpoints';
+import { createMcpEndpoints } from './mcp-endpoints';
 import { createOperateEndpoints } from './operate-endpoints';
 import { createPackagingEndpoints } from './packaging-endpoints';
 import { createPipelineEndpoints } from './pipeline-endpoints';
@@ -112,6 +113,7 @@ export function createEndpoints(client: ApiClient = defaultClient) {
     ...createDeliveryEndpoints(client),
     ...createPackagingEndpoints(client),
     ...createEvaluationEndpoints(client),
+    ...createMcpEndpoints(client),
     myPermissions: (org: string, workspace?: string, project?: string) =>
       client.request<MyPermissions>(`${orgPath(org)}/me/permissions`, {
         query: { workspace, project },

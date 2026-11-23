@@ -73,6 +73,8 @@ export const connectionsHref = (org: string, ws?: string, proj?: string) =>
 export const connectionHref = (org: string, id: string, area = '') =>
   `${orgHref(org)}/connections/${e(id)}${area ? `/${area}` : ''}`;
 export const workspacesHref = (org: string) => `${orgHref(org)}/workspaces`;
+export const settingsHref = (org: string, area = '') =>
+  `${orgHref(org)}/settings${area ? `/${area}` : ''}`;
 export const projectsHref = (org: string, ws: string) => `${wsHref(org, ws)}/projects`;
 
 export type ScopeLevel = 'org' | 'ws' | 'proj';
