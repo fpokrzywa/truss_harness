@@ -381,66 +381,40 @@ class FakeDatabricksWorkspace:
         if "warehouse_missing" in self.faults or body.get("warehouse_id") != self.warehouse_id:
             return _json(404, {"error_code": "RESOURCE_DOES_NOT_EXIST"})
         statement_id = f"stmt-{next(self._ids)}"
+        statement = str(body.get("statement", ""))
+        text = statement.strip().rstrip(";").strip()
         if "slow" in self.faults:
             doc: dict[str, Any] = {"statement_id": statement_id, "status": {"state": "PENDING"}}
-        else:
-            doc = self._result(
-                statement_id,
-                str(body.get("statement", "")),
-                body.get("row_limit"),
-                [p for p in body.get("parameters") or [] if isinstance(p, dict)],
-            )
-        self._statements[statement_id] = doc
-        return _json(200, doc)
-
-    def _result(
-        self,
-        statement_id: str,
-        statement: str,
-        row_limit: Any,  # Any: the request's row_limit
-        parameters: list[dict[str, Any]],  # Any: parameter values
-    ) -> dict[str, Any]:  # Any: statement doc
-        text = statement.strip().rstrip(";").strip()
-        columns: list[tuple[str, str]]
-        rows: list[list[Any]]  # Any: JSON_ARRAY values
-        if text.upper() == SELECT_ONE:
-            columns, rows = [("1", "INT")], [["1"]]
-        elif text == ROWS_STATEMENT:
-            columns = [("n", "INT"), ("label", "STRING")]
-            rows = [[str(i), f"row {i}"] for i in range(self.row_count)]
-        elif self._db is not None or self.denied_tables():
+        elif (self._db is not None or self.denied_tables()) and (
+            text.upper() != SELECT_ONE and text != ROWS_STATEMENT
+        ):
+            parameters = [p for p in body.get("parameters") or [] if isinstance(p, dict)]
             answered = self._query(text, parameters)
             if isinstance(answered, str):
-                return {
+                doc = {
                     "statement_id": statement_id,
                     "status": {
                         "state": "FAILED",
                         "error": {"error_code": answered, "message": "the statement failed"},
                     },
                 }
-            columns, rows = answered
+            else:
+                doc = _succeeded(statement_id, *answered, body.get("row_limit"))
+        else:
+            doc = self._result(statement_id, statement, body.get("row_limit"))
+        self._statements[statement_id] = doc
+        return _json(200, doc)
+
+    def _result(self, statement_id: str, statement: str, row_limit: Any) -> dict[str, Any]:  # Any
+        text = statement.strip().rstrip(";").strip()
+        if text.upper() == SELECT_ONE:
+            columns, rows = [("1", "INT")], [["1"]]
+        elif text == ROWS_STATEMENT:
+            columns = [("n", "INT"), ("label", "STRING")]
+            rows = [[str(i), f"row {i}"] for i in range(self.row_count)]
         else:
             columns, rows = [], []
-        limit = row_limit if isinstance(row_limit, int) else len(rows)
-        truncated = len(rows) > limit
-        rows = rows[:limit]
-        return {
-            "statement_id": statement_id,
-            "status": {"state": "SUCCEEDED"},
-            "manifest": {
-                "format": "JSON_ARRAY",
-                "schema": {
-                    "column_count": len(columns),
-                    "columns": [
-                        {"name": n, "type_name": t, "position": i}
-                        for i, (n, t) in enumerate(columns)
-                    ],
-                },
-                "total_row_count": len(rows),
-                "truncated": truncated,
-            },
-            "result": {"row_count": len(rows), "data_array": rows},
-        }
+        return _succeeded(statement_id, columns, rows, row_limit)
 
     def _query(
         self, statement: str, parameters: list[dict[str, Any]]
@@ -464,6 +438,33 @@ class FakeDatabricksWorkspace:
         columns = [(str(d[0]), known.get(str(d[0]), "STRING")) for d in cursor.description or []]
         rows = [[None if v is None else str(v) for v in row] for row in found]
         return columns, rows
+
+
+def _succeeded(
+    statement_id: str,
+    columns: list[tuple[str, str]],
+    rows: list[list[Any]],  # Any: JSON_ARRAY values
+    row_limit: Any,  # Any: the request's row_limit
+) -> dict[str, Any]:  # Any: statement doc
+    limit = row_limit if isinstance(row_limit, int) else len(rows)
+    truncated = len(rows) > limit
+    rows = rows[:limit]
+    return {
+        "statement_id": statement_id,
+        "status": {"state": "SUCCEEDED"},
+        "manifest": {
+            "format": "JSON_ARRAY",
+            "schema": {
+                "column_count": len(columns),
+                "columns": [
+                    {"name": n, "type_name": t, "position": i} for i, (n, t) in enumerate(columns)
+                ],
+            },
+            "total_row_count": len(rows),
+            "truncated": truncated,
+        },
+        "result": {"row_count": len(rows), "data_array": rows},
+    }
 
 
 SNOWFLAKE_STATEMENTS = "/api/v2/statements"
