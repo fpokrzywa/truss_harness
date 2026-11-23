@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from shifde.adapters.dataplatforms.fakes import FakeSnowflakeAccount
 from shifde.core.settings import Settings
+from tests._support.conntests import invoke_outcome
 from tests.connections.routes import activate, as_user, connection, connections_client, org
 from tests.tenancy.conftest import World
 from tests.tenancy.routes import People
@@ -81,15 +82,16 @@ def test_create_test_discover_and_invoke_against_the_fake(
     assert ("ANALYTICS", "PUBLIC", "CUSTOMERS") in {
         (t["catalog"], t["schema"], t["name"]) for t in tables
     }
-    invoked = c.post(f"{A}/connections/{cid}/invoke", headers=h, json={"sql": "SELECT 1"})
-    assert invoked.status_code == 200, invoked.text
-    assert invoked.json()["result"] == {"columns": ["1"], "rows": [["1"]], "row_count": 1}
+    # the invoke is queued (issue #190): its job runs, the outcome is read on the status route
+    invoked = invoke_outcome(c, h, A, cid, {"sql": "SELECT 1"}, tenant_id=world.a.tenant)
+    assert invoked[0] == 200, invoked
+    assert invoked[1]["result"] == {"columns": ["1"], "rows": [["1"]], "row_count": 1}
     sent = len(fake.requests)
-    refused = c.post(f"{A}/connections/{cid}/invoke", headers=h, json={"sql": "DROP TABLE t"})
-    assert refused.status_code == 422
+    refused = invoke_outcome(c, h, A, cid, {"sql": "DROP TABLE t"}, tenant_id=world.a.tenant)
+    assert refused[0] == 422, refused
     assert len(fake.requests) == sent  # refused before any request
-    for text in (str(activated), discovered.text, invoked.text, refused.text):
-        assert KEY_BODY not in text
+    for text in (activated, discovered.text, invoked, refused):
+        assert KEY_BODY not in str(text)
 
     hb = as_user(c, people.owner_b)
     for path, body in (("test", {}), ("discover", {}), ("invoke", {"sql": "SELECT 1"})):
