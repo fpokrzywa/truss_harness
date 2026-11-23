@@ -24,6 +24,11 @@ This module mirrors, with the same semantics and the same problem strings:
   test's comparison with the SETH 3ba0e06 snapshot and `ported_tables.txt`, which are protected
   test data, so it equals the test version called with an empty snapshot.
 
+`helper_violations` (issue #215) pins the context helpers' `pg_get_functiondef` texts to
+`CONTEXT_HELPER_DEFINITIONS`, so a dump that weakens `current_tenant_id()` fails restore. It has
+no counterpart copy in `tests/schema` (the schema tests pin the squashed body, not this text) and
+is guarded by its own tests in `tests/cli/test_catalog_rules.py`.
+
 The rules and their reasons are documented in those files. `tests/schema/*` is protected and
 `src` never imports `tests`, so the rules are copied here; `tests/cli/test_catalog_rules.py`
 compares the data and the results of both copies, so neither can drift without a failing test.
@@ -159,6 +164,32 @@ SECURITY_DEFINER_ALLOWLIST = frozenset(
 # allowed to write the client context (empty: nothing may).
 CONTEXT_HELPERS = ("current_tenant_id", "current_principal_id", "is_platform_admin_ctx")
 CONTEXT_WRITE_ALLOWLIST: dict[str, str] = {}
+
+# helper -> exact pg_get_functiondef text under search_path = pg_catalog on a freshly migrated
+# database (base_0001_baseline). Reviewed, pinned values: changing one needs isolation review.
+CONTEXT_HELPER_DEFINITIONS: dict[str, str] = {
+    "current_tenant_id": (
+        "CREATE OR REPLACE FUNCTION shifde.current_tenant_id()\n RETURNS uuid\n LANGUAGE sql\n"
+        " STABLE\nAS $function$ SELECT CASE WHEN pg_catalog.current_setting('app.tenant_id', true)"
+        "\n                               OPERATOR(pg_catalog.=) '' THEN NULL\n"
+        "                          ELSE pg_catalog.current_setting('app.tenant_id', true)"
+        "::pg_catalog.uuid\n                     END $function$\n"
+    ),
+    "current_principal_id": (
+        "CREATE OR REPLACE FUNCTION shifde.current_principal_id()\n RETURNS uuid\n"
+        " LANGUAGE sql\n STABLE\nAS $function$ SELECT CASE WHEN"
+        " pg_catalog.current_setting('app.principal_id', true)"
+        "\n                               OPERATOR(pg_catalog.=) '' THEN NULL\n"
+        "                          ELSE pg_catalog.current_setting('app.principal_id', true)"
+        "::pg_catalog.uuid\n                     END $function$\n"
+    ),
+    "is_platform_admin_ctx": (
+        "CREATE OR REPLACE FUNCTION shifde.is_platform_admin_ctx()\n RETURNS boolean\n"
+        " LANGUAGE sql\n STABLE\nAS $function$ SELECT"
+        " COALESCE(pg_catalog.current_setting('app.platform_admin', true), '')"
+        "\n                OPERATOR(pg_catalog.=) 'on' $function$\n"
+    ),
+}
 
 # The kinds of catalog object the context-write scan reads.
 ALL_KINDS = frozenset(
@@ -994,4 +1025,35 @@ def principal_table_problems(
             problems.append(f"{entry}: has a tenant_id column (principal keys do not count there)")
         elif not principal_policy:
             problems.append(f"{entry}: no permissive policy keyed to {_PRINCIPAL_HELPER}")
+    return problems
+
+
+# --------------------------------------------------------------------------- context helpers
+_HELPER_FUNCTIONS = text(
+    """SELECT p.proname, p.pronargs,
+              CASE WHEN p.prokind <> 'a' THEN pg_catalog.pg_get_functiondef(p.oid) END
+                AS definition
+         FROM pg_catalog.pg_proc p
+         JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'shifde' AND p.proname = ANY(CAST(:names AS text[]))
+        ORDER BY p.proname, p.oid"""
+)
+
+
+def helper_violations(conn: Connection) -> list[str]:
+    """`shifde.<name>: problem` for every context helper that is missing, overloaded or whose
+    definition differs from `CONTEXT_HELPER_DEFINITIONS`. Never includes the definition."""
+    conn.execute(_PIN_SEARCH_PATH)
+    rows = conn.execute(_HELPER_FUNCTIONS, {"names": list(CONTEXT_HELPERS)}).all()
+    problems: list[str] = []
+    for name in CONTEXT_HELPERS:
+        named = [row for row in rows if row.proname == name]
+        where = f"shifde.{name}"
+        if len(named) > 1:
+            problems.append(f"{where}: {len(named)} functions with this name (overloaded)")
+        row = next((row for row in named if row.pronargs == 0), None)
+        if row is None:
+            problems.append(f"{where}: missing")
+        elif row.definition != CONTEXT_HELPER_DEFINITIONS[name]:
+            problems.append(f"{where}: definition differs from the migrations")
     return problems

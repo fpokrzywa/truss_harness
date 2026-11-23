@@ -282,6 +282,60 @@ def test_a_recognised_write_form_is_not_reported(scratch: Connection, expr: str)
     ]
 
 
+# --------------------------------------------------------------------------- context helpers
+# `helper_violations` has no counterpart in tests/schema, so it is not in `_both` or `PROBES`.
+_WEAK_BODY = {
+    "current_tenant_id": "uuid LANGUAGE sql STABLE AS $$ SELECT NULL::uuid $$",
+    "current_principal_id": "uuid LANGUAGE sql STABLE AS $$ SELECT NULL::uuid $$",
+    "is_platform_admin_ctx": "boolean LANGUAGE sql STABLE AS $$ SELECT true $$",
+}
+
+
+def test_the_pinned_helper_texts_match_the_schema_tests_bodies() -> None:
+    assert tuple(catalog_rules.CONTEXT_HELPER_DEFINITIONS) == catalog_rules.CONTEXT_HELPERS
+    for name, definition in catalog_rules.CONTEXT_HELPER_DEFINITIONS.items():
+        body = definition.split("$function$")[1]
+        assert fn_rules._squash(body) == fn_rules.BASE_HELPERS[name]["body"]
+
+
+def test_the_migrated_database_has_the_pinned_helpers(owner_engine: Engine) -> None:
+    with owner_engine.connect() as c:
+        assert catalog_rules.helper_violations(c) == []
+
+
+@pytest.mark.parametrize("name", catalog_rules.CONTEXT_HELPERS)
+def test_a_replaced_helper_body_is_reported(scratch: Connection, name: str) -> None:
+    scratch.execute(text(f"CREATE OR REPLACE FUNCTION shifde.{name}() RETURNS {_WEAK_BODY[name]}"))
+    assert catalog_rules.helper_violations(scratch) == [
+        f"shifde.{name}: definition differs from the migrations"
+    ]
+
+
+@pytest.mark.parametrize("change", ["SECURITY DEFINER", "SET search_path = pg_catalog", "VOLATILE"])
+def test_a_changed_helper_attribute_is_reported(scratch: Connection, change: str) -> None:
+    scratch.execute(text(f"ALTER FUNCTION shifde.current_tenant_id() {change}"))
+    assert catalog_rules.helper_violations(scratch) == [
+        "shifde.current_tenant_id: definition differs from the migrations"
+    ]
+
+
+def test_a_renamed_helper_is_reported_missing(scratch: Connection) -> None:
+    scratch.execute(text("ALTER FUNCTION shifde.current_principal_id() RENAME TO zz_gone"))
+    assert catalog_rules.helper_violations(scratch) == ["shifde.current_principal_id: missing"]
+
+
+def test_an_overloaded_helper_is_reported(scratch: Connection) -> None:
+    scratch.execute(
+        text(
+            "CREATE FUNCTION shifde.current_tenant_id(x int) RETURNS uuid LANGUAGE sql STABLE"
+            " AS $$ SELECT NULL::uuid $$"
+        )
+    )
+    assert catalog_rules.helper_violations(scratch) == [
+        "shifde.current_tenant_id: 2 functions with this name (overloaded)"
+    ]
+
+
 @pytest.mark.parametrize(("ddl", "labels"), fn_rules.CONTEXT_WRITERS)
 def test_each_context_writer_gives_the_same_non_empty_scan(
     scratch: Connection, ddl: list[str], labels: set[str]

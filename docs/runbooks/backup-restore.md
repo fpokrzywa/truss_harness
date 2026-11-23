@@ -68,9 +68,9 @@ line each:
 - `catalog rules`: the restored catalog passes the code's isolation rules (row-level security,
   app-role privileges, the SECURITY DEFINER allowlist, no object that writes the client context,
   tenant_id in foreign and unique keys between client tables, uuid tenant_id and user_id
-  columns, the admin flag only on installation rows of client tables, and the principal tables:
-  each a table without tenant_id with a policy keyed to the principal), read from the catalog
-  and never from the manifest;
+  columns, the admin flag only on installation rows of client tables, the principal tables:
+  each a table without tenant_id with a policy keyed to the principal, and the context helpers'
+  definitions equal to the migrations'), read from the catalog and never from the manifest;
 - the row counts equal the manifest's for every non-volatile table;
 - the migration state is `ok`;
 - `shifde_app` passes the startup role check against the target;

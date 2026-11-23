@@ -38,6 +38,22 @@ export default defineConfig({
         SHIFDE_AUTH_LOCAL_ENABLED: 'true',
         SHIFDE_API_PORT: String(API_PORT),
         SHIFDE_ALLOWED_ORIGINS: WEB_ORIGIN,
+        // databricks/snowflake connections reach the in-process fakes (e2e/connections.spec.ts)
+        SHIFDE_DEV_FAKE_DATA_PLATFORMS: 'true',
+        UV_LINK_MODE: 'copy',
+      },
+      reuseExistingServer: false,
+      timeout: 180_000,
+    },
+    {
+      // Runs the queued connection tests. It has no port of its own, and a `url` of the API that is
+      // already up would be refused as in use: it starts once the entry above answers /healthz
+      // (webServer entries start in order) and is not waited on (B-2759, B-3251).
+      command: 'uv run --frozen shifde-worker',
+      cwd: path.resolve(import.meta.dirname, '..', 'backend'),
+      env: {
+        SHIFDE_ENV: 'development',
+        SHIFDE_DEV_FAKE_DATA_PLATFORMS: 'true',
         UV_LINK_MODE: 'copy',
       },
       reuseExistingServer: false,
