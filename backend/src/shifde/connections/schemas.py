@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Literal  # Any: connection config / adapter payload JSON
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 Strict = ConfigDict(extra="forbid")
 ConnectionType = Literal["rest", "mcp", "database", "data_platform", "model_api"]
@@ -22,6 +22,14 @@ class ScopeSlugs(BaseModel):
     project: str | None = None
 
 
+class ConnectionCredential(BaseModel):
+    """A connection's own credential (B-2747). No length constraint here: the byte limit is the
+    secrets service's, whose refusal never echoes the value."""
+
+    model_config = Strict
+    value: SecretStr
+
+
 class ConnectionCreate(BaseModel):
     model_config = Strict
     name: str = Field(min_length=1, max_length=200)
@@ -32,6 +40,8 @@ class ConnectionCreate(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
     auth_method: AuthMethod = "none"
     secret_id: UUID | None = None
+    # stored as the connection's own secret `connection-<id>`; not together with `secret_id`
+    credential: ConnectionCredential | None = None
     egress_policy_id: UUID | None = None
     access_mode: AccessMode = "read"
     # design 5.3 (B-1507): required true when a secret is bound to a read connection
@@ -50,6 +60,15 @@ class ConnectionPatch(BaseModel):
     # design 5.3 (B-1507): re-confirmed when a new secret, or read mode, is set with a secret bound
     read_only_confirmed: bool | None = None
     row_version: int | None = None
+
+
+class ConnectionCredentialSet(BaseModel):
+    """`PUT .../credential` (B-2749): sets the connection's own secret, or rotates the bound one."""
+
+    model_config = Strict
+    value: SecretStr
+    row_version: int
+    read_only_confirmed: bool | None = None
 
 
 class ConnectionStatusChange(BaseModel):

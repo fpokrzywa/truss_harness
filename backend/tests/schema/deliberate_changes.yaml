@@ -49,6 +49,11 @@
   path: [policies, write_own]
   reason: "ARCH m7 (B-701): SETH's INSERT check admitted tenant_id NULL for any caller; a NULL-tenant row now needs the platform-administrator context"
   migration: audit_0001
+
+- table: audit_events
+  path: [indexes, ix_audit_events__tenant_id_correlation_id]
+  reason: "the model-provider job result lookup (audit.repository.find_event) has no time bound (B-2861); without this index it scanned the client's whole audit history on every job status read and worker run (issue #183, DECISIONS B-2993). Leads with tenant_id like every other index of the table."
+  migration: audit_0002
 - table: role_permissions
   path: [constraints, ck_role_permissions__no_platform_only_in_client_role]
   reason: >-
@@ -752,8 +757,8 @@
 
 - table: artifact_versions
   path: [triggers, trg_artifact_versions_release_guard]
-  reason: "a published version pinned by a sealed, non-withdrawn release (its manifest's entrypoint or one of its pins) cannot be retired: the invoker-rights trigger refuses with 23514, the owner too, and build's set_state answers 409 (sub-project 3 design 12 item 11, issue #79)"
-  migration: packaging_0002
+  reason: "a published version pinned by a sealed, non-withdrawn release (its manifest's entrypoint or one of its pins) cannot be retired, and no version is retired outside its client's context: the invoker-rights trigger (artifact_versions_release_guard, replaced by packaging_0003) refuses with 23514 when the pinning release is visible to the caller, and also whenever current_tenant_id() is unset or is not the version's tenant_id, so the owner without a client context is refused even where row-level security hides the release; build's set_state answers 409 for the pinned case (sub-project 3 design 12 item 11, issues #79 and #158, DECISIONS B-2994)"
+  migration: packaging_0003
 
 - table: idp_configs
   path: [columns, profile]

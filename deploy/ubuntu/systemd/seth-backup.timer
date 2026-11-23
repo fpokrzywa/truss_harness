@@ -1,0 +1,14 @@
+# Nightly seth-backup.service (SP4 design open question 2: a nightly `backup create` by the
+# host's scheduler is the baseline). Persistent=true runs a missed backup at the next boot.
+[Unit]
+Description=Nightly SETH database backup
+Documentation=file:///opt/seth/docs/runbooks/ubuntu-host.md
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=30min
+Persistent=true
+Unit=seth-backup.service
+
+[Install]
+WantedBy=timers.target

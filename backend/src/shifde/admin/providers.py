@@ -77,6 +77,7 @@ IDP_CONFLICT = "the identity provider conflicts with another identity provider i
 IDP_NOT_FOUND = "identity provider not found"
 ENTRA_ISSUER = "https://login.microsoftonline.com/{tenant}/v2.0"
 SECRET_NOT_FOUND = "secret not found"
+OWNED_SECRET = "this secret belongs to a connection; manage it from the connection"
 
 
 @dataclass
@@ -509,6 +510,10 @@ def _secret_ref(scope: TenantScope, scope_type: str, scope_id: UUID | None) -> R
 
 
 def create_secret(scope: TenantScope, settings: Settings, body: s.SecretCreate) -> s.SecretOut:
+    if body.name.startswith("connection-"):  # a connection's own credential (B-2750)
+        raise ValidationFailed(
+            "names starting 'connection-' are reserved for connection credentials"
+        )
     scope_type = body.scope.type if body.scope else "tenant"
     scope_id = body.scope.id if body.scope else None
     if (scope_type == "tenant") != (scope_id is None):
@@ -547,6 +552,8 @@ def rotate_secret(
 ) -> s.SecretOut:
     scope.pdp.require("secret:manage", scope.tenant_ref)  # tenant-level, before any lookup
     sec = _get_secret(scope, secret_id)
+    if sec.name.startswith("connection-"):  # owned by a connection (B-2750)
+        raise Conflict(OWNED_SECRET)
     iam.assert_active(scope)
     updated = secrets_service.rotate_secret(
         scope.session, settings.keyring, sec, value=body.value, expected_version=body.row_version
@@ -566,6 +573,8 @@ def rotate_secret(
 def disable_secret(scope: TenantScope, secret_id: UUID, body: s.SecretPatch) -> s.SecretOut:
     scope.pdp.require("secret:manage", scope.tenant_ref)  # tenant-level, before any lookup
     sec = _get_secret(scope, secret_id)
+    if sec.name.startswith("connection-"):  # owned by a connection (B-2750)
+        raise Conflict(OWNED_SECRET)
     iam.assert_active(scope)
     updated = secrets_service.disable_secret(scope.session, sec, expected_version=body.row_version)
     iam.record(
