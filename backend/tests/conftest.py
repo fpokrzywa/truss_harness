@@ -45,6 +45,7 @@ from shifde.app import create_app
 from shifde.core.db import Database
 from shifde.core.migrations import alembic_config
 from shifde.core.settings import Settings
+from tests._support import connect_retry
 
 DEV_ENV = Path(__file__).resolve().parents[2] / ".devdata" / "dev.env"
 ORIGIN = "http://127.0.0.1:3710"
@@ -72,6 +73,7 @@ _RUN_STASH = pytest.StashKey[str]()
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    connect_retry.install()  # WinError 10055/10048 at connect (issue #238)
     workerinput = getattr(config, "workerinput", None)
     if workerinput is not None:
         config.stash[_RUN_STASH] = str(workerinput[_RUN_KEY])
