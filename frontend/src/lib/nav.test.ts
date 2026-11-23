@@ -24,6 +24,7 @@ describe('navigation config (FR-UI-003)', () => {
       'command-center',
       'dashboard',
       'deliver-approvals',
+      'deliver-board',
       'deliver-deployments',
       'deliver-evaluation-datasets',
       'deliver-executors',
@@ -387,10 +388,24 @@ describe('permission-aware navigation (FR-UI-004)', () => {
     it('gates Solutions and Evaluation datasets (SP3-7) on their read permissions', () => {
       expect(items(['delivery:target:read'])).not.toContain('Solutions=/o/acme/solutions');
       expect(items(['packaging:solution:write'])).toEqual([]);
-      expect(items(['packaging:solution:read'])).toEqual(['Solutions=/o/acme/solutions']);
+      expect(items(['packaging:solution:read'])).toEqual([
+        'Board=/o/acme/board',
+        'Solutions=/o/acme/solutions',
+      ]);
       expect(items(['evaluation:dataset:read'])).toEqual([
         'Evaluation datasets=/o/acme/evaluations/datasets',
       ]);
+    });
+
+    it('gates Board (SP7-6) on packaging:solution:read and lists it first', () => {
+      expect(items(['packaging:solution:read'])).toContain('Board=/o/acme/board');
+      expect(items(['packaging:solution:read', 'delivery:target:read'])[0]).toBe(
+        'Board=/o/acme/board',
+      );
+      expect(items(['delivery:target:read', 'packaging:solution:write'])).not.toContain(
+        'Board=/o/acme/board',
+      );
+      expect(parseScope('/o/acme/board')).toEqual({ org: 'acme', area: 'other' });
     });
 
     it('treats /o/{org}/solutions, releases and evaluations as organization-level areas', () => {
