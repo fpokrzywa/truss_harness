@@ -23,7 +23,7 @@ The SETH tests that call `lifecycle` drive the API and the worker (`World`, `Tes
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -100,13 +100,18 @@ def _seed(o: Session, tenant: UUID) -> C:
 
 
 @pytest.fixture
-def two(owner_db: Database) -> tuple[C, C]:
+def two(owner_db: Database) -> Iterator[tuple[C, C]]:
     a, b = uuid7(), uuid7()
     with owner_db.session() as o:
         add_tenants(o, a, b)
         pair = _seed(o, a), _seed(o, b)
         o.commit()
-    return pair
+    yield pair
+    # A `suspended` client left behind makes the `tenancy_0005` downgrade fail (issue #229).
+    with owner_db.session() as o:
+        o.execute(text("UPDATE shifde.tenants SET status = 'active' WHERE id IN (:a, :b)"),
+                  {"a": a, "b": b})  # fmt: skip
+        o.commit()
 
 
 class Fake:
