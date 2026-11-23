@@ -46,11 +46,24 @@ def _is_name_char(ch: str) -> bool:
     return _is_name_start(ch) or ("0" <= ch <= "9")
 
 
-def _quoted(sql: str, start: int, quote: str) -> int:
-    """Index just past the closing `quote` of the quoted text opened at `start` (a doubled quote
-    is an escape), or -1 when it never closes."""
+def _raw_prefix(sql: str, quote: int) -> bool:
+    """True when the quote at `quote` opens a raw literal: an `r`/`R` that starts a token (as
+    `adapters/dataplatforms/sqlapi._code_of` reads it)."""
+    if quote == 0 or sql[quote - 1] not in "rR":
+        return False
+    return quote == 1 or not (sql[quote - 2].isalnum() or sql[quote - 2] == "_")
+
+
+def _quoted(sql: str, start: int, quote: str, escapes: bool) -> int:
+    """Index just past the closing `quote` of the quoted text opened at `start`, or -1 when it
+    never closes. With `escapes` a backslash takes the next character with it (Databricks reads
+    `\\'` as a quote inside a string). A doubled quote closes the text and opens it again, so it
+    stays inside one token."""
     i = start + 1
     while i < len(sql):
+        if escapes and sql[i] == "\\":
+            i += 2
+            continue
         if sql[i] == quote:
             if i + 1 < len(sql) and sql[i + 1] == quote:
                 i += 2
@@ -67,7 +80,10 @@ def tokenize(sql: str) -> list[Token]:
         ch = sql[i]
         nxt = sql[i + 1] if i + 1 < n else ""
         if ch in ("'", '"', "`"):
-            end = _quoted(sql, i, ch)
+            raw = ch != "`" and _raw_prefix(sql, i)
+            if raw and tokens and tokens[-1] == Token("ident", "r"):
+                tokens.pop()  # the `r` of a raw literal is part of the string
+            end = _quoted(sql, i, ch, escapes=ch != "`" and not raw)
             if end < 0:
                 tokens.append(Token("unterminated", ch))
                 return tokens

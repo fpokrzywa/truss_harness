@@ -62,6 +62,27 @@ def test_comments_are_recorded_and_unterminated_quotes_end_the_tokens() -> None:
     assert tokenize("select `abc")[-1] == Token("unterminated", "`")
 
 
+def test_backslash_escapes_and_raw_literals_read_as_databricks_reads_them() -> None:
+    # `\'` stays inside a '...' or "..." string; a raw literal and a backtick have no escapes
+    assert tokenize(r"select '\'' as q") == [
+        Token("ident", "select"),
+        Token("string", r"\'"),
+        Token("ident", "as"),
+        Token("ident", "q"),
+    ]
+    assert tokenize(r'select "a\"b" x')[1] == Token("string", r"a\"b")
+    assert tokenize(r"select r'a\' as q") == [
+        Token("ident", "select"),
+        Token("string", "a\\"),
+        Token("ident", "as"),
+        Token("ident", "q"),
+    ]
+    assert tokenize(r'select R"a\" x')[1] == Token("string", "a\\")
+    assert tokenize(r"select xr'a\'' q")[1:3] == [Token("ident", "xr"), Token("string", r"a\'")]
+    assert tokenize(r"select `a\` x")[1] == Token("ident", "a\\", quoted=True)
+    assert tokenize(r"select '\\' x")[1] == Token("string", r"\\")
+
+
 @pytest.mark.parametrize(
     "sql", ["", ";", "'", "`", '"', ":", "::", "--", "/*", "((((", "))", "\x00é", "a." * 50]
 )
@@ -96,6 +117,21 @@ def test_the_acceptance_examples() -> None:
         ("`select` 1", "sql_not_select"),
         ("select * from t where 'a' = 'b", "sql_unterminated_quote"),
         ("select `a from t", "sql_unterminated_quote"),
+        (
+            r"with a as (select '\'' as q) insert into main.default.orders select * from a "
+            r"where q <> '\''",
+            "sql_write_statement",
+        ),
+        (
+            r"select '\'' ; drop table main.default.orders; select '\''",
+            "sql_multiple_statements",
+        ),
+        (
+            r"select '\'' ; drop table main.default.orders; select '\''",
+            "sql_write_statement",
+        ),
+        (r"select r'\'; drop table t", "sql_write_statement"),
+        (r"select 'a\'", "sql_unterminated_quote"),
     ],
 )
 def test_statement_rules_refuse(sql: str, code: str) -> None:
@@ -149,6 +185,8 @@ def test_every_write_keyword_is_refused_as_a_bare_identifier(word: str) -> None:
         "select 'a; b -- c /* d' as x",
         "select x::int from main.default.orders",
         "select `--weird` from main.default.orders",
+        r"select 'it\'s; drop' as x",
+        r"select r'C:\dir' as p, 'x' as q",
     ],
 )
 def test_statement_rules_accept(sql: str) -> None:
