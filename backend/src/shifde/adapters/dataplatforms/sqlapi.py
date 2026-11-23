@@ -44,6 +44,13 @@ Dialect = Literal["databricks", "snowflake"]
 # Snowflake dialect: a word is a maximal run of letters, digits, `_` and `$`
 _WORD = re.compile(r"[\w$]+")
 _SNOWFLAKE_REFUSED_WORDS = frozenset({"procedure", "call"})
+_QUOTES = ("'", '"', "`")
+# Snowflake has no backtick quoting and no raw literals; only `'` takes backslash escapes,
+# `"` takes only the doubled `""` (B-3212)
+_SNOWFLAKE_QUOTES = ("'", '"')
+_LINE_END = re.compile(r"\n")
+# Snowflake dialect: a lone `\r` also ends a line comment (fail closed, B-3212)
+_SNOWFLAKE_LINE_END = re.compile(r"[\r\n]")
 
 
 def _raw_prefix(sql: str, quote: int) -> bool:
@@ -64,7 +71,9 @@ def _code_of(sql: str, dialect: Dialect = "databricks") -> tuple[str, list[int],
     that nests block comments and one that does not cannot read the statement differently.
     The Snowflake dialect also reads `$$...$$` as a string (no escapes) and `//` as a line
     comment, and refuses a `$$` right after a word character, where Snowflake may read it as
-    part of an identifier (B-3211)."""
+    part of an identifier (B-3211). In it only `'...'` honours backslash escapes, a backtick is
+    an ordinary character, nothing is a raw literal, and a line comment also ends at a lone
+    carriage return (B-3212)."""
     snowflake = dialect == "snowflake"
     out: list[str] = []
     bare: list[str] = []
@@ -73,8 +82,8 @@ def _code_of(sql: str, dialect: Dialect = "databricks") -> tuple[str, list[int],
     i, n = 0, len(sql)
     while i < n:
         ch = sql[i]
-        if ch in ("'", '"', "`"):
-            escapes = ch != "`" and not _raw_prefix(sql, i)
+        if ch in (_SNOWFLAKE_QUOTES if snowflake else _QUOTES):
+            escapes = ch == "'" if snowflake else ch != "`" and not _raw_prefix(sql, i)
             j = i + 1
             while j < n and sql[j] != ch:
                 j += 2 if escapes and sql[j] == "\\" else 1
@@ -95,8 +104,8 @@ def _code_of(sql: str, dialect: Dialect = "databricks") -> tuple[str, list[int],
             size += end + 2 - i
             i = end + 2
         elif sql.startswith("--", i) or (snowflake and sql.startswith("//", i)):
-            end = sql.find("\n", i)
-            i = n if end < 0 else end
+            found = (_SNOWFLAKE_LINE_END if snowflake else _LINE_END).search(sql, i)
+            i = n if found is None else found.start()
             out.append(" ")
             bare.append(" ")
             size += 1

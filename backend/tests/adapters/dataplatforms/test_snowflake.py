@@ -451,6 +451,13 @@ REFUSED_SQL = [
     "SELECT a$$b FROM t",
     "WITH x AS (SELECT 1) SELECT * FROM x -- \n CALL p()",
     "SELECT 1 // $$\n CALL p() -- $$",
+    # B-3212: `\` is no escape in `"..."`, a lone `\r` ends a line comment, no raw literals
+    'WITH "p\\" AS PROCEDURE () RETURNS VARCHAR LANGUAGE SQL AS '
+    '$$ BEGIN DELETE FROM t; RETURN \'x\'; END $$ CALL "p\\"() -- "',
+    "SELECT 1 -- x\rCALL p()",
+    "SELECT 1 // x\rCALL p()",
+    "SELECT r'\\' , '  CALL p() -- '",
+    "SELECT `a CALL p() -- `",
 ]
 ACCEPTED_SQL = [
     "SELECT $$hello$$",
@@ -461,6 +468,7 @@ ACCEPTED_SQL = [
     "SELECT 'call me', \"CALL\" FROM t",
     "SELECT $1 FROM t",
     "SELECT $$x$$;",
+    'SELECT 1 AS "a "" b;"',
 ]
 
 
