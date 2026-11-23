@@ -1703,6 +1703,12 @@ def run_invoke_job(
         session.close()
 
 
+def scrub_ended_invoke_jobs(session: Session, tenant_id: UUID) -> int:
+    """Clear the queued request from `tenant_id`'s ended invoke jobs that still hold it (the
+    worker's per-client sweep, issue #224); the caller sets the client and commits."""
+    return repository.scrub_ended_invoke_jobs(session, tenant_id=tenant_id, kind=INVOKE_JOB_KIND)
+
+
 def _invocation_out(r: Mapping[str, Any]) -> s.InvocationOut:
     """An invocation as its requester reads it: one still `queued` or `running` whose job ended
     or is gone (read in the same snapshot) is reported `failed`/`worker_lost`; nothing is
