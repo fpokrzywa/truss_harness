@@ -65,6 +65,8 @@ packages = ["src/shifde"]
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
+# The Fabric notebook template is the FDE SDK file byte for byte: never lint or reformat it.
+extend-exclude = ["src/shifde/adapters/native/fabric/templates"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
