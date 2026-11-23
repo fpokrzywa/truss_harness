@@ -125,6 +125,17 @@ EVALUATION = {
     ("POST", EVALUATIONS),
     ("GET", "/api/v1/orgs/{org}/evaluation-runs/{run_id}"),
 }
+# appgen: app requests and their drafts (SP5 design section 7, issue #255): not a SETH module
+APP_REQUESTS = "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/app-requests"
+APP_REQUEST = "/api/v1/orgs/{org}/app-requests/{request_id}"
+APPGEN = {
+    ("GET", APP_REQUESTS),
+    ("POST", APP_REQUESTS),
+    ("GET", APP_REQUEST),
+    ("POST", APP_REQUEST + "/drafts"),
+    ("POST", APP_REQUEST + "/discard"),
+    ("POST", APP_REQUEST + "/retry"),
+}
 
 
 def _pairs(rows: list[list[str]]) -> set[tuple[str, str]]:
@@ -149,6 +160,7 @@ def test_the_mounted_route_table_is_sethss_minus_branding(
         | DELIVERY
         | PACKAGING
         | EVALUATION
+        | APPGEN
     )
     mounted = _mounted(client)
     assert mounted - expected == set(), "mounted but not in SETH"
