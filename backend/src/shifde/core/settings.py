@@ -207,6 +207,10 @@ class Settings(BaseSettings):
     # gcp.databricks.com. `SHIFDE_DELIVERY_DATABRICKS_HOST_SUFFIXES` is comma-separated; each entry
     # is a bare domain of two or more labels (no scheme, port, wildcard or leading dot).
     delivery_databricks_host_suffixes: Annotated[list[str], NoDecode] = []
+    # Development switch (design 2026-11-22 7.5, B-2755): `databricks` and `snowflake` connections
+    # reach the in-process fakes (`shifde.adapters.dataplatforms.fakes`) instead of the network,
+    # for the local e2e and demo. Refused unless `env` is development or test.
+    dev_fake_data_platforms: bool = False
     # P5 runtime
     worker_poll_ms: int = 1000
     worker_lease_seconds: int = 60
@@ -291,6 +295,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _production_guards(self) -> Settings:
+        if self.dev_fake_data_platforms and self.env not in ("development", "test"):
+            raise ValueError(
+                "SHIFDE_DEV_FAKE_DATA_PLATFORMS is allowed only when SHIFDE_ENV is development "
+                "or test"
+            )
         if (
             self.env == "production"
             and self.auth_local_enabled

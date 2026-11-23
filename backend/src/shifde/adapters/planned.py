@@ -1,4 +1,4 @@
-"""Declared-only adapters (Databricks, Snowflake, Microsoft Fabric): `planned`, no implementation.
+"""Declared-only adapters (Snowflake, Microsoft Fabric): `planned`, no implementation.
 
 They exist so a connection can be configured and shown honestly as "Declared - not validated";
 `test`, `discover`, `open` and `invoke` answer 422 `adapter_not_implemented`.
@@ -67,10 +67,6 @@ class _PlannedAdapter:
 
     def open(self, ctx: ExecContext, conn: ConnectionConfig) -> Any:
         raise self._refuse()
-
-
-class DatabricksPlanned(_PlannedAdapter):
-    descriptor = _descriptor("databricks", "Databricks (planned)", ["host"])
 
 
 class SnowflakePlanned(_PlannedAdapter):

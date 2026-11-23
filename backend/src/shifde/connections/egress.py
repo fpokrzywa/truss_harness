@@ -16,6 +16,7 @@ from uuid import UUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from shifde.adapters.dataplatforms import fakes as data_platform_fakes
 from shifde.adapters.runtime import IntegrationRuntime
 from shifde.audit import service as audit
 from shifde.authz import service as authz
@@ -100,15 +101,24 @@ def _rule_values(rules: s.EgressRules) -> dict[str, Any]:
 
 
 # ------------------------------------------------------------------ effective guard
+FAKE_DATA_PLATFORMS = frozenset({"databricks", "snowflake"})  # the dev switch's adapter keys
+
+
 def build_guard(
     session: Session,
     runtime: IntegrationRuntime,
     tenant_id: UUID,
     connection_policy_id: UUID | None,
+    *,
+    adapter_key: str | None = None,
 ) -> EgressGuard:
     """The effective guard of a connection of `tenant_id`. The session must be in that client's
     context (connections review 1 item 1): under another or no client, row-level security would
-    hide the client's own default policy and silently leave it out, so this refuses instead."""
+    hide the client's own default policy and silently leave it out, so this refuses instead.
+
+    With `SHIFDE_DEV_FAKE_DATA_PLATFORMS` (development/test only, B-2755) a `databricks` or
+    `snowflake` connection gets the in-process fakes' transport and a loopback resolver; the
+    policy layers are the same."""
     current = repository.context_tenant_id(session)
     if current is None or current != tenant_id:
         raise RuntimeError("an egress guard is built only in its own client's context")
@@ -127,6 +137,12 @@ def build_guard(
             layers.append(policy_from_row(row))
         else:  # a dangling reference must never widen anything: deny everything
             layers.append(EgressPolicy(allowed_schemes=frozenset({"__none__"})))
+    if runtime.settings.dev_fake_data_platforms and adapter_key in FAKE_DATA_PLATFORMS:
+        return EgressGuard(
+            layers,
+            resolver=lambda host: ["127.0.0.1"],
+            inner=data_platform_fakes.dev_transport(),
+        )
     return EgressGuard(
         layers, resolver=runtime.resolver, inner=runtime.inner, inner_async=runtime.inner_async
     )

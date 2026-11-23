@@ -7,6 +7,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, Query
 
+from shifde.adapters.base import AdapterRules
 from shifde.adapters.deps import RuntimeDep
 from shifde.connections import egress
 from shifde.connections import schemas as s
@@ -20,7 +21,10 @@ router = APIRouter(prefix="/api/v1")
 
 
 def _connections(scope: ScopeDep, runtime: RuntimeDep) -> ConnectionService:
-    return ConnectionService(scope, runtime)
+    rules = AdapterRules(
+        databricks_host_suffixes=tuple(runtime.settings.delivery_databricks_host_suffixes)
+    )
+    return ConnectionService(scope, runtime, rules)
 
 
 def _policies(scope: ScopeDep) -> egress.EgressPolicyService:
