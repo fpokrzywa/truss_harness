@@ -117,7 +117,7 @@ def make_fabric_setup(fake: FakeFabricWorkspace, *, capacity: bool = True) -> Fa
     build = BuildContext(
         tenant_id=tenant, artifacts=InMemoryArtifactStore(), toolchain_digest=TOOLCHAIN_DIGEST
     )
-    adapter = FabricAdapter(client_factory=fake.client_factory)
+    adapter = FabricAdapter(client_factory=fake.client_factory, env="test")
     return FabricSetup(
         adapter, fake, build, ReadContext(tenant_id=tenant, target=target), workspace
     )

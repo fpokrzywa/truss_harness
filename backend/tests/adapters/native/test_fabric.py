@@ -49,7 +49,7 @@ from shifde.adapters.native.contracts import (
 )
 from shifde.adapters.native.databricks.adapter import DatabricksAdapter
 from shifde.adapters.native.databricks.fake import FakeDatabricksPlatform
-from shifde.adapters.native.fabric.adapter import ForeignItem
+from shifde.adapters.native.fabric.adapter import FabricAdapter, ForeignItem, validate_receipt
 from shifde.adapters.native.fabric.fake import FakeFabricWorkspace
 from shifde.adapters.native.fabric.source import exit_cell, fabric_step, template_spec
 from tests.adapters.native.fabric_support import (
@@ -569,3 +569,56 @@ def test_fabric_hang_release_unblocks_the_write(fabric_fake: FakeFabricWorkspace
 def test_fabric_spec_item_types_are_lakehouse_and_notebook_only() -> None:
     with pytest.raises(ValueError):
         FabricItem(key="o", item_type="Ontology", definition_path="o")
+
+
+# --------------------------------------------------------------------------- fake evidence
+@pytest.mark.parametrize("env", ["development", "test"])
+def test_fabric_fake_receipt_is_accepted_in_development_and_test(
+    fabric: FabricSetup, env: str
+) -> None:
+    artifact, receipt, _ = fabric.apply()
+    spec = template_spec(RELEASE)
+    validate_receipt(receipt, spec, fabric.target, env=env)
+    adapter = FabricAdapter(client_factory=fabric.fake.client_factory, env=env)
+    assert adapter.verify(VerifyRequest(receipt=receipt, spec=artifact.spec), fabric.read).passed
+
+
+@pytest.mark.parametrize("env", ["production", "staging"])
+def test_fabric_fake_receipt_is_refused_outside_development_and_test(
+    fabric: FabricSetup, env: str
+) -> None:
+    artifact, receipt, _ = fabric.apply()
+    spec = template_spec(RELEASE)
+    with pytest.raises(ValueError, match="mismatch"):
+        validate_receipt(receipt, spec, fabric.target, env=env)
+    real = receipt.model_copy(
+        update={"operation_handles": {**receipt.operation_handles, "platform": "fabric"}}
+    )
+    validate_receipt(real, spec, fabric.target, env=env)
+    adapter = FabricAdapter(client_factory=fabric.fake.client_factory, env=env)
+    count = len(fabric.fake.requests)
+    with pytest.raises(ValueError, match="mismatch"):
+        adapter.verify(VerifyRequest(receipt=receipt, spec=artifact.spec), fabric.read)
+    with pytest.raises(ValueError, match="mismatch"):
+        adapter.observe(ObserveRequest(receipt=receipt, spec=artifact.spec), fabric.read)
+    assert len(fabric.fake.requests) == count
+
+
+def test_fabric_fake_apply_is_refused_outside_development_and_test(
+    fabric_fake: FakeFabricWorkspace,
+) -> None:
+    setup = make_fabric_setup(fabric_fake)
+    setup.adapter = FabricAdapter(client_factory=fabric_fake.client_factory, env="production")
+    artifact, plan, ctx = setup.prepare()
+    with pytest.raises(ValueError, match="mismatch"):
+        setup.adapter.apply(ApplyRequest(artifact=artifact, plan=plan), ctx)
+    assert ctx.journal.completed("fabric-finalize") is None
+
+
+def test_fabric_adapter_environment_comes_from_shifde_env(
+    fabric_fake: FakeFabricWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("SHIFDE_ENV", raising=False)
+    assert FabricAdapter(client_factory=fabric_fake.client_factory).env == "production"
+    monkeypatch.setenv("SHIFDE_ENV", "development")
+    assert FabricAdapter(client_factory=fabric_fake.client_factory).env == "development"

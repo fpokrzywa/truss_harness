@@ -10,6 +10,7 @@ not own is never adopted (`ForeignItem`).
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Callable
 from datetime import timedelta
@@ -83,7 +84,13 @@ TERMINAL = "fabric-finalize"
 VERIFICATION = "fabric-verification-submit"
 RECEIPT_BUDGET = 16000
 NOTEBOOK_DESCRIPTION = "Managed by SHIFDE"
-PLATFORMS = ("fabric", "fake")
+# A receipt over the in-process fake is evidence only in development and test.
+DEV_ENVS = ("development", "test")
+
+
+def environment() -> str:
+    """`SHIFDE_ENV` as the executor reads it: unset means production."""
+    return os.environ.get("SHIFDE_ENV") or "production"
 
 
 class ForeignItem(PermissionError):
@@ -116,9 +123,11 @@ def validate_receipt(
     spec: FabricSolutionSpec,
     target: Target,
     *,
+    env: str,
     completed: Callable[[str], dict[str, Any] | None] | None = None,
 ) -> None:
-    """The receipt's shape against the spec and target, and (with `completed`) the journal."""
+    """The receipt's shape against the spec and target, and (with `completed`) the journal.
+    A `platform: fake` receipt is refused unless `env` is development or test."""
     workspace, names = bindings(spec, target)
     handles = receipt.operation_handles
     if receipt.tenant_id != target.tenant_id:
@@ -129,7 +138,7 @@ def validate_receipt(
         or handles.get("workspace") != workspace
         or handles.get("verification") != spec.verification_notebook
         or handles.get("release_digest") != spec.release_digest
-        or handles.get("platform") not in PLATFORMS
+        or handles.get("platform") not in (("fabric", "fake") if env in DEV_ENVS else ("fabric",))
     ):
         raise ValueError("Fabric receipt/spec/target mismatch")
     resources = {r.key: r for r in receipt.resources}
@@ -203,8 +212,11 @@ def validate_receipt(
 class FabricAdapter:
     kind = "fabric.solution/v1"
 
-    def __init__(self, *, client_factory: Callable[[Target], FabricClient]) -> None:
+    def __init__(
+        self, *, client_factory: Callable[[Target], FabricClient], env: str | None = None
+    ) -> None:
         self.client_factory = client_factory
+        self.env = env or environment()
 
     def _client(self, ctx: ReadContext) -> FabricClient:
         ctx.check_deadline()
@@ -636,17 +648,18 @@ class FabricAdapter:
             resources=list(resources.values()),
             operation_handles=handles,
         )
-        validate_receipt(receipt, spec, ctx.target, completed=ctx.journal.completed)
+        validate_receipt(receipt, spec, ctx.target, env=self.env, completed=ctx.journal.completed)
         begin(TERMINAL)
         ctx.journal.complete(TERMINAL, receipt.model_dump(mode="json"))
         return receipt
 
-    @staticmethod
-    def _check_receipt(receipt: ApplyReceipt, spec: FabricSolutionSpec, ctx: ReadContext) -> str:
+    def _check_receipt(
+        self, receipt: ApplyReceipt, spec: FabricSolutionSpec, ctx: ReadContext
+    ) -> str:
         """The receipt's workspace, refused for another tenant or target before any request."""
         if receipt.tenant_id != ctx.tenant_id or receipt.target_id != ctx.target.id:
             raise PermissionError("Fabric receipt belongs to another tenant or target")
-        validate_receipt(receipt, spec, ctx.target)
+        validate_receipt(receipt, spec, ctx.target, env=self.env)
         return receipt.operation_handles["workspace"]
 
     def _items_drift(
