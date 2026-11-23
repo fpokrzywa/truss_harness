@@ -11,7 +11,7 @@ and path).
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 WRITE_KEYWORDS = frozenset(
     {
@@ -33,11 +33,14 @@ class SqlIssue:
 class Token:
     """`kind` is `ident` (lowercased; `quoted` for a backtick identifier), `string` (opaque),
     `param` (a `:name`, the name as written), `punct`, `comment` (`--` or `/*`) or `unterminated`
-    (a quote or backtick that never closes; always the last token)."""
+    (a quote or backtick that never closes; always the last token). A `param` also carries its
+    span in the text (`start`, `end`), outside equality."""
 
     kind: str
     value: str
     quoted: bool = False
+    start: int = field(default=0, compare=False, repr=False)
+    end: int = field(default=0, compare=False, repr=False)
 
 
 def _is_name_start(ch: str) -> bool:
@@ -110,7 +113,7 @@ def tokenize(sql: str) -> list[Token]:
                 j = i + 1
                 while j < n and _is_name_char(sql[j]):
                     j += 1
-                tokens.append(Token("param", sql[i + 1 : j]))
+                tokens.append(Token("param", sql[i + 1 : j], start=i, end=j))
                 i = j
             else:
                 i += 1

@@ -15,11 +15,26 @@ earlier attempt may have reached the provider) records `model_call_unknown` with
 Request routes reach a request under the organization; an unknown id, another client's or another
 project's request and one the caller cannot read get one answer (`app request not found`). Every
 state change is a conditional UPDATE on the state read and writes one audit event.
+
+Accepting a drafted revision (design 5.5) turns it into build, evaluation and packaging objects
+of the request's project, each made through its owning service under the caller's scope. Those
+services commit their own transactions, so accept is a resumable sequence. First a pre-check:
+the caller must hold every permission the steps need on the project (a missing one is 403 with
+nothing written); then the state, the revision's diagnostics, the runtime model and the artifact
+keys are checked. Step 1 sets `accepting` (committed). Steps 2.1 to 2.6 create and publish the
+prompt, one `connection.sql` tool per draft tool and the agent, then create the evaluation
+dataset, the solution (or reuse the active one of that name) and the solution version with the
+draft's screens. Each step locks the request row, re-reads `accept_progress`, is skipped when its
+id is there, and records its id right after the owning service commits. Step 3 sets `accepted`.
+A failed step records its error code as `status_reason` and leaves the request `accepting` with
+its objects in place; accepting the same revision again resumes.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import json
+import re
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any  # Any: request and draft rows, JSON documents
 from uuid import UUID
@@ -33,16 +48,21 @@ from shifde.appgen import schemas as s
 from shifde.audit import service as audit
 from shifde.authz import service as authz
 from shifde.authz.service import ResourceRef
+from shifde.build import schemas as build_schemas
+from shifde.build.service import ArtifactService
 from shifde.connections.service import ConnectionService
-from shifde.core import db
+from shifde.core import db, sqlrules
 from shifde.core.context import RequestContext
 from shifde.core.db import Database
-from shifde.core.errors import AppError, NotFound
+from shifde.core.errors import AppError, NotFound, PublishPending
 from shifde.core.ids import uuid7
 from shifde.core.pagination import Page, decode_cursor, encode_cursor, paginate
+from shifde.evaluation.schemas import DatasetCreate
+from shifde.evaluation.service import EvaluationService
 from shifde.models_admin import schemas as model_schemas
 from shifde.models_admin.service import ModelService
-from shifde.packaging.service import in_scope
+from shifde.packaging import schemas as packaging_schemas
+from shifde.packaging.service import SolutionService, in_scope
 from shifde.tenancy import service as tenancy
 from shifde.tenancy.scope import TenantScope
 
@@ -52,6 +72,30 @@ RESOURCE_TYPE = "appgen_request"
 REQUEST_NOT_FOUND = "app request not found"
 DRAFT_MAX_TOKENS = 8000
 DONE = frozenset({"drafted", "accepting", "accepted", "failed", "discarded"})
+ACCEPT = "appgen:draft:accept"
+# every permission the accept steps need on the project (design section 4): the pre-check
+ACCEPT_PERMISSIONS = (
+    ACCEPT,
+    "prompt:create",
+    "prompt:publish",
+    "tool:create",
+    "tool:publish",
+    "agent:create",
+    "agent:publish",
+    "evaluation:dataset:write",
+    "packaging:solution:write",
+)
+PUBLISH_NOTE = "accepted from an app request"
+# the input schema of a draft tool parameter, by its draft type (design 5.5)
+PARAMETER_SCHEMAS: dict[str, dict[str, Any]] = {
+    "integer": {"type": "integer"},
+    "number": {"type": "number"},
+    "boolean": {"type": "boolean"},
+    "date": {"type": "string", "format": "date", "pattern": r"^\d{4}-\d{2}-\d{2}$"},
+    "string": {"type": "string", "maxLength": 1000},
+}
+TOOL_TIMEOUT_S = 60
+AGENT_LIMITS = {"max_iterations": 8, "max_tool_calls": 8, "max_tokens": 200_000, "deadline_s": 60}
 
 
 class ConnectionNotDatabricks(AppError):
@@ -98,6 +142,18 @@ class RequestNotFailed(AppError):
     status, code, title = 409, "request_not_failed", "Conflict"
 
 
+class AlreadyAccepted(AppError):
+    status, code, title = 409, "already_accepted", "Conflict"
+
+
+class RequestNotAcceptable(AppError):
+    status, code, title = 409, "request_not_acceptable", "Conflict"
+
+
+class DraftInvalid(AppError):
+    status, code, title = 422, "draft_invalid", "Unprocessable Entity"
+
+
 MODEL_REFUSALS: dict[str, AppError] = {
     "model_not_found": NotFound("model not found"),  # the answer an unknown model id gets
     "model_unavailable": DraftModelUnavailable("the drafting model cannot be used"),
@@ -133,6 +189,50 @@ def _summary_fields(r: Mapping[str, Any]) -> dict[str, Any]:  # Any: field value
     }
 
 
+def sql_template(sql: str) -> str:
+    """A draft tool's SQL in `build`'s stored form: each `:name` parameter `sqlrules.tokenize`
+    finds (never one inside quoted text) as `%(name)s`, and every other `%` doubled, so
+    `build.tools.named_sql` gives the draft SQL back."""
+    parts: list[str] = []
+    at = 0
+    for token in sqlrules.tokenize(sql):
+        if token.kind == "param":
+            parts += [sql[at : token.start].replace("%", "%%"), f"%({token.value})s"]
+            at = token.end
+    parts.append(sql[at:].replace("%", "%%"))
+    return "".join(parts)
+
+
+def tool_spec(tool: s.DraftTool, connection_id: UUID) -> dict[str, Any]:  # Any: JSON spec
+    """The `connection.sql` tool spec of a draft tool over the request's connection."""
+    return {
+        "executor": "connection.sql",
+        "binding": {
+            "connection_id": str(connection_id),
+            "sql_template": sql_template(tool.sql),
+            "max_rows": tool.max_rows,
+        },
+        "input_schema": {
+            "type": "object",
+            "properties": {p.name: dict(PARAMETER_SCHEMAS[p.type]) for p in tool.parameters},
+            "required": [p.name for p in tool.parameters if p.required],
+            "additionalProperties": False,
+        },
+        "output_schema": {"type": "object"},
+        "side_effect_class": "read",
+        "timeout_s": TOOL_TIMEOUT_S,
+        "audit_level": "metadata",
+    }
+
+
+def _recorded(progress: Mapping[str, Any], key: str, item: str | None) -> str | None:
+    """The id recorded under `key` (under `key.item` for a per-tool map), or None."""
+    value = progress.get(key)
+    if item is not None:
+        value = value.get(item) if isinstance(value, dict) else None
+    return str(value) if value is not None else None
+
+
 def _ref(tenant_id: UUID, r: Mapping[str, Any]) -> ResourceRef:
     return ResourceRef(tenant_id, r["workspace_id"], r["project_id"], RESOURCE_TYPE, r["id"])
 
@@ -159,11 +259,16 @@ def _record(
 
 
 class AppGenService:
-    def __init__(self, scope: TenantScope, runtime: IntegrationRuntime) -> None:
+    def __init__(
+        self, scope: TenantScope, runtime: IntegrationRuntime, evaluations: EvaluationService
+    ) -> None:
         self.sc = scope
         self.runtime = runtime
         self.conns = ConnectionService(scope, runtime)
         self.models = ModelService(scope, runtime)
+        self.artifacts = ArtifactService(scope, runtime)
+        self.evaluations = evaluations
+        self.solutions = SolutionService(scope, runtime)
 
     @property
     def _session(self) -> Session:
@@ -397,6 +502,277 @@ class AppGenService:
         )
         self._session.commit()
         return self._out(request_id)
+
+    # ================================================================== accept (design 5.5)
+    def accept(self, request_id: UUID, body: s.AcceptIn) -> s.AppRequestOut:
+        row = self._request(request_id, ACCEPT)
+        project = ResourceRef(self.sc.tenant_id, row["workspace_id"], row["project_id"])
+        for action in ACCEPT_PERMISSIONS:  # the pre-check: nothing is written before it passes
+            self.sc.pdp.require(action, project)
+        status = row["status"]
+        if status == s.RequestStatus.ACCEPTED:
+            raise AlreadyAccepted("the request is already accepted")
+        if status == s.RequestStatus.ACCEPTING:
+            if row["accepted_revision_no"] != body.revision_no:
+                raise RequestNotAcceptable("the request is being accepted with another revision")
+        elif status != s.RequestStatus.DRAFTED:
+            raise RequestNotAcceptable("only a drafted request can be accepted")
+        elif body.revision_no != row["latest_revision_no"]:
+            raise StaleRevision("the draft has a newer revision; reload and retry")
+        revision = next(
+            d
+            for d in repository.list_drafts(self._session, request_id, tenant_id=self.sc.tenant_id)
+            if d["revision_no"] == body.revision_no
+        )
+        errors = [d for d in revision["validation"] if d["severity"] == "error"]
+        if errors:
+            raise DraftInvalid(
+                "the revision has errors; correct them in a new revision",
+                errors=[
+                    {
+                        "loc": ["draft", *d["path"].split(".")],
+                        "msg": d["message"],
+                        "type": d["code"],
+                    }
+                    for d in errors
+                ],
+            )
+        problem = self.models.problems_at(project, [body.model_id]).get(body.model_id)
+        if problem is not None:
+            raise MODEL_REFUSALS[problem]
+        draft = s.Draft.model_validate(revision["draft"])
+        self._check_keys(row, draft)
+        if status == s.RequestStatus.DRAFTED:
+            if not repository.start_accepting(
+                self._session,
+                request_id,
+                tenant_id=self.sc.tenant_id,
+                revision_no=body.revision_no,
+                accepted_by=self.sc.principal.principal_id,
+            ):
+                self._session.rollback()
+                raise RequestNotAcceptable("only a drafted request can be accepted")
+            self._audit(
+                "appgen.request.accepting",
+                row,
+                {"revision_no": body.revision_no, "solution_name": body.solution_name},
+            )
+            self._session.commit()
+        try:
+            version_id = self._accept_steps(row, draft, body)
+            if not repository.finish_accepting(
+                self._session,
+                request_id,
+                tenant_id=self.sc.tenant_id,
+                solution_version_id=UUID(version_id),
+            ):
+                self._session.rollback()
+                raise RequestNotAcceptable("the request is no longer being accepted")
+        except AppError as exc:
+            self._session.rollback()
+            repository.accept_failed(
+                self._session, request_id, tenant_id=self.sc.tenant_id, reason=exc.code
+            )
+            self._session.commit()
+            raise
+        self._audit(
+            "appgen.request.accepted",
+            row,
+            {"revision_no": body.revision_no, "solution_version_id": version_id},
+        )
+        self._session.commit()
+        return self._out(request_id)
+
+    def _check_keys(self, row: Mapping[str, Any], draft: s.Draft) -> None:
+        """The draft's artifact keys are usable and free in the project (`draft_invalid`, naming
+        the field, otherwise); a key whose artifact a step already recorded is not checked."""
+        progress = row["accept_progress"]
+        tools = progress.get("tool_artifact_ids") or {}
+        name = draft.agent.name
+        checks = [
+            ("prompts", name, "prompt_artifact_id" in progress, "agent.name"),
+            ("agents", name, "agent_artifact_id" in progress, "agent.name"),
+        ] + [
+            ("tools", tool.name, tool.name in tools, f"tools.{i}.name")
+            for i, tool in enumerate(draft.tools)
+        ]
+        errors = []
+        for kind, key, recorded, path in checks:
+            if recorded:
+                continue
+            if not re.match(build_schemas.KEY_PATTERN, key):
+                msg, code = f"{key!r} cannot be an artifact key", "invalid_key"
+            elif self.artifacts.key_holder(kind, row["workspace_id"], row["project_id"], key):
+                msg, code = f"the project already has a {kind[:-1]} {key!r}", "key_taken"
+            else:
+                continue
+            errors.append({"loc": ["draft", *path.split(".")], "msg": msg, "type": code})
+        if errors:
+            raise DraftInvalid("a name of the draft is already used in the project", errors=errors)
+
+    def _progress(self, request_id: UUID) -> dict[str, Any]:  # Any: JSON ids
+        """The request's `accept_progress`, its row locked until this transaction ends: a
+        concurrent resume waits here, then reads what the other one recorded."""
+        row = repository.get_request(
+            self._session, request_id, tenant_id=self.sc.tenant_id, lock=True
+        )
+        if row is None or row["status"] != s.RequestStatus.ACCEPTING:
+            raise RequestNotAcceptable("the request is no longer being accepted")
+        return dict(row["accept_progress"])
+
+    def _note(self, request_id: UUID, key: str, value: str, item: str | None = None) -> None:
+        """Record `value` under `key` (under `key.item` for a per-tool map) and commit."""
+        progress = self._progress(request_id)
+        stored: Any = value  # Any: an id or a per-tool map of ids
+        if item is not None:
+            stored = {**(progress.get(key) or {}), item: value}
+        if not repository.record_progress(
+            self._session, request_id, tenant_id=self.sc.tenant_id, key=key, value=stored
+        ):
+            self._session.rollback()
+            raise RequestNotAcceptable("the request is no longer being accepted")
+        self._session.commit()
+
+    def _published(self, kind: str, artifact_id: UUID) -> str:
+        """The artifact's draft published now, or its latest published version when it has no
+        draft left; a publish waiting for approval is `publish_pending`."""
+        art = self.artifacts.get(kind, artifact_id)
+        if art.has_draft or art.latest_published_version is None:
+            out = self.artifacts.publish(
+                kind, artifact_id, build_schemas.PublishIn(change_note=PUBLISH_NOTE)
+            )
+            if isinstance(out, build_schemas.PublishPendingOut):
+                raise PublishPending("the publish waits for approval; accept again once approved")
+            return str(out.id)
+        return str(art.latest_published_version.id)
+
+    def _artifact_step(
+        self,
+        row: Mapping[str, Any],
+        kind: str,
+        body: build_schemas.ArtifactCreate,
+        keys: tuple[str, str],
+        item: str | None = None,
+    ) -> str:
+        """Steps 2.1 to 2.3: the published version of one artifact, created and published unless
+        `keys` (artifact id, version id) are already recorded."""
+        artifact_key, version_key = keys
+        progress = self._progress(row["id"])
+        version = _recorded(progress, version_key, item)
+        if version is not None:
+            return version
+        artifact = _recorded(progress, artifact_key, item)
+        if artifact is None:
+            artifact = str(self.artifacts.create(kind, body).id)
+            self._note(row["id"], artifact_key, artifact, item)
+        version = self._published(kind, UUID(artifact))
+        self._note(row["id"], version_key, version, item)
+        return version
+
+    def _step(self, row: Mapping[str, Any], key: str, make: Callable[[], UUID]) -> str:
+        """Steps 2.4 to 2.6: the id recorded under `key`, or `make()`'s, recorded now."""
+        recorded = _recorded(self._progress(row["id"]), key, None)
+        if recorded is not None:
+            return recorded
+        made = str(make())
+        self._note(row["id"], key, made)
+        return made
+
+    def _accept_steps(self, row: Mapping[str, Any], draft: s.Draft, body: s.AcceptIn) -> str:
+        """Steps 2.1 to 2.6; returns the solution version id."""
+        workspaces, projects = tenancy.scope_slug_map(
+            self.sc, [row["workspace_id"]], [row["project_id"]]
+        )
+        ws, proj = workspaces[row["workspace_id"]], projects[row["project_id"]]
+        scope = build_schemas.ScopeRef(type="project", id=row["project_id"])
+        name = draft.agent.name
+
+        def artifact(
+            key: str, spec: dict[str, Any], description: str | None = None
+        ) -> build_schemas.ArtifactCreate:
+            return build_schemas.ArtifactCreate(
+                key=key, name=key, description=description, scope=scope, spec=spec
+            )
+
+        prompt = self._artifact_step(
+            row,
+            "prompts",
+            artifact(name, {"sections": {"system": draft.agent.instructions}}),
+            ("prompt_artifact_id", "prompt_version_id"),
+        )
+        tools = [
+            self._artifact_step(
+                row,
+                "tools",
+                artifact(tool.name, tool_spec(tool, row["connection_id"]), tool.description),
+                ("tool_artifact_ids", "tool_version_ids"),
+                tool.name,
+            )
+            for tool in draft.tools
+        ]
+        thresholds = body.thresholds
+        agent = self._artifact_step(
+            row,
+            "agents",
+            artifact(
+                name,
+                {
+                    "prompt_version_id": prompt,
+                    "model": {"model_id": str(body.model_id)},
+                    "tool_version_ids": tools,
+                    # a normalized decimal string is a JSON number
+                    "limits": {
+                        **AGENT_LIMITS,
+                        "max_cost": json.loads(thresholds.max_total_cost_usd),
+                    },
+                },
+            ),
+            ("agent_artifact_id", "agent_version_id"),
+        )
+
+        def dataset() -> UUID:
+            cases = [c.model_dump(mode="json") for c in draft.evaluation_cases]
+            return self.evaluations.create_dataset(
+                ws, proj, DatasetCreate.model_validate({"name": body.solution_name, "cases": cases})
+            ).id
+
+        dataset_id = self._step(row, "dataset_id", dataset)
+
+        def solution() -> UUID:
+            found = self.solutions.active_named(ws, proj, body.solution_name)
+            if found is None:
+                found = self.solutions.create(
+                    ws,
+                    proj,
+                    packaging_schemas.SolutionCreate(
+                        name=body.solution_name, target_kind=packaging_schemas.TARGET_KIND
+                    ),
+                )
+            return found.id
+
+        solution_id = self._step(row, "solution_id", solution)
+
+        def version() -> UUID:
+            read = packaging_schemas.DataRead(
+                connection_id=row["connection_id"], tables=row["tables"]
+            )
+            contract = packaging_schemas.EvaluationContract(
+                dataset_id=UUID(dataset_id), **thresholds.model_dump()
+            )
+            return self.solutions.create_version(
+                ws,
+                proj,
+                UUID(solution_id),
+                packaging_schemas.SolutionVersionCreate(
+                    entrypoint_kind="agent",
+                    entrypoint_version_id=UUID(agent),
+                    data_reads=[read],
+                    evaluation=contract,
+                    screens=draft.screens,
+                ),
+            ).id
+
+        return self._step(row, "solution_version_id", version)
 
 
 # ====================================================================== the job (design 5.2)
