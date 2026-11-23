@@ -208,7 +208,11 @@ def test_a_202_is_polled_until_it_finishes(sf: FakeSnowflakeAccount) -> None:
 
     sf._submit = finish_on_first_poll  # type: ignore[method-assign]
     result = _invoke(sf, {"sql": SELECT_ONE})
-    assert result.result == {"columns": ["1"], "rows": [["1"]], "row_count": 1}
+    assert result.result == {
+        "columns": [{"name": "1", "type": ""}],  # the answer gave no type
+        "rows": [["1"]],
+        "row_count": 1,
+    }
     assert [p[0] for p in sf.paths()] == ["POST", "GET"]
 
 
@@ -377,7 +381,11 @@ def test_the_statement_body_and_bindings(sf: FakeSnowflakeAccount) -> None:
         role="READER",
         statement_timeout_seconds=20,
     )
-    assert result.result == {"columns": ["1"], "rows": [["1"]], "row_count": 1}
+    assert result.result == {
+        "columns": [{"name": "1", "type": "text"}],
+        "rows": [["1"]],
+        "row_count": 1,
+    }
     assert result.truncated is False
     (body,) = sf.bodies()
     assert body == {
@@ -420,7 +428,10 @@ def test_the_row_cap_sets_truncated(sf: FakeSnowflakeAccount) -> None:
     sf.row_count = 10
     capped = _invoke(sf, {"sql": ROWS_STATEMENT}, max_rows=4)
     assert capped.result["row_count"] == 4 and len(capped.result["rows"]) == 4
-    assert capped.truncated is True and capped.result["columns"] == ["N", "LABEL"]
+    assert capped.truncated is True and capped.result["columns"] == [
+        {"name": "N", "type": "text"},
+        {"name": "LABEL", "type": "text"},
+    ]
     sf.row_count = 4
     exact = _invoke(sf, {"sql": ROWS_STATEMENT}, max_rows=4)
     assert exact.result["row_count"] == 4 and exact.truncated is False

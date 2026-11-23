@@ -5,6 +5,13 @@ Auth is `key_pair` (an RS256 JWT signed here with `cryptography`, cached per cli
 key fingerprint) or `bearer` (a programmatic access token). The host is derived from `account`
 and `.snowflakecomputing.com` is the only suffix. Every request goes through `ctx.egress`; the
 module never reads settings.
+
+An invoke binds `params` positionally. An optional `param_types` (keyed by 1-based position, in the
+Databricks type names the API keeps) maps each position to a SQL API binding type (`BIGINT` to
+`FIXED`, `DOUBLE` to `REAL`, `STRING` and `DATE` to `TEXT`, `BOOLEAN`); a date travels as `TEXT`
+`YYYY-MM-DD` (call S6-I), and a position without a type is inferred from its value. The invoke
+result is `{"columns": [{"name", "type"}], "rows", "row_count"}`, the type being the answer's
+`rowType[].type`.
 """
 
 from __future__ import annotations
@@ -231,6 +238,17 @@ def _stored_account(config: JSON) -> tuple[str, str]:
     return host, user
 
 
+# the API's (Databricks) parameter type -> the SQL API binding type
+BINDING_TYPES = {
+    "BIGINT": "FIXED",
+    "DOUBLE": "REAL",
+    "STRING": "TEXT",
+    "DATE": "TEXT",
+    "BOOLEAN": "BOOLEAN",
+}
+MALFORMED = "malformed request"
+
+
 def _binding(value: Any) -> JSON:  # Any: a bound parameter value
     """One positional binding: `{"type", "value"}` with the value as text."""
     if value is None:
@@ -244,6 +262,27 @@ def _binding(value: Any) -> JSON:  # Any: a bound parameter value
     if isinstance(value, str):
         return {"type": "TEXT", "value": value}
     raise AdapterFailure(ErrorClass.CONFIG, "parameters must be strings, numbers, booleans or null")
+
+
+def _typed_binding(value: Any, kind: str) -> JSON:  # Any: a bound parameter value
+    """One positional binding of a declared type: the value as text (`true`/`false` for a
+    boolean, null for None)."""
+    inferred = _binding(value)  # refuses a value that is no scalar
+    return {"type": BINDING_TYPES[kind], "value": inferred["value"]}
+
+
+def _bindings(params: Any, param_types: Any) -> JSON:  # Any: request values
+    if param_types is None:
+        param_types = {}
+    if not isinstance(param_types, dict) or any(
+        t not in BINDING_TYPES for t in param_types.values()
+    ):
+        raise AdapterFailure(ErrorClass.CONFIG, MALFORMED)
+    out: JSON = {}
+    for i, value in enumerate(params or [], start=1):
+        kind = param_types.get(str(i))
+        out[str(i)] = _binding(value) if kind is None else _typed_binding(value, kind)
+    return out
 
 
 class SnowflakeSession:
@@ -348,11 +387,13 @@ class SnowflakeSession:
                 ErrorClass.CONFIG,
                 "Snowflake takes positional parameters only: send params as an array",
             )
-        bindings = {str(i): _binding(v) for i, v in enumerate(params or [], start=1)}
+        bindings = _bindings(params, request.get("param_types"))
         max_rows = int(self._conn.config.get("max_rows", DEFAULT_MAX_ROWS))
-        columns, rows, truncated = _rows(self.run(self.body(statement, bindings)), max_rows)
+        doc = self.run(self.body(statement, bindings))
+        _, rows, truncated = _rows(doc, max_rows)
         return InvokeResult(
-            {"columns": columns, "rows": rows, "row_count": len(rows)}, truncated=truncated
+            {"columns": _typed_columns(doc), "rows": rows, "row_count": len(rows)},
+            truncated=truncated,
         )
 
     def close(self) -> None:
@@ -373,6 +414,16 @@ def _rows(doc: JSON, cap: int) -> tuple[list[str], list[Any], bool]:
     total = meta.get("numRows")
     more = isinstance(total, int) and total > len(data)
     return columns, rows, capped or more or len(meta.get("partitionInfo") or []) > 1
+
+
+def _typed_columns(doc: JSON) -> list[JSON]:
+    """`{"name", "type"}` of each result column (`type`: `rowType[].type`)."""
+    meta = doc.get("resultSetMetaData") or {}
+    return [
+        {"name": str(c.get("name")), "type": str(c.get("type") or "")}
+        for c in meta.get("rowType") or []
+        if isinstance(c, dict)
+    ]
 
 
 def quote_identifier(name: str) -> str:
