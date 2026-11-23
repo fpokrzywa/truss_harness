@@ -154,6 +154,11 @@ def good_env(app_url: str, owner_url: str, run_secrets: Mapping[str, str]) -> di
     }
 
 
+def service_env(values: Mapping[str, str]) -> dict[str, str]:
+    """A copy of `values` without the owner URL, which is never given to a service."""
+    return {k: v for k, v in values.items() if k != "SHIFDE_MIGRATION_DATABASE_URL"}
+
+
 def changed(env: Mapping[str, str], changes: Mapping[str, str | None]) -> dict[str, str]:
     """`env` with each key of `changes` set to its value, or removed when the value is None."""
     out = dict(env)
@@ -554,7 +559,7 @@ class Check:
 
     def start_api(self, values: Mapping[str, str], port: int, log: str) -> subprocess.Popen[bytes]:
         values = {**values, "SHIFDE_API_HOST": "127.0.0.1", "SHIFDE_API_PORT": str(port)}
-        proc = spawn([self.api_cli], self.env(values), self.workdir / log)
+        proc = spawn([self.api_cli], self.env(service_env(values)), self.workdir / log)
         self.stack.callback(stop, proc)
         return proc
 
@@ -694,7 +699,7 @@ class Check:
             _, out = ctl("status")
             return dict(re.findall(r"^(\w+) pid=(\S+)", out, re.M))
 
-        path = write_env_file(self.workdir / "procctl.env", {**good, **ports})
+        path = write_env_file(self.workdir / "procctl.env", service_env({**good, **ports}))
         log = self.workdir / "procctl-up.log"
         up = spawn(
             [sys.executable, script, "up", "--env-file", str(path), "--state-dir", str(state)],
@@ -818,7 +823,6 @@ class Check:
         values = {
             "SHIFDE_ENV": "development",
             "SHIFDE_DATABASE_URL": self.target_app,
-            "SHIFDE_MIGRATION_DATABASE_URL": self.target_owner,
             "SHIFDE_AUTH_LOCAL_ENABLED": "true",
             **self.secrets,
         }
