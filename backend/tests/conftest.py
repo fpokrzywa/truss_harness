@@ -75,6 +75,7 @@ _RUN_STASH = pytest.StashKey[str]()
 def pytest_configure(config: pytest.Config) -> None:
     connect_retry.install()  # WinError 10055/10048 at connect (issue #238)
     connect_retry.install_testclient()  # the same errors at TestClient entry (issue #253)
+    connect_retry.install_testclient_portal()  # and at an unentered client's request (issue #265)
     workerinput = getattr(config, "workerinput", None)
     if workerinput is not None:
         config.stash[_RUN_STASH] = str(workerinput[_RUN_KEY])
