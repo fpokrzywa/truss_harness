@@ -1,4 +1,5 @@
-"""Databricks native delivery wire models and canonical hashing (FDE SDK `shifde_contracts`).
+"""Native delivery wire models (Databricks Apps and Snowflake Native Apps) and canonical hashing
+(FDE SDK `shifde_contracts`).
 
 The values an executor reports back in a job result carry length and count limits (`NAME_MAX`,
 `NATIVE_ID_MAX`, `EVIDENCE_MAX`, `HANDLES_MAX`, `RESOURCES_MAX`, `ITEMS_MAX`; B-2736): a value
@@ -236,8 +237,16 @@ class FabricSolutionSpec(Model):
         return self
 
 
+class SnowflakeApplicationSpec(Model):
+    """A Snowflake Native App. No names: the package, application and warehouse come from the
+    target bindings (SP6 design 6.2)."""
+
+    kind: Literal["snowflake.native-app/v1"] = "snowflake.native-app/v1"
+
+
 ApplicationSpec = Annotated[
-    DatabricksApplicationSpec | FabricSolutionSpec, Field(discriminator="kind")
+    DatabricksApplicationSpec | SnowflakeApplicationSpec | FabricSolutionSpec,
+    Field(discriminator="kind"),
 ]
 
 

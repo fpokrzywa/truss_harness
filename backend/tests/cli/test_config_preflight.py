@@ -231,11 +231,12 @@ def test_the_committed_register_parses() -> None:
     assert {r.id: r.state for r in rows} == {
         "Item 5a": "closed",
         "Item 20 delete": "closed",
-        "Item 20 audit-retention": "pending-owner",
+        "Item 20 audit-retention": "accepted",
         "Item 21": "closed",
-        "Item 23": "pending-owner",
+        "Item 23": "accepted",
         "ARCH M11": "closed",
         "ARCH M5": "closed",
-        "REQ F-08": "pending-owner",
+        "REQ F-08": "accepted",
         "REQ F-22": "pending-owner",
+        "Hosting target": "accepted",
     }

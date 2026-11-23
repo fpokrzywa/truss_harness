@@ -26,6 +26,7 @@ from shifde.adapters.native.base import (
     read_archive,
 )
 from shifde.adapters.native.contracts import (
+    ApplicationSpec,
     ApplyReceipt,
     ApplyRequest,
     BuildArtifact,
@@ -33,7 +34,6 @@ from shifde.adapters.native.contracts import (
     Capability,
     CapabilityReport,
     Check,
-    DatabricksApplicationSpec,
     DeploymentPlan,
     Diagnostic,
     EnvironmentSnapshot,
@@ -102,9 +102,7 @@ class ForeignItem(PermissionError):
         super().__init__("a Fabric item of a bound name exists but is not owned by this target")
 
 
-def fabric_spec(
-    spec: DatabricksApplicationSpec | FabricSolutionSpec | None,
-) -> FabricSolutionSpec:
+def fabric_spec(spec: ApplicationSpec | None) -> FabricSolutionSpec:
     """The spec, refused before any native call when it is of another kind (or absent)."""
     if not isinstance(spec, FabricSolutionSpec):
         raise ValueError("the Fabric adapter refuses a spec of another kind")

@@ -25,6 +25,7 @@ from shifde.adapters.native.base import (
     read_archive,
 )
 from shifde.adapters.native.contracts import (
+    ApplicationSpec,
     ApplyReceipt,
     ApplyRequest,
     BuildArtifact,
@@ -36,7 +37,6 @@ from shifde.adapters.native.contracts import (
     DeploymentPlan,
     Diagnostic,
     EnvironmentSnapshot,
-    FabricSolutionSpec,
     InspectRequest,
     NativeObservation,
     ObserveRequest,
@@ -87,12 +87,10 @@ def root_path(principal: str, application_id: UUID, target_id: UUID) -> str:
     return f"/Workspace/Users/{principal}/.shifde/{application_id}/{target_id}"
 
 
-def databricks_spec(
-    spec: DatabricksApplicationSpec | FabricSolutionSpec | None,
-) -> DatabricksApplicationSpec:
-    """The spec, refused before any native call when it is of another kind (or absent)."""
+def databricks_spec(spec: ApplicationSpec) -> DatabricksApplicationSpec:
+    """`spec`, refused with `ValueError` unless it is a Databricks App spec."""
     if not isinstance(spec, DatabricksApplicationSpec):
-        raise ValueError("the Databricks adapter refuses a spec of another kind")
+        raise ValueError("the Databricks adapter requires a databricks.app/v1 spec")
     return spec
 
 
@@ -193,11 +191,10 @@ class DatabricksAdapter:
         return EnvironmentSnapshot(resources=resources, fingerprint=digest(identity(app)))
 
     def scaffold(self, request: ScaffoldRequest, ctx: BuildContext) -> SourceArchive:
+        spec = databricks_spec(request.spec)
         if request.template_version != ADAPTER_VERSION:
             raise ValueError("unsupported template version")
-        return ctx.artifacts.put(
-            ctx.tenant_id, create_archive(scaffold_files(databricks_spec(request.spec)))
-        )
+        return ctx.artifacts.put(ctx.tenant_id, create_archive(scaffold_files(spec)))
 
     def validate(self, request: ValidateRequest, ctx: BuildContext) -> ValidationReport:
         spec = databricks_spec(request.spec)
@@ -211,6 +208,7 @@ class DatabricksAdapter:
             )
 
     def build(self, request: BuildRequest, ctx: BuildContext) -> BuildArtifact:
+        databricks_spec(request.spec)
         report = self.validate(ValidateRequest(spec=request.spec, source=request.source), ctx)
         if not report.passed:
             raise ValueError("application source validation failed")
@@ -228,8 +226,8 @@ class DatabricksAdapter:
 
     def plan(self, request: PlanRequest, ctx: ReadContext) -> DeploymentPlan:
         artifact = request.artifact
-        spec = databricks_spec(artifact.spec)
         self._check_artifact(artifact, ctx)
+        spec = databricks_spec(artifact.spec)
         if not ctx.target.bindings.get(spec.warehouse_binding):
             raise ValueError("required warehouse binding is missing")
         if spec.warehouse_binding != WAREHOUSE_BINDING:
@@ -308,6 +306,7 @@ class DatabricksAdapter:
 
     @staticmethod
     def _check_artifact(artifact: BuildArtifact, ctx: ReadContext) -> None:
+        databricks_spec(artifact.spec)
         if artifact.tenant_id != ctx.tenant_id or artifact.archive.tenant_id != ctx.tenant_id:
             raise PermissionError("artifact belongs to another tenant")
         if artifact.adapter_version != ADAPTER_VERSION or artifact.spec_digest != digest(
