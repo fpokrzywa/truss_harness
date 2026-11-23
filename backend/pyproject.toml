@@ -36,7 +36,7 @@ postgres = "shifde.adapters.postgres:PostgresAdapter"
 fake = "shifde.adapters.model_providers:FakeProvider"
 openai_compatible = "shifde.adapters.model_providers:OpenAICompatibleProvider"
 anthropic = "shifde.adapters.model_providers:AnthropicProvider"
-databricks = "shifde.adapters.planned:DatabricksPlanned"
+databricks = "shifde.adapters.dataplatforms.databricks:DatabricksAdapter"
 snowflake = "shifde.adapters.planned:SnowflakePlanned"
 fabric = "shifde.adapters.planned:FabricPlanned"
 
@@ -230,6 +230,7 @@ source_modules = [
   "shifde.adapters.mcp_http",
   "shifde.adapters.postgres", "shifde.adapters.model_providers", "shifde.adapters.registry",
   "shifde.adapters.evidence", "shifde.adapters.maturity", "shifde.adapters.conformance",
+  "shifde.adapters.dataplatforms.sqlapi", "shifde.adapters.dataplatforms.databricks",
   "shifde.core.egress", "shifde.core.ssrf",
   "shifde.governance.service", "shifde.governance.repository", "shifde.governance.validation",
   "shifde.ledger.pricing", "shifde.ledger.usage", "shifde.ledger.budgeting",
