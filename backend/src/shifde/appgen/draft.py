@@ -27,7 +27,7 @@ _FENCE = re.compile(r"\A\s*```[A-Za-z0-9_-]*[ \t]*\r?\n(.*?)\r?\n[ \t]*```\s*\Z"
 
 SYSTEM_PROMPT = (
     "You draft a small read-only data application for a Databricks SQL warehouse. The user "
-    "message is a JSON document with a brief and the tables you may read, each with its column "
+    "message is a JSON document with a brief and the tables you may read, each with its column "  # nosec B608 - prompt text for the model, not a query
     "names and types. Draft one agent with instructions, one to eight read-only SQL tools (one "
     "SELECT or WITH statement each, every table named as catalog.schema.table from the given "
     "tables, parameters written as :name and declared), the screens of the application and "
