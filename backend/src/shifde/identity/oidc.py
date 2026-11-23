@@ -13,7 +13,9 @@ ID-token validation: algorithm allow-list (no `none`, no HMAC), signature agains
 refetched after expiry and fail-closed if that fetch fails; within the lifetime refreshed once,
 rate-limited, on a `kid` miss), `iss` == discovery issuer == configured issuer, `aud` contains
 the client id (and `azp` == client id when several audiences), `exp`, `iat`, `nbf` with at most
-60 s skew, `nonce` bound to this request, non-empty `sub`.
+60 s skew, `nonce` bound to this request, non-empty `sub`. The IdP test (`run_checks`) fetches
+discovery and the JWKS live, validates them like sign-in does, and never reads or writes the
+sign-in caches (issue #189, B-3061).
 Identity mapping is by `(iss, sub)` only; e-mail is an attribute, never the key.
 
 Every failure path ends in a generic redirect; the specific reason is only audited and logged.
@@ -182,6 +184,12 @@ class OidcClient:
             if cached[1].issuer != expected_issuer:  # another IdP row naming the same URL
                 raise OidcFailure("issuer_mismatch_discovery")
             return cached[1]
+        disc = self._fetch_discovery(url, expected_issuer)
+        self._discovery[url] = (self._clock(), disc)
+        return disc
+
+    def _fetch_discovery(self, url: str, expected_issuer: str) -> Discovery:
+        """Fetch and validate a discovery document; never reads or writes `_discovery`."""
         try:
             doc = self._http.get_json(url)
             disc = Discovery(
@@ -199,11 +207,10 @@ class OidcClient:
             raise OidcFailure("discovery_invalid") from exc
         except EgressViolation as exc:
             raise OidcFailure(f"discovery_unreachable:{exc}") from exc
-        self._discovery[url] = (self._clock(), disc)
         return disc
 
     def _load_jwks(self, jwks_uri: str) -> tuple[float, KeySet]:
-        """Fetch and parse the JWKS and work out its lifetime; stores nothing."""
+        """Fetch and parse the JWKS and work out its lifetime; never reads or writes `_jwks`."""
         try:
             doc, headers = self._http.get_json_with_headers(jwks_uri)
             # the document is dict[str, Any]; joserfc types the argument as its JWKS TypedDict
@@ -236,13 +243,12 @@ class OidcClient:
         return keys
 
     def run_checks(self, discovery_url: str, issuer: str) -> list[tuple[str, bool, str]]:
-        """Uncached connectivity checks for the IdP `test` endpoint: (name, ok, detail). The JWKS
-        is fetched fresh and never stored, so a test neither touches the shared JWKS cache nor
-        the `kid`-miss refresh rate limit (issue #140)."""
+        """Uncached connectivity checks for the IdP `test` endpoint: (name, ok, detail). The
+        sign-in caches (discovery and JWKS) are neither read nor written, and the `kid`-miss
+        refresh rate limit is untouched (issues #140, #189)."""
         checks: list[tuple[str, bool, str]] = []
-        self._discovery.pop(discovery_url, None)
         try:
-            disc = self.discovery(discovery_url, issuer)
+            disc = self._fetch_discovery(discovery_url, issuer)
         except OidcFailure as exc:
             checks.append(("discovery", False, exc.reason))
             return checks
