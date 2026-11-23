@@ -43,6 +43,7 @@ __all__ = [
     "SecretProvider",
     "SecretValue",
     "check_all",
+    "check_value",
     "create_secret",
     "disable_secret",
     "get_secret",
@@ -125,6 +126,12 @@ def _check_value(value: str) -> bytes:
         raise ValidationFailed(f"secret value must be 1..{MAX_SECRET_BYTES} bytes")
     register_secret(value)
     return raw
+
+
+def check_value(value: str) -> None:
+    """Refuse a value `create_secret`/`rotate_secret` would refuse (422, never echoing it), for a
+    caller whose earlier checks must answer before its later ones (connections, B-2749)."""
+    _check_value(value)
 
 
 def get_secret(session: Session, secret_id: UUID, *, tenant_id: UUID | None) -> SecretMeta | None:

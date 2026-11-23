@@ -216,6 +216,21 @@ def update_connection(
     )
 
 
+def count_live_bindings(
+    session: Session, secret_id: UUID, *, tenant_id: UUID, exclude: UUID
+) -> int:
+    """How many connections of the client other than `exclude`, not retired, bind `secret_id`."""
+    return int(
+        session.execute(
+            text(
+                "SELECT count(*) FROM shifde.connections WHERE tenant_id = :t "
+                "AND secret_ref_id = :s AND id <> :x AND status <> 'retired'"
+            ),
+            {"t": tenant_id, "s": secret_id, "x": exclude},
+        ).scalar_one()
+    )
+
+
 def record_test_outcome(
     session: Session,
     connection_id: UUID,
