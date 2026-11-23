@@ -169,12 +169,9 @@ class AppGenService:
     def _session(self) -> Session:
         return self.sc.session
 
-    def _request(self, request_id: UUID, action: str, *, lock: bool = False) -> Mapping[str, Any]:
-        """The request the caller may `action` on; anything else is `app request not found`.
-        `lock` holds its row until commit, so concurrent writers of it run one at a time."""
-        row = repository.get_request(
-            self._session, request_id, tenant_id=self.sc.tenant_id, lock=lock
-        )
+    def _request(self, request_id: UUID, action: str) -> Mapping[str, Any]:
+        """The request the caller may `action` on; anything else is `app request not found`."""
+        row = repository.get_request(self._session, request_id, tenant_id=self.sc.tenant_id)
         if row is None:
             raise NotFound(REQUEST_NOT_FOUND)
         try:
@@ -316,8 +313,14 @@ class AppGenService:
 
     # ================================================================== revise, discard, retry
     def revise(self, request_id: UUID, body: s.DraftEdit) -> s.DraftOut:
-        # locked: a second edit of the same base waits here, then sees the new revision
-        row = self._request(request_id, WRITE, lock=True)
+        # permission on an unlocked read (no lock wait for a caller without access), then the
+        # row locked and read again: a second edit of the same base waits here, then is stale
+        self._request(request_id, WRITE)
+        row = repository.get_request(
+            self._session, request_id, tenant_id=self.sc.tenant_id, lock=True
+        )
+        if row is None:
+            raise NotFound(REQUEST_NOT_FOUND)
         if row["status"] != s.RequestStatus.DRAFTED:
             raise RequestNotEditable("the request is not drafted")
         if body.base_revision_no != row["latest_revision_no"]:
