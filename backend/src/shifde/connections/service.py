@@ -52,6 +52,7 @@ from shifde.core.errors import (
     Conflict,
     ConnectionDisabled,
     EgressDenied,
+    EgressPolicyMismatch,
     Forbidden,
     NotFound,
     RateLimited,
@@ -60,6 +61,7 @@ from shifde.core.errors import (
     UpstreamError,
     UseModelsEndpoint,
     ValidationFailed,
+    VendorNotVisible,
 )
 from shifde.core.ids import uuid7
 from shifde.core.pagination import Page, decode_cursor, encode_cursor, paginate
@@ -94,18 +96,35 @@ CREDENTIAL_KINDS: dict[str, str] = {
     "basic": "password",
 }
 NO_SECRET_FOR_NONE = "a secret cannot be attached when auth_method is 'none'"
+# the fixed RAISE texts of `shifde.connections_guard()` (connections_0001, connections_0002)
+GUARD_SECRET_TENANT = "secret must belong to the connection tenant"
+GUARD_SECRET_SCOPE = "secret scope must match the connection scope"
+GUARD_EGRESS_TENANT = "egress policy must belong to the connection tenant"
+GUARD_VENDOR_TENANT = "vendor is not visible to the connection tenant"
+CHECK_FAILED = "the connection does not meet a database check"
 
 
 def integrity_error(exc: IntegrityError) -> AppError | None:
-    """HTTP mapping of a database refusal by SQLSTATE (#156 rule 4.5, B-2745): a duplicate name
-    in one scope is 409, a `connections_guard` refusal is 422 with the guard's own message (the
-    RAISE text, never ids or values); None for anything else, which the caller re-raises."""
+    """HTTP mapping of a database refusal by SQLSTATE (#156 rule 4.5, B-2745, B-3121): a duplicate
+    name in one scope is 409; a `connections_guard` refusal (23514) is 422 with the code of the
+    guard its fixed RAISE text names, any other 23514 (a plain CHECK) 422 `validation_error`; the
+    message is always a constant here, never ids or values; None for anything else, which the
+    caller re-raises."""
     state = getattr(exc.orig, "sqlstate", None)
     if state == "23505":
         return Conflict("a connection with this name already exists in this scope")
     if state == "23514":
         diag = getattr(exc.orig, "diag", None)
-        return SecretScopeMismatch(getattr(diag, "message_primary", None) or SCOPE_MISMATCH)
+        message = getattr(diag, "message_primary", None)
+        if message == GUARD_SECRET_TENANT:
+            return SecretScopeMismatch(GUARD_SECRET_TENANT)
+        if message == GUARD_SECRET_SCOPE:
+            return SecretScopeMismatch(GUARD_SECRET_SCOPE)
+        if message == GUARD_EGRESS_TENANT:
+            return EgressPolicyMismatch(GUARD_EGRESS_TENANT)
+        if message == GUARD_VENDOR_TENANT:
+            return VendorNotVisible(GUARD_VENDOR_TENANT)
+        return ValidationFailed(CHECK_FAILED)
     return None
 
 
