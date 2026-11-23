@@ -4,7 +4,9 @@ Validation is the security boundary of a tool definition: the executor must exis
 `planned`, the binding must be well formed, a referenced connection must be same-tenant, active and
 usable by the publisher (`connection:use`), JSON Schemas must be valid draft 2020-12 documents
 without remote references, and the side-effect class must be consistent with the binding, retry
-policy and idempotency declaration (SYSTEM_ARCHITECTURE 6.7 is authoritative).
+policy and idempotency declaration (SYSTEM_ARCHITECTURE 6.7 is authoritative). A `connection.sql`
+tool on a Databricks `data_platform` connection also passes the SELECT-only statement rules of
+`build/sqlrules.py` on its template converted to the `:name` form.
 """
 
 from __future__ import annotations
@@ -13,10 +15,12 @@ import re
 from typing import Any  # Any: stored JSON specs
 from uuid import UUID
 
+from shifde.build import sqlrules
 from shifde.build.env import Env
 from shifde.build.executors import (
     BUILTIN_FUNCTIONS,
-    CONNECTION_TYPE_OF,
+    CONNECTION_TYPES_OF,
+    DATA_PLATFORM_ADAPTER_OF,
     EXECUTORS,
     SEVERITY,
     SIDE_EFFECT_CLASSES,
@@ -31,6 +35,7 @@ SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 PERMISSION_KEY = re.compile(r"^[a-z][a-z_]*:[a-z][a-z_]*$")
 BRACE_NAME = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 PARAM_NAME = re.compile(r"%\(([A-Za-z_][A-Za-z0-9_]*)\)s")
+_PARAM_OR_PERCENT = re.compile(r"%\(([A-Za-z_][A-Za-z0-9_]*)\)s|%%")
 READ_SQL = re.compile(r"^\s*(select|with|show|values|table|explain)\b", re.I)
 KNOWN_KEYS = frozenset(
     {
@@ -61,6 +66,11 @@ def _uuid(value: Any) -> UUID | None:
 
 def _is_number(value: Any) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+def named_sql(template: str) -> str:
+    """A stored `%(name)s` template in the data-platform form: `:name` parameters, `%%` as `%`."""
+    return _PARAM_OR_PERCENT.sub(lambda m: f":{m.group(1)}" if m.group(1) else "%", template)
 
 
 def template_names(node: Any, pattern: re.Pattern[str]) -> set[str]:  # Any: JSON template
@@ -94,7 +104,7 @@ def validate_tool(
     executor = spec.get("executor")
     if executor not in EXECUTORS:
         report.error("executor", "invalid_value", f"must be one of {', '.join(EXECUTORS)}")
-    elif env.executor_maturity(executor) == "planned":
+    elif _maturity(executor, spec, env) == "planned":
         report.error("executor", "executor_planned", f"executor {executor!r} is planned only")
 
     side = spec.get("side_effect_class")
@@ -121,6 +131,19 @@ def validate_tool(
     elif executor in EXECUTORS and side in SIDE_EFFECT_CLASSES:
         out["binding"] = _validate_binding(executor, binding, side, props, env, report, resolve)
     return out
+
+
+def _maturity(executor: str, spec: dict[str, Any], env: Env) -> str | None:
+    """The executor's derived maturity; for `connection.sql` on a data_platform connection, that
+    of the platform adapter's capability (None: an unsupported adapter, reported at the binding)."""
+    binding = spec.get("binding")
+    if executor == "connection.sql" and isinstance(binding, dict):
+        cid = _uuid(binding.get("connection_id"))
+        info = env.connection(cid) if cid is not None else None
+        if info is not None and info.connection_type == "data_platform":
+            platform = DATA_PLATFORM_ADAPTER_OF.get(info.adapter_key)
+            return None if platform is None else env.adapter_maturity(*platform)
+    return env.executor_maturity(executor)
 
 
 def _schema(report: Report, path: str, schema: Any, *, must_be_object: bool) -> bool:
@@ -265,6 +288,8 @@ def _validate_binding(
         out = _validate_mcp(binding, side, env, report, resolve, info)
     else:
         _validate_sql(binding, side, props, report)
+        if info is not None and info.connection_type == "data_platform":
+            _validate_platform_sql(binding, report)
     return out
 
 
@@ -286,13 +311,20 @@ def _connection(
     if info is None:
         report.error(path, "connection_not_found", "no such connection in this organization")
         return None
-    if info.connection_type != CONNECTION_TYPE_OF[executor]:
+    allowed = CONNECTION_TYPES_OF[executor]
+    if info.connection_type not in allowed:
         report.error(
             path,
             "wrong_connection_type",
-            f"{executor} needs a {CONNECTION_TYPE_OF[executor]} connection",
+            f"{executor} needs a {' or '.join(sorted(allowed))} connection",
         )
         return None
+    if info.connection_type == "data_platform" and info.adapter_key not in DATA_PLATFORM_ADAPTER_OF:
+        report.error(
+            path,
+            "executor_adapter_unsupported",
+            "connection.sql supports Databricks data platform connections only",
+        )
     if not info.implemented:
         report.error(path, "executor_planned", "the connection's adapter is planned only")
     if info.status != "active":
@@ -386,6 +418,15 @@ def _validate_sql(binding: dict[str, Any], side: str, props: set[str], report: R
         isinstance(max_rows, bool) or not isinstance(max_rows, int) or not 1 <= max_rows <= 10000
     ):
         report.error("binding.max_rows", "invalid_value", "must be between 1 and 10000")
+
+
+def _validate_platform_sql(binding: dict[str, Any], report: Report) -> None:
+    """The SELECT-only statement rules on the template as the data platform receives it."""
+    sql = binding.get("sql_template")
+    if not isinstance(sql, str) or not sql.strip():
+        return  # `_validate_sql` reported it
+    for issue in sqlrules.statement_rules(named_sql(sql)):
+        report.error("binding.sql_template", issue.code, issue.message)
 
 
 def _validate_mcp(

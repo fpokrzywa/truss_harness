@@ -8,7 +8,7 @@ import pytest
 from shifde.build.executors import (
     ADAPTER_OF,
     BUILTIN_FUNCTIONS,
-    CONNECTION_TYPE_OF,
+    CONNECTION_TYPES_OF,
     EXECUTORS,
     ONTOLOGY_QUERY,
     SEVERITY,
@@ -21,7 +21,7 @@ from shifde.core.errors import ValidationFailed
 
 def test_only_the_four_executor_kinds_exist() -> None:
     assert EXECUTORS == ("builtin.function", "rest.http", "mcp.tool", "connection.sql")
-    assert set(ADAPTER_OF) == set(CONNECTION_TYPE_OF) == set(EXECUTORS) - {"builtin.function"}
+    assert set(ADAPTER_OF) == set(CONNECTION_TYPES_OF) == set(EXECUTORS) - {"builtin.function"}
 
 
 def test_side_effect_classes_are_ordered_and_writes_are_marked() -> None:

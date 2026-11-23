@@ -20,14 +20,27 @@ def maturity_map(session: Session, registry: AdapterRegistry) -> dict[str, str]:
     latest = evidence.latest_runs(session)
     out: dict[str, str] = {"builtin.function": "validated"}
     for executor, (adapter_key, capability) in ADAPTER_OF.items():
-        descriptor = registry.descriptor(adapter_key)
-        if descriptor is None:
-            out[executor] = "planned"
-        else:
-            out[executor] = capability_maturity(
-                descriptor, capability, latest.get(adapter_key)
-            ).maturity
+        out[executor] = _derived(registry, latest, adapter_key, capability)
     return out
+
+
+def adapter_maturity(
+    session: Session, registry: AdapterRegistry, adapter_key: str, capability: str
+) -> str:
+    """The derived maturity of one adapter capability (`planned` for an unknown adapter)."""
+    return _derived(registry, evidence.latest_runs(session), adapter_key, capability)
+
+
+def _derived(
+    registry: AdapterRegistry,
+    latest: dict[str, evidence.ConformanceRun],
+    adapter_key: str,
+    capability: str,
+) -> str:
+    descriptor = registry.descriptor(adapter_key)
+    if descriptor is None:
+        return "planned"
+    return capability_maturity(descriptor, capability, latest.get(adapter_key)).maturity
 
 
 def executor_catalog(session: Session, registry: AdapterRegistry) -> s.ExecutorCatalogOut:
