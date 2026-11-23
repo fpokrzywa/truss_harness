@@ -115,6 +115,7 @@ type = "layers"
 layers = [
   "shifde.main | shifde.executor",
   "shifde.app | shifde.cli",
+  "shifde.board",
   "shifde.delivery",
   "shifde.evaluation",
   "shifde.packaging",
@@ -154,6 +155,7 @@ containers = [
   "shifde.delivery",
   "shifde.evaluation",
   "shifde.packaging",
+  "shifde.board",
 ]
 exhaustive = false
 
@@ -167,6 +169,7 @@ forbidden_modules = [
   "shifde.adapters", "shifde.vendors", "shifde.connections", "shifde.models_admin",
   "shifde.build", "shifde.ontology", "shifde.runtime", "shifde.governance", "shifde.ledger",
   "shifde.evaluation", "shifde.packaging",
+  "shifde.board",
 ]
 
 [[tool.importlinter.contracts]]
@@ -182,6 +185,7 @@ forbidden_modules = [
   "shifde.vendors", "shifde.installation", "shifde.tenancy", "shifde.identity", "shifde.secrets",
   "shifde.audit", "shifde.authz", "shifde.observability", "shifde.ledger", "shifde.evaluation",
   "shifde.packaging",
+  "shifde.board",
 ]
 
 [[tool.importlinter.contracts]]
@@ -195,6 +199,7 @@ forbidden_modules = [
   "shifde.vendors", "shifde.installation", "shifde.tenancy", "shifde.identity", "shifde.secrets",
   "shifde.audit", "shifde.authz", "shifde.observability", "shifde.ledger", "shifde.evaluation",
   "shifde.packaging",
+  "shifde.board",
 ]
 
 [[tool.importlinter.contracts]]
@@ -243,6 +248,7 @@ source_modules = [
   "shifde.packaging.canonical",
   "shifde.evaluation.service", "shifde.evaluation.repository", "shifde.evaluation.schemas",
   "shifde.evaluation.assertions", "shifde.evaluation.scoring",
+  "shifde.board.service", "shifde.board.repository", "shifde.board.schemas",
 ]
 forbidden_modules = ["fastapi", "starlette"]
 
@@ -264,6 +270,7 @@ source_modules = [
   "shifde.models_admin", "shifde.build", "shifde.ontology", "shifde.runtime",
   "shifde.governance", "shifde.ledger",
   "shifde.delivery", "shifde.packaging", "shifde.evaluation",
+  "shifde.board",
 ]
 forbidden_modules = [
   "shifde.secrets.repository", "shifde.secrets.models",
@@ -274,6 +281,7 @@ forbidden_modules = [
   "shifde.vendors.repository", "shifde.connections.repository", "shifde.models_admin.repository",
   "shifde.build.repository", "shifde.ontology.repository", "shifde.governance.repository",
   "shifde.delivery.repository", "shifde.packaging.repository", "shifde.evaluation.repository",
+  "shifde.board.repository",
 ]
 allow_indirect_imports = true
 ignore_imports = [
@@ -295,4 +303,26 @@ ignore_imports = [
   "shifde.delivery.** -> shifde.delivery.repository",
   "shifde.packaging.** -> shifde.packaging.repository",
   "shifde.evaluation.** -> shifde.evaluation.repository",
+  "shifde.board.** -> shifde.board.repository",
 ]
+
+[[tool.importlinter.contracts]]
+name = "Board writes nothing"
+type = "forbidden"
+# design 2026-11-23 section 3: the board reads other modules' tables through its own repository
+# only, writes no audit row and never runs the plan or deployment settle steps (their list/get
+# commit); the services it may use import audit.service themselves, hence indirect imports.
+source_modules = ["shifde.board"]
+forbidden_modules = [
+  "shifde.audit.service", "shifde.delivery.plans", "shifde.delivery.deployments",
+  "shifde.tenancy.repository", "shifde.tenancy.models",
+  "shifde.identity.repository", "shifde.identity.models",
+  "shifde.authz.repository", "shifde.authz.models",
+  "shifde.audit.repository", "shifde.audit.models",
+  "shifde.secrets.repository", "shifde.secrets.models",
+  "shifde.vendors.repository", "shifde.connections.repository", "shifde.models_admin.repository",
+  "shifde.build.repository", "shifde.ontology.repository", "shifde.runtime.repository",
+  "shifde.governance.repository", "shifde.delivery.repository", "shifde.packaging.repository",
+  "shifde.evaluation.repository",
+]
+allow_indirect_imports = true
