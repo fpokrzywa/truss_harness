@@ -7,6 +7,7 @@ counterpart returns. Each probe yields at least one problem, so no comparison is
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 
 import pytest
@@ -109,7 +110,7 @@ PROBES: dict[str, list[str]] = {
 
 
 def _both(c: Connection) -> list[tuple[list[str], list[str]]]:
-    """(ported, test) results of the three rule functions on `c`."""
+    """(ported, test) results of the four rule functions on `c`."""
     return [
         (
             catalog_rules.rls_violations(c),
@@ -122,6 +123,10 @@ def _both(c: Connection) -> list[tuple[list[str], list[str]]]:
         (
             catalog_rules.definer_violations(c, fn_rules.OWNER_ROLE, fn_rules.APP_ROLE),
             fn_rules.definer_violations(c, fn_rules.SECURITY_DEFINER_ALLOWLIST),
+        ),
+        (
+            catalog_rules.context_write_violations(c),
+            scan_rules.context_write_violations(c),
         ),
     ]
 
@@ -150,6 +155,18 @@ def test_the_rule_data_matches_the_schema_tests() -> None:
     assert set(fn_rules.SECURITY_DEFINER_ALLOWLIST) == catalog_rules.SECURITY_DEFINER_ALLOWLIST
 
 
+def _patterns(patterns: tuple[tuple[re.Pattern[str], str], ...]) -> list[tuple[str, int, str]]:
+    return [(pattern.pattern, pattern.flags, why) for pattern, why in patterns]
+
+
+def test_the_context_scan_data_matches_the_schema_tests() -> None:
+    assert catalog_rules.ALL_KINDS == scan_rules.ALL_KINDS
+    assert catalog_rules._SCANNED_LANGUAGES == scan_rules._SCANNED_LANGUAGES
+    assert catalog_rules._EXPRESSIONS.keys() == scan_rules._EXPRESSIONS.keys()
+    assert _patterns(catalog_rules._PATTERNS) == _patterns(scan_rules._PATTERNS)
+    assert _patterns(catalog_rules._BODY_PATTERNS) == _patterns(scan_rules._BODY_PATTERNS)
+
+
 def test_the_migrated_database_gives_the_same_empty_results(owner_engine: Engine) -> None:
     with owner_engine.connect() as c:
         results = _both(c)
@@ -176,3 +193,35 @@ def test_a_recognised_write_form_is_not_reported(scratch: Connection, expr: str)
     assert catalog_rules.rls_violations(scratch) == [
         "shifde.zz_rls_probe: row level security not forced"
     ]
+
+
+@pytest.mark.parametrize(("ddl", "labels"), fn_rules.CONTEXT_WRITERS)
+def test_each_context_writer_gives_the_same_non_empty_scan(
+    scratch: Connection, ddl: list[str], labels: set[str]
+) -> None:
+    for statement in ddl:
+        scratch.execute(text(statement))
+    ported = catalog_rules.context_write_violations(scratch)
+    assert ported == scan_rules.context_write_violations(scratch)
+    assert ported
+
+
+def test_the_allowlist_argument_gives_the_same_scan(scratch: Connection) -> None:
+    ddl, labels = fn_rules.CONTEXT_WRITERS[0]
+    for statement in ddl:
+        scratch.execute(text(statement))
+    for allowlist in ({}, dict.fromkeys(labels, "probe")):
+        ported = catalog_rules.context_write_violations(scratch, allowlist=allowlist)
+        assert ported == scan_rules.context_write_violations(scratch, allowlist=allowlist)
+    assert catalog_rules.context_write_violations(scratch, allowlist={}) != []
+
+
+@pytest.mark.parametrize("body", [False, True])
+@pytest.mark.parametrize(
+    "config", [["app.platform_admin=on"], ["search_path=pg_catalog", "APP.Tenant_Id=x"]]
+)
+def test_a_set_clause_gives_the_same_reasons(config: list[str], body: bool) -> None:
+    source = " ".join(config)
+    ported = catalog_rules.context_reasons(source, body=body)
+    assert ported == scan_rules.context_reasons(source, body=body)
+    assert ported

@@ -460,6 +460,16 @@ FORGERIES = {
         ],
         "shifde.zz_forged: SECURITY DEFINER but not on the allowlist",
     ),
+    # a plain (not SECURITY DEFINER) trigger function that sets the client context
+    "set_updated_at writes the context": (
+        [
+            "CREATE OR REPLACE FUNCTION shifde.set_updated_at() RETURNS trigger LANGUAGE plpgsql"
+            " AS $$ BEGIN PERFORM pg_catalog.set_config('app.tenant_id',"
+            " '01900000-0000-7000-8000-0000000000bb', true);"
+            " NEW.updated_at = pg_catalog.now(); RETURN NEW; END $$"
+        ],
+        "function shifde.set_updated_at(): set_config, names app.<context setting>",
+    ),
 }
 
 
