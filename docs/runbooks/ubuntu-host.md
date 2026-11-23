@@ -273,8 +273,13 @@ instance name is only a local label.
    `SHIFDE_EXECUTOR_TOKEN` is the credential from step 1,
    `SHIFDE_EXECUTOR_CREDENTIALS_FILE=/etc/seth/executor/<org>.credentials.json`, and
    `SHIFDE_EXECUTOR_HEALTH_PORT` is a loopback port of its own (8720, 8721, ...).
-3. Create the credentials file: JSON `credential_ref -> {tenant_id, host, token,
-   service_principal}`, every entry carrying this organization's id as `tenant_id`.
+3. Create the credentials file: JSON `credential_ref -> entry`, every entry carrying this
+   organization's id as `tenant_id`. A Databricks target's entry is `{tenant_id, host, token,
+   service_principal}`; a Snowflake target's entry is `{tenant_id, host, platform: "snowflake",
+   user, role, private_key_file}`, where `private_key_file` is the absolute path of the deploy
+   user's unencrypted PKCS#8 PEM key (for example `/etc/seth/executor/<org>.snowflake.p8`),
+   owned by `seth-exec-<org>` with mode 0600 like the credentials file: the executor refuses a key
+   file readable or writable by group or others, and reads it on every use.
 4. Create the instance's user, set the modes and start the instance. It is never started with
    `--fake-platform`.
 
