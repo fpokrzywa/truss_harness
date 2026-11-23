@@ -73,6 +73,18 @@ class StageCopier(Protocol):
 CredentialProvider = Callable[[], SnowflakeKeyPair]
 
 
+def _bound_credential(provider: CredentialProvider, host: str) -> SnowflakeKeyPair:
+    """The provider's credential, refused unless it belongs to the (normalized) target `host`."""
+    credential = provider()
+    try:
+        credential_host = normalize_snowflake_address(credential.host)
+    except ValueError:
+        credential_host = ""
+    if credential_host != host:
+        raise PermissionError("Snowflake credential belongs to another account host")
+    return credential
+
+
 class SnowflakeSqlApi:
     """One statement per request against `target.host`, as the credential's role."""
 
@@ -93,14 +105,7 @@ class SnowflakeSqlApi:
         return f"SnowflakeSqlApi({self.host})"
 
     def _credential(self) -> SnowflakeKeyPair:
-        credential = self.credential_provider()
-        try:
-            host = normalize_snowflake_address(credential.host)
-        except ValueError:
-            host = ""
-        if host != self.host:
-            raise PermissionError("Snowflake credential belongs to another account host")
-        return credential
+        return _bound_credential(self.credential_provider, self.host)
 
     def _key(self, pem: str) -> rsa.RSAPrivateKey:
         """The parsed key of `pem` (kept for the last PEM only: parsing checks the key, slowly)."""
@@ -182,22 +187,25 @@ def _rows(doc: dict[str, Any]) -> list[dict[str, Any]]:  # Any: JSON body and va
 
 
 class SnowflakeStageCopier:
-    """The pinned Snowflake CLI in a minimal environment: version check and stage copy only."""
+    """The pinned Snowflake CLI in a minimal environment: version check and stage copy only, to
+    `target.host` with a credential of that host."""
 
     platform = "snowflake"
 
     def __init__(
         self,
+        target: Target,
         executable: str = "snow",
         *,
         credential_provider: CredentialProvider,
         timeout: float = 600,
     ) -> None:
+        self.host = normalize_snowflake_address(target.host)  # the egress rule
         self.executable, self.credential_provider = executable, credential_provider
         self.timeout = timeout
 
     def __repr__(self) -> str:
-        return f"SnowflakeStageCopier({self.executable})"
+        return f"SnowflakeStageCopier({self.host}, {self.executable})"
 
     @staticmethod
     def _env(home: str) -> dict[str, str]:
@@ -244,8 +252,8 @@ class SnowflakeStageCopier:
         stage = ".".join(identifier(part) for part in stage.split("."))
         if not _DIGEST.fullmatch(digest):
             raise ValueError("invalid release digest")
-        credential = self.credential_provider()
-        host = normalize_snowflake_address(credential.host).removeprefix("https://")
+        credential = _bound_credential(self.credential_provider, self.host)
+        host = self.host.removeprefix("https://")
         with tempfile.TemporaryDirectory(prefix="shifde-snowcli-") as temporary:
             self._version(temporary)
             config = Path(temporary) / "config.toml"

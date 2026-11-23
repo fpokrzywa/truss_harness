@@ -194,9 +194,9 @@ def run(monkeypatch: pytest.MonkeyPatch) -> _Run:
     return recorder
 
 
-def _copier() -> SnowflakeStageCopier:
-    credential = sf_credential()
-    return SnowflakeStageCopier(credential_provider=lambda: credential)
+def _copier(credential_host: str = SF_HOST) -> SnowflakeStageCopier:
+    credential = sf_credential(credential_host)
+    return SnowflakeStageCopier(_target(), credential_provider=lambda: credential)
 
 
 def test_the_copier_runs_one_hook_free_stage_copy(run: _Run, tmp_path: Path) -> None:
@@ -214,6 +214,7 @@ def test_the_copier_runs_one_hook_free_stage_copy(run: _Run, tmp_path: Path) -> 
     ]
     for flag in ("--no-auto-compress", "--temporary-connection", "--config-file"):
         assert flag in argv
+    assert argv[argv.index("--host") + 1] == "acct1.snowflakecomputing.com"
     assert argv[argv.index("--authenticator") + 1] == "SNOWFLAKE_JWT"
     assert argv[argv.index("--format") + 1] == "JSON"
     assert "app" not in argv and "--force" not in argv
@@ -268,6 +269,50 @@ def test_the_copier_refuses_odd_stages_and_digests(
     with pytest.raises(ValueError):
         _copier().copy(tmp_path, stage, digest)
     assert run.calls == []
+
+
+@pytest.mark.parametrize(
+    "credential_host",
+    [
+        "https://acct2.snowflakecomputing.com",
+        "https://evil.example.com",
+        "https://acct1.snowflakecomputing.com.evil.com",
+        "not a url",
+    ],
+)
+def test_the_copier_refuses_a_credential_of_another_host_before_running(
+    run: _Run, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, credential_host: str
+) -> None:
+    made: list[str] = []
+    real = clients.tempfile.TemporaryDirectory
+
+    def recording(*args: Any, **kwargs: Any) -> Any:  # Any: TemporaryDirectory arguments
+        directory = real(*args, **kwargs)
+        made.append(directory.name)
+        return directory
+
+    monkeypatch.setattr(clients.tempfile, "TemporaryDirectory", recording)
+    with pytest.raises(PermissionError, match="another account host"):
+        _copier(credential_host).copy(tmp_path, "SHIFDE_PKG.SHIFDE.SOURCE", DIGEST)
+    assert run.calls == [] and run.key_file is None and made == []
+
+
+def test_the_copier_compares_the_credential_host_normalized(run: _Run, tmp_path: Path) -> None:
+    _copier("https://ACCT1.snowflakecomputing.com:443/").copy(
+        tmp_path, "SHIFDE_PKG.SHIFDE.SOURCE", DIGEST
+    )
+    argv = run.calls[-1][0]
+    assert argv[argv.index("--host") + 1] == "acct1.snowflakecomputing.com"
+
+
+@pytest.mark.parametrize(
+    "host", ["https://evil.example.com", "http://acct1.snowflakecomputing.com", "https://10.0.0.1"]
+)
+def test_the_copier_is_bound_to_a_snowflakecomputing_com_target(host: str) -> None:
+    target = _target().model_copy(update={"host": host})
+    credential = sf_credential(host)
+    with pytest.raises(ValueError):
+        SnowflakeStageCopier(target, credential_provider=lambda: credential)
 
 
 def test_a_missing_cli_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
