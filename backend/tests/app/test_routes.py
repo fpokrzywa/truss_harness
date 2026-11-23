@@ -45,6 +45,8 @@ UNIFIED_ONLY = {
     ("PUT", "/api/v1/orgs/{org}/capture-content"),  # J-M2, B-2550
     # ARCH M2 (issue #10, B-2610): the connection test runs on the worker; its job's status
     ("GET", "/api/v1/orgs/{org}/connections/{connection_id}/test-jobs/{job_id}"),
+    # issue #190: the connection invoke runs on the worker; its invocation's status
+    ("GET", "/api/v1/orgs/{org}/connections/{connection_id}/invocations/{invocation_id}"),
     # CM-2 (issue #160, B-2749): set or rotate the connection's own credential
     ("PUT", "/api/v1/orgs/{org}/connections/{connection_id}/credential"),
     # ARCH M11 (issue #56, B-2722): ontology export gated by data:export

@@ -22,6 +22,7 @@ from shifde.connections import api as connections_api
 from shifde.core.db import Database, set_tenant
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
+from tests._support.conntests import run_invoke
 from tests._support.tenants import add_project
 from tests.connections.routes import (
     REST_TOKEN,
@@ -59,7 +60,8 @@ CASES: dict[tuple[str, str], tuple[Any, int]] = {
     ("GET", f"{_ONE}/test-jobs/{{job_id}}"): (None, 200),
     ("GET", f"{_ONE}/discoveries/latest"): (None, 200),
     ("POST", f"{_ONE}/discover"): (None, 200),
-    ("POST", f"{_ONE}/invoke"): ({"method": "GET", "path": "/health"}, 200),
+    ("POST", f"{_ONE}/invoke"): ({"method": "GET", "path": "/health"}, 202),
+    ("GET", f"{_ONE}/invocations/{{invocation_id}}"): (None, 200),
     ("POST", f"{_ONE}/test"): (None, 202),
     # `row_version` is the own connection's current one, read just before the call
     ("PUT", "/api/v1/orgs/{org}/connections/{connection_id}/credential"): (
@@ -117,7 +119,20 @@ def _state(owner_db: Database, world: World, cid: str) -> tuple[Any, ...]:
             ),
             {"i": cid},
         ).all()
-    return (tuple(row), tests, found, [tuple(j) for j in jobs], tuple(secret))
+        invocations = o.execute(  # its invoke results (issue #190), all columns
+            text(
+                "SELECT * FROM shifde.connection_invocations WHERE connection_id = :i ORDER BY id"
+            ),
+            {"i": cid},
+        ).all()
+    return (
+        tuple(row),
+        tests,
+        found,
+        [tuple(j) for j in jobs],
+        tuple(secret),
+        [tuple(i) for i in invocations],
+    )
 
 
 def test_a_connection_of_another_project_answers_like_an_unknown_id(
@@ -156,7 +171,10 @@ def test_a_connection_of_another_project_answers_like_an_unknown_id(
     hidden = made(evil, "in-p2", p2_slug, p2)
     member, member_id = limited_user(owner_db, a.tenant, [], label="p1-member")
     grant(owner_db, a.tenant, member_id, PROJECT_PERMS, scope_type="project", scope_id=a.project)
+    invoke = {"method": "GET", "path": "/health"}
+    hidden_inv = run_invoke(client, owner, A, hidden, invoke, tenant_id=a.tenant)["id"]
     h = as_user(client, member)
+    own_inv = run_invoke(client, h, A, own, invoke, tenant_id=a.tenant)["id"]
 
     for url in (
         f"{A}/connections?limit=200",
@@ -177,23 +195,28 @@ def test_a_connection_of_another_project_answers_like_an_unknown_id(
     own_job, hidden_job = _state(owner_db, world, own)[3][-1][0], before[3][-1][0]
     nobody = str(uuid7())
 
-    def url(path: str, cid: str, job: Any) -> str:
+    def url(path: str, cid: str, job: Any, inv: Any = None) -> str:
         return (
             path.replace("/api/v1/orgs/{org}", A)
             .replace("{connection_id}", cid)
             .replace("{job_id}", str(job))
+            .replace("{invocation_id}", str(inv))
         )
 
     for (method, path), (payload, ok) in CASES.items():
         if method == "PUT":
             current = client.get(url(_ONE, own, None), headers=h).json()["row_version"]
             payload = {**payload, "row_version": current}
-        r = client.request(method, url(path, own, own_job), headers=h, json=payload)
+        r = client.request(method, url(path, own, own_job, own_inv), headers=h, json=payload)
         assert r.status_code == ok, (method, path, r.text)  # own object first
-        missing = client.request(method, url(path, nobody, hidden_job), headers=h, json=payload)
+        missing = client.request(
+            method, url(path, nobody, hidden_job, hidden_inv), headers=h, json=payload
+        )
         assert missing.json()["detail"] == "connection not found", missing.text
         _same_404(
-            client.request(method, url(path, hidden, hidden_job), headers=h, json=payload),
+            client.request(
+                method, url(path, hidden, hidden_job, hidden_inv), headers=h, json=payload
+            ),
             missing,
         )
     assert _state(owner_db, world, hidden) == before  # unchanged, no test, discovery or job added

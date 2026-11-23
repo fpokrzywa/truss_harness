@@ -26,6 +26,7 @@ from shifde.adapters.base import (
 from shifde.adapters.conformance import loopback_guard
 from shifde.adapters.rest_http import RestHttpAdapter
 from shifde.adapters.testservers import _LocalHttpServer, _send_json
+from shifde.core.httplogs import HTTP_CLIENT_LOGGERS
 
 SECRET = "client-secret-f09-value"
 _serial = itertools.count(1)
@@ -474,6 +475,8 @@ def test_secret_and_tokens_never_leak(
     fake: OAuth2FakeServer, clock: list[float], caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.DEBUG)
+    for name in HTTP_CLIENT_LOGGERS:  # kept at WARNING by the logging setup (B-3901); not here
+        caplog.set_level(logging.DEBUG, logger=name)
     fake.expires_in = 60
     c, x = conn(fake), ctx()
     a = RestHttpAdapter()

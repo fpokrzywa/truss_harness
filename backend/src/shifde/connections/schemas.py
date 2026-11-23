@@ -149,6 +149,19 @@ class InvokeOut(BaseModel):
     duration_ms: int
 
 
+class InvocationOut(BaseModel):
+    """A connection invoke queued on the worker (issue #190): `result` once it has succeeded,
+    `error` (a code, never a message) once it has failed."""
+
+    id: UUID
+    connection_id: UUID
+    status: Literal["queued", "running", "succeeded", "failed"]
+    result: InvokeOut | None
+    error: str | None
+    created_at: datetime
+    finished_at: datetime | None
+
+
 # ------------------------------------------------------------------ egress policies (B2)
 class EgressRules(BaseModel):
     model_config = Strict

@@ -3,6 +3,7 @@ development and test, and `--fake-platform` refused outside them, before any gat
 
 from __future__ import annotations
 
+import logging
 import subprocess  # nosec B404 - runs the installed console script
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ from uuid import uuid4
 
 import pytest
 
+from shifde.core.httplogs import HTTP_CLIENT_LOGGERS
 from shifde.executor import main
 from shifde.executor.runner import FakePlatform, RealPlatform
 from tests.executor.support import credentials_file
@@ -115,3 +117,22 @@ def test_a_missing_variable_is_named_without_the_token(
 
 def test_the_real_platform_is_the_default(env: None) -> None:
     assert isinstance(main.configure([], main.os.environ).platform, RealPlatform)
+
+
+def test_the_logging_setup_raises_the_http_client_loggers_to_warning(
+    env: None, calls: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B-3901: the executor's logging setup leaves no gateway request URL at INFO."""
+    levels = {name: logging.getLogger(name).level for name in HTTP_CLIENT_LOGGERS}
+    monkeypatch.setenv("SHIFDE_ENV", "test")
+    try:
+        for name in HTTP_CLIENT_LOGGERS:
+            logging.getLogger(name).setLevel(logging.NOTSET)
+        with pytest.raises(GatewayCalled):
+            main.run([])
+        assert {n: logging.getLogger(n).level for n in HTTP_CLIENT_LOGGERS} == dict.fromkeys(
+            HTTP_CLIENT_LOGGERS, logging.WARNING
+        )
+    finally:
+        for name, value in levels.items():
+            logging.getLogger(name).setLevel(value)

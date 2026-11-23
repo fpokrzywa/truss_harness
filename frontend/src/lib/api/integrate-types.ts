@@ -316,6 +316,18 @@ export interface ConnectionInvokeResult {
   duration_ms: number;
 }
 
+/** A connection invocation queued on the worker (issue #190): `result` once it succeeded. */
+export interface ConnectionInvocation {
+  id: string;
+  connection_id: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  result: ConnectionInvokeResult | null;
+  /** Error code of a failed invocation (e.g. `forbidden`, `upstream_error`, `worker_lost`). */
+  error: string | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
 /** Egress rule fields are not fixed by the contract (SECURITY_MODEL section 6); see frontend/README.md. */
 export interface EgressRules {
   allowed_schemes?: string[];
