@@ -71,6 +71,13 @@ def update_connection(
     return svc.update(connection_id, body)
 
 
+@router.put("/orgs/{org}/connections/{connection_id}/credential", tags=["connections"])
+def set_connection_credential(
+    svc: Connections, connection_id: UUID, body: s.ConnectionCredentialSet
+) -> s.ConnectionOut:
+    return svc.set_credential(connection_id, body)
+
+
 @router.post("/orgs/{org}/connections/{connection_id}/status", tags=["connections"])
 def set_connection_status(
     svc: Connections, connection_id: UUID, body: s.ConnectionStatusChange

@@ -48,6 +48,7 @@ PROJECT_PERMS = [
     "connection:test",
     "connection:use",
     "connection:write",
+    "secret:manage",  # PUT .../credential (CM-2, B-2748)
 ]
 
 # every connections route naming a connection, in the order the member calls it (its own
@@ -60,6 +61,11 @@ CASES: dict[tuple[str, str], tuple[Any, int]] = {
     ("POST", f"{_ONE}/discover"): (None, 200),
     ("POST", f"{_ONE}/invoke"): ({"method": "GET", "path": "/health"}, 200),
     ("POST", f"{_ONE}/test"): (None, 202),
+    # `row_version` is the own connection's current one, read just before the call
+    ("PUT", "/api/v1/orgs/{org}/connections/{connection_id}/credential"): (
+        {"value": REST_TOKEN, "read_only_confirmed": True},
+        200,
+    ),
     ("PATCH", _ONE): ({"name": "renamed"}, 200),
     ("POST", f"{_ONE}/status"): ({"status": "disabled"}, 200),
 }
@@ -101,6 +107,9 @@ def _state(owner_db: Database, world: World, cid: str) -> tuple[Any, ...]:
             text("SELECT count(*) FROM shifde.connection_discoveries WHERE connection_id = :i"),
             {"i": cid},
         ).scalar_one()
+        secret = o.execute(  # the bound secret, all columns (ciphertext included)
+            text("SELECT s.* FROM shifde.secrets s WHERE s.id = :s"), {"s": row.secret_ref_id}
+        ).one()
         jobs = o.execute(
             text(
                 "SELECT id, status FROM shifde.jobs WHERE kind = 'connection.test' "
@@ -108,7 +117,7 @@ def _state(owner_db: Database, world: World, cid: str) -> tuple[Any, ...]:
             ),
             {"i": cid},
         ).all()
-    return (tuple(row), tests, found, [tuple(j) for j in jobs])
+    return (tuple(row), tests, found, [tuple(j) for j in jobs], tuple(secret))
 
 
 def test_a_connection_of_another_project_answers_like_an_unknown_id(
@@ -176,6 +185,9 @@ def test_a_connection_of_another_project_answers_like_an_unknown_id(
         )
 
     for (method, path), (payload, ok) in CASES.items():
+        if method == "PUT":
+            current = client.get(url(_ONE, own, None), headers=h).json()["row_version"]
+            payload = {**payload, "row_version": current}
         r = client.request(method, url(path, own, own_job), headers=h, json=payload)
         assert r.status_code == ok, (method, path, r.text)  # own object first
         missing = client.request(method, url(path, nobody, hidden_job), headers=h, json=payload)
