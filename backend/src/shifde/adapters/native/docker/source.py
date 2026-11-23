@@ -13,6 +13,7 @@ import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any  # Any: YAML and JSON documents
+from uuid import UUID
 
 import yaml
 
@@ -26,7 +27,7 @@ BASE_IMAGE = (
 RELEASE_LABEL = "org.shifde.release_digest"  # on the image
 TARGET_LABEL = "org.shifde.target_id"  # on the compose service
 ENV_FILE_DIR = "/etc/shifde-apps"
-PROJECT = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
+PROJECT = re.compile(r"^shifde-[0-9a-f]{32}$")  # `compose_project` of a target id
 PORT_MIN, PORT_MAX = 1024, 65535
 CONTAINER_PORT = 8000
 TMPFS = "/tmp"  # nosec B108 - the container's tmpfs mount point, never a host path
@@ -84,19 +85,26 @@ class Bundle:
     labels: dict[str, str]
 
 
+def compose_project(target_id: UUID) -> str:
+    """The target's compose project, from its id only: a client-chosen name could be claimed by
+    another client's target on the same daemon first, with that name's image and env file."""
+    return f"shifde-{target_id.hex}"
+
+
 def image_tag(project: str, release_digest: str) -> str:
-    return f"shifde-{project}:{release_digest[:12]}"
+    return f"{project}:{release_digest[:12]}"
+
+
+def env_file(project: str) -> str:
+    return f"{ENV_FILE_DIR}/{project}.env"
 
 
 def target_project_port(target: Target) -> tuple[str, int]:
-    """The `project` and `port` bindings of a Docker target, validated."""
-    project = target.bindings.get("project", "")
+    """The target's derived compose project and its `port` binding, validated."""
     port = target.bindings.get("port", "")
-    if not PROJECT.fullmatch(project):
-        raise ValueError("the project binding is missing or invalid")
     if not port.isascii() or not port.isdigit() or not PORT_MIN <= int(port) <= PORT_MAX:
         raise ValueError("the port binding is missing or outside 1024..65535")
-    return project, int(port)
+    return compose_project(target.id), int(port)
 
 
 def _logical_lines(text: str) -> list[str]:
@@ -201,6 +209,9 @@ def _string_map(value: Any, code: str, message: str) -> dict[str, str]:
 
 
 def _validate_compose(data: bytes) -> tuple[dict[str, Any], dict[str, str], dict[str, str]]:
+    if b"$" in data:
+        # Compose interpolates `$VAR`/`${VAR}` from the host environment anywhere in the file.
+        raise BundleInvalid("compose_interpolation", "compose.yaml may not hold $")
     try:
         document = yaml.safe_load(data)
     except yaml.YAMLError:
@@ -269,8 +280,8 @@ def validate_for_target(bundle: Bundle, target: Target) -> tuple[str, int]:
     service = bundle.service
     if service.get("image") != image_tag(project, bundle.release_digest):
         raise BundleInvalid("compose_image", "the compose image is not the derived image tag")
-    env_file = f"{ENV_FILE_DIR}/{project}.env"
-    if service.get("env_file") not in ([env_file], env_file):
+    path = env_file(project)
+    if service.get("env_file") not in ([path], path):
         raise BundleInvalid("compose_env_file", "the compose env_file is not the target's file")
     if service.get("ports") != [f"127.0.0.1:{port}:{CONTAINER_PORT}"]:
         raise BundleInvalid("compose_ports", "the compose port must be the loopback target port")

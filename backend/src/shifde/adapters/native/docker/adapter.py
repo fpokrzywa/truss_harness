@@ -1,10 +1,11 @@
 """`DockerComposeAdapter`: the ten native operations for a `docker.compose/v1` bundle, synchronous.
 
 The project, port, image and daemon are derived from the artifact and the target, never taken from
-the caller. Every write is attempted once: a failed or timed-out write propagates, and the journal
-turns any uncertain outcome into `NeedsAttention`. A target's daemon must be the runtime's
-(`docker_host_mismatch`), and a compose project of the bound name must carry this target's label
-(`foreign_project`). There is no down and no image prune.
+the caller; the compose project, image and env file are named after the target id
+(`shifde-<target id hex>`), never a client-chosen name. Every write is attempted once: a failed or
+timed-out write propagates, and the journal turns any uncertain outcome into `NeedsAttention`. A
+target's daemon must be the runtime's (`docker_host_mismatch`), and the target's compose project
+must carry this target's label (`foreign_project`). There is no down and no image prune.
 """
 
 from __future__ import annotations
@@ -142,7 +143,7 @@ class DockerComposeAdapter:
     def inspect(self, request: InspectRequest, ctx: ReadContext) -> EnvironmentSnapshot:
         project, _ = target_project_port(ctx.target)
         if request.app_name != project:
-            raise PermissionError("app name is not the target's project binding")
+            raise PermissionError("app name is not the target's compose project")
         self._daemon(ctx)
         containers = self._containers(project, ctx)
         resources = (
@@ -352,6 +353,7 @@ class DockerComposeAdapter:
                 "image": image,
                 "port": str(port),
                 "release_digest": release_digest,
+                "daemon_id": str(details["daemon_id"]),
             },
         )
         ctx.journal.complete("container-ready", receipt.model_dump(mode="json"))
@@ -368,7 +370,12 @@ class DockerComposeAdapter:
         receipt = request.receipt
         self._check_receipt(receipt, ctx)
         handles = receipt.operation_handles
-        containers = self.runtime.compose_ps(handles["project"])
+        project, _ = target_project_port(ctx.target)
+        if handles.get("project") != project:
+            raise PermissionError("receipt project is not the target's compose project")
+        if handles.get("daemon_id") != self._daemon(ctx):
+            raise DockerRefused("docker_host_mismatch")
+        containers = self.runtime.compose_ps(project)
         failed: Literal["failed"] = "failed"
         if not containers:
             return NativeObservation(state=failed, diagnostics=["the project has no container"])
@@ -407,8 +414,8 @@ class DockerComposeAdapter:
             evidence="the daemon's state does not prove which release was accepted",
         )
 
-    def _health(self, port: int, path: str) -> tuple[int, dict[str, Any]]:
-        status, body = self.runtime.http_get_local(port, path)
+    def _health(self, project: str, port: int, path: str) -> tuple[int, dict[str, Any]]:
+        status, body = self.runtime.http_get_local(project, port, path)
         document = json.loads(body)
         if not isinstance(document, dict):
             raise ValueError("unexpected health response")
@@ -429,22 +436,22 @@ class DockerComposeAdapter:
                 Check(name="app-deep-health", status="skipped"),
             ]
             return VerificationReport(checks=checks)
-        port = int(receipt.operation_handles["port"])
+        project, port = receipt.operation_handles["project"], int(receipt.operation_handles["port"])
         try:
-            status, body = self._health(port, "/health")
+            status, body = self._health(project, port, "/health")
             good = status == 200 and body.get("status") == "ok"
             checks.append(Check(name="runtime-health", status="passed" if good else "failed"))
         except Exception:
             checks.append(
                 Check(name="runtime-health", status="failed", evidence="health request failed")
             )
-        checks.append(self._deep_health(port, receipt.operation_handles["release_digest"]))
+        checks.append(self._deep_health(project, port, receipt.operation_handles["release_digest"]))
         return VerificationReport(checks=checks)
 
-    def _deep_health(self, port: int, release_digest: str) -> Check:
+    def _deep_health(self, project: str, port: int, release_digest: str) -> Check:
         """SP5 6.6: 200, `status` ok, the plan's release digest and every check passed."""
         try:
-            status, body = self._health(port, "/health?deep=1")
+            status, body = self._health(project, port, "/health?deep=1")
         except Exception:
             return Check(
                 name="app-deep-health", status="failed", evidence="deep health request failed"

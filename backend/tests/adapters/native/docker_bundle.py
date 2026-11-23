@@ -36,9 +36,10 @@ from shifde.adapters.native.docker.adapter import DockerComposeAdapter
 from shifde.adapters.native.docker.fake import FakeContainerRuntime
 from shifde.adapters.native.docker.source import (
     BASE_IMAGE,
-    ENV_FILE_DIR,
     RELEASE_LABEL,
     TARGET_LABEL,
+    compose_project,
+    env_file,
     image_tag,
 )
 
@@ -91,14 +92,13 @@ if __name__ == "__main__":
 '''
 
 
-def compose_document(
-    *, target_id: UUID, project: str, port: int, release_digest: str
-) -> dict[str, Any]:
+def compose_document(*, target_id: UUID, port: int, release_digest: str) -> dict[str, Any]:
+    project = compose_project(target_id)
     return {
         "services": {
             "app": {
                 "image": image_tag(project, release_digest),
-                "env_file": [f"{ENV_FILE_DIR}/{project}.env"],
+                "env_file": [env_file(project)],
                 "environment": {
                     "DATABRICKS_WAREHOUSE_ID": "warehouse-123",
                     "SERVING_ENDPOINT": "endpoint-1",
@@ -141,14 +141,11 @@ def dockerfile(release_digest: str) -> str:
 def bundle_files(
     *,
     target_id: UUID,
-    project: str,
     port: int,
     release_digest: str = RELEASE,
     marker: str = MARKER,
 ) -> dict[str, bytes]:
-    compose = compose_document(
-        target_id=target_id, project=project, port=port, release_digest=release_digest
-    )
+    compose = compose_document(target_id=target_id, port=port, release_digest=release_digest)
     return {
         "Dockerfile": dockerfile(release_digest).encode(),
         "compose.yaml": yaml.safe_dump(compose, sort_keys=False).encode(),
@@ -180,7 +177,11 @@ class DockerSetup:
 
     @property
     def project(self) -> str:
-        return self.target.bindings["project"]
+        return compose_project(self.target.id)
+
+    @property
+    def image(self) -> str:
+        return image_tag(self.project, RELEASE)
 
     @property
     def port(self) -> int:
@@ -189,7 +190,6 @@ class DockerSetup:
     def files(self, release_digest: str = RELEASE, marker: str = MARKER) -> dict[str, bytes]:
         return bundle_files(
             target_id=self.target.id,
-            project=self.project,
             port=self.port,
             release_digest=release_digest,
             marker=marker,
@@ -238,7 +238,7 @@ class DockerSetup:
 def make_docker_setup(
     runtime: FakeContainerRuntime,
     *,
-    project: str = "shop",
+    project: str = "shop",  # a display name only: the adapter never reads it
     port: int = 8701,
     daemon: str = DAEMON,
 ) -> DockerSetup:

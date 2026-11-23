@@ -18,17 +18,20 @@ import tempfile
 import time
 from collections.abc import Iterator
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import yaml
 
 from shifde.adapters.native.docker.runtime import DockerCliRuntime, docker_host
-from shifde.adapters.native.docker.source import RELEASE_LABEL
+from shifde.adapters.native.docker.source import RELEASE_LABEL, compose_project
 from tests.adapters.native.docker_bundle import bundle_files
 
 OPT_IN = "local Docker harness is opt-in: set SHIFDE_TEST_DOCKER=1 and run with -m docker"
 PORT = 18765
+# Docker Desktop keeps compose and buildx in the per-user plugin directory; the runtime's own
+# empty CLI config names it explicitly.
+PLUGIN_DIRS = [Path.home() / ".docker" / "cli-plugins"]
 
 pytestmark = [
     pytest.mark.docker,
@@ -37,9 +40,10 @@ pytestmark = [
 
 
 @pytest.fixture
-def project() -> Iterator[str]:
-    name = f"shifde-harness-{uuid4().hex[:8]}"
-    yield name
+def target_id() -> Iterator[UUID]:
+    target_id = uuid4()
+    yield target_id
+    name = compose_project(target_id)
     docker = shutil.which("docker")
     if docker:
         subprocess.run(  # direct teardown, never through the runtime
@@ -51,15 +55,16 @@ def project() -> Iterator[str]:
         )
 
 
-def test_docker_local_daemon_builds_and_serves_health(project: str) -> None:
+def test_docker_local_daemon_builds_and_serves_health(target_id: UUID) -> None:
+    project = compose_project(target_id)
     release = hashlib.sha256(project.encode()).hexdigest()
-    files = bundle_files(target_id=uuid4(), project=project, port=PORT, release_digest=release)
+    files = bundle_files(target_id=target_id, port=PORT, release_digest=release)
     # The harness host has no `/etc/shifde-apps/<project>.env`; the runtime does not need one.
     document = yaml.safe_load(files["compose.yaml"])
     del document["services"]["app"]["env_file"]
     files["compose.yaml"] = yaml.safe_dump(document, sort_keys=False).encode()
     tag = document["services"]["app"]["image"]
-    runtime = DockerCliRuntime()
+    runtime = DockerCliRuntime(plugin_dirs=PLUGIN_DIRS)
     runtime.check_version()
     assert runtime.daemon_id()
     directory = Path(tempfile.mkdtemp(prefix="shifde-docker-"))
@@ -83,7 +88,7 @@ def test_docker_local_daemon_builds_and_serves_health(project: str) -> None:
     status, body = 0, b""
     while time.monotonic() < deadline:
         try:
-            status, body = runtime.http_get_local(PORT, "/health")
+            status, body = runtime.http_get_local(project, PORT, "/health")
         except Exception:
             status = 0  # the container is not listening yet
         if status == 200:

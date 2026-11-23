@@ -1,8 +1,9 @@
 """The `ContainerRuntime` protocol and `DockerCliRuntime`, the host `docker` CLI (local daemon).
 
 The CLI runs in a minimal environment with `DOCKER_HOST` always set to the local socket or named
-pipe, every argv is built here, and one guard refuses privileged, network, volume, mount, secret
-and capability flags. There is no `down`, `rm`, `prune` or `pull`.
+pipe and `DOCKER_CONFIG` set to a fresh directory of its own (so `~/.docker/config.json` proxies,
+credentials and contexts never apply), every argv is built here, and one guard refuses privileged,
+network, volume, mount, secret and capability flags. There is no `down`, `rm`, `prune` or `pull`.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol  # Any: decoded `docker compose ps` JSON
@@ -62,7 +63,7 @@ ALLOWED_ENV = frozenset(
 _DAEMON_ID = re.compile(DAEMON_ID)
 _UNIX_HOST = re.compile(r"unix:///\S+")
 _NPIPE_HOST = re.compile(r"npipe:////\./pipe/[A-Za-z0-9._-]+")
-_TAG = re.compile(r"shifde-[a-z][a-z0-9-]{0,39}:[a-f0-9]{12}")
+_TAG = re.compile(r"shifde-[0-9a-f]{32}:[a-f0-9]{12}")
 
 
 class DockerRefused(PermissionError):
@@ -81,6 +82,7 @@ class ContainerState:
     state: str
     health: str | None  # healthy, starting, unhealthy or None
     labels: dict[str, str] = field(default_factory=dict)
+    ports: tuple[int, ...] = ()  # host ports published on 127.0.0.1
 
 
 class ContainerRuntime(Protocol):
@@ -89,7 +91,7 @@ class ContainerRuntime(Protocol):
     def image_labels(self, tag: str) -> dict[str, str] | None: ...
     def compose_up(self, directory: Path, *, project: str) -> None: ...
     def compose_ps(self, project: str) -> list[ContainerState]: ...
-    def http_get_local(self, port: int, path: str) -> tuple[int, bytes]: ...
+    def http_get_local(self, project: str, port: int, path: str) -> tuple[int, bytes]: ...
 
 
 def check_local_request(port: int, path: str) -> None:
@@ -121,6 +123,19 @@ def docker_host() -> str:
     raise DockerRefused("docker_host_not_local")
 
 
+def _loopback_ports(value: Any) -> tuple[int, ...]:
+    """The host ports of `docker compose ps` `Publishers` bound to 127.0.0.1."""
+    if not isinstance(value, list):
+        return ()
+    return tuple(
+        item["PublishedPort"]
+        for item in value
+        if isinstance(item, dict)
+        and item.get("URL") == "127.0.0.1"
+        and isinstance(item.get("PublishedPort"), int)
+    )
+
+
 def _labels(value: Any) -> dict[str, str]:
     if isinstance(value, dict):
         return {str(key): str(item) for key, item in value.items()}
@@ -136,37 +151,48 @@ class DockerCliRuntime:
         self,
         executable: str = "docker",
         *,
+        plugin_dirs: Sequence[Path] = (),
         timeout: float = 900,
         http_timeout: float = 5,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.executable, self.timeout = executable, timeout
+        # CLI plugin directories (compose, buildx) outside the system ones, for example Docker
+        # Desktop's per-user `~/.docker/cli-plugins`; the only setting the CLI config carries.
+        self.plugin_dirs = tuple(plugin_dirs)
         self.http_timeout, self.transport = http_timeout, transport
 
-    def _env(self) -> dict[str, str]:
+    def _env(self, config: Path) -> dict[str, str]:
         env = {key: value for key, value in os.environ.items() if key.upper() in ALLOWED_ENV}
         env["DOCKER_HOST"] = docker_host()
+        env["DOCKER_CONFIG"] = str(config)
         return env
 
     def _run(self, args: list[str], *, cwd: Path | None = None) -> bytes:
         for arg in args:
             if arg in FORBIDDEN_FLAGS or arg.split("=", 1)[0] in FORBIDDEN_FLAGS:
                 raise DockerRefused("forbidden_flag")
-        env = self._env()
         executable = shutil.which(self.executable)
         if not executable:
             raise FileNotFoundError("install Docker 24 or later or provide its executable path")
-        try:
-            process = subprocess.run(
-                [executable, *args],
-                cwd=cwd,
-                env=env,
-                capture_output=True,
-                timeout=self.timeout,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            raise TimeoutError("Docker command timed out") from None
+        with tempfile.TemporaryDirectory(prefix="shifde-docker-config-") as config:
+            env = self._env(Path(config))
+            if self.plugin_dirs:
+                (Path(config) / "config.json").write_text(
+                    json.dumps({"cliPluginsExtraDirs": [str(d) for d in self.plugin_dirs]}),
+                    encoding="utf-8",
+                )
+            try:
+                process = subprocess.run(
+                    [executable, *args],
+                    cwd=cwd,
+                    env=env,
+                    capture_output=True,
+                    timeout=self.timeout,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                raise TimeoutError("Docker command timed out") from None
         if process.returncode:
             # Raw Docker output may hold host details; never return it to an agent.
             raise RuntimeError(f"Docker command failed with exit code {process.returncode}")
@@ -258,13 +284,16 @@ class DockerCliRuntime:
                 state=str(row.get("State", "")),
                 health=row.get("Health") or None,
                 labels=_labels(row.get("Labels")),
+                ports=_loopback_ports(row.get("Publishers")),
             )
             for row in rows
             if isinstance(row, dict)
         ]
 
-    def http_get_local(self, port: int, path: str) -> tuple[int, bytes]:
+    def http_get_local(self, project: str, port: int, path: str) -> tuple[int, bytes]:
         check_local_request(port, path)
+        if not any(port in container.ports for container in self.compose_ps(project)):
+            raise ConnectionError("the project publishes no container on that loopback port")
         body = b""
         with (
             httpx.Client(

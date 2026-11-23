@@ -1,4 +1,6 @@
-"""An in-memory Docker daemon for development and tests only (no real daemon exists).
+"""An in-memory Docker daemon for development and tests only (no real daemon exists): it refuses
+to construct unless `SHIFDE_ENV` is `development` or `test`, because it runs the staged app's code
+in-process.
 
 `FakeContainerRuntime` is a `ContainerRuntime`. `build` stores an image (labels, `Dockerfile`,
 `compose.yaml` and `app/` files) after the sha256 check and the bundle validation; `compose_up`
@@ -12,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import os
 import sys
 import tempfile
 import threading
@@ -33,6 +36,7 @@ from shifde.adapters.native.docker.source import (
     validate_bundle,
 )
 
+ENVIRONMENTS = ("development", "test")
 PrepareApp = Callable[[ModuleType, Mapping[str, str]], None]
 DEEP_HEALTH_BAD = (
     b'{"status": "failed", "generator_version": "fake", "release_digest": null, '
@@ -75,6 +79,8 @@ class FakeContainerRuntime:
         hang_timeout: float = 60.0,
         prepare_app: PrepareApp | None = None,
     ) -> None:
+        if os.environ.get("SHIFDE_ENV") not in ENVIRONMENTS:
+            raise RuntimeError("the fake Docker runtime runs only in development or test")
         self._daemon_id = daemon_id
         self.hang_timeout = hang_timeout
         self.prepare_app = prepare_app
@@ -136,7 +142,10 @@ class FakeContainerRuntime:
             raise ValueError("staged compose.yaml differs from the image's")
         ports = bundle.service.get("ports") or []
         port = int(str(ports[0]).rsplit(":", 2)[1]) if ports else 0
-        if not PORT_MIN <= port <= PORT_MAX:
+        if not PORT_MIN <= port <= PORT_MAX or any(
+            name != project and c.port == port for name, c in self.projects.items()
+        ):
+            # Docker refuses a host port another project already publishes.
             raise RuntimeError("Docker command failed with exit code 1")
         service = next(iter(yaml.safe_load(compose)["services"]))
         self.projects[project] = FakeContainer(
@@ -161,15 +170,14 @@ class FakeContainerRuntime:
                 state=container.state,
                 health="unhealthy" if self.unhealthy else container.health,
                 labels=dict(container.labels),
+                ports=(container.port,),
             )
         ]
 
-    def http_get_local(self, port: int, path: str) -> tuple[int, bytes]:
+    def http_get_local(self, project: str, port: int, path: str) -> tuple[int, bytes]:
         check_local_request(port, path)
-        container = next(
-            (c for c in self.projects.values() if c.port == port and c.state == "running"), None
-        )
-        if container is None:
+        container = self.projects.get(project)
+        if container is None or container.port != port or container.state != "running":
             raise ConnectionError("connection refused")
         if self.deep_health_bad and path == "/health?deep=1":
             return 503, DEEP_HEALTH_BAD

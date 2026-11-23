@@ -33,7 +33,13 @@ from shifde.adapters.native.contracts import (
 from shifde.adapters.native.docker import LIVE_VALIDATED, MATURITY
 from shifde.adapters.native.docker.fake import FakeContainerRuntime
 from shifde.adapters.native.docker.runtime import DockerRefused
-from shifde.adapters.native.docker.source import BASE_IMAGE, RELEASE_LABEL, TARGET_LABEL
+from shifde.adapters.native.docker.source import (
+    BASE_IMAGE,
+    RELEASE_LABEL,
+    TARGET_LABEL,
+    env_file,
+    image_tag,
+)
 from tests.adapters.native.conftest import Setup
 from tests.adapters.native.docker_bundle import (
     DAEMON,
@@ -48,6 +54,11 @@ from tests.adapters.native.docker_bundle import (
 SECOND = "2" * 64
 
 
+@pytest.fixture(autouse=True)
+def _test_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SHIFDE_ENV", "test")
+
+
 @pytest.fixture
 def runtime() -> FakeContainerRuntime:
     return FakeContainerRuntime(DAEMON, hang_timeout=0.05)
@@ -56,6 +67,37 @@ def runtime() -> FakeContainerRuntime:
 @pytest.fixture
 def docker(runtime: FakeContainerRuntime) -> DockerSetup:
     return make_docker_setup(runtime)
+
+
+@pytest.mark.parametrize("environment", [None, "", "production", "staging", "Test"])
+def test_docker_fake_runtime_refuses_outside_development_and_test(
+    monkeypatch: pytest.MonkeyPatch, environment: str | None
+) -> None:
+    if environment is None:
+        monkeypatch.delenv("SHIFDE_ENV")
+    else:
+        monkeypatch.setenv("SHIFDE_ENV", environment)
+    with pytest.raises(RuntimeError, match="development or test"):
+        FakeContainerRuntime(DAEMON)
+
+
+@pytest.mark.parametrize("environment", ["development", "test"])
+def test_docker_fake_runtime_runs_in_development_and_test(
+    monkeypatch: pytest.MonkeyPatch, environment: str
+) -> None:
+    monkeypatch.setenv("SHIFDE_ENV", environment)
+    assert FakeContainerRuntime(DAEMON).daemon_id() == DAEMON
+
+
+def test_docker_fake_serves_health_by_project_not_by_port(
+    docker: DockerSetup, runtime: FakeContainerRuntime
+) -> None:
+    _deploy(docker)
+    assert runtime.http_get_local(docker.project, 8701, "/health")[0] == 200
+    with pytest.raises(ConnectionError):
+        runtime.http_get_local(f"shifde-{uuid4().hex}", 8701, "/health")
+    with pytest.raises(ConnectionError):
+        runtime.http_get_local(docker.project, 8702, "/health")
 
 
 def _deploy(docker: DockerSetup, release_digest: str = RELEASE, marker: str = MARKER) -> Any:
@@ -77,21 +119,22 @@ def test_docker_happy_path_runs_the_staged_app(
     assert [step.key for step in plan.steps] == ["image-build", "compose-up", "container-ready"]
     assert [step.action for step in plan.steps] == ["create", "create", "start"]
     assert plan.details == {
-        "project": "shop",
+        "project": docker.project,
         "port": 8701,
-        "image": f"shifde-shop:{RELEASE[:12]}",
+        "image": docker.image,
         "release_digest": RELEASE,
         "daemon_id": DAEMON,
     }
     receipt = docker.adapter.apply(ApplyRequest(artifact=artifact, plan=plan), deploy)
     assert receipt.operation_handles == {
-        "project": "shop",
-        "image": f"shifde-shop:{RELEASE[:12]}",
+        "project": docker.project,
+        "image": docker.image,
         "port": "8701",
         "release_digest": RELEASE,
+        "daemon_id": DAEMON,
     }
     assert [(r.resource_type, r.native_id) for r in receipt.resources] == [
-        ("docker.compose_project", "shop")
+        ("docker.compose_project", docker.project)
     ]
     journal = deploy.journal
     assert isinstance(journal, InMemoryJournal)
@@ -107,7 +150,7 @@ def test_docker_happy_path_runs_the_staged_app(
         ("runtime-health", "passed"),
         ("app-deep-health", "passed"),
     ]
-    status, body = runtime.http_get_local(8701, "/health?deep=1")
+    status, body = runtime.http_get_local(docker.project, 8701, "/health?deep=1")
     assert status == 200
     assert json.loads(body)["generator_version"] == marker  # executed from the staged app.py
     assert json.loads(body)["release_digest"] == RELEASE
@@ -128,7 +171,7 @@ def test_docker_image_holds_the_artifact_bytes(
 ) -> None:
     files = docker.files()
     _deploy(docker)
-    image = runtime.images[f"shifde-shop:{RELEASE[:12]}"]
+    image = runtime.images[docker.image]
     assert image.dockerfile == files["Dockerfile"]
     assert image.compose == files["compose.yaml"]
     assert image.labels[RELEASE_LABEL] == RELEASE
@@ -147,7 +190,7 @@ def test_docker_build_refuses_altered_staged_files(
     docker: DockerSetup, runtime: FakeContainerRuntime
 ) -> None:
     files = docker.files()
-    tag = f"shifde-shop:{RELEASE[:12]}"
+    tag = docker.image
     with tempfile.TemporaryDirectory(prefix="shifde-docker-") as temporary:
         directory = Path(temporary)
         expected = _stage(files, directory)
@@ -169,12 +212,12 @@ def test_docker_second_release_replaces_the_container(
     artifact, plan, deploy = docker.prepare(SECOND)
     assert [step.action for step in plan.steps] == ["create", "update", "start"]
     receipt = docker.adapter.apply(ApplyRequest(artifact=artifact, plan=plan), deploy)
-    containers = runtime.compose_ps("shop")
+    containers = runtime.compose_ps(docker.project)
     assert len(containers) == 1
-    assert containers[0].image == f"shifde-shop:{SECOND[:12]}"
+    assert containers[0].image == image_tag(docker.project, SECOND)
     report = docker.adapter.verify(VerifyRequest(receipt=receipt), docker.read)
     assert report.passed
-    status, body = runtime.http_get_local(8701, "/health?deep=1")
+    status, body = runtime.http_get_local(docker.project, 8701, "/health?deep=1")
     assert json.loads(body)["release_digest"] == SECOND
 
 
@@ -241,7 +284,7 @@ def test_docker_starting_container_is_running(
     docker: DockerSetup, runtime: FakeContainerRuntime
 ) -> None:
     _, _, _, receipt = _deploy(docker)
-    runtime.projects["shop"].health = "starting"
+    runtime.projects[docker.project].health = "starting"
     assert docker.adapter.observe(ObserveRequest(receipt=receipt), docker.read).state == "running"
 
 
@@ -249,7 +292,7 @@ def test_docker_container_without_health_status_is_unknown(
     docker: DockerSetup, runtime: FakeContainerRuntime
 ) -> None:
     _, _, _, receipt = _deploy(docker)
-    runtime.projects["shop"].health = None
+    runtime.projects[docker.project].health = None
     observed = docker.adapter.observe(ObserveRequest(receipt=receipt), docker.read)
     assert observed.state == "unknown"
     assert not docker.adapter.verify(VerifyRequest(receipt=receipt), docker.read).passed
@@ -358,6 +401,8 @@ REFUSED: dict[str, Callable[[dict[str, bytes]], None]] = {
     "writable": _service(lambda s: s.update(read_only=False)),
     "security-opt-extra": _service(lambda s: s["security_opt"].append("seccomp=unconfined")),
     "tmpfs-other": _service(lambda s: s.update(tmpfs=["/tmp", "/run"])),
+    "interpolation": _service(lambda s: s["environment"].update(SERVING_ENDPOINT="${HOME}")),
+    "interpolation-escaped": _service(lambda s: s.update(restart="$$no")),
     "extra-environment": _service(lambda s: s["environment"].update(DATABRICKS_TOKEN="x")),
     "second-service": _second_service,
     "top-level": _top_level,
@@ -386,6 +431,8 @@ def test_docker_bundle_validation_refuses(docker: DockerSetup, case: str) -> Non
         ("heredoc", "dockerfile_heredoc"),
         ("security-opt-extra", "compose_hardening"),
         ("tmpfs-other", "compose_tmpfs"),
+        ("interpolation", "compose_interpolation"),
+        ("interpolation-escaped", "compose_interpolation"),
     ],
 )
 def test_docker_bundle_refusal_names_the_rule(docker: DockerSetup, case: str, code: str) -> None:
@@ -402,7 +449,9 @@ TARGET_REFUSED: dict[str, Callable[[dict[str, Any]], None]] = {
     "ports-all-interfaces": lambda s: s.update(ports=["0.0.0.0:8701:8000"]),
     "ports-other": lambda s: s.update(ports=["127.0.0.1:8702:8000"]),
     "env-file-path": lambda s: s.update(env_file=["/etc/shifde-apps/other.env"]),
+    "env-file-display-name": lambda s: s.update(env_file=["/etc/shifde-apps/shop.env"]),
     "image": lambda s: s.update(image="shifde-shop:latest"),
+    "image-display-name": lambda s: s.update(image=f"shifde-shop:{RELEASE[:12]}"),
 }
 
 
@@ -421,7 +470,7 @@ def test_docker_target_rules_refuse_at_plan(
 
 def test_docker_env_file_as_a_single_string_is_accepted(docker: DockerSetup) -> None:
     files = docker.files()
-    edit_compose(files, lambda s: s.update(env_file="/etc/shifde-apps/shop.env"))
+    edit_compose(files, lambda s: s.update(env_file=env_file(docker.project)))
     docker.adapter.plan(PlanRequest(artifact=docker.artifact(files)), docker.read)
 
 
@@ -469,14 +518,15 @@ def test_docker_capabilities_unknown_when_the_daemon_fails(docker: DockerSetup) 
 
 
 def test_docker_inspect_fingerprints_the_project(docker: DockerSetup) -> None:
-    request = InspectRequest(application_id=uuid4(), app_name="shop")
+    assert docker.project == f"shifde-{docker.target.id.hex}"
+    request = InspectRequest(application_id=uuid4(), app_name=docker.project)
     empty = docker.adapter.inspect(request, docker.read)
     assert empty.resources == []
     _deploy(docker)
     snapshot = docker.adapter.inspect(request, docker.read)
-    assert [r.native_id for r in snapshot.resources] == ["shop"]
+    assert [r.native_id for r in snapshot.resources] == [docker.project]
     assert snapshot.fingerprint != empty.fingerprint
-    assert docker.runtime.projects["shop"].labels[TARGET_LABEL] == str(docker.target.id)
+    assert docker.runtime.projects[docker.project].labels[TARGET_LABEL] == str(docker.target.id)
 
 
 # --------------------------------------------------------------------------- contracts

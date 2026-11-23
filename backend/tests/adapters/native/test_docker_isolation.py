@@ -1,9 +1,10 @@
 """Tenant, target and host isolation of the `docker.compose/v1` adapter (design SP8 section 6).
 
-The project, port, image and daemon are derived from the artifact and the target; every input of
-another tenant or target is refused with `PermissionError` before any runtime write, a project of
-another target on the same daemon is `foreign_project`, and another daemon is
-`docker_host_mismatch`.
+The project, port, image and daemon are derived from the artifact and the target, and the compose
+project, image and env file are named after the target id, so two clients' targets on one daemon
+never share a name whatever display name they chose; every input of another tenant or target is
+refused with `PermissionError` before any runtime write, a project holding a container not labelled
+for the target is `foreign_project`, and another daemon is `docker_host_mismatch`.
 """
 
 from __future__ import annotations
@@ -13,7 +14,12 @@ from uuid import uuid4
 
 import pytest
 
-from shifde.adapters.native.base import DeployContext, InMemoryJournal, ReadContext
+from shifde.adapters.native.base import (
+    DeployContext,
+    InMemoryJournal,
+    ReadContext,
+    read_archive,
+)
 from shifde.adapters.native.contracts import (
     ApplyRequest,
     InspectRequest,
@@ -23,11 +29,21 @@ from shifde.adapters.native.contracts import (
     Target,
     VerifyRequest,
 )
-from shifde.adapters.native.docker.fake import FakeContainerRuntime
+from shifde.adapters.native.docker.fake import FakeContainer, FakeContainerRuntime
 from shifde.adapters.native.docker.runtime import DockerRefused
-from shifde.adapters.native.docker.source import TARGET_LABEL
+from shifde.adapters.native.docker.source import TARGET_LABEL, env_file
 from shifde.adapters.native.planning import bindings_digest, seal_plan
-from tests.adapters.native.docker_bundle import DAEMON, DockerSetup, make_docker_setup
+from tests.adapters.native.docker_bundle import (
+    DAEMON,
+    DockerSetup,
+    edit_compose,
+    make_docker_setup,
+)
+
+
+@pytest.fixture(autouse=True)
+def _test_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SHIFDE_ENV", "test")
 
 
 @pytest.fixture
@@ -42,7 +58,7 @@ def a(runtime: FakeContainerRuntime) -> DockerSetup:
 
 @pytest.fixture
 def b(runtime: FakeContainerRuntime) -> DockerSetup:
-    """Client B's target on the same daemon, bound to the same project name as A's."""
+    """Client B's target on the same daemon, with the same display project name as A's."""
     return make_docker_setup(runtime, project="shop", port=8702)
 
 
@@ -126,13 +142,59 @@ def test_docker_inspect_refuses_another_project_name(a: DockerSetup) -> None:
         a.adapter.inspect(InspectRequest(application_id=uuid4(), app_name="other"), a.read)
 
 
-def test_docker_cross_client_project_is_foreign(
+def test_docker_cross_client_same_display_name_never_shares_names(
     a: DockerSetup, b: DockerSetup, runtime: FakeContainerRuntime
 ) -> None:
-    b_artifact, b_plan, b_deploy = b.prepare()  # planned while the project is still empty
+    # B deploys first under the display name A also chose.
+    assert a.target.bindings["project"] == b.target.bindings["project"] == "shop"
+    b_artifact, b_plan, b_deploy = b.prepare()
+    b_receipt = b.adapter.apply(ApplyRequest(artifact=b_artifact, plan=b_plan), b_deploy)
     a_artifact, a_plan, a_deploy = a.prepare()
-    a.adapter.apply(ApplyRequest(artifact=a_artifact, plan=a_plan), a_deploy)
-    before = runtime.compose_ps("shop")
+    a_receipt = a.adapter.apply(ApplyRequest(artifact=a_artifact, plan=a_plan), a_deploy)
+    assert b_plan.details["project"] == f"shifde-{b.target.id.hex}"
+    assert a_plan.details["project"] == f"shifde-{a.target.id.hex}"
+    for key in ("project", "image"):
+        assert b_plan.details[key] != a_plan.details[key]
+        assert "shop" not in str(b_plan.details[key])
+    b_files = read_archive(b.build.artifacts.read(b_artifact.archive, b.read.tenant_id))
+    assert env_file(b.project).encode() in b_files["compose.yaml"]
+    assert a.project.encode() not in b_files["compose.yaml"]
+    # Each client sees only its own container; B's verify reached B's app, not A's.
+    assert set(runtime.projects) == {a.project, b.project}
+    assert runtime.projects[b.project].image == b_plan.details["image"]
+    assert runtime.projects[b.project].labels[TARGET_LABEL] == str(b.target.id)
+    assert runtime.projects[a.project].labels[TARGET_LABEL] == str(a.target.id)
+    assert b.adapter.verify(VerifyRequest(receipt=b_receipt), b.read).passed
+    assert a.adapter.verify(VerifyRequest(receipt=a_receipt), a.read).passed
+    with pytest.raises(ConnectionError):
+        runtime.http_get_local(a.project, b.port, "/health")
+
+
+def test_docker_bundle_naming_another_targets_env_file_is_refused(
+    a: DockerSetup, b: DockerSetup, runtime: FakeContainerRuntime
+) -> None:
+    files = b.files()
+    edit_compose(files, lambda service: service.update(env_file=[env_file(a.project)]))
+    artifact = b.artifact(files)
+    with pytest.raises(ValueError, match="env_file"):
+        b.adapter.plan(PlanRequest(artifact=artifact), b.read)
+    assert runtime.actions == []
+
+
+def test_docker_project_with_another_targets_container_is_foreign(
+    a: DockerSetup, b: DockerSetup, runtime: FakeContainerRuntime
+) -> None:
+    b_artifact, b_plan, b_deploy = b.prepare()  # planned while B's project is still empty
+    # A container labelled for A's target turns up in B's project (started outside SETH).
+    runtime.projects[b.project] = FakeContainer(
+        name=f"{b.project}-app-1",
+        image="other:latest",
+        state="running",
+        health="healthy",
+        port=8799,
+        labels={TARGET_LABEL: str(a.target.id)},
+    )
+    before = runtime.compose_ps(b.project)
     writes = list(_writes(runtime))
     with pytest.raises(DockerRefused) as refused:
         b.adapter.plan(PlanRequest(artifact=b_artifact), b.read)
@@ -141,11 +203,35 @@ def test_docker_cross_client_project_is_foreign(
         b.adapter.apply(ApplyRequest(artifact=b_artifact, plan=b_plan), b_deploy)
     assert refused.value.code == "foreign_project"
     with pytest.raises(DockerRefused) as refused:
-        b.adapter.inspect(InspectRequest(application_id=uuid4(), app_name="shop"), b.read)
+        b.adapter.inspect(InspectRequest(application_id=uuid4(), app_name=b.project), b.read)
     assert refused.value.code == "foreign_project"
     assert _writes(runtime) == writes
-    assert runtime.compose_ps("shop") == before
-    assert before[0].labels[TARGET_LABEL] == str(a.target.id)
+    assert runtime.compose_ps(b.project) == before
+
+
+def test_docker_observe_checks_the_receipts_daemon_and_project(
+    a: DockerSetup, runtime: FakeContainerRuntime
+) -> None:
+    artifact, plan, deploy = a.prepare()
+    receipt = a.adapter.apply(ApplyRequest(artifact=artifact, plan=plan), deploy)
+    handles = receipt.operation_handles
+    other_daemon = receipt.model_copy(
+        update={"operation_handles": {**handles, "daemon_id": str(uuid4())}}
+    )
+    with pytest.raises(DockerRefused) as refused:
+        a.adapter.observe(ObserveRequest(receipt=other_daemon), a.read)
+    assert refused.value.code == "docker_host_mismatch"
+    other_project = receipt.model_copy(
+        update={"operation_handles": {**handles, "project": f"shifde-{uuid4().hex}"}}
+    )
+    with pytest.raises(PermissionError, match="compose project"):
+        a.adapter.observe(ObserveRequest(receipt=other_project), a.read)
+    with pytest.raises(PermissionError):
+        a.adapter.verify(VerifyRequest(receipt=other_project), a.read)
+    runtime.daemon_mismatch = True
+    with pytest.raises(DockerRefused) as refused:
+        a.adapter.observe(ObserveRequest(receipt=receipt), a.read)
+    assert refused.value.code == "docker_host_mismatch"
 
 
 def test_docker_target_on_another_daemon_is_a_host_mismatch(
@@ -158,7 +244,7 @@ def test_docker_target_on_another_daemon_is_a_host_mismatch(
     assert refused.value.code == "docker_host_mismatch"
     with pytest.raises(DockerRefused) as refused:
         elsewhere.adapter.inspect(
-            InspectRequest(application_id=uuid4(), app_name="shop"), elsewhere.read
+            InspectRequest(application_id=uuid4(), app_name=elsewhere.project), elsewhere.read
         )
     assert refused.value.code == "docker_host_mismatch"
     assert runtime.actions == []
