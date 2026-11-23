@@ -208,6 +208,17 @@ def _string_map(value: Any, code: str, message: str) -> dict[str, str]:
     raise BundleInvalid(code, message)
 
 
+def _holds_dollar(node: Any) -> bool:
+    """Whether any string key or value of a parsed YAML node holds `$`."""
+    if isinstance(node, str):
+        return "$" in node
+    if isinstance(node, dict):
+        return any(_holds_dollar(key) or _holds_dollar(item) for key, item in node.items())
+    if isinstance(node, list):
+        return any(_holds_dollar(item) for item in node)
+    return False
+
+
 def _validate_compose(data: bytes) -> tuple[dict[str, Any], dict[str, str], dict[str, str]]:
     if b"$" in data:
         # Compose interpolates `$VAR`/`${VAR}` from the host environment anywhere in the file.
@@ -216,6 +227,9 @@ def _validate_compose(data: bytes) -> tuple[dict[str, Any], dict[str, str], dict
         document = yaml.safe_load(data)
     except yaml.YAMLError:
         raise BundleInvalid("compose_yaml", "compose.yaml is not valid YAML") from None
+    if _holds_dollar(document):
+        # Compose interpolates the parsed values, so a YAML escape such as "\x24" counts too.
+        raise BundleInvalid("compose_interpolation", "compose.yaml may not hold $")
     if not isinstance(document, dict) or set(document) != {"services"}:
         raise BundleInvalid("compose_top_level", "compose.yaml may only hold services")
     services = document["services"]
