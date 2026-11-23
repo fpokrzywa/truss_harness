@@ -170,25 +170,96 @@ class DatabricksApplicationSpec(Model):
     health_path: Literal["/health"] = "/health"
 
 
+class FabricItem(Model):
+    key: Identifier
+    item_type: Literal["Lakehouse", "Notebook"]
+    definition_path: RelativePath
+    depends_on: list[Identifier] = Field(default_factory=list)
+    name_binding: Identifier | None = None
+    lakehouse: Identifier | None = None
+
+
+class FabricSolutionSpec(Model):
+    """A Fabric solution: an acyclic graph of Lakehouse and Notebook items (SDK
+    `platform_specs/fabric.py`, without Ontology and the legacy `bindings`)."""
+
+    kind: Literal["fabric.solution/v1"] = "fabric.solution/v1"
+    solution_root: RelativePath = "."
+    items: list[FabricItem] = Field(min_length=1, max_length=16)
+    workspace_binding: Literal["workspace"] = "workspace"
+    release_digest: Digest
+    verification_notebook: Identifier
+
+    @model_validator(mode="after")
+    def _validate_graph(self) -> Self:
+        graph = {item.key: item.depends_on for item in self.items}
+        if len(graph) != len(self.items):
+            raise ValueError("item keys must be unique")
+        visited: set[str] = set()
+        visiting: set[str] = set()
+
+        def visit(key: str) -> None:
+            if key not in graph:
+                raise ValueError(f"unknown dependency: {key}")
+            if key in visiting:
+                raise ValueError("cyclic item dependencies")
+            if key in visited:
+                return
+            visiting.add(key)
+            for dependency in graph[key]:
+                visit(dependency)
+            visiting.remove(key)
+            visited.add(key)
+
+        for key in graph:
+            visit(key)
+        by_key = {item.key: item for item in self.items}
+        paths = [item.definition_path for item in self.items]
+        if (
+            "." in paths
+            or len(set(paths)) != len(paths)
+            or any(a.startswith(b + "/") for a in paths for b in paths if a != b)
+        ):
+            raise ValueError("Fabric item definition paths must not overlap")
+        if len({item.name_binding or item.key for item in self.items}) != len(self.items):
+            raise ValueError("item name bindings must be unique")
+        for item in self.items:
+            if item.lakehouse and (
+                item.item_type != "Notebook"
+                or item.lakehouse not in item.depends_on
+                or by_key[item.lakehouse].item_type != "Lakehouse"
+            ):
+                raise ValueError("notebook lakehouse must be a declared Lakehouse dependency")
+        notebook = by_key.get(self.verification_notebook)
+        if notebook is None or notebook.item_type != "Notebook":
+            raise ValueError("verification_notebook must identify a declared Notebook")
+        return self
+
+
+ApplicationSpec = Annotated[
+    DatabricksApplicationSpec | FabricSolutionSpec, Field(discriminator="kind")
+]
+
+
 # --------------------------------------------------------------------------- builds
 class BuildArtifact(Entity):
     application_id: UUID
     archive: SourceArchive
     source_digest: Digest
     spec_digest: Digest
-    spec: DatabricksApplicationSpec
+    spec: ApplicationSpec
     adapter_version: str
     toolchain_digest: Digest
     template_version: str = "0.1.0"
 
 
 class ScaffoldRequest(Model):
-    spec: DatabricksApplicationSpec
+    spec: ApplicationSpec
     template_version: str = "0.1.0"
 
 
 class ValidateRequest(Model):
-    spec: DatabricksApplicationSpec
+    spec: ApplicationSpec
     source: SourceArchive
 
 
@@ -235,7 +306,7 @@ class PlanRequest(Model):
 class InspectRequest(Model):
     application_id: UUID
     app_name: str
-    spec: DatabricksApplicationSpec | None = None
+    spec: ApplicationSpec | None = None
 
 
 # --------------------------------------------------------------------------- execution
@@ -254,7 +325,7 @@ class ApplyReceipt(Entity):
 
 class ObserveRequest(Model):
     receipt: ApplyReceipt
-    spec: DatabricksApplicationSpec | None = None
+    spec: ApplicationSpec | None = None
 
 
 class ReconcileRequest(Model):
@@ -263,7 +334,7 @@ class ReconcileRequest(Model):
 
 class VerifyRequest(Model):
     receipt: ApplyReceipt
-    spec: DatabricksApplicationSpec | None = None
+    spec: ApplicationSpec | None = None
 
 
 class NativeObservation(Model):

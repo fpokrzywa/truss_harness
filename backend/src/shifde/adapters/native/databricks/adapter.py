@@ -32,9 +32,11 @@ from shifde.adapters.native.contracts import (
     Capability,
     CapabilityReport,
     Check,
+    DatabricksApplicationSpec,
     DeploymentPlan,
     Diagnostic,
     EnvironmentSnapshot,
+    FabricSolutionSpec,
     InspectRequest,
     NativeObservation,
     ObserveRequest,
@@ -83,6 +85,15 @@ def root_path(principal: str, application_id: UUID, target_id: UUID) -> str:
     if not _PRINCIPAL.fullmatch(principal) or ".." in principal:
         raise ValueError("service principal binding is not a valid workspace user name")
     return f"/Workspace/Users/{principal}/.shifde/{application_id}/{target_id}"
+
+
+def databricks_spec(
+    spec: DatabricksApplicationSpec | FabricSolutionSpec | None,
+) -> DatabricksApplicationSpec:
+    """The spec, refused before any native call when it is of another kind (or absent)."""
+    if not isinstance(spec, DatabricksApplicationSpec):
+        raise ValueError("the Databricks adapter refuses a spec of another kind")
+    return spec
 
 
 def identity(app: dict[str, Any] | None) -> dict[str, Any]:
@@ -169,6 +180,8 @@ class DatabricksAdapter:
         )
 
     def inspect(self, request: InspectRequest, ctx: ReadContext) -> EnvironmentSnapshot:
+        if request.spec is not None:
+            databricks_spec(request.spec)
         if request.app_name != app_name(request.application_id, ctx.target.id):
             raise PermissionError("app name is not the one derived for this application and target")
         app = self._workspace(ctx).get_app(request.app_name)
@@ -182,12 +195,15 @@ class DatabricksAdapter:
     def scaffold(self, request: ScaffoldRequest, ctx: BuildContext) -> SourceArchive:
         if request.template_version != ADAPTER_VERSION:
             raise ValueError("unsupported template version")
-        return ctx.artifacts.put(ctx.tenant_id, create_archive(scaffold_files(request.spec)))
+        return ctx.artifacts.put(
+            ctx.tenant_id, create_archive(scaffold_files(databricks_spec(request.spec)))
+        )
 
     def validate(self, request: ValidateRequest, ctx: BuildContext) -> ValidationReport:
+        spec = databricks_spec(request.spec)
         try:
             contents = read_archive(ctx.artifacts.read(request.source, ctx.tenant_id))
-            validate_source(contents, request.spec)
+            validate_source(contents, spec)
             return ValidationReport(passed=True)
         except (ValueError, yaml.YAMLError) as error:
             return ValidationReport(
@@ -212,7 +228,7 @@ class DatabricksAdapter:
 
     def plan(self, request: PlanRequest, ctx: ReadContext) -> DeploymentPlan:
         artifact = request.artifact
-        spec = artifact.spec
+        spec = databricks_spec(artifact.spec)
         self._check_artifact(artifact, ctx)
         if not ctx.target.bindings.get(spec.warehouse_binding):
             raise ValueError("required warehouse binding is missing")
@@ -260,7 +276,7 @@ class DatabricksAdapter:
         principal = ctx.target.bindings.get(PRINCIPAL_BINDING)
         if not principal:
             raise ValueError("required service principal binding is missing")
-        warehouse = ctx.target.bindings.get(artifact.spec.warehouse_binding)
+        warehouse = ctx.target.bindings.get(databricks_spec(artifact.spec).warehouse_binding)
         if not warehouse:
             raise ValueError("required warehouse binding is missing")
         return {
@@ -275,7 +291,10 @@ class DatabricksAdapter:
         """The app's binding when `ctx` owns it; refuses an unowned app and a vanished owned one."""
         if app:
             binding = self._resource(
-                app, artifact.spec.app_resource_key, artifact.application_id, ctx.target.id
+                app,
+                databricks_spec(artifact.spec).app_resource_key,
+                artifact.application_id,
+                ctx.target.id,
             )
             if binding not in ctx.owned_resources:
                 raise PermissionError("refusing to adopt an unowned native app by name")
@@ -298,7 +317,7 @@ class DatabricksAdapter:
 
     def apply(self, request: ApplyRequest, ctx: DeployContext) -> ApplyReceipt:
         artifact, plan = request.artifact, request.plan
-        spec = artifact.spec
+        spec = databricks_spec(artifact.spec)
         validate_plan(plan, ctx.target, check_start_ttl=False)
         if ctx.toolchain_digest != plan.toolchain_digest:
             raise ValueError("executing toolchain does not match the deployment plan")
@@ -420,6 +439,8 @@ class DatabricksAdapter:
             return receipt
 
     def observe(self, request: ObserveRequest, ctx: ReadContext) -> NativeObservation:
+        if request.spec is not None:
+            databricks_spec(request.spec)
         receipt = request.receipt
         self._check_receipt(receipt, ctx)
         app = self._workspace(ctx).get_app(receipt.operation_handles["app_name"])
@@ -467,6 +488,8 @@ class DatabricksAdapter:
         )
 
     def verify(self, request: VerifyRequest, ctx: ReadContext) -> VerificationReport:
+        if request.spec is not None:
+            databricks_spec(request.spec)
         observed = self.observe(ObserveRequest(receipt=request.receipt), ctx)
         checks = [
             Check(
