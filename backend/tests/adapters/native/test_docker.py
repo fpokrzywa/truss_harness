@@ -368,18 +368,27 @@ def _service(edit: Callable[[dict[str, Any]], None]) -> Callable[[dict[str, byte
     return lambda files: edit_compose(files, edit)
 
 
-def _escaped(
-    edit: Callable[[dict[str, Any], str], None], escape: str
+def _raw_yaml(
+    edit: Callable[[dict[str, Any], str], None], raw: str
 ) -> Callable[[dict[str, bytes]], None]:
-    """Puts `escape`, a YAML double-quoted scalar that parses to a `$`, where `edit` says."""
+    """Puts `raw`, YAML text holding no `$` byte (an escape, a tag), where `edit` says."""
 
     def apply(files: dict[str, bytes]) -> None:
-        edit_compose(files, lambda s: edit(s, "ESCAPED_PLACEHOLDER"))
-        text = files["compose.yaml"].replace(b"ESCAPED_PLACEHOLDER", escape.encode())
+        edit_compose(files, lambda s: edit(s, "RAW_PLACEHOLDER"))
+        text = files["compose.yaml"].replace(b"RAW_PLACEHOLDER", raw.encode())
         assert b"$" not in text
         files["compose.yaml"] = text
 
     return apply
+
+
+def _alias_cycle(files: dict[str, bytes]) -> None:
+    files["compose.yaml"] = b"services: &a\n  x: *a\n"
+
+
+def _label_alias_cycle(files: dict[str, bytes]) -> None:
+    _raw_yaml(lambda s, v: s["labels"].update({"org.example.note": v}), "*a")(files)
+    files["compose.yaml"] = files["compose.yaml"].replace(b"  app:\n", b"  app: &a\n", 1)
 
 
 def _second_service(files: dict[str, bytes]) -> None:
@@ -417,18 +426,29 @@ REFUSED: dict[str, Callable[[dict[str, bytes]], None]] = {
     "tmpfs-other": _service(lambda s: s.update(tmpfs=["/tmp", "/run"])),
     "interpolation": _service(lambda s: s["environment"].update(SERVING_ENDPOINT="${HOME}")),
     "interpolation-escaped": _service(lambda s: s.update(restart="$$no")),
-    "interpolation-yaml-x24": _escaped(
+    "interpolation-yaml-x24": _raw_yaml(
         lambda s, v: s["environment"].update(SERVING_ENDPOINT=v), r'"\x24{HOME}"'
     ),
-    "interpolation-yaml-u0024": _escaped(
+    "interpolation-yaml-u0024": _raw_yaml(
         lambda s, v: s["environment"].update(SERVING_ENDPOINT=v), r'"\u0024HOME"'
     ),
-    "interpolation-yaml-label": _escaped(
+    "interpolation-yaml-label": _raw_yaml(
         lambda s, v: s["labels"].update({"org.example.note": v}), r'"\x24{HOME}"'
     ),
-    "interpolation-yaml-label-key": _escaped(
+    "interpolation-yaml-label-key": _raw_yaml(
         lambda s, v: s["labels"].update({v: "x"}), r'"\u0024{HOME}"'
     ),
+    "binary-environment": _raw_yaml(
+        lambda s, v: s["environment"].update(SERVING_ENDPOINT=v), "!!binary JHtIT01FfQ=="
+    ),
+    "binary-label": _raw_yaml(
+        lambda s, v: s["labels"].update({"org.example.note": v}), "!!binary JHtIT01FfQ=="
+    ),
+    "set-environment": _raw_yaml(
+        lambda s, v: s["environment"].update(SERVING_ENDPOINT=v), "!!set {a: null}"
+    ),
+    "alias-cycle": _alias_cycle,
+    "label-alias-cycle": _label_alias_cycle,
     "extra-environment": _service(lambda s: s["environment"].update(DATABRICKS_TOKEN="x")),
     "second-service": _second_service,
     "top-level": _top_level,
@@ -463,6 +483,11 @@ def test_docker_bundle_validation_refuses(docker: DockerSetup, case: str) -> Non
         ("interpolation-yaml-u0024", "compose_interpolation"),
         ("interpolation-yaml-label", "compose_interpolation"),
         ("interpolation-yaml-label-key", "compose_interpolation"),
+        ("binary-environment", "compose_yaml"),
+        ("binary-label", "compose_yaml"),
+        ("set-environment", "compose_yaml"),
+        ("alias-cycle", "compose_yaml"),
+        ("label-alias-cycle", "compose_yaml"),
     ],
 )
 def test_docker_bundle_refusal_names_the_rule(docker: DockerSetup, case: str, code: str) -> None:

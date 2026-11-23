@@ -208,15 +208,32 @@ def _string_map(value: Any, code: str, message: str) -> dict[str, str]:
     raise BundleInvalid(code, message)
 
 
-def _holds_dollar(node: Any) -> bool:
-    """Whether any string key or value of a parsed YAML node holds `$`."""
-    if isinstance(node, str):
-        return "$" in node
-    if isinstance(node, dict):
-        return any(_holds_dollar(key) or _holds_dollar(item) for key, item in node.items())
-    if isinstance(node, list):
-        return any(_holds_dollar(item) for item in node)
-    return False
+_SCALARS = (str, int, float, bool, type(None))
+
+
+def _check_compose_nodes(document: Any) -> None:
+    """Refuses a parsed compose.yaml that is not plain data or whose strings hold `$`.
+
+    Compose (yaml.v3) reads tagged values such as `!!binary` as strings and interpolates the parsed
+    values, so only plain mappings, lists and scalars pass. A mapping or list reached twice (an
+    alias, possibly cyclic) is refused.
+    """
+    seen: set[int] = set()
+    stack = [document]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, str):
+            if "$" in node:
+                raise BundleInvalid("compose_interpolation", "compose.yaml may not hold $")
+        elif isinstance(node, dict | list):
+            if id(node) in seen:
+                raise BundleInvalid("compose_yaml", "compose.yaml may not reuse a node by alias")
+            seen.add(id(node))
+            stack.extend(
+                [item for pair in node.items() for item in pair] if isinstance(node, dict) else node
+            )
+        elif not isinstance(node, _SCALARS):
+            raise BundleInvalid("compose_yaml", "compose.yaml may only hold plain YAML values")
 
 
 def _validate_compose(data: bytes) -> tuple[dict[str, Any], dict[str, str], dict[str, str]]:
@@ -225,11 +242,10 @@ def _validate_compose(data: bytes) -> tuple[dict[str, Any], dict[str, str], dict
         raise BundleInvalid("compose_interpolation", "compose.yaml may not hold $")
     try:
         document = yaml.safe_load(data)
-    except yaml.YAMLError:
+    except (yaml.YAMLError, RecursionError):
         raise BundleInvalid("compose_yaml", "compose.yaml is not valid YAML") from None
-    if _holds_dollar(document):
-        # Compose interpolates the parsed values, so a YAML escape such as "\x24" counts too.
-        raise BundleInvalid("compose_interpolation", "compose.yaml may not hold $")
+    # Compose interpolates the parsed values, so a YAML escape such as "\x24" counts too.
+    _check_compose_nodes(document)
     if not isinstance(document, dict) or set(document) != {"services"}:
         raise BundleInvalid("compose_top_level", "compose.yaml may only hold services")
     services = document["services"]
