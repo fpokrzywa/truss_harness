@@ -87,7 +87,8 @@ describe('actions editor', () => {
         required: ['request_id'],
       }),
     );
-    await user.type(within(dialog).getByLabelText('Key'), 'crm.escalate_request');
+    await user.click(within(dialog).getByLabelText('Key'));
+    await user.paste('crm.escalate_request');
     await user.selectOptions(within(dialog).getByLabelText('Object type'), 'crm.customer');
     await user.selectOptions(await within(dialog).findByLabelText('Tool'), 'tool-1');
     const versionSelect = await within(dialog).findByLabelText('Published tool version');
@@ -101,11 +102,15 @@ describe('actions editor', () => {
       'Required tool parameter "request_id" is not mapped.',
     );
     await user.click(within(dialog).getByRole('button', { name: 'Add parameter' }));
-    await user.type(within(dialog).getByLabelText('Parameter 1 name'), 'request_id');
-    await user.type(within(dialog).getByLabelText('Parameter 1 value'), '$object.customer_id');
+    await user.click(within(dialog).getByLabelText('Parameter 1 name'));
+    await user.paste('request_id');
+    await user.click(within(dialog).getByLabelText('Parameter 1 value'));
+    await user.paste('$object.customer_id');
     await user.click(within(dialog).getByRole('button', { name: 'Add parameter' }));
-    await user.type(within(dialog).getByLabelText('Parameter 2 name'), 'note');
-    await user.type(within(dialog).getByLabelText('Parameter 2 value'), 'escalated');
+    await user.click(within(dialog).getByLabelText('Parameter 2 name'));
+    await user.paste('note');
+    await user.click(within(dialog).getByLabelText('Parameter 2 value'));
+    await user.paste('escalated');
     await user.click(within(dialog).getByRole('button', { name: 'Save action' }));
 
     expect(specOf().actions).toEqual([
@@ -120,7 +125,8 @@ describe('actions editor', () => {
 
   it('rejects mappings that refer to a property the object type lacks', async () => {
     const { user, dialog } = await openDialog(base(), toolRoutes());
-    await user.type(within(dialog).getByLabelText('Key'), 'crm.a');
+    await user.click(within(dialog).getByLabelText('Key'));
+    await user.paste('crm.a');
     await user.selectOptions(within(dialog).getByLabelText('Object type'), 'crm.customer');
     await user.selectOptions(await within(dialog).findByLabelText('Tool'), 'tool-1');
     await user.selectOptions(
@@ -128,8 +134,10 @@ describe('actions editor', () => {
       'tv-1',
     );
     await user.click(within(dialog).getByRole('button', { name: 'Add parameter' }));
-    await user.type(within(dialog).getByLabelText('Parameter 1 name'), 'x');
-    await user.type(within(dialog).getByLabelText('Parameter 1 value'), '$object.nope');
+    await user.click(within(dialog).getByLabelText('Parameter 1 name'));
+    await user.paste('x');
+    await user.click(within(dialog).getByLabelText('Parameter 1 value'));
+    await user.paste('$object.nope');
     expect(within(dialog).getByRole('alert')).toHaveTextContent(
       'Mapping refers to "nope", which is not a property of crm.customer.',
     );
@@ -156,7 +164,8 @@ describe('actions editor', () => {
     expect(within(dialog).getByLabelText('Key')).toBeDisabled();
     const value = within(dialog).getByLabelText('Parameter 1 value');
     await user.clear(value);
-    await user.type(value, '$object.name');
+    await user.click(value);
+    await user.paste('$object.name');
     await user.click(within(dialog).getByRole('button', { name: 'Save action' }));
     expect(specOf().actions[0]?.param_mapping).toEqual({ id: '$object.name' });
     await user.click(screen.getByRole('button', { name: 'Remove action crm.a' }));
