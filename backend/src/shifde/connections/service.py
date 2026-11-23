@@ -30,6 +30,8 @@ from sqlalchemy.orm import Session
 from shifde.adapters.base import (
     AdapterDescriptor,
     AdapterFailure,
+    AdapterRules,
+    ConfigRefused,
     ConnectionConfig,
     ConnectionSession,
     Credential,
@@ -131,9 +133,14 @@ class ConnectionPlacement:
 
 
 class ConnectionService:
-    def __init__(self, scope: TenantScope, runtime: IntegrationRuntime) -> None:
+    def __init__(
+        self, scope: TenantScope, runtime: IntegrationRuntime, rules: AdapterRules | None = None
+    ) -> None:
         self.sc = scope
         self.runtime = runtime
+        # the installation rules `normalize_config` applies on create/update; without them the
+        # built-in rules only (fail closed, B-2753)
+        self.rules = rules or AdapterRules()
 
     # ================================================================== helpers
     @property
@@ -346,6 +353,43 @@ class ConnectionService:
             )
         return desc
 
+    def _normalized(self, adapter_key: str, config: dict[str, Any]) -> dict[str, Any]:
+        """The adapter's `normalize_config` of `config` (create, and PATCH with `config`; never on
+        a read, test, discover or invoke path); unchanged when the adapter has no such hook."""
+        normalize = getattr(self.runtime.registry.get(adapter_key), "normalize_config", None)
+        if normalize is None:
+            return config
+        try:
+            normalized: dict[str, Any] = normalize(config, self.rules)
+        except ConfigRefused as exc:
+            raise ValidationFailed(
+                "connection config was refused",
+                errors=[
+                    {
+                        "loc": ["body", "config", *e.path.split("/")],
+                        "msg": e.message,
+                        "type": "config",
+                    }
+                    for e in exc.errors
+                ],
+            ) from exc
+        return normalized
+
+    def _check_credential(
+        self, adapter_key: str, auth_method: str, value: str, loc: list[str]
+    ) -> None:
+        """The adapter's `validate_credential` of an inline credential value (422 at `loc`; the
+        messages are the adapter's fixed text, never the value)."""
+        check = getattr(self.runtime.registry.get(adapter_key), "validate_credential", None)
+        if check is None:
+            return
+        errors = check(auth_method, value)
+        if errors:
+            raise ValidationFailed(
+                "the credential is not valid for this connection",
+                errors=[{"loc": loc, "msg": e.message, "type": "credential"} for e in errors],
+            )
+
     def _secret_ref(self, sec: secrets_service.SecretMeta) -> ResourceRef:
         if sec.scope_id is None:
             return self.sc.tenant_ref
@@ -547,14 +591,21 @@ class ConnectionService:
             self.sc.pdp.require("secret:manage", ref)
         self._active_tenant()
         self._active_scope(body.scope.workspace, body.scope.project)
+        config = self._normalized(body.adapter_key, body.config)
         self._validate_definition(
             connection_type=body.connection_type,
             adapter_key=body.adapter_key,
-            config=body.config,
+            config=config,
             auth_method=body.auth_method,
             secret_id=body.secret_id,
             credential=body.credential is not None,
         )
+        if body.credential is not None:
+            value = body.credential.value.get_secret_value()
+            secrets_service.check_value(value)  # the byte limit answers first
+            self._check_credential(
+                body.adapter_key, body.auth_method, value, ["body", "credential", "value"]
+            )
         sec = self._check_secret(body.secret_id)
         self._check_secret_scope(sec, ref.workspace_id, ref.project_id)
         bound = body.secret_id is not None or body.credential is not None
@@ -585,7 +636,7 @@ class ConnectionService:
                     "connection_type": body.connection_type,
                     "adapter_key": body.adapter_key,
                     "vendor_id": body.vendor_id,
-                    "config": body.config,
+                    "config": config,
                     "auth_method": body.auth_method,
                     "secret_ref_id": owned.id if owned is not None else body.secret_id,
                     "egress_policy_id": body.egress_policy_id,
@@ -637,7 +688,7 @@ class ConnectionService:
         if "name" in sent and body.name is not None:
             values["name"] = body.name
         if "config" in sent and body.config is not None:
-            values["config"] = body.config
+            values["config"] = self._normalized(row["adapter_key"], body.config)
         if "auth_method" in sent and body.auth_method is not None:
             values["auth_method"] = body.auth_method
         if "secret_id" in sent:
@@ -798,6 +849,7 @@ class ConnectionService:
             raise ValidationFailed(NO_SECRET_FOR_NONE)
         value = body.value.get_secret_value()
         secrets_service.check_value(value)
+        self._check_credential(row["adapter_key"], row["auth_method"], value, ["body", "value"])
         expected = self._checked_version(body.row_version, row)
         if row["access_mode"] == "read":
             self._require_read_only_confirmation(body.read_only_confirmed)
@@ -880,7 +932,11 @@ class ConnectionService:
 
     def _exec_ctx(self, row: Mapping[str, Any], deadline: float | None = None) -> ExecContext:
         guard = egress.build_guard(
-            self._session, self.runtime, row["tenant_id"], row["egress_policy_id"]
+            self._session,
+            self.runtime,
+            row["tenant_id"],
+            row["egress_policy_id"],
+            adapter_key=row["adapter_key"],
         )
         if deadline is not None:
             guard.set_deadline(deadline)
