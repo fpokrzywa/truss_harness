@@ -14,8 +14,8 @@ import pytest
 
 from shifde.adapters.dataplatforms.databricks import DatabricksAdapter
 from shifde.adapters.dataplatforms.fakes import FakeDatabricksWorkspace
-from shifde.build import sqlrules
 from shifde.build.tool_runtime import param_type
+from shifde.core import sqlrules
 from shifde.evaluation.assertions import evaluate
 from shifde.evaluation.schemas import Case
 from shifde.runtime.agent import parse_tool_calls, untrusted_block

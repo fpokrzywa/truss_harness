@@ -458,6 +458,11 @@ REFUSED_SQL = [
     "SELECT 1 // x\rCALL p()",
     "SELECT r'\\' , '  CALL p() -- '",
     "SELECT `a CALL p() -- `",
+    # a write keyword anywhere in the code (#267)
+    "WITH a AS (SELECT 1) INSERT INTO t SELECT * FROM a",
+    "WITH a AS (SELECT 1) DELETE FROM t",
+    "with a as (select 1) Insert into t select * from a",
+    "With a As (Select 1) dElEtE From t",
 ]
 ACCEPTED_SQL = [
     "SELECT $$hello$$",
@@ -469,6 +474,9 @@ ACCEPTED_SQL = [
     "SELECT $1 FROM t",
     "SELECT $$x$$;",
     'SELECT 1 AS "a "" b;"',
+    "SELECT 'insert' AS w -- delete",
+    'SELECT "update" FROM t // drop',
+    "SELECT updated_at, deleted FROM t",
 ]
 
 
