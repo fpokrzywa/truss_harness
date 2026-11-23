@@ -40,11 +40,19 @@ _UNTERMINATED = "the statement has an unterminated quote or comment"
 _NESTED = "nested block comments are not allowed"
 
 
+def _raw_prefix(sql: str, quote: int) -> bool:
+    """True when the quote at `quote` opens a raw literal: an `r`/`R` that starts a token."""
+    if quote == 0 or sql[quote - 1] not in "rR":
+        return False
+    return quote == 1 or not (sql[quote - 2].isalnum() or sql[quote - 2] == "_")
+
+
 def _code_of(sql: str) -> tuple[str, list[int]]:
     """`sql` with comments replaced by spaces, and the offsets of every `;` outside quotes.
 
     Single- and double-quoted text honours backslash escapes (Databricks SQL reads `\\'` as a
-    quote inside a string); backtick identifiers do not. A doubled quote needs no special case: it
+    quote inside a string); a raw literal (`r'...'`, `R"..."`) and backtick identifiers do not.
+    A doubled quote needs no special case: it
     closes the text and opens it again. A `/*` inside a block comment is refused, so a dialect
     that nests block comments and one that does not cannot read the statement differently."""
     out: list[str] = []
@@ -54,9 +62,10 @@ def _code_of(sql: str) -> tuple[str, list[int]]:
     while i < n:
         ch = sql[i]
         if ch in ("'", '"', "`"):
+            escapes = ch != "`" and not _raw_prefix(sql, i)
             j = i + 1
             while j < n and sql[j] != ch:
-                j += 2 if ch != "`" and sql[j] == "\\" else 1
+                j += 2 if escapes and sql[j] == "\\" else 1
             if j >= n:
                 raise AdapterFailure(ErrorClass.CAPABILITY, _UNTERMINATED)
             out.append(sql[i : j + 1])
