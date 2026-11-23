@@ -290,6 +290,11 @@ REFUSED = [
     "SELECT r'\\'; DROP TABLE t; --'",
     "-- only a comment",
     "",
+    "WITH a AS (SELECT 1) INSERT INTO t SELECT * FROM a",
+    "WITH a AS (SELECT 1) DELETE FROM t",
+    "with a as (select 1) Insert into t select * from a",
+    "With a As (Select 1) dElEtE From t",
+    "SELECT 1 FROM t WHERE x IN (SELECT 1) UPDATE t SET y = 1",
 ]
 ACCEPTED = [
     "SELECT ';'",
@@ -304,6 +309,10 @@ ACCEPTED = [
     "SELECT \"x;y\", 'it''s'",
     "SELECT r'\\', 'a;b'",
     "SELECT attr'\\';'",
+    "SELECT 'insert' AS w -- delete",
+    "SELECT `update` FROM t /* drop */",
+    'SELECT "merge" FROM t',
+    "SELECT updated_at, deleted FROM t",
 ]
 
 
@@ -325,6 +334,13 @@ def test_refusals_are_capability_failures() -> None:
         with pytest.raises(AdapterFailure) as raised:
             sqlapi.check_read_only(sql)
         assert raised.value.error_class is ErrorClass.CAPABILITY, sql
+
+
+def test_a_write_word_refusal_never_echoes_the_statement() -> None:
+    with pytest.raises(AdapterFailure) as raised:
+        sqlapi.check_read_only("WITH a AS (SELECT 1) INSERT INTO t SELECT * FROM a")
+    assert raised.value.error_class is ErrorClass.CAPABILITY
+    assert "insert" not in str(raised.value).lower()
 
 
 def test_the_default_dialect_does_not_read_dollar_quotes() -> None:

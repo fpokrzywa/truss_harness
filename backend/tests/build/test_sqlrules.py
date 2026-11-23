@@ -1,4 +1,4 @@
-"""SP5-1: `build/sqlrules.py`, the pure SELECT-only rules of design 5.4: the tokenizer, every
+"""SP5-1: `core/sqlrules.py`, the pure SELECT-only rules of design 5.4: the tokenizer, every
 statement, table and parameter code with a refusing and an accepting example, and no exception on
 any input."""
 
@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from shifde.build.sqlrules import (
+from shifde.core.sqlrules import (
     SqlIssue,
     Token,
     check,

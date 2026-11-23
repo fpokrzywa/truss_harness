@@ -58,7 +58,7 @@ The owner input ("the same workspace, with sample data") is not supplied (`.devd
 **`appgen` may import:**
 - `shifde.core`, `shifde.authz`, `shifde.audit`;
 - `shifde.connections.service`/`.schemas`, `shifde.models_admin.service`/`.schemas`;
-- `shifde.build.service`/`.schemas`/`.sqlrules`, `shifde.packaging.service`/`.schemas`, `shifde.evaluation.service`/`.schemas`;
+- `shifde.build.service`/`.schemas`, `shifde.core.sqlrules`, `shifde.packaging.service`/`.schemas`, `shifde.evaluation.service`/`.schemas`;
 - `jsonschema`.
 
 **`appgen` may not import:** `shifde.delivery`, `shifde.app`, `shifde.cli`, `shifde.main`, `shifde.worker_main`, `shifde.executor`, `shifde.adapters.native`, `shifde.runtime`, `flask` or `databricks`.
@@ -360,7 +360,7 @@ The same `AGENT_SCRIPT` list, in the same `{match, reply}` format and with the s
 - **Row limit (R14).** The tool result is `{columns: [{name, type}], rows: [[...]], row_count, truncated}`; `truncated` comes from the statement API's `manifest.truncated`, true when more rows existed than `max_rows`. If the existing `data_platform` invoke result differs, its shape is kept and the generated app copies it exactly; the conformance test compares them.
 - **Write statements (R13)** are refused before reaching the platform in two places:
   - `sqlcheck` at draft time;
-  - `build` validation at tool publish, which runs `sqlcheck.statement_rules` on the converted template and gives `sql_write_statement` and the other statement-rule codes as build `report.error` with path `binding.sql_template`. `build` may not import `appgen`, so the pure statement rules live in `build/sqlrules.py` and `appgen/sqlcheck.py` imports them from there.
+  - `build` validation at tool publish, which runs `sqlcheck.statement_rules` on the converted template and gives `sql_write_statement` and the other statement-rule codes as build `report.error` with path `binding.sql_template`. `build` may not import `appgen`, so the pure statement rules live in `core/sqlrules.py` and `appgen/sqlcheck.py` imports them from there.
 
   The read-only credential (`access_mode = 'read'`) and the app identity's SELECT-only grants remain the real guarantee.
 - **Fake workspace with sample data.** `FakeDatabricksWorkspace(sample_data=True)`:
@@ -598,7 +598,7 @@ Every backend issue's checks include `cd backend; uv run ruff format --check .; 
 - Migrations are new files under a protected path, so the approver escalates and the lead merges after the 13-gate set (B-2530).
 
 1. **SP5-1 SQL tools over a Databricks connection; fake workspace with sample data and serving endpoint; shared fixtures (C).**
-   - Scope: 6.1; `build/sqlrules.py`; `tests/_support/appgen_fixtures.py` (5.6).
+   - Scope: 6.1; `core/sqlrules.py`; `tests/_support/appgen_fixtures.py` (5.6).
    - Migration: no.
    - Checks: `uv run pytest tests/build tests/connections tests/adapters/dataplatforms tests/runtime -k "sql or databricks or fake"`.
    - Depends: none.
@@ -658,7 +658,7 @@ The earlier open questions 1-9 are settled with the recommended answers:
 - **S2 Client usage table (design 5.6). Known gap.** v1 logs usage as JSON lines to the app logs (6.4) and writes no table. This needs the **owner's written acceptance, or scheduling** in a later sub-project. STATUS lists it under "Waiting on owner input" until then.
 - **S3 Shared SHI provider for drafting.** Allowed under the existing per-client switch. Only names and types are sent, never row values.
 - **S4 Parity.** The generated loop speaks SETH's own tool protocol (verbatim copy, parity test) and is checked by the conformance test on the fakes. The deployment gate stays SP3's SETH-side evaluation.
-- **S5 SQL safety.** A tokenizer and rules with no parser dependency (5.4, `build/sqlrules.py`), plus `access_mode = 'read'` in SETH and SELECT-only grants for the app identity. No `sqlglot`.
+- **S5 SQL safety.** A tokenizer and rules with no parser dependency (5.4, `core/sqlrules.py`), plus `access_mode = 'read'` in SETH and SELECT-only grants for the app identity. No `sqlglot`.
 - **S6 Grants.** The app's service principal gets SELECT on the data-read tables by hand (client or FDE, runbook). `app-deep-health` fails verify with "the app cannot read <table>" until it does.
 - **S7 Entrypoint.** One agent only. Pipelines are reported by name.
 - **S8 Skipping drafting.** Allowed: `screens` on solution-version create is enough. The drafting model is never pinned; a release has exactly one runtime model binding, which is also the app's serving endpoint.

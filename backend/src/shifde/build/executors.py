@@ -11,7 +11,7 @@ redaction: there is no second network path.
 `data_platform` connection whose adapter is in `DATA_PLATFORM_ADAPTER_OF` (Databricks): there the
 stored `%(name)s` template is sent as `:name` with typed parameters, the tool's derived maturity is
 that of the Databricks adapter's `query.sql`, and publish runs the SELECT-only statement rules of
-`build/sqlrules.py` on it.
+`core/sqlrules.py` on it.
 """
 
 from __future__ import annotations
