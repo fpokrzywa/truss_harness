@@ -1,36 +1,36 @@
 {
-  "generated": "2026-11-22T22:31:23+00:00",
+  "generated": "2026-11-23T17:10:03+00:00",
   "note": "est_usd is an estimate at list price, not a bill",
   "totals": {
     "all": "all",
-    "input": 53904,
-    "output": 17801253,
-    "cache_write_5m": 105314240,
-    "cache_write_1h": 16280270,
-    "cache_read": 2667936777,
-    "requests": 26343,
-    "est_usd": 1443.3942
+    "input": 69178,
+    "output": 22484965,
+    "cache_write_5m": 135211696,
+    "cache_write_1h": 18671122,
+    "cache_read": 3442380320,
+    "requests": 33815,
+    "est_usd": 1846.2013
   },
   "by_model": [
     {
       "model": "claude-opus-5-5",
-      "input": 46402,
-      "output": 15154412,
-      "cache_write_5m": 85589427,
-      "cache_write_1h": 15507748,
-      "cache_read": 2388969462,
-      "requests": 22666,
-      "est_usd": 1333.0769
+      "input": 60232,
+      "output": 19598039,
+      "cache_write_5m": 111386629,
+      "cache_write_1h": 17898600,
+      "cache_read": 3145645712,
+      "requests": 29472,
+      "est_usd": 1721.4528
     },
     {
       "model": "claude-sonnet-5-5",
-      "input": 6736,
-      "output": 1951670,
-      "cache_write_5m": 17719952,
+      "input": 8180,
+      "output": 2191755,
+      "cache_write_5m": 21820206,
       "cache_write_1h": 354601,
-      "cache_read": 249369224,
-      "requests": 3296,
-      "est_usd": 90.1854
+      "cache_read": 267136517,
+      "requests": 3962,
+      "est_usd": 104.6165
     },
     {
       "model": "claude-fable-5-2",
@@ -56,53 +56,53 @@
   "by_agent_type": [
     {
       "agent_type": "builder",
-      "input": 12276,
-      "output": 4350202,
-      "cache_write_5m": 42042708,
+      "input": 17930,
+      "output": 6635892,
+      "cache_write_5m": 57071547,
       "cache_write_1h": 0,
-      "cache_read": 585998868,
-      "requests": 6022,
-      "est_usd": 414.4665
+      "cache_read": 928611975,
+      "requests": 8795,
+      "est_usd": 603.8697
     },
     {
       "agent_type": "lead",
-      "input": 13864,
-      "output": 3184374,
+      "input": 17618,
+      "output": 3810140,
       "cache_write_5m": 0,
-      "cache_write_1h": 16280270,
-      "cache_read": 990823095,
-      "requests": 6644,
-      "est_usd": 395.7169
+      "cache_write_1h": 18671122,
+      "cache_read": 1297069938,
+      "requests": 8491,
+      "est_usd": 488.6234
     },
     {
       "agent_type": "module-builder-critical",
-      "input": 8770,
-      "output": 3708119,
-      "cache_write_5m": 16952001,
+      "input": 8976,
+      "output": 3770789,
+      "cache_write_5m": 17731460,
       "cache_write_1h": 0,
-      "cache_read": 566258788,
-      "requests": 4296,
-      "est_usd": 272.2092
-    },
-    {
-      "agent_type": "isolation-reviewer",
-      "input": 4390,
-      "output": 1617486,
-      "cache_write_5m": 10384759,
-      "cache_write_1h": 0,
-      "cache_read": 118210051,
-      "requests": 2173,
-      "est_usd": 107.9331
+      "cache_read": 575534484,
+      "requests": 4396,
+      "est_usd": 279.2159
     },
     {
       "agent_type": "spec-writer",
-      "input": 3874,
-      "output": 1580499,
-      "cache_write_5m": 6808877,
+      "input": 5360,
+      "output": 2240151,
+      "cache_write_5m": 9680865,
       "cache_write_1h": 0,
-      "cache_read": 87696742,
-      "requests": 1928,
-      "est_usd": 83.2092
+      "cache_read": 125463919,
+      "requests": 2665,
+      "est_usd": 118.3216
+    },
+    {
+      "agent_type": "isolation-reviewer",
+      "input": 4702,
+      "output": 1708352,
+      "cache_write_5m": 11258778,
+      "cache_write_1h": 0,
+      "cache_read": 122491287,
+      "requests": 2327,
+      "est_usd": 114.978
     },
     {
       "agent_type": "module-builder",
@@ -116,53 +116,63 @@
     },
     {
       "agent_type": "general-purpose",
-      "input": 1006,
-      "output": 326078,
-      "cache_write_5m": 3186960,
+      "input": 2210,
+      "output": 713301,
+      "cache_write_5m": 6614307,
       "cache_write_1h": 0,
-      "cache_read": 35167957,
-      "requests": 479,
-      "est_usd": 24.1817
+      "cache_read": 76799304,
+      "requests": 1027,
+      "est_usd": 48.0992
     },
     {
       "agent_type": "approver",
-      "input": 1198,
-      "output": 296485,
-      "cache_write_5m": 3091749,
+      "input": 1870,
+      "output": 458985,
+      "cache_write_5m": 4946281,
       "cache_write_1h": 0,
-      "cache_read": 13050285,
-      "requests": 599,
-      "est_usd": 24.0033
-    },
-    {
-      "agent_type": "reviewer-security",
-      "input": 1018,
-      "output": 221263,
-      "cache_write_5m": 2613028,
-      "cache_write_1h": 0,
-      "cache_read": 11645287,
-      "requests": 506,
-      "est_usd": 19.8235
+      "cache_read": 21284433,
+      "requests": 934,
+      "est_usd": 38.1755
     },
     {
       "agent_type": "reviewer-code",
-      "input": 1408,
-      "output": 375635,
-      "cache_write_5m": 4042766,
+      "input": 2228,
+      "output": 541955,
+      "cache_write_5m": 6440802,
       "cache_write_1h": 0,
-      "cache_read": 16498726,
-      "requests": 678,
-      "est_usd": 19.7036
+      "cache_read": 29092670,
+      "requests": 1078,
+      "est_usd": 35.9394
+    },
+    {
+      "agent_type": "reviewer-security",
+      "input": 1626,
+      "output": 363275,
+      "cache_write_5m": 4248409,
+      "cache_write_1h": 0,
+      "cache_read": 19870082,
+      "requests": 808,
+      "est_usd": 32.4881
     },
     {
       "agent_type": "intake",
-      "input": 1258,
-      "output": 230213,
-      "cache_write_5m": 1755337,
+      "input": 1746,
+      "output": 320124,
+      "cache_write_5m": 2614934,
       "cache_write_1h": 0,
-      "cache_read": 6977615,
-      "requests": 628,
-      "est_usd": 7.3907
+      "cache_read": 9919503,
+      "requests": 872,
+      "est_usd": 10.734
+    },
+    {
+      "agent_type": "reviewer-ux",
+      "input": 288,
+      "output": 50394,
+      "cache_write_5m": 625047,
+      "cache_write_1h": 0,
+      "cache_read": 3368971,
+      "requests": 136,
+      "est_usd": 4.3412
     },
     {
       "agent_type": "frontend-builder",
@@ -175,16 +185,6 @@
       "est_usd": 4.2139
     },
     {
-      "agent_type": "reviewer-ux",
-      "input": 250,
-      "output": 42658,
-      "cache_write_5m": 512103,
-      "cache_write_1h": 0,
-      "cache_read": 2918198,
-      "requests": 118,
-      "est_usd": 3.5314
-    },
-    {
       "agent_type": "Explore",
       "input": 146,
       "output": 36464,
@@ -193,6 +193,16 @@
       "cache_read": 4280779,
       "requests": 73,
       "est_usd": 3.2634
+    },
+    {
+      "agent_type": "reviewer-ui",
+      "input": 214,
+      "output": 48157,
+      "cache_write_5m": 445615,
+      "cache_write_1h": 0,
+      "cache_read": 1607539,
+      "requests": 101,
+      "est_usd": 0.7928
     },
     {
       "agent_type": "verifier",
@@ -213,16 +223,6 @@
       "cache_read": 1667644,
       "requests": 12,
       "est_usd": 0.6736
-    },
-    {
-      "agent_type": "reviewer-ui",
-      "input": 182,
-      "output": 44791,
-      "cache_write_5m": 390301,
-      "cache_write_1h": 0,
-      "cache_read": 1424950,
-      "requests": 87,
-      "est_usd": 0.6025
     },
     {
       "agent_type": "scout",
@@ -248,23 +248,23 @@
   "by_unit": [
     {
       "unit": "lead",
-      "input": 13864,
-      "output": 3184374,
+      "input": 17618,
+      "output": 3810140,
       "cache_write_5m": 0,
-      "cache_write_1h": 16280270,
-      "cache_read": 990823095,
-      "requests": 6644,
-      "est_usd": 395.7169
+      "cache_write_1h": 18671122,
+      "cache_read": 1297069938,
+      "requests": 8491,
+      "est_usd": 488.6234
     },
     {
       "unit": "unassigned",
-      "input": 12236,
-      "output": 3934328,
-      "cache_write_5m": 33272957,
+      "input": 18876,
+      "output": 5985326,
+      "cache_write_5m": 50173936,
       "cache_write_1h": 0,
-      "cache_read": 400296489,
-      "requests": 6008,
-      "est_usd": 314.9956
+      "cache_read": 589672525,
+      "requests": 9256,
+      "est_usd": 470.1269
     },
     {
       "unit": "runtime",
@@ -347,6 +347,16 @@
       "est_usd": 23.3328
     },
     {
+      "unit": "137",
+      "input": 510,
+      "output": 223091,
+      "cache_write_5m": 1031602,
+      "cache_write_1h": 0,
+      "cache_read": 61950254,
+      "requests": 254,
+      "est_usd": 21.9345
+    },
+    {
       "unit": "app-2",
       "input": 914,
       "output": 248100,
@@ -355,6 +365,16 @@
       "cache_read": 36475321,
       "requests": 444,
       "est_usd": 20.0738
+    },
+    {
+      "unit": "133-sp5-2",
+      "input": 454,
+      "output": 155440,
+      "cache_write_5m": 1555856,
+      "cache_write_1h": 0,
+      "cache_read": 42060463,
+      "requests": 225,
+      "est_usd": 19.2445
     },
     {
       "unit": "models_admin",
@@ -407,6 +427,16 @@
       "est_usd": 15.7349
     },
     {
+      "unit": "138",
+      "input": 350,
+      "output": 168075,
+      "cache_write_5m": 1499743,
+      "cache_write_1h": 0,
+      "cache_read": 17332164,
+      "requests": 172,
+      "est_usd": 14.2428
+    },
+    {
       "unit": "031-sp3-2-packaging-compatibility",
       "input": 360,
       "output": 170059,
@@ -447,6 +477,16 @@
       "est_usd": 11.7283
     },
     {
+      "unit": "135-sp6-2",
+      "input": 310,
+      "output": 173442,
+      "cache_write_5m": 472116,
+      "cache_write_1h": 0,
+      "cache_read": 26719894,
+      "requests": 153,
+      "est_usd": 11.0902
+    },
+    {
       "unit": "SP2-6",
       "input": 326,
       "output": 170560,
@@ -467,6 +507,16 @@
       "est_usd": 10.4807
     },
     {
+      "unit": "145",
+      "input": 326,
+      "output": 149958,
+      "cache_write_5m": 454348,
+      "cache_write_1h": 0,
+      "cache_read": 24306207,
+      "requests": 161,
+      "est_usd": 10.0573
+    },
+    {
       "unit": "authz",
       "input": 316,
       "output": 157541,
@@ -475,6 +525,36 @@
       "cache_read": 21118320,
       "requests": 157,
       "est_usd": 9.9454
+    },
+    {
+      "unit": "136-sp7-5",
+      "input": 252,
+      "output": 101210,
+      "cache_write_5m": 993392,
+      "cache_write_1h": 0,
+      "cache_read": 14089913,
+      "requests": 125,
+      "est_usd": 9.6872
+    },
+    {
+      "unit": "140",
+      "input": 232,
+      "output": 157070,
+      "cache_write_5m": 821821,
+      "cache_write_1h": 0,
+      "cache_read": 10955932,
+      "requests": 111,
+      "est_usd": 9.3516
+    },
+    {
+      "unit": "141",
+      "input": 264,
+      "output": 133728,
+      "cache_write_5m": 620005,
+      "cache_write_1h": 0,
+      "cache_read": 16929811,
+      "requests": 130,
+      "est_usd": 9.0723
     },
     {
       "unit": "governance",
@@ -527,6 +607,36 @@
       "est_usd": 8.1899
     },
     {
+      "unit": "139",
+      "input": 234,
+      "output": 114751,
+      "cache_write_5m": 821474,
+      "cache_write_1h": 0,
+      "cache_read": 8753219,
+      "requests": 115,
+      "est_usd": 8.0761
+    },
+    {
+      "unit": "133",
+      "input": 310,
+      "output": 84963,
+      "cache_write_5m": 935140,
+      "cache_write_1h": 0,
+      "cache_read": 7443122,
+      "requests": 151,
+      "est_usd": 7.8648
+    },
+    {
+      "unit": "097",
+      "input": 290,
+      "output": 93562,
+      "cache_write_5m": 661156,
+      "cache_write_1h": 0,
+      "cache_read": 13027049,
+      "requests": 140,
+      "est_usd": 7.0318
+    },
+    {
       "unit": "096",
       "input": 228,
       "output": 67131,
@@ -577,14 +687,14 @@
       "est_usd": 6.4432
     },
     {
-      "unit": "097",
-      "input": 222,
-      "output": 88887,
-      "cache_write_5m": 459700,
+      "unit": "sp7-design",
+      "input": 194,
+      "output": 99266,
+      "cache_write_5m": 330125,
       "cache_write_1h": 0,
-      "cache_read": 11750727,
-      "requests": 109,
-      "est_usd": 6.3537
+      "cache_read": 13400813,
+      "requests": 95,
+      "est_usd": 5.8212
     },
     {
       "unit": "063",
@@ -615,6 +725,16 @@
       "cache_read": 7293059,
       "requests": 119,
       "est_usd": 5.2112
+    },
+    {
+      "unit": "134-runtime-ro-sql",
+      "input": 280,
+      "output": 76042,
+      "cache_write_5m": 661689,
+      "cache_write_1h": 0,
+      "cache_read": 6234096,
+      "requests": 132,
+      "est_usd": 5.1781
     },
     {
       "unit": "007",
@@ -727,6 +847,16 @@
       "est_usd": 3.9235
     },
     {
+      "unit": "sp8-design",
+      "input": 136,
+      "output": 78387,
+      "cache_write_5m": 274098,
+      "cache_write_1h": 0,
+      "cache_read": 7319762,
+      "requests": 67,
+      "est_usd": 3.8998
+    },
+    {
       "unit": "011",
       "input": 208,
       "output": 68868,
@@ -745,6 +875,16 @@
       "cache_read": 3307558,
       "requests": 92,
       "est_usd": 3.8549
+    },
+    {
+      "unit": "142",
+      "input": 186,
+      "output": 55901,
+      "cache_write_5m": 423301,
+      "cache_write_1h": 0,
+      "cache_read": 3942838,
+      "requests": 88,
+      "est_usd": 3.7408
     },
     {
       "unit": "sp4",
@@ -787,6 +927,16 @@
       "est_usd": 3.5011
     },
     {
+      "unit": "135",
+      "input": 150,
+      "output": 43490,
+      "cache_write_5m": 388235,
+      "cache_write_1h": 0,
+      "cache_read": 2849398,
+      "requests": 74,
+      "est_usd": 3.3815
+    },
+    {
       "unit": "audit",
       "input": 166,
       "output": 88367,
@@ -817,6 +967,16 @@
       "est_usd": 2.848
     },
     {
+      "unit": "sp6-design",
+      "input": 64,
+      "output": 61614,
+      "cache_write_5m": 274466,
+      "cache_write_1h": 0,
+      "cache_read": 2553624,
+      "requests": 31,
+      "est_usd": 2.6879
+    },
+    {
       "unit": "030-sp3-5-ledger-runtime",
       "input": 112,
       "output": 29521,
@@ -845,6 +1005,26 @@
       "cache_read": 2239376,
       "requests": 59,
       "est_usd": 2.4787
+    },
+    {
+      "unit": "146",
+      "input": 130,
+      "output": 45385,
+      "cache_write_5m": 184034,
+      "cache_write_1h": 0,
+      "cache_read": 3453492,
+      "requests": 64,
+      "est_usd": 2.4309
+    },
+    {
+      "unit": "143",
+      "input": 116,
+      "output": 38168,
+      "cache_write_5m": 247887,
+      "cache_write_1h": 0,
+      "cache_read": 2344134,
+      "requests": 58,
+      "est_usd": 2.3936
     },
     {
       "unit": "072",
@@ -977,6 +1157,16 @@
       "est_usd": 1.3217
     },
     {
+      "unit": "136",
+      "input": 58,
+      "output": 13025,
+      "cache_write_5m": 164817,
+      "cache_write_1h": 0,
+      "cache_read": 991578,
+      "requests": 29,
+      "est_usd": 1.2831
+    },
+    {
       "unit": "069",
       "input": 62,
       "output": 11722,
@@ -1047,6 +1237,16 @@
       "est_usd": 0.9569
     },
     {
+      "unit": "144",
+      "input": 58,
+      "output": 12612,
+      "cache_write_5m": 125100,
+      "cache_write_1h": 0,
+      "cache_read": 488018,
+      "requests": 29,
+      "est_usd": 0.8538
+    },
+    {
       "unit": "100",
       "input": 52,
       "output": 20151,
@@ -1055,6 +1255,16 @@
       "cache_read": 711240,
       "requests": 26,
       "est_usd": 0.8404
+    },
+    {
+      "unit": "132-retry-winerror",
+      "input": 54,
+      "output": 6548,
+      "cache_write_5m": 268865,
+      "cache_write_1h": 0,
+      "cache_read": 864956,
+      "requests": 25,
+      "est_usd": 0.8242
     },
     {
       "unit": "sp2-2",
@@ -1177,6 +1387,16 @@
       "est_usd": 0.5989
     },
     {
+      "unit": "113",
+      "input": 88,
+      "output": 5399,
+      "cache_write_5m": 152236,
+      "cache_write_1h": 0,
+      "cache_read": 1553224,
+      "requests": 33,
+      "est_usd": 0.5901
+    },
+    {
       "unit": "fe-areas-1",
       "input": 48,
       "output": 16067,
@@ -1257,6 +1477,16 @@
       "est_usd": 0.4554
     },
     {
+      "unit": "lead-mig1",
+      "input": 56,
+      "output": 4708,
+      "cache_write_5m": 94671,
+      "cache_write_1h": 0,
+      "cache_read": 1007430,
+      "requests": 24,
+      "est_usd": 0.3846
+    },
+    {
       "unit": "049",
       "input": 30,
       "output": 3557,
@@ -1330,35 +1560,45 @@
   "by_sub_project": [
     {
       "sub_project": "sp1",
-      "input": 40040,
-      "output": 14616879,
-      "cache_write_5m": 105314240,
+      "input": 51560,
+      "output": 18674825,
+      "cache_write_5m": 135211696,
       "cache_write_1h": 0,
-      "cache_read": 1677113682,
-      "requests": 19699,
-      "est_usd": 1047.6773
+      "cache_read": 2145310382,
+      "requests": 25324,
+      "est_usd": 1357.5779
     },
     {
       "sub_project": "lead",
-      "input": 13864,
-      "output": 3184374,
+      "input": 17618,
+      "output": 3810140,
       "cache_write_5m": 0,
-      "cache_write_1h": 16280270,
-      "cache_read": 990823095,
-      "requests": 6644,
-      "est_usd": 395.7169
+      "cache_write_1h": 18671122,
+      "cache_read": 1297069938,
+      "requests": 8491,
+      "est_usd": 488.6234
     }
   ],
   "by_day": [
     {
+      "day": "2026-11-23",
+      "input": 14014,
+      "output": 4375689,
+      "cache_write_5m": 26904592,
+      "cache_write_1h": 2197630,
+      "cache_read": 731048714,
+      "requests": 6856,
+      "est_usd": 373.8997
+    },
+    {
       "day": "2026-11-22",
-      "input": 10910,
-      "output": 2978505,
-      "cache_write_5m": 16724184,
-      "cache_write_1h": 1991409,
-      "cache_read": 464546812,
-      "requests": 5347,
-      "est_usd": 243.3282
+      "input": 12170,
+      "output": 3286528,
+      "cache_write_5m": 19717048,
+      "cache_write_1h": 2184631,
+      "cache_read": 507941641,
+      "requests": 5963,
+      "est_usd": 272.2356
     },
     {
       "day": "2026-11-21",
@@ -1891,7 +2131,7 @@
       "fix": 0,
       "review": 0,
       "inventory": 0,
-      "other": 2
+      "other": 3
     },
     {
       "unit": "098",
@@ -1955,6 +2195,177 @@
       "review": 0,
       "inventory": 0,
       "other": 1
+    },
+    {
+      "unit": "113",
+      "build": 0,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 1
+    },
+    {
+      "unit": "132-retry-winerror",
+      "build": 0,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "133",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 6,
+      "inventory": 0,
+      "other": 3
+    },
+    {
+      "unit": "133-sp5-2",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "134-runtime-ro-sql",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 2,
+      "inventory": 0,
+      "other": 5
+    },
+    {
+      "unit": "135",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 4,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "135-sp6-2",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "136",
+      "build": 0,
+      "verify": 0,
+      "fix": 0,
+      "review": 2,
+      "inventory": 0,
+      "other": 1
+    },
+    {
+      "unit": "136-sp7-5",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "137",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "138",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 4,
+      "inventory": 0,
+      "other": 4
+    },
+    {
+      "unit": "139",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 2,
+      "inventory": 0,
+      "other": 4
+    },
+    {
+      "unit": "140",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 2,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "141",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "142",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 3,
+      "inventory": 0,
+      "other": 3
+    },
+    {
+      "unit": "143",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "144",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 1,
+      "inventory": 0,
+      "other": 3
+    },
+    {
+      "unit": "145",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "146",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 2
     },
     {
       "unit": "SP2-5",
@@ -2200,6 +2611,15 @@
       "other": 3
     },
     {
+      "unit": "lead-mig1",
+      "build": 0,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 1
+    },
+    {
       "unit": "ledger",
       "build": 1,
       "verify": 0,
@@ -2369,6 +2789,33 @@
       "review": 0,
       "inventory": 0,
       "other": 2
+    },
+    {
+      "unit": "sp6-design",
+      "build": 0,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 3
+    },
+    {
+      "unit": "sp7-design",
+      "build": 0,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 3
+    },
+    {
+      "unit": "sp8-design",
+      "build": 0,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 3
     },
     {
       "unit": "suite-speed-2",
