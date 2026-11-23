@@ -1,6 +1,6 @@
 """scripts/golive_check.py without the backend environment or a cluster: the mode flag, the
 register verdict, the edge proxy against a stub upstream, the env-file builder and the child
-environment."""
+environment, and the service environment without the owner URL."""
 
 from __future__ import annotations
 
@@ -13,7 +13,9 @@ import sys
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest import mock
 
 _SPEC = importlib.util.spec_from_file_location(
     "golive_check", Path(__file__).resolve().parents[1] / "golive_check.py"
@@ -168,6 +170,32 @@ class EnvFiles(unittest.TestCase):
         self.assertEqual(
             env, {"PATH": "/bin", "SHIFDE_PG_BIN_DIR": "/pg/bin", "SHIFDE_ENV": "development"}
         )
+
+
+class ServiceEnv(unittest.TestCase):
+    def test_the_owner_url_is_removed_and_every_other_key_kept(self) -> None:
+        good = golive.good_env(APP_URL, OWNER_URL, SECRETS)
+        env = golive.service_env(good)
+        self.assertNotIn("SHIFDE_MIGRATION_DATABASE_URL", env)
+        expected = {k: v for k, v in good.items() if k != "SHIFDE_MIGRATION_DATABASE_URL"}
+        self.assertEqual(env, expected)
+        self.assertEqual(good["SHIFDE_MIGRATION_DATABASE_URL"], OWNER_URL)
+
+    def test_start_api_spawns_without_the_owner_url(self) -> None:
+        stub = SimpleNamespace(
+            env=lambda values: golive.child_env({}, values),
+            api_cli="shifde-api",
+            workdir=Path("work"),
+            stack=SimpleNamespace(callback=lambda *args: None),
+        )
+        good = golive.good_env(APP_URL, OWNER_URL, SECRETS)
+        with mock.patch.object(golive, "spawn") as spawn:
+            golive.Check.start_api(stub, good, 8999, "api.log")
+        env = spawn.call_args.args[1]
+        self.assertNotIn("SHIFDE_MIGRATION_DATABASE_URL", env)
+        self.assertEqual(env["SHIFDE_DATABASE_URL"], APP_URL)
+        self.assertEqual(env["SHIFDE_API_HOST"], "127.0.0.1")
+        self.assertEqual(env["SHIFDE_API_PORT"], "8999")
 
 
 if __name__ == "__main__":

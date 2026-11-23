@@ -55,6 +55,18 @@ const QUEUED = {
   created_at: '2026-11-18T10:00:00Z',
 };
 
+// issue #190: the POST queues the invocation (202); the outcome comes from its status route
+const INVOCATION = {
+  id: 'i-1',
+  connection_id: 'c-1',
+  status: 'queued',
+  result: null,
+  error: null,
+  created_at: '2026-11-22T10:00:00Z',
+  finished_at: null,
+};
+const INVOCATION_URL = 'GET /api/v1/orgs/acme/connections/c-1/invocations/i-1';
+
 describe('ConnectionDetailView', () => {
   it('shows config and the secret by name only, with activation messaging', async () => {
     stubInt(route({}));
@@ -190,13 +202,22 @@ describe('Connection console', () => {
     const fetchMock = stubInt({
       ...route({ status: 'active' }),
       'POST /api/v1/orgs/acme/connections/c-1/invoke': () =>
-        jsonResponse({ result: { items: [1] }, truncated: true, duration_ms: 12 }),
+        jsonResponse(INVOCATION, { status: 202 }),
+      [INVOCATION_URL]: () =>
+        jsonResponse({
+          ...INVOCATION,
+          status: 'succeeded',
+          result: { result: { items: [1] }, truncated: true, duration_ms: 12 },
+          finished_at: '2026-11-22T10:00:01Z',
+        }),
     });
     renderWithClient(<ConnectionDetailView id="c-1" />);
     await userEvent.type(await screen.findByLabelText('Path'), '/orders');
     await userEvent.type(screen.getByLabelText('Query (JSON object)'), '{{"limit":1}');
     await userEvent.click(screen.getByRole('button', { name: 'Run' }));
-    expect(await screen.findByText(/Truncated/)).toBeInTheDocument();
+    expect(await screen.findByText('Invocation queued...')).toBeInTheDocument();
+    expect(await screen.findByText(/Truncated/, {}, { timeout: 5000 })).toBeInTheDocument();
+    expect(screen.queryByText('Invocation queued...')).not.toBeInTheDocument();
     expect(screen.getByText(/Completed in 12 ms/)).toBeInTheDocument();
     expect(bodyOf(fetchMock, 'POST /api/v1/orgs/acme/connections/c-1/invoke')).toEqual({
       method: 'GET',
@@ -231,7 +252,14 @@ describe('Connection console', () => {
           },
         ]),
       'POST /api/v1/orgs/acme/connections/c-1/invoke': () =>
-        jsonResponse({ result: { rows: [] }, truncated: false, duration_ms: 3 }),
+        jsonResponse(INVOCATION, { status: 202 }),
+      [INVOCATION_URL]: () =>
+        jsonResponse({
+          ...INVOCATION,
+          status: 'succeeded',
+          result: { result: { rows: [] }, truncated: false, duration_ms: 3 },
+          finished_at: '2026-11-22T10:00:01Z',
+        }),
     });
     renderWithClient(<ConnectionDetailView id="c-1" />);
     expect(
@@ -245,8 +273,43 @@ describe('Connection console', () => {
         params: [],
       }),
     );
+    expect(await screen.findByText(/Completed in 3 ms/, {}, { timeout: 5000 })).toBeInTheDocument();
     expect(screen.queryByText(/Truncated/)).not.toBeInTheDocument();
   });
+
+  it('polls a running invocation and shows its error once it failed', async () => {
+    let polls = 0;
+    const fetchMock = stubInt({
+      ...route({ status: 'active' }),
+      'POST /api/v1/orgs/acme/connections/c-1/invoke': () =>
+        jsonResponse(INVOCATION, { status: 202 }),
+      [INVOCATION_URL]: () => {
+        polls += 1;
+        return jsonResponse(
+          polls === 1
+            ? { ...INVOCATION, status: 'running' }
+            : {
+                ...INVOCATION,
+                status: 'failed',
+                error: 'egress_denied',
+                finished_at: '2026-11-22T10:00:02Z',
+              },
+        );
+      },
+    });
+    renderWithClient(<ConnectionDetailView id="c-1" />);
+    await userEvent.type(await screen.findByLabelText('Path'), '/orders');
+    await userEvent.click(screen.getByRole('button', { name: 'Run' }));
+    expect(
+      await screen.findByText('Invocation running...', {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText(/The invocation failed \(egress_denied\)/, {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Invocation running...')).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Invocation result' })).not.toBeInTheDocument();
+    expect(fetchMock.calls.filter((c) => c.key === INVOCATION_URL)).toHaveLength(2);
+  }, 10_000);
 
   it('is disabled with an explanation when the connection is not active', async () => {
     stubInt(route({ status: 'disabled' }));

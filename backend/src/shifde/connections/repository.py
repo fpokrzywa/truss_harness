@@ -11,13 +11,13 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import Any  # Any: SQL parameter values / JSON documents
+from typing import Any, Literal  # Any: SQL parameter values / JSON documents
 from uuid import UUID
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from shifde.core.errors import ConnectionTestBusy
+from shifde.core.errors import Conflict, ConnectionTestBusy
 
 Row = Mapping[Any, Any]  # Any: SQLAlchemy RowMapping keys / column values
 
@@ -403,6 +403,163 @@ def get_test_job(
         .mappings()
         .first()
     )
+
+
+# ------------------------------------------------------------------ invocations (issue #190)
+# an invocation with its job's status in one snapshot (null: the job is gone)
+INVOCATION_COLUMNS = (
+    "i.id, i.job_id, i.connection_id, i.requested_by, i.status, i.result, i.error_code, "
+    "i.created_at, i.finished_at, j.status AS job_status"
+)
+INVOCATION_FROM = (
+    "shifde.connection_invocations i LEFT JOIN shifde.jobs j "
+    "ON j.tenant_id = i.tenant_id AND j.id = i.job_id"
+)
+
+
+def _invoke_job_by_key(
+    session: Session, *, tenant_id: UUID, kind: str, dedupe_key: str
+) -> Row | None:
+    return (
+        session.execute(
+            text(
+                # columns are module constants; values are bound
+                f"SELECT {JOB_COLUMNS} FROM shifde.jobs WHERE tenant_id = :t AND "  # nosec B608
+                "kind = :k AND dedupe_key = :dk ORDER BY created_at DESC, id DESC LIMIT 1"
+            ),
+            {"t": tenant_id, "k": kind, "dk": dedupe_key},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def enqueue_invoke_job(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    kind: str,
+    job_id: UUID,
+    dedupe_key: str,
+    payload: Mapping[str, Any],
+    invocation_id: UUID,
+    connection_id: UUID,
+    requested_by: UUID,
+) -> tuple[Row, bool]:
+    """Queue the invoke job and its `queued` invocation in `tenant_id` (the caller commits), or
+    return the job already holding `dedupe_key` (active or ended) and False. Two concurrent first
+    requests are settled by `uq_jobs__dedupe`: the loser's insert does nothing and it answers the
+    winner's job."""
+    found = _invoke_job_by_key(session, tenant_id=tenant_id, kind=kind, dedupe_key=dedupe_key)
+    if found is not None:
+        return found, False
+    inserted = (
+        session.execute(
+            text(
+                "INSERT INTO shifde.jobs (id, tenant_id, kind, payload, dedupe_key, run_after) "
+                "VALUES (:id, :t, :k, CAST(:p AS jsonb), :dk, now()) "
+                "ON CONFLICT (tenant_id, kind, dedupe_key) WHERE status IN ('queued', 'leased') "
+                # columns are module constants; values are bound
+                f"DO NOTHING RETURNING {JOB_COLUMNS}"  # nosec B608
+            ),
+            {"id": job_id, "t": tenant_id, "k": kind, "p": json.dumps(payload), "dk": dedupe_key},
+        )
+        .mappings()
+        .first()
+    )
+    if inserted is None:
+        found = _invoke_job_by_key(session, tenant_id=tenant_id, kind=kind, dedupe_key=dedupe_key)
+        if found is None:
+            raise Conflict("an invocation with this Idempotency-Key is starting; retry the request")
+        return found, False
+    session.execute(
+        text(
+            "INSERT INTO shifde.connection_invocations (tenant_id, id, job_id, connection_id, "
+            "requested_by) VALUES (:t, :id, :j, :c, :r)"
+        ),
+        {"t": tenant_id, "id": invocation_id, "j": job_id, "c": connection_id, "r": requested_by},
+    )
+    session.execute(text("SELECT pg_notify('shifde_jobs', '')"))
+    return inserted, True
+
+
+def get_invocation(
+    session: Session,
+    invocation_id: UUID,
+    *,
+    tenant_id: UUID,
+    connection_id: UUID,
+    requested_by: UUID,
+) -> Row | None:
+    """The invocation `invocation_id` of `tenant_id`, of `connection_id`, asked by
+    `requested_by`; None for any other (another client's, another user's, another connection's)."""
+    return (
+        session.execute(
+            text(
+                # columns are module constants; values are bound
+                f"SELECT {INVOCATION_COLUMNS} FROM {INVOCATION_FROM} "  # nosec B608
+                "WHERE i.tenant_id = :t AND i.id = :id AND i.connection_id = :c "
+                "AND i.requested_by = :r"
+            ),
+            {"t": tenant_id, "id": invocation_id, "c": connection_id, "r": requested_by},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def get_invocation_by_job(session: Session, job_id: UUID, *, tenant_id: UUID) -> Row | None:
+    return (
+        session.execute(
+            text(
+                # columns are module constants; values are bound
+                f"SELECT {INVOCATION_COLUMNS} FROM {INVOCATION_FROM} "  # nosec B608
+                "WHERE i.tenant_id = :t AND i.job_id = :j"
+            ),
+            {"t": tenant_id, "j": job_id},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def move_invocation(
+    session: Session,
+    invocation_id: UUID,
+    *,
+    tenant_id: UUID,
+    expected: Literal["queued", "running"],
+    to: Literal["running", "succeeded", "failed"],
+    result: Mapping[str, Any] | None = None,
+    error_code: str | None = None,
+) -> bool:
+    """The forward transitions only (`queued -> running`, `running -> succeeded`, `running ->
+    failed`, `queued -> failed`), conditional on the status read: False, and nothing written,
+    when the row is no longer `expected` (never backwards, never a terminal row rewritten)."""
+    if (expected, to) not in INVOCATION_TRANSITIONS:
+        raise ValueError(f"no invocation transition {expected} -> {to}")
+    moved = session.execute(
+        text(
+            "UPDATE shifde.connection_invocations SET status = :to, "
+            "result = CAST(:res AS jsonb), error_code = :e, "
+            "finished_at = CASE WHEN :to IN ('succeeded', 'failed') THEN now() END "
+            "WHERE tenant_id = :t AND id = :id AND status = :ex RETURNING id"
+        ),
+        {
+            "t": tenant_id,
+            "id": invocation_id,
+            "ex": expected,
+            "to": to,
+            "res": json.dumps(result) if result is not None else None,
+            "e": error_code,
+        },
+    ).first()
+    return moved is not None
+
+
+INVOCATION_TRANSITIONS = frozenset(
+    {("queued", "running"), ("running", "succeeded"), ("running", "failed"), ("queued", "failed")}
+)
 
 
 def insert_discovery(session: Session, values: Mapping[str, Any]) -> None:

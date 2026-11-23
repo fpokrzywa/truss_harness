@@ -33,6 +33,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from shifde.core.healthserver import HealthServer
+from shifde.core.httplogs import quiet_http_client_logs
 from shifde.executor.client import GatewayClient, GatewayError, Whoami
 from shifde.executor.credentials import CredentialBroker, CredentialFileRefused
 from shifde.executor.runner import POLL_SECONDS, FakePlatform, Platform, RealPlatform, Runner
@@ -289,6 +290,7 @@ def run(argv: Sequence[str] | None = None) -> int:
     """The process exit code (`EXIT_*`); an unhandled exception is a crash (exit 1)."""
     config = configure(argv, os.environ)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    quiet_http_client_logs()  # no gateway request URL at INFO (B-3901)
     with GatewayClient(config.api_url, config.token) as client:
         process = Process(config, client)
         _install_signals(process)
