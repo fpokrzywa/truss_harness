@@ -42,14 +42,82 @@ from shifde.adapters.base import (
 )
 from shifde.adapters.httputil import classify_exception
 from shifde.core.egress import EgressViolation
+from shifde.core.sqlrules import WRITE_KEYWORDS
 
 DEFAULT_MAX_ROWS = 1000
 HARD_MAX_ROWS = 10_000
 CURSOR_PREFIX = re.compile(r"^\s*(select|with|values|table)\b", re.I)  # DECLARE-able
 DEFAULT_MAX_BYTES = 5_000_000
 FETCH_BATCH = 256
-READ_PREFIX = re.compile(r"^\s*(select|with|show|values|table|explain)\b", re.I)
+READ_WORDS = frozenset({"select", "with", "show", "values", "table", "explain"})
+# `SELECT ... INTO` creates a table
+_REFUSED_WORDS = WRITE_KEYWORDS | {"into"}
+_WORD = re.compile(r"\w+")
+_FIRST_WORD = re.compile(r"\s*(\w+)")
+_LINE_END = re.compile(r"[\r\n]")
+_POSITIONAL = re.compile(r"\$[0-9]+")
+_NOT_READ = "only read statements are allowed (read_write access and connection:write needed)"
+_UNTERMINATED = "the statement has an unterminated quote or comment"
+_NESTED = "nested block comments are not allowed"
+_BACKSLASH = "a backslash inside a string is not allowed in a read statement"
+_DOLLAR = "a $ is allowed only as a positional parameter ($1) in a read statement"
 _OPS = {"=": "=", "!=": "<>", "<": "<", "<=": "<=", ">": ">", ">=": ">=", "like": "LIKE"}
+
+
+def check_read_only(sql: str) -> None:
+    """Refuse (CAPABILITY) anything but a statement whose first word of code is a read keyword
+    and whose code holds no word of `WRITE_KEYWORDS` and not `into`. `'...'` strings, `"..."`
+    identifiers (a doubled quote stays inside) and `--`/`/* */` comments are never read as code.
+    Text Postgres could read differently is refused (fail closed): an unterminated quote or
+    comment, a nested `/*`, a backslash in a string (E-strings, `standard_conforming_strings`)
+    and a `$` that is not a positional parameter (dollar quotes). Messages never echo the SQL;
+    the READ ONLY transaction stays the backstop."""
+    code: list[str] = []
+    i, n = 0, len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch in ("'", '"'):
+            j = i + 1
+            while j < n:
+                if sql[j] == ch:
+                    if sql.startswith(ch, j + 1):
+                        j += 2
+                        continue
+                    break
+                if ch == "'" and sql[j] == "\\":
+                    raise AdapterFailure(ErrorClass.CAPABILITY, _BACKSLASH)
+                j += 1
+            if j >= n:
+                raise AdapterFailure(ErrorClass.CAPABILITY, _UNTERMINATED)
+            code.append(" ")
+            i = j + 1
+        elif sql.startswith("--", i):
+            found = _LINE_END.search(sql, i)
+            code.append(" ")
+            i = n if found is None else found.start()
+        elif sql.startswith("/*", i):
+            end = sql.find("*/", i + 2)
+            if end < 0:
+                raise AdapterFailure(ErrorClass.CAPABILITY, _UNTERMINATED)
+            if "/*" in sql[i + 2 : end]:
+                raise AdapterFailure(ErrorClass.CAPABILITY, _NESTED)
+            code.append(" ")
+            i = end + 2
+        elif ch == "$":
+            param = _POSITIONAL.match(sql, i)
+            if param is None or (i and (sql[i - 1].isalnum() or sql[i - 1] == "_")):
+                raise AdapterFailure(ErrorClass.CAPABILITY, _DOLLAR)
+            code.append(" ")
+            i = param.end()
+        else:
+            code.append(ch)
+            i += 1
+    bare = "".join(code)
+    first = _FIRST_WORD.match(bare)
+    if first is None or first.group(1).lower() not in READ_WORDS:
+        raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
+    if any(word.lower() in _REFUSED_WORDS for word in _WORD.findall(bare)):
+        raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
 
 
 def _filter_columns(filters: Sequence[FilterNode]) -> list[str]:
@@ -160,11 +228,8 @@ class PostgresSession:
         body = statement.rstrip(";").rstrip()
         if ";" in body:
             raise AdapterFailure(ErrorClass.CONFIG, "exactly one statement is allowed")
-        if not write and not READ_PREFIX.match(body):
-            raise AdapterFailure(
-                ErrorClass.CAPABILITY,
-                "only read statements are allowed (read_write access and connection:write needed)",
-            )
+        if not write:
+            check_read_only(body)
         max_rows = min(int(self._conn.config.get("max_rows", DEFAULT_MAX_ROWS)), HARD_MAX_ROWS)
         max_bytes = int(self._conn.config.get("max_result_bytes", DEFAULT_MAX_BYTES))
         return run_query(
