@@ -245,6 +245,16 @@ def test_docker_starting_container_is_running(
     assert docker.adapter.observe(ObserveRequest(receipt=receipt), docker.read).state == "running"
 
 
+def test_docker_container_without_health_status_is_unknown(
+    docker: DockerSetup, runtime: FakeContainerRuntime
+) -> None:
+    _, _, _, receipt = _deploy(docker)
+    runtime.projects["shop"].health = None
+    observed = docker.adapter.observe(ObserveRequest(receipt=receipt), docker.read)
+    assert observed.state == "unknown"
+    assert not docker.adapter.verify(VerifyRequest(receipt=receipt), docker.read).passed
+
+
 def test_docker_daemon_mismatch_refuses_plan_and_apply(
     docker: DockerSetup, runtime: FakeContainerRuntime
 ) -> None:
@@ -330,6 +340,15 @@ REFUSED: dict[str, Callable[[dict[str, bytes]], None]] = {
     "run-mount": _dockerfile(lambda text: text + "RUN --mount=type=secret,id=k cat /k\n"),
     "syntax": _dockerfile(lambda text: "# syntax=docker/dockerfile:1\n" + text),
     "no-label": _dockerfile(lambda text: text.replace(RELEASE_LABEL, "org.example.other")),
+    "continuation-comment-mount": _dockerfile(
+        lambda text: text + "RUN \\\n# c\n--mount=type=bind,from=alpine,target=/x true\n"
+    ),
+    "continuation-blank-network": _dockerfile(
+        lambda text: text + "RUN \\\n\n--network=host true\n"
+    ),
+    "copy-from": _dockerfile(lambda text: text + "COPY --from=alpine /bin/sh /x\n"),
+    "unknown-instruction": _dockerfile(lambda text: text + "ONBUILD RUN true\n"),
+    "heredoc": _dockerfile(lambda text: text + "RUN <<EOF\ntrue\nEOF\n"),
     "privileged": _service(lambda s: s.update(privileged=True)),
     "network-host": _service(lambda s: s.update(network_mode="host")),
     "volumes": _service(lambda s: s.update(volumes=["/:/host"])),
@@ -337,6 +356,8 @@ REFUSED: dict[str, Callable[[dict[str, bytes]], None]] = {
     "cap-add": _service(lambda s: s.update(cap_add=["SYS_ADMIN"])),
     "post-start": _service(lambda s: s.update(post_start=[{"command": "sh"}])),
     "writable": _service(lambda s: s.update(read_only=False)),
+    "security-opt-extra": _service(lambda s: s["security_opt"].append("seccomp=unconfined")),
+    "tmpfs-other": _service(lambda s: s.update(tmpfs=["/tmp", "/run"])),
     "extra-environment": _service(lambda s: s["environment"].update(DATABRICKS_TOKEN="x")),
     "second-service": _second_service,
     "top-level": _top_level,
@@ -353,6 +374,28 @@ def test_docker_bundle_validation_refuses(docker: DockerSetup, case: str) -> Non
     assert not _validate(docker, files)
     with pytest.raises(ValueError, match="validation failed"):
         docker.artifact(files)
+
+
+@pytest.mark.parametrize(
+    ("case", "code"),
+    [
+        ("continuation-comment-mount", "dockerfile_run_flag"),
+        ("continuation-blank-network", "dockerfile_run_flag"),
+        ("copy-from", "dockerfile_copy_from"),
+        ("unknown-instruction", "dockerfile_instruction"),
+        ("heredoc", "dockerfile_heredoc"),
+        ("security-opt-extra", "compose_hardening"),
+        ("tmpfs-other", "compose_tmpfs"),
+    ],
+)
+def test_docker_bundle_refusal_names_the_rule(docker: DockerSetup, case: str, code: str) -> None:
+    files = docker.files()
+    REFUSED[case](files)
+    source = docker.build.artifacts.put(docker.build.tenant_id, create_archive(files))
+    report = docker.adapter.validate(
+        ValidateRequest(spec=DockerComposeSpec(), source=source), docker.build
+    )
+    assert [d.code for d in report.diagnostics] == [code]
 
 
 TARGET_REFUSED: dict[str, Callable[[dict[str, Any]], None]] = {
@@ -384,6 +427,13 @@ def test_docker_env_file_as_a_single_string_is_accepted(docker: DockerSetup) -> 
 
 def test_docker_valid_bundle_passes_validation(docker: DockerSetup) -> None:
     assert _validate(docker, docker.files())
+
+
+def test_docker_continuation_comments_parse_as_docker_does(docker: DockerSetup) -> None:
+    files = docker.files()
+    files["Dockerfile"] += b"RUN echo a \\\n# a note\n\n    && echo b\n"
+    edit_compose(files, lambda s: s.update(tmpfs="/tmp"))
+    assert _validate(docker, files)
 
 
 def test_docker_scaffold_is_refused(docker: DockerSetup) -> None:

@@ -50,6 +50,21 @@ ENVIRONMENT_KEYS = frozenset({"DATABRICKS_WAREHOUSE_ID", "SERVING_ENDPOINT"})
 _DIGEST = re.compile(r"^[a-f0-9]{64}$")
 _DIRECTIVE = re.compile(r"^#\s*(syntax|escape|check)\s*=", re.IGNORECASE)
 _RUN_FLAGS = ("--mount", "--network", "--security")
+INSTRUCTIONS = frozenset(
+    {
+        "FROM",
+        "LABEL",
+        "RUN",
+        "COPY",
+        "WORKDIR",
+        "ENV",
+        "USER",
+        "EXPOSE",
+        "CMD",
+        "ENTRYPOINT",
+        "HEALTHCHECK",
+    }
+)
 
 
 class BundleInvalid(ValueError):
@@ -84,13 +99,15 @@ def target_project_port(target: Target) -> tuple[str, int]:
 
 
 def _logical_lines(text: str) -> list[str]:
-    """Dockerfile lines with continuations joined; blank lines dropped, comments kept."""
+    """Dockerfile lines with continuations joined as Docker joins them: blank and comment lines
+    inside a continuation are dropped, blank lines elsewhere dropped, other comments kept."""
     lines: list[str] = []
     pending = ""
     for raw in text.splitlines():
         line = raw.strip()
-        if not pending and line.startswith("#"):
-            lines.append(line)
+        if line.startswith("#") or not line:
+            if not pending and line:
+                lines.append(line)
             continue
         if line.endswith("\\"):
             pending += line[:-1] + " "
@@ -121,6 +138,16 @@ def dockerfile_labels(text: str) -> dict[str, str]:
     return labels
 
 
+def _leading_flags(tokens: list[str]) -> list[str]:
+    """The `--flag` tokens before an instruction's arguments, as Docker parses them."""
+    flags: list[str] = []
+    for token in tokens:
+        if not token.startswith("--"):
+            break
+        flags.append(token)
+    return flags
+
+
 def _validate_dockerfile(text: str, release_digest: str) -> None:
     froms = 0
     for line in _logical_lines(text):
@@ -132,21 +159,25 @@ def _validate_dockerfile(text: str, release_digest: str) -> None:
             continue
         parts = line.split()
         instruction = parts[0].upper()
+        flags = [token.lower() for token in _leading_flags(parts[1:])]
+        if instruction not in INSTRUCTIONS:
+            raise BundleInvalid(
+                "dockerfile_instruction",
+                "the Dockerfile uses an instruction outside the allow-list",
+            )
+        if any("<<" in token for token in parts[1:]):
+            raise BundleInvalid("dockerfile_heredoc", "Dockerfile heredocs are refused")
         if instruction == "FROM":
             froms += 1
             if parts[1:] != [BASE_IMAGE]:
                 raise BundleInvalid("dockerfile_from", "the Dockerfile FROM must be the base image")
-        elif instruction == "ADD":
-            raise BundleInvalid("dockerfile_add", "the Dockerfile ADD instruction is refused")
-        elif instruction == "RUN":
-            for token in parts[1:]:
-                if not token.startswith("--"):
-                    break
-                if token.startswith(_RUN_FLAGS):
-                    raise BundleInvalid(
-                        "dockerfile_run_flag",
-                        "Dockerfile RUN mount, network and security flags are refused",
-                    )
+        elif instruction == "RUN" and any(flag.startswith(_RUN_FLAGS) for flag in flags):
+            raise BundleInvalid(
+                "dockerfile_run_flag",
+                "Dockerfile RUN mount, network and security flags are refused",
+            )
+        elif instruction == "COPY" and any(flag.startswith("--from") for flag in flags):
+            raise BundleInvalid("dockerfile_copy_from", "Dockerfile COPY --from is refused")
     if froms != 1:
         raise BundleInvalid("dockerfile_from", "the Dockerfile must have exactly one FROM")
     if dockerfile_labels(text).get(RELEASE_LABEL) != release_digest:
@@ -181,18 +212,18 @@ def _validate_compose(data: bytes) -> tuple[dict[str, Any], dict[str, str], dict
     service = next(iter(services.values()))
     if not isinstance(service, dict) or not set(service) <= SERVICE_KEYS:
         raise BundleInvalid("compose_service_key", "the compose service uses a refused key")
-    security = service.get("security_opt")
     if (
         service.get("read_only") is not True
         or service.get("cap_drop") != ["ALL"]
-        or not isinstance(security, list)
-        or "no-new-privileges:true" not in security
+        or service.get("security_opt") != ["no-new-privileges:true"]
     ):
         raise BundleInvalid(
             "compose_hardening",
-            "the compose service must be read-only, drop all capabilities and set "
+            "the compose service must be read-only, drop all capabilities and set only "
             "no-new-privileges",
         )
+    if "tmpfs" in service and service["tmpfs"] not in ("/tmp", ["/tmp"]):
+        raise BundleInvalid("compose_tmpfs", "the compose tmpfs may only be /tmp")
     environment = _string_map(
         service.get("environment"), "compose_environment", "the compose environment is malformed"
     )

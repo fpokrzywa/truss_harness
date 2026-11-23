@@ -383,6 +383,12 @@ class DockerComposeAdapter:
                 resources=receipt.resources,
                 diagnostics=["the container is not running and healthy"],
             )
+        if any(c.health is None for c in containers):
+            return NativeObservation(
+                state="unknown",
+                resources=receipt.resources,
+                diagnostics=["the container has no health status"],
+            )
         if any(c.health != "healthy" for c in containers):
             return NativeObservation(state="running", resources=receipt.resources)
         labels = self.runtime.image_labels(handles["image"]) or {}
