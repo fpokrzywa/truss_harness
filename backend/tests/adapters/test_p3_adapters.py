@@ -89,8 +89,8 @@ def test_duplicate_or_malformed_adapters_are_refused() -> None:
 def test_planned_adapters_refuse_to_operate() -> None:
     from shifde.core.errors import AdapterNotImplemented
 
-    adapter = REGISTRY.get("snowflake")
-    cfg = ConnectionConfig(None, "x", "snowflake", {"account": "a"})
+    adapter = REGISTRY.get("fabric")
+    cfg = ConnectionConfig(None, "x", "fabric", {"endpoint": "e"})
     for call in (adapter.test, adapter.discover, adapter.open):
         with pytest.raises(AdapterNotImplemented):
             call(None, cfg)  # type: ignore[arg-type]
