@@ -18,12 +18,15 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from shifde.adapters.testservers import RestTestServer
 from shifde.connections import api as connections_api
+from shifde.connections import repository
 from shifde.core.db import Database, set_tenant
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
+from tests.connections.conftest import check_values
 from tests.connections.routes import (
     REST_TOKEN,
     activate,
@@ -36,7 +39,7 @@ from tests.connections.routes import (
     rest_body,
     secret,
 )
-from tests.tenancy.conftest import World, app_session
+from tests.tenancy.conftest import Client, World, app_session
 from tests.tenancy.routes import People, ws2_slug, ws_slug
 
 _VARYING = {"instance", "request_id"}
@@ -366,6 +369,52 @@ def test_b_cannot_set_rotate_or_archive_as_credential(
     assert _a_credential_state(owner_db, two, ids) == before
 
 
+def test_b_cannot_bind_as_owned_connection_secret(
+    client: TestClient, owner_db: Database, two: Two, rest_server: RestTestServer
+) -> None:
+    """CM-2 (issue #208): B's PATCH of its own connection with `secret_id` = A's owned
+    `connection-<id>` secret gets exactly the answer an unknown secret id gets; A's connection
+    and secret rows and B's state stay byte-identical."""
+    A, h = two.a.base, as_user(client, two.a.email)
+    owned = connection(
+        client,
+        h,
+        {
+            **rest_body(rest_server, None, name="a-owned-bind"),
+            "auth_method": "bearer",
+            "access_mode": "read_write",
+            "credential": {"value": REST_TOKEN},
+        },
+        A,
+    )
+    assert owned["secret_id"]
+    with owner_db.session() as o:
+        name, tenant = o.execute(
+            text("SELECT name, tenant_id FROM shifde.secrets WHERE id = :i"),
+            {"i": owned["secret_id"]},
+        ).one()
+    assert name == f"connection-{owned['id']}" and tenant == two.a.tenant
+    ids = [two.a.connection, owned["id"]]
+    before_a, before_b = _a_credential_state(owner_db, two, ids), _b_state(owner_db, two)
+    B, hb = two.b.base, as_user(client, two.b.email)
+    own = client.get(f"{B}/connections/{two.b.connection}", headers=hb)
+    assert own.status_code == 200, own.text
+    rv = own.json()["row_version"]
+    reference = client.patch(
+        f"{B}/connections/{two.b.connection}",
+        headers=hb,
+        json={"secret_id": str(uuid7()), "row_version": rv, "read_only_confirmed": True},
+    )
+    attack = client.patch(
+        f"{B}/connections/{two.b.connection}",
+        headers=hb,
+        json={"secret_id": owned["secret_id"], "row_version": rv, "read_only_confirmed": True},
+    )
+    _same_404(attack, reference)
+    assert _a_credential_state(owner_db, two, ids) == before_a
+    assert _b_state(owner_db, two) == before_b
+
+
 def test_a_lists_only_its_own_rows(client: TestClient, two: Two) -> None:
     for me, other in ((two.a, two.b), (two.b, two.a)):
         h = as_user(client, me.email)
@@ -379,6 +428,136 @@ def test_a_lists_only_its_own_rows(client: TestClient, two: Two) -> None:
         ids = {p["id"] for p in policies.json()["items"]}
         assert me.policy in ids and other.policy not in ids
         assert ids == {me.policy}  # neither B's nor the installation default
+
+
+def _workspace_connection(client: TestClient, side: Side, c: Client, server: RestTestServer) -> str:
+    """A connection in `c`'s first workspace, created through the routes by `side`'s owner."""
+    h = as_user(client, side.email)
+    body = {**rest_body(server, None, name=f"ws-{c.slug}"), "scope": {"workspace": ws_slug(c)}}
+    return str(connection(client, h, body, side.base)["id"])
+
+
+def test_include_shared_lists_only_own_rows(
+    client: TestClient,
+    world: World,
+    two: Two,
+    rest_server: RestTestServer,
+    b_server: RestTestServer,
+) -> None:
+    """Issue #205: `include_shared=true&workspace=<own slug>` lists the caller's client-wide and
+    workspace rows and none of the other client's, in both directions."""
+    a_ws = _workspace_connection(client, two.a, world.a, rest_server)
+    b_ws = _workspace_connection(client, two.b, world.b, b_server)
+    for me, c, own_ws, other, other_ws in (
+        (two.a, world.a, a_ws, two.b, b_ws),
+        (two.b, world.b, b_ws, two.a, a_ws),
+    ):
+        h = as_user(client, me.email)
+        r = client.get(
+            f"{me.base}/connections?include_shared=true&workspace={ws_slug(c)}&limit=200",
+            headers=h,
+        )
+        assert r.status_code == 200, r.text
+        ids = {i["id"] for i in r.json()["items"]}
+        assert ids == {me.connection, own_ws}
+        assert not ids & {other.connection, other_ws}
+
+
+def test_bs_workspace_slug_is_unknown_to_a(client: TestClient, world: World, two: Two) -> None:
+    """Issue #205: B's workspace slug under A's organization answers exactly what an unknown
+    workspace slug gets, with and without `include_shared`."""
+    A, h = two.a.base, as_user(client, two.a.email)
+    nobody = f"w-{uuid7().hex}"
+    for shared in ("include_shared=true&", ""):
+        own = client.get(f"{A}/connections?{shared}workspace={ws_slug(world.a)}", headers=h)
+        assert own.status_code == 200, own.text  # own workspace first
+        _same_404(
+            client.get(f"{A}/connections?{shared}workspace={ws_slug(world.b)}", headers=h),
+            client.get(f"{A}/connections?{shared}workspace={nobody}", headers=h),
+        )
+
+
+def _failed_test(owner_db: Database, side: Side) -> None:
+    """A newer test of `side`'s connection that failed, as the schema owner."""
+    with owner_db.session() as o:
+        values = {**check_values(side.tenant, UUID(side.connection)), "outcome": "fail"}
+        repository.insert_test(o, values)
+        o.commit()
+
+
+def test_last_test_outcome_is_the_own_clients(
+    client: TestClient, owner_db: Database, two: Two, rest_server: RestTestServer
+) -> None:
+    """Issue #205: `last_test_outcome` reads the caller's own connection tests only: B's newer
+    failed test never shows on A's connections, a never-tested connection shows null."""
+    _failed_test(owner_db, two.b)
+    A, h = two.a.base, as_user(client, two.a.email)
+    fresh = str(connection(client, h, rest_body(rest_server, None, name="a-fresh"), A)["id"])
+    want = {two.a.connection: "pass", fresh: None}
+    items = client.get(f"{A}/connections?limit=200", headers=h).json()["items"]
+    assert {c["id"]: c["last_test_outcome"] for c in items} == want
+    for cid, outcome in want.items():
+        got = client.get(f"{A}/connections/{cid}", headers=h)
+        assert got.status_code == 200 and got.json()["last_test_outcome"] == outcome, got.text
+    B, hb = two.b.base, as_user(client, two.b.email)
+    items = client.get(f"{B}/connections?limit=200", headers=hb).json()["items"]
+    assert {c["id"]: c["last_test_outcome"] for c in items} == {two.b.connection: "fail"}
+    got = client.get(f"{B}/connections/{two.b.connection}", headers=hb)
+    assert got.status_code == 200 and got.json()["last_test_outcome"] == "fail", got.text
+
+
+def test_the_list_key_holds_without_row_level_security(
+    client: TestClient,
+    world: World,
+    owner_db: Database,
+    owner_session: Session,
+    two: Two,
+    b_server: RestTestServer,
+) -> None:
+    """Issue #205: `repository.list_connections` keyed to A on a session that bypasses row-level
+    security (the schema owner) returns A's rows only, with A's own latest test outcome, in each
+    scope filter; B has a client-wide and a workspace connection and a newer failed test that
+    would show if the `c.tenant_id = :t` key were missing (forced RLS hides that from routes)."""
+    _workspace_connection(client, two.b, world.b, b_server)
+    _failed_test(owner_db, two.b)
+    o, a = owner_session, two.a.tenant
+    b_ids = set(
+        o.execute(
+            text("SELECT id FROM shifde.connections WHERE tenant_id = :t"), {"t": two.b.tenant}
+        ).scalars()
+    )
+    assert len(b_ids) == 2
+    latest = {
+        cid: outcome
+        for cid, outcome in o.execute(
+            text(
+                "SELECT DISTINCT ON (connection_id) connection_id, outcome "
+                "FROM shifde.connection_tests WHERE tenant_id = :t "
+                "ORDER BY connection_id, started_at DESC"
+            ),
+            {"t": a},
+        ).all()
+    }
+    for include_shared, workspace in ((True, world.a.ws), (True, world.b.ws), (False, None)):
+        rows = repository.list_connections(
+            o,
+            tenant_id=a,
+            connection_type=None,
+            status=None,
+            workspace_id=workspace,
+            project_id=None,
+            include_shared=include_shared,
+            tenant_wide=True,
+            visible_workspaces=[],
+            visible_projects=[],
+            after=None,
+            limit=500,
+        )
+        assert [r["id"] for r in rows] == [UUID(two.a.connection)], (include_shared, workspace)
+        for r in rows:
+            assert r["tenant_id"] == a and r["id"] not in b_ids
+            assert r["last_test_outcome"] == latest.get(r["id"]) == "pass"
+    o.rollback()
 
 
 def test_a_cannot_bind_bs_secret_or_policy(
