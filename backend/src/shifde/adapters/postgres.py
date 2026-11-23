@@ -52,6 +52,31 @@ FETCH_BATCH = 256
 READ_WORDS = frozenset({"select", "with", "show", "values", "table", "explain"})
 # `SELECT ... INTO` creates a table
 _REFUSED_WORDS = WRITE_KEYWORDS | {"into"}
+# functions with side effects even inside a READ ONLY transaction (#285)
+_REFUSED_FUNCTIONS = frozenset(
+    {
+        "pg_terminate_backend",
+        "pg_cancel_backend",
+        "pg_advisory_lock",
+        "pg_advisory_lock_shared",
+        "pg_advisory_unlock",
+        "pg_advisory_unlock_shared",
+        "pg_advisory_unlock_all",
+        "pg_advisory_xact_lock",
+        "pg_advisory_xact_lock_shared",
+        "pg_try_advisory_lock",
+        "pg_try_advisory_lock_shared",
+        "pg_try_advisory_xact_lock",
+        "pg_try_advisory_xact_lock_shared",
+        "set_config",
+        "pg_reload_conf",
+        "pg_notify",
+        "lo_import",
+        "lo_export",
+        "dblink",
+    }
+)
+_REFUSED_FUNCTION_PREFIXES = ("dblink_",)
 _WORD = re.compile(r"\w+")
 _FIRST_WORD = re.compile(r"\s*(\w+)")
 _LINE_END = re.compile(r"[\r\n]")
@@ -66,13 +91,16 @@ _OPS = {"=": "=", "!=": "<>", "<": "<", "<=": "<=", ">": ">", ">=": ">=", "like"
 
 def check_read_only(sql: str) -> None:
     """Refuse (CAPABILITY) anything but a statement whose first word of code is a read keyword
-    and whose code holds no word of `WRITE_KEYWORDS` and not `into`. `'...'` strings, `"..."`
-    identifiers (a doubled quote stays inside) and `--`/`/* */` comments are never read as code.
+    and whose code holds no word of `WRITE_KEYWORDS` and not `into`, and no side-effecting
+    function of `_REFUSED_FUNCTIONS` or starting with `dblink_` (#285), as a word of code or as a
+    whole `"..."` identifier. `'...'` strings, `"..."` identifiers (a doubled quote stays inside)
+    and `--`/`/* */` comments are otherwise never read as code.
     Text Postgres could read differently is refused (fail closed): an unterminated quote or
     comment, a nested `/*`, a backslash in a string (E-strings, `standard_conforming_strings`)
     and a `$` that is not a positional parameter (dollar quotes). Messages never echo the SQL;
     the READ ONLY transaction stays the backstop."""
     code: list[str] = []
+    identifiers: list[str] = []
     i, n = 0, len(sql)
     while i < n:
         ch = sql[i]
@@ -89,6 +117,8 @@ def check_read_only(sql: str) -> None:
                 j += 1
             if j >= n:
                 raise AdapterFailure(ErrorClass.CAPABILITY, _UNTERMINATED)
+            if ch == '"':
+                identifiers.append(sql[i + 1 : j].replace('""', '"'))
             code.append(" ")
             i = j + 1
         elif sql.startswith("--", i):
@@ -116,8 +146,12 @@ def check_read_only(sql: str) -> None:
     first = _FIRST_WORD.match(bare)
     if first is None or first.group(1).lower() not in READ_WORDS:
         raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
-    if any(word.lower() in _REFUSED_WORDS for word in _WORD.findall(bare)):
+    words = [word.lower() for word in _WORD.findall(bare)]
+    if any(word in _REFUSED_WORDS for word in words):
         raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
+    for name in words + [identifier.lower() for identifier in identifiers]:
+        if name in _REFUSED_FUNCTIONS or name.startswith(_REFUSED_FUNCTION_PREFIXES):
+            raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
 
 
 def _filter_columns(filters: Sequence[FilterNode]) -> list[str]:
