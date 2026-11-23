@@ -17,7 +17,7 @@ import re
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any  # Any: decoded JSON bodies, httpx options, result rows
+from typing import Any, Literal  # Any: decoded JSON bodies, httpx options, result rows
 
 import httpx
 
@@ -38,6 +38,12 @@ _NOT_READ = "only read statements are allowed (read_write access and connection:
 _ONE_STATEMENT = "exactly one statement is allowed"
 _UNTERMINATED = "the statement has an unterminated quote or comment"
 _NESTED = "nested block comments are not allowed"
+_AMBIGUOUS_DOLLARS = "a $$ directly after a name is not allowed"
+
+Dialect = Literal["databricks", "snowflake"]
+# Snowflake dialect: a word is a maximal run of letters, digits, `_` and `$`
+_WORD = re.compile(r"[\w$]+")
+_SNOWFLAKE_REFUSED_WORDS = frozenset({"procedure", "call"})
 
 
 def _raw_prefix(sql: str, quote: int) -> bool:
@@ -47,15 +53,21 @@ def _raw_prefix(sql: str, quote: int) -> bool:
     return quote == 1 or not (sql[quote - 2].isalnum() or sql[quote - 2] == "_")
 
 
-def _code_of(sql: str) -> tuple[str, list[int]]:
-    """`sql` with comments replaced by spaces, and the offsets of every `;` outside quotes.
+def _code_of(sql: str, dialect: Dialect = "databricks") -> tuple[str, list[int], str]:
+    """`sql` with comments replaced by spaces, the offsets of every `;` outside quotes, and the
+    code alone (quoted text also replaced by a space, so a word search never sees it).
 
     Single- and double-quoted text honours backslash escapes (Databricks SQL reads `\\'` as a
     quote inside a string); a raw literal (`r'...'`, `R"..."`) and backtick identifiers do not.
     A doubled quote needs no special case: it
     closes the text and opens it again. A `/*` inside a block comment is refused, so a dialect
-    that nests block comments and one that does not cannot read the statement differently."""
+    that nests block comments and one that does not cannot read the statement differently.
+    The Snowflake dialect also reads `$$...$$` as a string (no escapes) and `//` as a line
+    comment, and refuses a `$$` right after a word character, where Snowflake may read it as
+    part of an identifier (B-3211)."""
+    snowflake = dialect == "snowflake"
     out: list[str] = []
+    bare: list[str] = []
     semicolons: list[int] = []
     size = 0  # length of the text in `out` so far
     i, n = 0, len(sql)
@@ -69,12 +81,24 @@ def _code_of(sql: str) -> tuple[str, list[int]]:
             if j >= n:
                 raise AdapterFailure(ErrorClass.CAPABILITY, _UNTERMINATED)
             out.append(sql[i : j + 1])
+            bare.append(" ")
             size += j + 1 - i
             i = j + 1
-        elif sql.startswith("--", i):
+        elif snowflake and sql.startswith("$$", i):
+            if i and (sql[i - 1].isalnum() or sql[i - 1] in "_$"):
+                raise AdapterFailure(ErrorClass.CAPABILITY, _AMBIGUOUS_DOLLARS)
+            end = sql.find("$$", i + 2)
+            if end < 0:
+                raise AdapterFailure(ErrorClass.CAPABILITY, _UNTERMINATED)
+            out.append(sql[i : end + 2])
+            bare.append(" ")
+            size += end + 2 - i
+            i = end + 2
+        elif sql.startswith("--", i) or (snowflake and sql.startswith("//", i)):
             end = sql.find("\n", i)
             i = n if end < 0 else end
             out.append(" ")
+            bare.append(" ")
             size += 1
         elif sql.startswith("/*", i):
             end = sql.find("*/", i + 2)
@@ -84,20 +108,23 @@ def _code_of(sql: str) -> tuple[str, list[int]]:
                 raise AdapterFailure(ErrorClass.CAPABILITY, _NESTED)
             i = end + 2
             out.append(" ")
+            bare.append(" ")
             size += 1
         else:
             if ch == ";":
                 semicolons.append(size)
             out.append(ch)
+            bare.append(ch)
             size += 1
             i += 1
-    return "".join(out), semicolons
+    return "".join(out), semicolons, "".join(bare)
 
 
-def check_read_only(sql: str) -> None:
+def check_read_only(sql: str, *, dialect: Dialect = "databricks") -> None:
     """Refuse (CAPABILITY, 422) anything but one statement whose first keyword is a read keyword;
-    comments are stripped first, quoted text is never read as code."""
-    code, semicolons = _code_of(sql)
+    comments are stripped first, quoted text is never read as code. The Snowflake dialect also
+    refuses a `procedure` or `call` word anywhere in the code (anonymous procedures)."""
+    code, semicolons, bare = _code_of(sql, dialect)
     stripped = code.rstrip()
     if semicolons:
         if len(semicolons) > 1 or semicolons[0] != len(stripped) - 1:
@@ -105,6 +132,10 @@ def check_read_only(sql: str) -> None:
         stripped = stripped[:-1]
     first = _FIRST_WORD.match(stripped)
     if first is None or first.group(1).lower() not in READ_KEYWORDS:
+        raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
+    if dialect == "snowflake" and any(
+        word.lower() in _SNOWFLAKE_REFUSED_WORDS for word in _WORD.findall(bare)
+    ):
         raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
 
 

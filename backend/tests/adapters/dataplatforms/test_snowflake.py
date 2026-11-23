@@ -19,7 +19,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from shifde.adapters import oauth2
 from shifde.adapters.base import AdapterFailure, ErrorClass
 from shifde.adapters.conformance import run_suite
-from shifde.adapters.dataplatforms import snowflake
+from shifde.adapters.dataplatforms import snowflake, sqlapi
 from shifde.adapters.dataplatforms.fakes import ROWS_STATEMENT, SELECT_ONE, FakeSnowflakeAccount
 from shifde.adapters.dataplatforms.snowflake import SnowflakeAdapter
 from shifde.adapters.dataplatforms.suites import SnowflakeSqlSuite
@@ -442,6 +442,25 @@ REFUSED_SQL = [
     "SELECT 1 -- x\n; DROP t",
     "SELECT 1 /* /* nested */ ; DROP t */",
     "SELECT 1 /* unterminated",
+    # Snowflake dialect (B-3211, #231)
+    "WITH p AS PROCEDURE () RETURNS VARCHAR LANGUAGE SQL AS "
+    "$$ BEGIN DELETE FROM t; RETURN 'x'; END $$ CALL p()",
+    "SELECT $$a$$; DELETE FROM t; SELECT $$b$$",
+    "SELECT $$x$$ ; DROP TABLE t",
+    "SELECT $$ ; DROP TABLE t",
+    "SELECT a$$b FROM t",
+    "WITH x AS (SELECT 1) SELECT * FROM x -- \n CALL p()",
+    "SELECT 1 // $$\n CALL p() -- $$",
+]
+ACCEPTED_SQL = [
+    "SELECT $$hello$$",
+    "SELECT $$a;b$$",
+    "SELECT $$delete from t; drop table t$$ AS note",
+    'SELECT $$it\'s "quoted" -- not a comment$$',
+    "SELECT call_count FROM t",
+    "SELECT 'call me', \"CALL\" FROM t",
+    "SELECT $1 FROM t",
+    "SELECT $$x$$;",
 ]
 
 
@@ -452,6 +471,16 @@ def test_refused_statements_make_no_request(sf: FakeSnowflakeAccount, sql: str) 
     assert raised.value.error_class is ErrorClass.CAPABILITY
     assert sql not in raised.value.message
     assert sf.requests == []
+
+
+@pytest.mark.parametrize("sql", ACCEPTED_SQL)
+def test_read_statements_pass_the_snowflake_check(sql: str) -> None:
+    sqlapi.check_read_only(sql, dialect="snowflake")
+
+
+def test_an_accepted_dollar_quoted_select_reaches_the_account(sf: FakeSnowflakeAccount) -> None:
+    _invoke(sf, {"sql": "SELECT $$a;b$$"})
+    assert [b["statement"] for b in sf.bodies()] == ["SELECT $$a;b$$"]
 
 
 def test_write_skips_the_keyword_check(sf: FakeSnowflakeAccount) -> None:
