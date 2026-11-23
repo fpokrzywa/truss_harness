@@ -543,8 +543,8 @@ CASES: list[tuple[str, dict[str, Any], str, list[tuple[str, dict[str, Any]]]]] =
     ("databricks",
      {"connection_type": "data_platform", "config": {"host": "https://a.cloud.databricks.com"}},
      "bearer", [("host", {"host": "https://b.cloud.databricks.com"})]),
-    ("snowflake", {"connection_type": "data_platform", "config": {"account": "acct1"}},
-     "bearer", [("account", {"account": "acct2"})]),
+    ("snowflake", {"connection_type": "data_platform", "config": {"account": "acct1", "user": "u"}},
+     "bearer", [("account", {"account": "acct2", "user": "u"})]),
     ("fabric", {"connection_type": "data_platform", "config": {"endpoint": "a.example.test"}},
      "bearer", [("endpoint", {"endpoint": "b.example.test"})]),
 ]  # fmt: skip
