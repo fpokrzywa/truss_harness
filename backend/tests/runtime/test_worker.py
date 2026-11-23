@@ -1216,3 +1216,147 @@ def test_a_connection_invoke_job_naming_another_clients_id_touches_nothing_of_th
         assert _invocations_of(owner_db, b.tenant) == b_invocations
     finally:
         w.db.dispose()
+
+
+KEPT = {"invocation_id", "connection_id", "request_hash", "principal_id", "principal_type",
+        "api_key_id"}  # fmt: skip  # an ended invoke job's payload (issue #224)
+
+
+def _jobs_of(owner_db: Database, tenant: UUID) -> list[tuple[Any, ...]]:
+    return _q(owner_db, "SELECT id, kind, status, payload, last_error, lease_owner, finished_at, "
+              "heartbeat_at, lease_expires_at, attempts FROM shifde.jobs WHERE tenant_id = :t "
+              "ORDER BY id", t=tenant)  # fmt: skip
+
+
+def _payload_of(owner_db: Database, job: UUID) -> dict[str, Any]:  # Any: JSON values
+    [(payload,)] = _q(owner_db, "SELECT payload FROM shifde.jobs WHERE id = :j", j=job)
+    return dict(payload)
+
+
+def _lease(o: Session, job: UUID, worker_id: str) -> None:
+    o.execute(text("UPDATE shifde.jobs SET status = 'leased', lease_owner = :w, "
+                   "lease_expires_at = now() + interval '1 hour' WHERE id = :j"),
+              {"j": job, "w": worker_id})  # fmt: skip
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_an_ended_invoke_job_keeps_no_request(
+    mode: str,
+    world: World,
+    owner_db: Database,
+    settings: Settings,
+    owner_url: str,
+    server: RestTestServer,
+) -> None:
+    """Issue #224: the worker's `finish_job` drops `request` and `write` from an invoke job's
+    payload in the statement that ends it, `done` or `dead` (a forged job naming B's
+    connection); the ids and `request_hash` stay and none of B's rows change. As `shifde_app`
+    and as the schema owner."""
+    with owner_db.session() as o:
+        b = _invoke_job(o, world.b.tenant, server)
+        forged = _invoke_job(o, world.a.tenant, server, {"connection_id": str(b.connection)})
+        own = _invoke_job(o, world.a.tenant, server)
+        _lease(o, forged.job, "w-s")
+        _lease(o, own.job, "w-s")
+        o.commit()
+    before = _state(owner_db, b.tenant)
+    b_jobs, b_invocations = _jobs_of(owner_db, b.tenant), _invocations_of(owner_db, b.tenant)
+    queued = _payload_of(owner_db, own.job)
+    w = _worker(settings, "w-s")
+    if mode == "schema-owner":
+        _on_owner(w, owner_url)
+    try:
+        dead = _Job(forged.job, world.a.tenant, None, connections.INVOKE_JOB_KIND)
+        assert w._execute(dead) == "dead" and dead.error == "not_found"
+        w._settle_job(dead, "dead")
+        ok = _Job(own.job, world.a.tenant, None, connections.INVOKE_JOB_KIND)
+        assert w._execute(ok) == "done" and ok.error is None
+        w._settle_job(ok, "done")
+    finally:
+        w.db.dispose()
+    ended = "SELECT status, last_error FROM shifde.jobs WHERE id = :j"
+    assert _q(owner_db, ended, j=forged.job) == [("dead", "not_found")]
+    assert _q(owner_db, ended, j=own.job) == [("done", None)]
+    for job in (forged.job, own.job):
+        payload = _payload_of(owner_db, job)
+        assert set(payload) == KEPT and payload["request_hash"] == "h"
+    assert _payload_of(owner_db, own.job) == {
+        k: v for k, v in queued.items() if k not in ("request", "write")
+    }
+    assert _jobs_of(owner_db, b.tenant) == b_jobs
+    assert _invocations_of(owner_db, b.tenant) == b_invocations
+    assert _state(owner_db, b.tenant) == before
+
+
+def test_other_job_kinds_keep_their_payload(
+    world: World, owner_db: Database, settings: Settings, server: RestTestServer
+) -> None:
+    """Issue #224: only an invoke job's payload is cleared; a `connection.test` job keeps its
+    own, and a job with an empty payload (an invoke job or an unknown kind) ends without an
+    error and still `{}`."""
+    empty_invoke, empty_other = uuid7(), uuid7()
+    with owner_db.session() as o:
+        t = _test_job(o, world.a.tenant, server)
+        insert(o, "jobs", id=empty_invoke, tenant_id=world.a.tenant,
+               kind=connections.INVOKE_JOB_KIND,
+               dedupe_key=f"connection-invoke:{empty_invoke}")  # fmt: skip
+        insert(o, "jobs", id=empty_other, tenant_id=world.a.tenant, kind="mystery.kind",
+               dedupe_key=f"mystery:{empty_other}")  # fmt: skip
+        for job in (t.job, empty_invoke, empty_other):
+            _lease(o, job, "w-k")
+        o.commit()
+    test_payload = _payload_of(owner_db, t.job)
+    w = _worker(settings, "w-k")
+    try:
+        for job_id, kind in ((t.job, connections.TEST_JOB_KIND),
+                             (empty_invoke, connections.INVOKE_JOB_KIND),
+                             (empty_other, "mystery.kind")):  # fmt: skip
+            job = _Job(job_id, world.a.tenant, None, kind)
+            w._settle_job(job, w._execute(job))
+    finally:
+        w.db.dispose()
+    ended = "SELECT status FROM shifde.jobs WHERE id = :j"
+    assert _q(owner_db, ended, j=t.job) == [("done",)]
+    assert _q(owner_db, ended, j=empty_invoke) == [("dead",)]
+    assert _q(owner_db, ended, j=empty_other) == [("dead",)]
+    assert _payload_of(owner_db, t.job) == test_payload and "test_id" in test_payload
+    assert _payload_of(owner_db, empty_invoke) == {} == _payload_of(owner_db, empty_other)
+
+
+def test_the_invocation_sweep_clears_a_reaped_invoke_job_of_its_own_client_only(
+    world: World, owner_db: Database, settings: Settings, server: RestTestServer
+) -> None:
+    """Issue #224: an invoke job the reaper closed (`done`, `stale lease`) still holds its
+    request; the worker's per-client invocation sweep clears it in that client only, keeps the
+    ids and `request_hash`, leaves a queued job alone and is idempotent."""
+    with owner_db.session() as o:
+        a = _invoke_job(o, world.a.tenant, server)
+        b = _invoke_job(o, world.b.tenant, server)
+        queued = _invoke_job(o, world.a.tenant, server)
+        o.execute(text("UPDATE shifde.jobs SET status = 'done', last_error = 'stale lease', "
+                       "finished_at = now() WHERE id = ANY(:j)"),
+                  {"j": [a.job, b.job]})  # fmt: skip
+        o.commit()
+    full = _payload_of(owner_db, a.job)
+    b_jobs = _jobs_of(owner_db, b.tenant)
+    queued_payload = _payload_of(owner_db, queued.job)
+    w = _worker(settings, "w-r")
+    try:
+        w._sweep_client_invocations(world.a.tenant)
+        cleared = _jobs_of(owner_db, world.a.tenant)
+        assert _payload_of(owner_db, a.job) == {
+            k: v for k, v in full.items() if k not in ("request", "write")
+        }
+        assert set(_payload_of(owner_db, a.job)) == KEPT
+        assert _payload_of(owner_db, queued.job) == queued_payload and "request" in queued_payload
+        assert _jobs_of(owner_db, b.tenant) == b_jobs and "request" in b_jobs[0][3]
+        w._sweep_client_invocations(world.a.tenant)  # nothing left to clear
+        assert _jobs_of(owner_db, world.a.tenant) == cleared
+        with w.db.session() as s:
+            worker_mod.db.set_tenant(s, world.a.tenant)
+            assert connections.scrub_ended_invoke_jobs(s, world.a.tenant) == 0
+            assert connections.scrub_ended_invoke_jobs(s, world.b.tenant) == 0  # B: not visible
+            s.rollback()
+    finally:
+        w.db.dispose()
+    assert _jobs_of(owner_db, b.tenant) == b_jobs

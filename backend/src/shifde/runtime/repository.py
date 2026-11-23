@@ -1199,11 +1199,22 @@ def finish_job(
     status: str = "done",
     *,
     last_error: str | None = None,
+    drop_request: bool = False,
 ) -> None:
+    """End the leased job. `drop_request` also drops the payload's `request` and `write` in the
+    same statement (a `connection.invoke` job, issue #224): the payload guard of `runtime_0007`
+    accepts that only in the update that ends the job."""
+    drop = (
+        ", payload = CASE WHEN jsonb_typeof(payload) = 'object' "
+        "THEN payload - 'request' - 'write' ELSE payload END"
+        if drop_request
+        else ""
+    )
     session.execute(
         text(
             "UPDATE shifde.jobs SET status = :st, finished_at = now(), "
-            "last_error = COALESCE(:e, last_error) "
+            # `drop` is one of two constant fragments; values are bound
+            f"last_error = COALESCE(:e, last_error){drop} "  # nosec B608
             "WHERE id = :id AND tenant_id = :t AND lease_owner = :w AND status = 'leased'"
         ),
         {"id": job_id, "t": tenant_id, "w": worker_id, "st": status, "e": last_error},

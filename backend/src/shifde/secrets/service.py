@@ -39,6 +39,7 @@ from shifde.secrets.models import Secret
 __all__ = [
     "INSTALLATION_IDP_SECRET_RESOLVED",
     "MAX_SECRET_BYTES",
+    "ROW_SECURITY_BLOCKS_REWRAP",
     "ROW_SECURITY_HIDES_SECRETS",
     "SECRET_NAME_CONFLICT",
     "RowSecurityHidesSecrets",
@@ -61,6 +62,9 @@ SECRET_NAME_CONFLICT = "a secret with this name already exists"
 INSTALLATION_IDP_SECRET_RESOLVED = "secret.idp_client_secret.resolved"
 ROW_SECURITY_HIDES_SECRETS = (
     "the database role cannot see every client's secrets (needs BYPASSRLS); nothing was checked"
+)
+ROW_SECURITY_BLOCKS_REWRAP = (
+    "the database role cannot see every client's secrets (needs BYPASSRLS); nothing was re-wrapped"
 )
 KINDS = frozenset({"generic", "api_key", "password", "token", "pem", "idp_client_secret"})
 
@@ -268,7 +272,12 @@ def rewrap_secret(session: Session, keyring: KeyRing, secret: Secret) -> bool:
 
 
 def rewrap_all(session: Session, keyring: KeyRing) -> tuple[int, int]:
-    """KEK rotation: re-wrap every DEK under the active KEK. Returns (rewrapped, total)."""
+    """KEK rotation: re-wrap every DEK under the active KEK. Returns (rewrapped, total). Raises
+    ``RowSecurityHidesSecrets`` (``ROW_SECURITY_BLOCKS_REWRAP``) before reading any row unless the
+    role is a superuser or has BYPASSRLS (otherwise row-level security would hide rows and
+    ``(0, 0)`` look like success)."""
+    if not sees_all_rows(session):
+        raise RowSecurityHidesSecrets(ROW_SECURITY_BLOCKS_REWRAP)
     rows = repository.all_secrets(session)
     changed = sum(1 for sec in rows if rewrap_secret(session, keyring, sec))
     return changed, len(rows)
@@ -277,8 +286,8 @@ def rewrap_all(session: Session, keyring: KeyRing) -> tuple[int, int]:
 class RowSecurityHidesSecrets(Exception):
     """The session's role is subject to row-level security, so not every secret is visible."""
 
-    def __init__(self) -> None:
-        super().__init__(ROW_SECURITY_HIDES_SECRETS)
+    def __init__(self, message: str = ROW_SECURITY_HIDES_SECRETS) -> None:
+        super().__init__(message)
 
 
 def check_all(session: Session, keyring: KeyRing) -> tuple[int, list[UUID]]:
