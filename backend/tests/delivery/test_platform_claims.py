@@ -3,7 +3,8 @@
 Claims are written only by the `shifde.delivery_claim_platform` definer, which reads the client
 from the session context and serializes claims on one address with an advisory lock. Another
 organization's attempt gets the fixed `409 platform_already_registered` and learns nothing about
-the holder; archiving the last target on a claim releases it.
+the holder; archiving the last target on a claim releases it. Snowflake accounts (SP6-3) are
+claimed the same way, under their own platform kind (delivery_0007 widens the CHECKs).
 """
 
 from __future__ import annotations
@@ -24,11 +25,22 @@ from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.delivery.service import PLATFORM_ALREADY_REGISTERED
 from tests.connections.routes import as_user
-from tests.delivery.routes import address, counts, delivery_client, register, target_body, targets
+from tests.delivery.routes import (
+    SNOWFLAKE_BINDINGS,
+    address,
+    counts,
+    delivery_client,
+    register,
+    snowflake_address,
+    snowflake_body,
+    target_body,
+    targets,
+)
 from tests.tenancy.conftest import World, app_session
 from tests.tenancy.routes import People, ws2_slug, ws_slug
 
 CLAIM = text("SELECT shifde.delivery_claim_platform('databricks', :k)")
+SNOWFLAKE_CLAIM = text("SELECT shifde.delivery_claim_platform('snowflake', :k)")
 
 
 def _assert_fixed_409(r: Any, world: World, url: str) -> None:
@@ -369,3 +381,160 @@ def test_the_app_role_cannot_delete_a_claim_an_active_target_holds(
             )
         s.rollback()
     assert _claim_state(owner_db, world.a.tenant, url) == (1, 1)
+
+
+# ------------------------------------------------------------------ Snowflake claims (SP6-3)
+def test_snowflake_targets_of_one_organization_share_one_claim(
+    client: TestClient, world: World, people: People, owner_db: Database
+) -> None:
+    h = as_user(client, people.owner_a)
+    url = snowflake_address()
+    first = register(client, h, world.a.slug, snowflake_body(ws_slug(world.a), url))
+    bindings = {**SNOWFLAKE_BINDINGS, "package": "PKG_2", "application": "APP_2"}
+    second = register(
+        client,
+        h,
+        world.a.slug,
+        snowflake_body(ws2_slug(world.a), url.upper() + ":443/", bindings=bindings),
+    )
+    assert first["address"] == second["address"] == url
+    assert counts(owner_db, world.a.tenant) == (2, 1)
+
+
+def test_another_organization_registering_a_snowflake_account_gets_the_fixed_409(
+    client: TestClient, world: World, people: People, owner_db: Database
+) -> None:
+    url = snowflake_address()
+    ha = as_user(client, people.owner_a)
+    register(client, ha, world.a.slug, snowflake_body(ws_slug(world.a), url))
+    hb = as_user(client, people.owner_b)
+    r = client.post(
+        targets(world.b.slug), headers=hb, json=snowflake_body(ws_slug(world.b), url.upper())
+    )
+    _assert_fixed_409(r, world, url)
+    # byte for byte the Databricks refusal, but for the varying request fields
+    dbx = address()
+    register(
+        client, as_user(client, people.owner_a), world.a.slug, target_body(ws_slug(world.a), dbx)
+    )
+    hb = as_user(client, people.owner_b)
+    d = client.post(targets(world.b.slug), headers=hb, json=target_body(ws_slug(world.b), dbx))
+    varying = {"instance", "request_id"}
+    assert {k: v for k, v in r.json().items() if k not in varying} == {
+        k: v for k, v in d.json().items() if k not in varying
+    }
+    assert counts(owner_db, world.b.tenant) == (0, 0)
+    assert counts(owner_db, world.a.tenant) == (2, 2)
+
+
+def test_archiving_the_last_snowflake_target_releases_the_claim(
+    client: TestClient, world: World, people: People, owner_db: Database
+) -> None:
+    url = snowflake_address()
+    ha = as_user(client, people.owner_a)
+    made = register(client, ha, world.a.slug, snowflake_body(ws_slug(world.a), url))
+    assert client.post(f"{targets(world.a.slug)}/{made['id']}/archive", headers=ha).is_success
+    assert counts(owner_db, world.a.tenant) == (1, 0)
+    hb = as_user(client, people.owner_b)
+    taken = register(client, hb, world.b.slug, snowflake_body(ws_slug(world.b), url))
+    assert taken["address"] == url
+    assert counts(owner_db, world.b.tenant) == (1, 1)
+
+
+def test_a_databricks_and_a_snowflake_claim_do_not_collide(app_db: Database, world: World) -> None:
+    key = address_key(address())
+    with app_session(app_db, world.a.tenant, uuid7()) as s:
+        databricks = s.execute(CLAIM, {"k": key}).scalar_one()
+        s.commit()
+    with app_session(app_db, world.b.tenant, uuid7()) as s:
+        snowflake = s.execute(SNOWFLAKE_CLAIM, {"k": key}).scalar_one()
+        s.commit()
+    assert isinstance(databricks, UUID) and isinstance(snowflake, UUID)
+    assert databricks != snowflake
+    with app_session(app_db, world.a.tenant, uuid7()) as s:
+        assert s.execute(SNOWFLAKE_CLAIM, {"k": key}).scalar_one() is None  # B holds it
+        s.rollback()
+
+
+def _sqlstate(exc: DBAPIError) -> str | None:
+    return getattr(exc.orig, "sqlstate", None)
+
+
+def test_the_widened_checks_accept_snowflake_and_refuse_another_kind(
+    app_db: Database, world: World
+) -> None:
+    principal = uuid7()
+    target = (
+        "INSERT INTO shifde.delivery_targets (id, tenant_id, workspace_id, name, platform_kind, "
+        "address, claim_id, environment, bindings, credential_ref, status, created_by) VALUES "
+        "(:i, :t, :w, 'x', :k, 'https://x', NULL, 'dev', '{}', 'ref', 'archived', :i)"
+    )
+    artifact = (
+        "INSERT INTO shifde.delivery_artifacts (tenant_id, id, target_kind, digest, size, "
+        "content, created_by) VALUES (:t, :i, :k, :d, 1, :c, :i)"
+    )
+    with app_session(app_db, world.a.tenant, principal) as s:
+        assert isinstance(s.execute(SNOWFLAKE_CLAIM, {"k": "a" * 64}).scalar_one(), UUID)
+        s.execute(
+            text(target), {"i": uuid7(), "t": world.a.tenant, "w": world.a.ws, "k": "snowflake"}
+        )
+        s.execute(
+            text(artifact),
+            {
+                "i": uuid7(),
+                "t": world.a.tenant,
+                "k": "snowflake.native-app/v1",
+                "d": "e" * 64,
+                "c": b"\x00",
+            },
+        )
+        s.commit()
+    for sql, params in (
+        ("SELECT shifde.delivery_claim_platform('oracle', :k)", {"k": "b" * 64}),
+        (target, {"i": uuid7(), "t": world.a.tenant, "w": world.a.ws, "k": "oracle"}),
+        (
+            artifact,
+            {"i": uuid7(), "t": world.a.tenant, "k": "oracle.app/v1", "d": "e" * 64, "c": b"\x00"},
+        ),
+    ):
+        with app_session(app_db, world.a.tenant, principal) as s:
+            with pytest.raises(DBAPIError) as raised:
+                s.execute(text(sql), params)
+            assert _sqlstate(raised.value) == "23514"
+            s.rollback()
+
+
+def test_bs_snowflake_target_and_claim_are_invisible_to_a(
+    client: TestClient, app_db: Database, world: World, people: People
+) -> None:
+    hb = as_user(client, people.owner_b)
+    made = register(client, hb, world.b.slug, snowflake_body(ws_slug(world.b), snowflake_address()))
+    with app_session(app_db, world.a.tenant, uuid7()) as s:
+        assert (
+            s.execute(
+                text("SELECT id FROM shifde.delivery_targets WHERE id = :i"), {"i": made["id"]}
+            ).all()
+            == []
+        )
+        assert (
+            s.execute(
+                text(
+                    "SELECT id FROM shifde.delivery_platform_claims WHERE platform_kind = 'snowflake'"
+                )
+            ).all()
+            == []
+        )
+        s.rollback()
+    with app_session(app_db, world.b.tenant, uuid7()) as s:
+        assert (
+            len(
+                s.execute(
+                    text(
+                        "SELECT id FROM shifde.delivery_platform_claims "
+                        "WHERE platform_kind = 'snowflake'"
+                    )
+                ).all()
+            )
+            == 1
+        )
+        s.rollback()

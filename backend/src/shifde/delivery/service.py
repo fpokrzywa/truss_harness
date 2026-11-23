@@ -1,8 +1,11 @@
 """Deployment targets and the one-platform-per-organization rule (design sections 3 and 9,
-DECISIONS B-2501, lead ruling B-2524).
+DECISIONS B-2501, lead ruling B-2524; SP6 design 6.4).
 
-A target's address is normalized and allow-listed by `adapters.native.addresses` before anything
-is written (this module makes no outbound request). The organization's claim on the address comes
+A target is a Databricks workspace or a Snowflake account (`platform_kind`). Its address is
+normalized and allow-listed by that platform's normalizer in `adapters.native.addresses` before
+anything is written (this module makes no outbound request). On one Snowflake claim, each package
+and each application is bound by at most one active target (`409 binding_in_use`, checked under
+the claim's advisory lock). The organization's claim on the address comes
 from the `shifde.delivery_claim_platform` definer; when another organization holds the address the
 caller gets the fixed `409 platform_already_registered`, which names no organization, row,
 constraint or key. Archiving the last active target on a claim deletes the claim, so another
@@ -44,11 +47,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from shifde.adapters.native import planning
-from shifde.adapters.native.addresses import (
-    AddressRefused,
-    address_key,
-    normalize_databricks_address,
-)
+from shifde.adapters.native.addresses import AddressRefused, address_key, normalize_address
 from shifde.adapters.native.contracts import (
     ApplyReceipt,
     JobResultSubmission,
@@ -96,10 +95,29 @@ class PlatformAlreadyRegistered(AppError):
         super().__init__(PLATFORM_ALREADY_REGISTERED)
 
 
+class BindingInUse(AppError):
+    """Another active target on the claim binds the same Snowflake package or application."""
+
+    status, code, title = 409, "binding_in_use", "Conflict"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Another active target on this account already binds this package or application."
+        )
+
+
 class PlanJobTargetMismatch(AppError):
     """A `plan` job's `target_id` is not its plan's target (B-2732)."""
 
     status, code, title = 409, "plan_job_target_mismatch", "Conflict"
+
+
+def claim_key(platform_kind: str, address: str) -> str:
+    """The claim key of a normalized target address, per platform (the one place it is made)."""
+    if platform_kind == "snowflake":
+        # TODO(#300): use #300's one-key-per-Snowflake-account derivation here once it is on main.
+        return address_key(address)
+    return address_key(address)
 
 
 class TargetService:
@@ -177,7 +195,7 @@ class TargetService:
             platform_kind=row["platform_kind"],
             address=row["address"],
             environment=row["environment"],
-            bindings=s.TargetBindings.model_validate(row["bindings"]),
+            bindings=s.BINDINGS[row["platform_kind"]].model_validate(row["bindings"]),
             credential_ref=row["credential_ref"],
             status=row["status"],
             revision=row["revision"],
@@ -239,7 +257,7 @@ class TargetService:
         self.sc.pdp.require("delivery:target:write", ref)
         self._active_scope(body.workspace, body.project)
         try:
-            address = normalize_databricks_address(body.address, self.host_suffixes)
+            address = normalize_address(body.platform_kind, body.address, self.host_suffixes)
         except AddressRefused as exc:
             raise ValidationFailed(
                 str(exc),
@@ -247,10 +265,24 @@ class TargetService:
             ) from exc
         session = self.sc.session
         # B-2524: the definer answers None, naming nobody, when another organization holds it
-        claim_id = repository.claim_platform(session, body.platform_kind, address_key(address))
+        claim_id = repository.claim_platform(
+            session, body.platform_kind, claim_key(body.platform_kind, address)
+        )
         if claim_id is None:
             session.rollback()
             raise PlatformAlreadyRegistered
+        if isinstance(body.bindings, s.SnowflakeBindings):
+            # the claim's lock serializes this check with every register and archive on it
+            repository.lock_claim(session, claim_id, tenant_id=self.sc.tenant_id)
+            if repository.snowflake_binding_in_use(
+                session,
+                claim_id,
+                body.bindings.package,
+                body.bindings.application,
+                tenant_id=self.sc.tenant_id,
+            ):
+                session.rollback()
+                raise BindingInUse
         target_id = uuid7()
         repository.insert_target(
             session,
