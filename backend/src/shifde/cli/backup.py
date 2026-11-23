@@ -48,7 +48,7 @@ from shifde.cli import catalog_rules
 from shifde.core.clock import utcnow
 from shifde.core.crypto import KeyRing
 from shifde.core.db import Database, read_db_revisions
-from shifde.core.dbrole import UnsafeDatabaseRole
+from shifde.core.dbrole import UnsafeDatabaseRole, sees_all_rows
 from shifde.core.health import migration_state
 from shifde.core.migrations import code_heads, migrations_dir
 from shifde.secrets import service as secrets_service
@@ -515,6 +515,10 @@ RESTORE_CHECKS = (
     "secrets",
 )
 _TARGET = "the target database URL"
+ROW_SECURITY_HIDES_AUDIT = (
+    "the database role cannot see every client's audit events (needs BYPASSRLS); "
+    "no chain was checked"
+)
 _CLIENTS = text("SELECT id, slug FROM shifde.tenants ORDER BY id")
 _NOT_EMPTY = text(
     "SELECT n.nspname, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
@@ -672,6 +676,8 @@ def _check_app_role(app_url: str) -> str:
 
 
 def _check_audit(session: Session) -> str:
+    if not sees_all_rows(session):  # row-level security would hide clients and pass vacuously
+        return ROW_SECURITY_HIDES_AUDIT
     broken = []
     for tenant_id, slug in session.execute(_CLIENTS).all():
         result = audit.verify_chain(session, tenant_id)
