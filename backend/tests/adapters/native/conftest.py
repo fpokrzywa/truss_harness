@@ -142,9 +142,20 @@ SF_FILES = {
 }
 
 
-def sf_credential(host: str = SF_HOST, pem: str = SF_PEM) -> SnowflakeKeyPair:
+def sf_credential(
+    tenant_id: UUID,
+    host: str = SF_HOST,
+    pem: str = SF_PEM,
+    account: str = "acct1",
+    user: str = "deployer",
+) -> SnowflakeKeyPair:
     return SnowflakeKeyPair(
-        host=host, account="acct1", user="deployer", role=SF_ROLE, private_key_pem=pem
+        tenant_id=tenant_id,
+        host=host,
+        account=account,
+        user=user,
+        role=SF_ROLE,
+        private_key_pem=pem,
     )
 
 
@@ -213,7 +224,8 @@ def make_sf_setup(
 ) -> SfSetup:
     tenant = uuid4()
     target = Target(tenant_id=tenant, host=host, bindings=dict(SF_BINDINGS))
-    credential = sf_credential(credential_host or host)
+    account = host.removeprefix("https://").split(".")[0]  # the target host's account
+    credential = sf_credential(tenant, credential_host or host, account=account)
     build = BuildContext(
         tenant_id=tenant, artifacts=InMemoryArtifactStore(), toolchain_digest="b" * 64
     )
