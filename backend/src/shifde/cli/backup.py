@@ -667,7 +667,10 @@ def _check_audit(session: Session) -> str:
 
 
 def _check_secrets(session: Session, keyring: KeyRing) -> str:
-    ok, failed = secrets_service.check_all(session, keyring)
+    try:
+        ok, failed = secrets_service.check_all(session, keyring)
+    except secrets_service.RowSecurityHidesSecrets:
+        return secrets_service.ROW_SECURITY_HIDES_SECRETS
     if not failed:
         return ""
     return f"ok {ok}, failed {len(failed)}: {', '.join(str(i) for i in failed)}"
