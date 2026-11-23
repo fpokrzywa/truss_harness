@@ -11,9 +11,10 @@ by the schema owner on a cluster with both roles, runs `pg_restore --single-tran
 `restore_checks` then compares the target with the manifest (seven checks, design 6.1).
 The `catalog rules` check never reads the manifest: it applies the code's own copy of the schema
 tests' isolation rules (`catalog_rules`) to the restored catalog -- the row-level security rules,
-the app role's privileges, the SECURITY DEFINER rules and the full context-write scan -- so a
-forged manifest cannot hide a catalog that breaks them. The schema tests' tenant key, admin-flag
-and principal-table checks are not ported (see `catalog_rules`).
+the app role's privileges, the SECURITY DEFINER rules, the full context-write scan, tenant_id in
+foreign and unique keys between client tables, uuid key columns, the admin flag only on
+installation rows and the principal tables -- so a forged manifest cannot hide a catalog that
+breaks them. The principal-table check reads only the live catalog (see `catalog_rules`).
 
 The digests detect corruption and edits, not a deliberate forger: the manifest is unsigned, so
 anyone who can edit it can recompute them. The KEK ring (`SHIFDE_SECRET_KEYS`, only its key ids
@@ -650,6 +651,11 @@ def _check_catalog_rules(session: Session, owner_role: str, app_role: str) -> st
         *catalog_rules.definer_violations(conn, owner_role, app_role),
         # policies are scanned by rls_violations
         *catalog_rules.context_write_violations(conn, kinds=catalog_rules.ALL_KINDS - {"policy"}),
+        *catalog_rules.foreign_key_problems(conn),
+        *catalog_rules.unique_key_problems(conn),
+        *catalog_rules.key_type_problems(conn),
+        *catalog_rules.admin_flag_problems(conn),
+        *catalog_rules.principal_table_problems(conn),
     ]
     return "violates: " + "; ".join(problems) if problems else ""
 

@@ -470,6 +470,33 @@ FORGERIES = {
         ],
         "function shifde.set_updated_at(): set_config, names app.<context setting>",
     ),
+    "plain foreign key": (
+        [
+            "ALTER TABLE shifde.runs ADD CONSTRAINT zz_forged_fk"
+            " FOREIGN KEY (id) REFERENCES shifde.runs (id)"
+        ],
+        "shifde.runs.zz_forged_fk: foreign key between client tables without tenant_id",
+    ),
+    "unique key without tenant_id": (
+        ["CREATE UNIQUE INDEX zz_forged_uq ON shifde.runs (id)"],
+        "shifde.runs.zz_forged_uq: unique key on a client table without tenant_id",
+    ),
+    "text key column": (
+        ["ALTER TABLE shifde.runs ADD COLUMN user_id text"],
+        "shifde.runs.user_id: text (must be uuid)",
+    ),
+    "admin flag on client rows": (
+        [
+            "CREATE POLICY zz_forged_admin ON shifde.runs FOR SELECT"
+            " USING (shifde.is_platform_admin_ctx())"
+        ],
+        "shifde.runs: policy zz_forged_admin (SELECT) USING lets"
+        " shifde.is_platform_admin_ctx() reach client rows",
+    ),
+    "principal table with tenant_id": (
+        ["ALTER TABLE shifde.login_lockouts ADD COLUMN tenant_id uuid"],
+        "shifde.login_lockouts: has a tenant_id column",
+    ),
 }
 
 
