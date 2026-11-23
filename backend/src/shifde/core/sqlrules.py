@@ -1,9 +1,11 @@
 """SELECT-only rules for Databricks SQL (SP5 design 5.4): a small tokenizer and the statement,
 table and parameter rules, in pure Python (S5: no parser library).
 
-`build` runs `statement_rules` at tool publish on a `connection.sql` template converted to the
-`:name` form; `appgen/sqlcheck.py` runs all three on a draft's tools. Every function takes any
-string and never raises; every issue is an error (callers add severity and path).
+It lives in `core` (it imports nothing from `shifde`) so every layer can share it: `build` runs
+`statement_rules` at tool publish on a `connection.sql` template converted to the `:name` form,
+and the runtime read checks of `adapters` refuse any word of `WRITE_KEYWORDS` in a `read` invoke.
+Every function takes any string and never raises; every issue is an error (callers add severity
+and path).
 """
 
 from __future__ import annotations
