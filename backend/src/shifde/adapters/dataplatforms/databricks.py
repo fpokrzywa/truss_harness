@@ -209,6 +209,14 @@ class DatabricksSession:
                 "Databricks takes named parameters only: send params as an object",
             )
         max_rows = int(cfg.get("max_rows", DEFAULT_MAX_ROWS))
+        wanted = request.get("max_rows")
+        if wanted is not None:
+            if isinstance(wanted, bool) or not isinstance(wanted, int) or wanted < 1:
+                raise AdapterFailure(ErrorClass.CONFIG, "malformed request")
+            max_rows = min(wanted, max_rows)
+        types = request.get("param_types") or {}
+        if not isinstance(types, dict):
+            raise AdapterFailure(ErrorClass.CONFIG, "malformed request")
         timeout = int(cfg.get("statement_timeout_seconds", DEFAULT_STATEMENT_TIMEOUT_S))
         body: JSON = {
             "warehouse_id": warehouse,
@@ -221,7 +229,9 @@ class DatabricksSession:
         }
         if params:
             body["parameters"] = [
-                {"name": str(k), "value": None if v is None else str(v)} for k, v in params.items()
+                {"name": str(k), "value": None if v is None else str(v)}
+                | ({"type": str(types[k])} if k in types else {})
+                for k, v in params.items()
             ]
         if cfg.get("default_catalog"):
             body["catalog"] = cfg["default_catalog"]

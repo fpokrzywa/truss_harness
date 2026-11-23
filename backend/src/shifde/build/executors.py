@@ -6,6 +6,12 @@ listed in `BUILTIN_FUNCTIONS` (nothing a tenant or a model can add). The other t
 systems exclusively through a P3 connection (`ConnectionService.open_for_use`), so every call passes
 the connection's status gates, `connection:use` / `connection:write`, the EgressGuard and secret
 redaction: there is no second network path.
+
+`connection.sql` runs on a `database` connection (postgres, `%(name)s` parameters) or on a
+`data_platform` connection whose adapter is in `DATA_PLATFORM_ADAPTER_OF` (Databricks): there the
+stored `%(name)s` template is sent as `:name` with typed parameters, the tool's derived maturity is
+that of the Databricks adapter's `query.sql`, and publish runs the SELECT-only statement rules of
+`build/sqlrules.py` on it.
 """
 
 from __future__ import annotations
@@ -25,7 +31,13 @@ ADAPTER_OF = {
     "mcp.tool": ("mcp_http", "mcp.tools"),
     "connection.sql": ("postgres", "query.sql"),
 }
-CONNECTION_TYPE_OF = {"rest.http": "rest", "mcp.tool": "mcp", "connection.sql": "database"}
+CONNECTION_TYPES_OF: dict[str, frozenset[str]] = {
+    "rest.http": frozenset({"rest"}),
+    "mcp.tool": frozenset({"mcp"}),
+    "connection.sql": frozenset({"database", "data_platform"}),
+}
+# data_platform adapter key -> (adapter key, capability) a connection.sql tool on it inherits
+DATA_PLATFORM_ADAPTER_OF = {"databricks": ("databricks", "query.sql")}
 
 
 @dataclass(frozen=True)

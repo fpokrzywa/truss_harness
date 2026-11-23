@@ -5,6 +5,11 @@ status gates, `connection:use` (+ `connection:write` for write classes), the Egr
 tool's timeout as the call deadline) and secret redaction all apply, so a tool is never a second
 network path. Templates substitute arguments as *data*: path values are percent-encoded, SQL values
 are bound parameters (`%(name)s`), nothing is interpolated into a statement.
+
+On a `data_platform` (Databricks) connection, a `connection.sql` request carries the template as
+`:name` parameters (`%%` as `%`), a SQL type per used parameter from the tool's input schema and the
+binding's `max_rows`; which form is sent follows the type of the connection row `open_for_use`
+re-read, never the spec or the arguments.
 """
 
 from __future__ import annotations
@@ -18,8 +23,8 @@ from uuid import UUID
 
 from shifde.adapters.base import AdapterFailure, ErrorClass
 from shifde.build.executors import BUILTIN_FUNCTIONS, WRITE_CLASSES
-from shifde.build.tools import BRACE_NAME, PARAM_NAME
-from shifde.connections.service import ConnectionService, failure_to_error
+from shifde.build.tools import BRACE_NAME, PARAM_NAME, named_sql
+from shifde.connections.service import ConnectionService, UseSession, failure_to_error
 from shifde.core.errors import ValidationFailed
 
 RETRYABLE = frozenset(
@@ -101,10 +106,38 @@ def rest_request(
     return request
 
 
-def sql_request(binding: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
+def param_type(prop: Any) -> str:  # Any: an input schema property
+    """The Databricks SQL type of an input schema property."""
+    kind = prop.get("type") if isinstance(prop, dict) else None
+    if kind == "integer":
+        return "BIGINT"
+    if kind == "number":
+        return "DOUBLE"
+    if kind == "boolean":
+        return "BOOLEAN"
+    if kind == "string" and prop.get("format") == "date":
+        return "DATE"
+    return "STRING"
+
+
+def sql_request(
+    binding: dict[str, Any],
+    args: dict[str, Any],
+    input_schema: dict[str, Any],
+    connection_type: str,
+) -> dict[str, Any]:
     template = str(binding["sql_template"])
     names = set(PARAM_NAME.findall(template))
-    return {"sql": template, "params": {n: args.get(n) for n in names}}
+    params = {n: args.get(n) for n in names}
+    if connection_type != "data_platform":
+        return {"sql": template, "params": params}
+    props = input_schema.get("properties") or {}
+    return {
+        "sql": named_sql(template),
+        "params": params,
+        "param_types": {n: param_type(props.get(n)) for n in names},
+        "max_rows": int(binding.get("max_rows") or 1000),
+    }
 
 
 def run_builtin(function_key: str, args: dict[str, Any]) -> Any:  # Any: tool result
@@ -147,7 +180,7 @@ def execute(
             with conns.open_for_use(
                 connection_id, purpose, write=write, deadline=remaining
             ) as session:
-                output = _invoke(executor, binding, args, session, write, key)
+                output = _invoke(spec, args, session, write, key)
             return ToolResult(output, attempts)
         except AdapterFailure as exc:
             left = timeout - (time.monotonic() - started)
@@ -157,20 +190,22 @@ def execute(
 
 
 def _invoke(
-    executor: str,
-    binding: dict[str, Any],
+    spec: dict[str, Any],
     args: dict[str, Any],
-    session: Any,  # Any: ConnectionSession
+    session: UseSession,
     write: bool,
     key: str | None,
 ) -> Any:  # Any: tool result
+    executor = spec["executor"]
+    binding: dict[str, Any] = spec["binding"]
     if executor == "rest.http":
         result = session.invoke(rest_request(binding, args, key), write=write)
         return {**result.result, **({"truncated": True} if result.truncated else {})}
     if executor == "mcp.tool":
         result = session.invoke({"tool": binding["tool_name"], "arguments": args}, write=write)
         return result.result
-    result = session.invoke(sql_request(binding, args), write=write)
+    request = sql_request(binding, args, spec.get("input_schema") or {}, session.connection_type)
+    result = session.invoke(request, write=write)
     out: dict[str, Any] = dict(result.result)
     max_rows = int(binding.get("max_rows") or 1000)
     rows = out.get("rows")
@@ -209,7 +244,7 @@ def invoke_once(
     with conns.open_for_use(
         connection_id, purpose, write=write, deadline=deadline, at=at
     ) as session:
-        output = _invoke(executor, binding, args, session, write, key)
+        output = _invoke(spec, args, session, write, key)
     status = output.get("status") if executor == "rest.http" and isinstance(output, dict) else None
     if isinstance(status, int) and status == 429:
         raise AdapterFailure(ErrorClass.RATE_LIMIT, "the upstream rate limited the call")
