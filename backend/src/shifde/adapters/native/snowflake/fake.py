@@ -3,9 +3,9 @@
 `FakeSnowflakeNativePlatform` answers the SQL API v2 through `transport()` (an
 `httpx.MockTransport`) and acts as the pinned CLI (`copier(target)`). State is kept per account
 host: packages, stages with their files, versions and patches, applications and grants. It accepts
-only key-pair JWTs that verify against `public_key` and records every statement and copy in order
-(`log`). Development and test only: any other `environment` refuses to construct it. Fault switches
-are off by default (`faults`, see `FAULTS`).
+only key-pair JWTs of the request host's account that verify against `public_key` and records
+every statement and copy in order (`log`). Development and test only: any other `environment`
+refuses to construct it. Fault switches are off by default (`faults`, see `FAULTS`).
 
 `DEEP_HEALTH()` is a stubbed answer until SP6-6, which will run the staged `ui/deep_health.py`
 instead: it returns SP5 6.4's shape with both checks passed (`deep_health_bad` fails one).
@@ -248,13 +248,13 @@ class FakeSnowflakeNativePlatform:
         host = request.url.host.lower()
         if not host.endswith(".snowflakecomputing.com"):
             return _json(404, {"code": "390404", "message": "unknown host"})
-        if not self._authorized(request):
+        if not self._authorized(request, host):
             return _json(401, {"code": "390303", "message": "Invalid credentials."})
         if request.method == "POST" and request.url.path == STATEMENTS:
             return self._submit(host, json.loads(request.content or b"{}"))
         return _json(404, {"code": "390404", "message": "endpoint not found"})
 
-    def _authorized(self, request: httpx.Request) -> bool:
+    def _authorized(self, request: httpx.Request, host: str) -> bool:
         scheme, _, token = request.headers.get("authorization", "").partition(" ")
         if scheme != "Bearer" or not token:
             return False
@@ -273,7 +273,7 @@ class FakeSnowflakeNativePlatform:
             return False
         if not isinstance(head, dict) or not isinstance(body, dict):
             return False
-        subject = snowflake_jwt.jwt_subject(self.account, self.user)
+        subject = snowflake_jwt.jwt_subject(host.split(".", 1)[0], self.user)
         issuer = f"{subject}.{snowflake_jwt.public_key_fingerprint(self.public_key)}"
         exp = body.get("exp")
         return (
