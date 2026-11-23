@@ -187,7 +187,7 @@ def test_capabilities_come_from_the_registry_and_recorded_evidence(
     assert pg["query.sql"]["maturity"] == "experimental"  # implemented, no evidence yet
     assert pg["query.pushdown_join"]["maturity"] == "planned"  # declared, not built
     adapters = {a["key"]: a for a in client.get("/api/v1/adapters").json()["items"]}
-    assert {a["maturity"] for a in adapters["databricks"]["capabilities"]} == {"planned"}
+    assert {a["maturity"] for a in adapters["fabric"]["capabilities"]} == {"planned"}
     assert adapters["postgres"]["connection_type"] == "database"
     assert adapters["rest.http"]["secret_fields"] and "config_schema" in adapters["rest.http"]
 

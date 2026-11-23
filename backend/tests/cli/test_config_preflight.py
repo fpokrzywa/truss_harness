@@ -229,8 +229,8 @@ def test_the_register_parser_reads_the_first_matching_table() -> None:
 def test_the_committed_register_parses() -> None:
     rows = preflight.read_register(preflight.DEFAULT_REGISTER)
     assert {r.id: r.state for r in rows} == {
-        "Item 5a": "open",
-        "Item 20 delete": "open",
+        "Item 5a": "closed",
+        "Item 20 delete": "closed",
         "Item 20 audit-retention": "pending-owner",
         "Item 21": "closed",
         "Item 23": "pending-owner",

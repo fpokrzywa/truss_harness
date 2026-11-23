@@ -9,6 +9,7 @@ from uuid import UUID
 from fastapi import APIRouter, Body, Depends, Header, Query
 from fastapi.responses import JSONResponse
 
+from shifde.adapters.base import AdapterRules
 from shifde.adapters.deps import RuntimeDep
 from shifde.connections import egress
 from shifde.connections import schemas as s
@@ -24,7 +25,10 @@ IDEMPOTENCY_KEY = re.compile(r"^[\x21-\x7e]{1,200}$")  # as `runtime.api` (POST 
 
 
 def _connections(scope: ScopeDep, runtime: RuntimeDep) -> ConnectionService:
-    return ConnectionService(scope, runtime)
+    rules = AdapterRules(
+        databricks_host_suffixes=tuple(runtime.settings.delivery_databricks_host_suffixes)
+    )
+    return ConnectionService(scope, runtime, rules)
 
 
 def _policies(scope: ScopeDep) -> egress.EgressPolicyService:
