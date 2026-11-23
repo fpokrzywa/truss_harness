@@ -250,6 +250,8 @@ export interface Connection {
   last_tested_at?: string | null;
   /** CM-1/CM-2: absent until the backend sends it. */
   last_test_outcome?: string | null;
+  /** CM-1: whether a credential (own or shared secret) is bound; never its value. */
+  secret_set?: boolean;
   row_version: number;
 }
 
@@ -262,8 +264,25 @@ export interface ConnectionInput {
   config: Record<string, unknown>;
   auth_method: string;
   secret_id?: string;
+  /** Stored as the connection's own secret `connection-<id>`; never together with `secret_id`. */
+  credential?: { value: string };
   egress_policy_id?: string;
   access_mode: AccessMode;
+  /** Required true in `read` mode whenever a credential or secret is bound (design 7.4). */
+  read_only_confirmed?: boolean;
+}
+
+/** `PATCH .../connections/{id}`: a config change resets the connection to draft. */
+export interface ConnectionPatch {
+  name?: string;
+  vendor_id?: string | null;
+  config?: Record<string, unknown>;
+  auth_method?: string;
+  secret_id?: string | null;
+  egress_policy_id?: string | null;
+  access_mode?: AccessMode;
+  read_only_confirmed?: boolean;
+  row_version?: number;
 }
 
 export type CheckName = 'config' | 'egress' | 'dns' | 'tls' | 'auth' | 'capability';
