@@ -8,6 +8,12 @@ the claim key is host-only, B-2524) and accepted only on an allow-listed Databri
 the key. Pure string handling: no DNS, no network,
 no settings (the installation's extra suffixes are passed in by the caller). `normalize_address`
 dispatches on the platform kind; the Snowflake entry takes no extra suffixes.
+
+For Snowflake the egress host and the claim identity are different strings. The egress host
+(`normalize_snowflake_address`) keeps `privatelink` and the region, because requests go there. The
+claim identity (`snowflake_claim_identity`) is the organization-account name only, so every URL
+form of one account gives one claim key: a Snowflake claim must use `address_key` of the identity,
+never of the egress host.
 """
 
 from __future__ import annotations
@@ -113,6 +119,22 @@ def normalize_snowflake_address(url: str) -> str:
     if not all(_SNOWFLAKE_LABEL.fullmatch(label) for label in account[1:]):
         raise SnowflakeAddressRefused
     return f"https://{host}"
+
+
+def snowflake_claim_identity(url: str) -> str:
+    """`https://<org>-<account>.snowflakecomputing.com` for an organization-account URL (plain or
+    `privatelink`, any case, `_` or `-`, `:443` or a trailing `/`), else `SnowflakeAddressRefused`.
+    Accepts only what `normalize_snowflake_address` accepts. Account-locator forms (a first label
+    without `-`, with or without region and `privatelink`) and an org-account name followed by
+    region labels are refused: from the string alone a locator cannot be shown to be the same
+    account as an org-account name, and a locator is unique only within a region, so claims key
+    only on the org-account name."""
+    account = normalize_snowflake_address(url).removeprefix("https://").split(".")[:-2]
+    if len(account) > 1 and account[-1] == "privatelink":
+        account = account[:-1]
+    if len(account) != 1 or "-" not in account[0]:
+        raise SnowflakeAddressRefused
+    return f"https://{account[0]}.{SNOWFLAKE_HOST_SUFFIX}"
 
 
 def normalize_address(platform: str, url: str, extra_suffixes: Iterable[str] = ()) -> str:

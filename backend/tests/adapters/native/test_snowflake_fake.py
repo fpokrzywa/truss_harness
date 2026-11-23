@@ -173,7 +173,7 @@ def test_a_jwt_of_another_key_is_401(sf: SfSetup) -> None:
     pem = other.private_bytes(
         serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
     ).decode()
-    gateway = sf.platform.gateway(sf.read.target, lambda: sf_credential(pem=pem))
+    gateway = sf.platform.gateway(sf.read.target, lambda: sf_credential(sf.read.tenant_id, pem=pem))
     with pytest.raises(RuntimeError, match="HTTP 401"):
         gateway.execute("SELECT CURRENT_ACCOUNT() AS ACCOUNT, CURRENT_ROLE() AS ROLE")
     assert sf.platform.log == []

@@ -6,8 +6,10 @@ plan, another target's receipt or plan, and a credential of another account host
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 from uuid import uuid4
 
+import httpx
 import pytest
 
 from shifde.adapters.native.base import ReadContext
@@ -19,7 +21,8 @@ from shifde.adapters.native.contracts import (
     Target,
     VerifyRequest,
 )
-from shifde.adapters.native.snowflake.clients import SnowflakeSqlApi
+from shifde.adapters.native.snowflake import clients
+from shifde.adapters.native.snowflake.clients import SnowflakeSqlApi, SnowflakeStageCopier
 from shifde.adapters.native.snowflake.fake import FakeSnowflakeNativePlatform
 from tests.adapters.native.conftest import (
     SF_BINDINGS,
@@ -86,6 +89,26 @@ def test_a_credential_of_another_host_is_refused_before_sending(
     assert sf_platform.log == []
 
 
+def test_a_credential_of_another_organization_is_refused_on_the_same_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[object] = []
+    monkeypatch.setattr(clients.subprocess, "run", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(clients.shutil, "which", lambda name: name)
+    org_a = Target(tenant_id=uuid4(), host=SF_HOST, bindings=dict(SF_BINDINGS))
+    theirs = sf_credential(uuid4())  # organization B's credential for the same account host
+    seen: list[httpx.Request] = []
+    api = SnowflakeSqlApi(
+        org_a, credential_provider=lambda: theirs, transport=httpx.MockTransport(seen.append)
+    )
+    with pytest.raises(PermissionError, match="another account host or organization"):
+        api.execute("SELECT 1")
+    copier = SnowflakeStageCopier(org_a, credential_provider=lambda: theirs)
+    with pytest.raises(PermissionError, match="another account host or organization"):
+        copier.copy(tmp_path, "SHIFDE_PKG.SHIFDE.SOURCE", "e" * 64)
+    assert seen == [] and calls == []
+
+
 def test_a_credential_host_is_compared_normalized(sf_platform: FakeSnowflakeNativePlatform) -> None:
     sf = make_sf_setup(sf_platform, credential_host="https://ACCT1.snowflakecomputing.com:443/")
     sf.prepare()
@@ -104,7 +127,7 @@ def test_a_credential_host_is_compared_normalized(sf_platform: FakeSnowflakeNati
 )
 def test_the_sql_api_talks_only_to_snowflakecomputing_com(host: str) -> None:
     target = Target(tenant_id=uuid4(), host=SF_HOST).model_copy(update={"host": host})
-    credential = sf_credential(host)
+    credential = sf_credential(target.tenant_id, host)
     with pytest.raises(ValueError):
         SnowflakeSqlApi(target, credential_provider=lambda: credential)
 
