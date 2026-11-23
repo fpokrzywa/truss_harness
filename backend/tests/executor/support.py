@@ -1,5 +1,5 @@
-"""Executor test helpers: a credentials file, a runner over the in-process gateway and the fake
-platform, and the requester's plan request."""
+"""Executor test helpers: a credentials file (Databricks, or Snowflake with its key file), a runner
+over the in-process gateway and the fake platform, and the requester's plan request."""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any  # Any: JSON bodies
 from uuid import UUID
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
 from shifde.adapters.native.databricks.fake import FakeDatabricksPlatform
@@ -47,6 +49,50 @@ def credentials_file(
         encoding="utf-8",
     )
     os.chmod(path, 0o600)  # the broker refuses a file open to group or others on POSIX
+    return path
+
+
+SNOWFLAKE_USER, SNOWFLAKE_ROLE = "deployer", "DEPLOY_ROLE"
+
+
+def snowflake_key_pem() -> str:
+    """A new RSA 2048 key as an unencrypted PKCS#8 PEM."""
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+    ).decode()
+
+
+def snowflake_credentials_file(
+    directory: Path,
+    host: str,
+    pem: str,
+    *,
+    tenant: UUID,
+    ref: str = "snowflake-dev",
+    name: str = "credentials.json",
+) -> Path:
+    """A credentials file of one Snowflake entry and its key file `<name>.p8`, both mode 0600."""
+    key_file = directory / f"{name}.p8"
+    key_file.write_text(pem, encoding="utf-8")
+    os.chmod(key_file, 0o600)
+    path = directory / name
+    path.write_text(
+        json.dumps(
+            {
+                ref: {
+                    "tenant_id": str(tenant),
+                    "host": host,
+                    "platform": "snowflake",
+                    "user": SNOWFLAKE_USER,
+                    "role": SNOWFLAKE_ROLE,
+                    "private_key_file": str(key_file),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    os.chmod(path, 0o600)
     return path
 
 
