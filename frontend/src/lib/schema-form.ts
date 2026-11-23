@@ -70,6 +70,19 @@ export function initialValues(fields: FieldDef[]): FormValues {
   return v;
 }
 
+/** Form values of a stored config; a field the config lacks starts from its default. */
+export function valuesFromConfig(fields: FieldDef[], config: Record<string, unknown>): FormValues {
+  const v = initialValues(fields);
+  for (const f of fields) {
+    const c = config[f.key];
+    if (c === undefined || c === null) continue;
+    if (f.kind === 'boolean') v[f.key] = c === true;
+    else if (f.kind === 'stringArray') v[f.key] = Array.isArray(c) ? c.map(String).join('\n') : '';
+    else v[f.key] = String(c);
+  }
+  return v;
+}
+
 const lines = (s: string) =>
   s
     .split('\n')
