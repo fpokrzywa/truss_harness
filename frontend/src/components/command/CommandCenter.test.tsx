@@ -68,6 +68,19 @@ describe('CommandCenterContent', () => {
     expect(screen.getByRole('tab', { name: 'Startup check' })).toHaveFocus();
   });
 
+  it('shows the Board card only when given its link', () => {
+    const { unmount } = render(<CommandCenterContent {...props} board="/o/acme/board" />);
+    expect(screen.getByRole('heading', { level: 2, name: 'Board' })).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Open the board' })).toHaveAttribute(
+      'href',
+      '/o/acme/board',
+    );
+    unmount();
+    render(<CommandCenterContent {...props} />);
+    expect(screen.queryByRole('heading', { name: 'Board' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Open the board' })).toBeNull();
+  });
+
   it('keeps Administration in view under the tabs, whichever tab is open', async () => {
     render(<CommandCenterContent {...props} />);
     expect(screen.getByRole('heading', { level: 2, name: 'Administration' })).toBeVisible();

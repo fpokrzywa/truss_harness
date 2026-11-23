@@ -1,4 +1,5 @@
 import {
+  boardHref,
   buildHref,
   connectionsHref,
   datasetsHref,
@@ -218,6 +219,11 @@ export const NAV_ITEMS: readonly NavItem[] = [
   operate('approvals', 'Approvals', ['approval:read'], (s) =>
     s.org ? `${orgHref(s.org)}/approvals` : null,
   ),
+  // SP7-6: the release board, an organization-level screen filtered by `?ws=&proj=`.
+  {
+    ...deliver('board', 'Board', ['packaging:solution:read']),
+    href: (s) => (s.org ? boardHref(s.org) : null),
+  },
   deliver('targets', 'Targets', ['delivery:target:read']),
   deliver('executors', 'Executors', ['delivery:executor:read']),
   deliver('plans', 'Plans', ['delivery:plan:read']),
