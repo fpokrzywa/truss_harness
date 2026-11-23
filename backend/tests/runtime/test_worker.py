@@ -1016,6 +1016,7 @@ def test_a_job_of_an_unknown_kind_ends_dead_and_is_never_run(
     ran: list[object] = []
     monkeypatch.setattr(worker_mod.lifecycle, "advance", lambda *a, **kw: ran.append(a) or "done")
     monkeypatch.setattr(worker_mod.connections, "run_test_job", lambda *a: ran.append(a))
+    monkeypatch.setattr(worker_mod.connections, "run_invoke_job", lambda *a: ran.append(a))
     monkeypatch.setattr(worker_mod.models_admin, "run_provider_job", lambda *a: ran.append(a))
     job = uuid7()
     with owner_db.session() as o:
@@ -1026,6 +1027,27 @@ def test_a_job_of_an_unknown_kind_ends_dead_and_is_never_run(
     done = "SELECT status, last_error FROM shifde.jobs WHERE id = :j"
     _until(lambda: _q(owner_db, done, j=job) == [("dead", worker_mod.UNKNOWN_KIND)])
     assert ran == []
+
+
+def test_a_connection_invoke_job_is_dispatched_in_its_own_client(
+    world: World,
+    owner_db: Database,
+    running: Callable[..., Worker],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #190: a `connection.invoke` job runs `connections.service.run_invoke_job` with the
+    claimed row's client and job id, and ends `done` when it returns None."""
+    ran: list[tuple[object, ...]] = []
+    monkeypatch.setattr(worker_mod.connections, "run_invoke_job", lambda *a: ran.append(a))
+    job = uuid7()
+    with owner_db.session() as o:
+        insert(o, "jobs", id=job, tenant_id=world.a.tenant, kind=connections.INVOKE_JOB_KIND,
+               dedupe_key=f"connection-invoke:{job}")  # fmt: skip
+        o.commit()
+    running("w-invoke")
+    done = "SELECT status, last_error FROM shifde.jobs WHERE id = :j"
+    _until(lambda: _q(owner_db, done, j=job) == [("done", None)])
+    assert [(a[2], a[3]) for a in ran] == [(world.a.tenant, job)]
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -1069,5 +1091,97 @@ def test_a_connection_test_job_naming_another_clients_id_touches_nothing_of_that
         w._settle_job(own, "done")
         assert _q(owner_db, "SELECT status FROM shifde.jobs WHERE id = :j", j=b.job) == [("done",)]
         assert [r[0] for r in _tests_of(owner_db, b.tenant)] == [b.test_id]
+    finally:
+        w.db.dispose()
+
+
+@dataclass(frozen=True)
+class Inv:
+    tenant: UUID
+    connection: UUID
+    job: UUID
+    invocation: UUID
+
+
+def _invoke_job(
+    o: Session, tenant: UUID, server: RestTestServer, forge: dict[str, str] | None = None
+) -> Inv:
+    """A queued `connection.invoke` job of `tenant` and its `queued` invocation, for a REST
+    connection to `server`, requested by a client administrator (the payload the invoke route
+    writes); `forge` overrides payload keys."""
+    user = add_person(o, tenant, "invoker", "tenant_administrator")
+    cid, job, inv = uuid7(), uuid7(), uuid7()
+    o.execute(
+        text(
+            "INSERT INTO shifde.connections (id, tenant_id, name, connection_type, adapter_key, "
+            "config, auth_method, access_mode, status) VALUES (:i, :t, :n, 'rest', 'rest.http', "
+            "CAST(:c AS jsonb), 'none', 'read', 'active')"
+        ),
+        {"i": cid, "t": tenant, "n": f"conn-{cid.hex}",
+         "c": json.dumps({"base_url": server.base_url, "health_path": "/health"})},
+    )  # fmt: skip
+    request = {"method": "GET", "path": "/health", "query": None, "body": None, "headers": None}
+    payload = {"invocation_id": str(inv), "connection_id": str(cid), "request": request,
+               "write": False, "request_hash": "h", "principal_id": str(user),
+               "principal_type": "user", "api_key_id": None, **(forge or {})}  # fmt: skip
+    o.execute(
+        text(
+            "INSERT INTO shifde.jobs (id, tenant_id, kind, payload, dedupe_key) "
+            "VALUES (:i, :t, :k, CAST(:p AS jsonb), :dk)"
+        ),
+        {"i": job, "t": tenant, "k": connections.INVOKE_JOB_KIND, "p": json.dumps(payload),
+         "dk": f"connection-invoke:{inv}"},
+    )  # fmt: skip
+    insert(o, "connection_invocations", id=inv, tenant_id=tenant, job_id=job, connection_id=cid,
+           requested_by=user)  # fmt: skip
+    return Inv(tenant, cid, job, inv)
+
+
+def _invocations_of(owner_db: Database, tenant: UUID) -> list[tuple[Any, ...]]:
+    return _q(owner_db, "SELECT id, connection_id, status, result, error_code, updated_at, "
+              "finished_at FROM shifde.connection_invocations WHERE tenant_id = :t ORDER BY id",
+              t=tenant)  # fmt: skip
+
+
+@pytest.mark.parametrize("naming", ["connection", "invocation"])
+@pytest.mark.parametrize("mode", MODES)
+def test_a_connection_invoke_job_naming_another_clients_id_touches_nothing_of_that_client(
+    mode: str,
+    naming: str,
+    world: World,
+    owner_db: Database,
+    settings: Settings,
+    owner_url: str,
+    server: RestTestServer,
+) -> None:
+    """B-2999 (4): an invoke job of A whose payload names B's connection or B's invocation ends
+    `dead` (`not_found`) without touching anything: its own invocation stays `queued`, none of
+    B's rows change and no connection is driven. A job naming its own ids runs. As `shifde_app`
+    and as the schema owner."""
+    with owner_db.session() as o:
+        b = _invoke_job(o, world.b.tenant, server)
+        named = str(b.connection) if naming == "connection" else str(b.invocation)
+        forged = _invoke_job(o, world.a.tenant, server, {f"{naming}_id": named})
+        own = _invoke_job(o, world.a.tenant, server)
+        o.commit()
+    before, b_invocations = _state(owner_db, b.tenant), _invocations_of(owner_db, b.tenant)
+    a_invocations = _invocations_of(owner_db, world.a.tenant)
+    w = _worker(settings, "w-i")
+    if mode == "schema-owner":
+        _on_owner(w, owner_url)
+    try:
+        job = _Job(forged.job, world.a.tenant, None, connections.INVOKE_JOB_KIND)
+        assert w._execute(job) == "dead" and job.error == "not_found"
+        assert _invocations_of(owner_db, world.a.tenant) == a_invocations  # all still queued
+        assert _state(owner_db, b.tenant) == before
+        assert _invocations_of(owner_db, b.tenant) == b_invocations
+        assert server.requests == []  # no connection was driven
+        ok = _Job(own.job, world.a.tenant, None, connections.INVOKE_JOB_KIND)  # not vacuous
+        assert w._execute(ok) == "done" and ok.error is None
+        status = "SELECT status FROM shifde.connection_invocations WHERE id = :i"
+        assert _q(owner_db, status, i=own.invocation) == [("succeeded",)]
+        assert _q(owner_db, status, i=forged.invocation) == [("queued",)]
+        assert len(server.requests) == 1
+        assert _invocations_of(owner_db, b.tenant) == b_invocations
     finally:
         w.db.dispose()

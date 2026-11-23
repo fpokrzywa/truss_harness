@@ -20,7 +20,7 @@ from shifde.core.egress import (
     EgressGuard,
     EgressPolicy,
 )
-from tests._support.conntests import result_of, run_test
+from tests._support.conntests import invoke_outcome, result_of, run_test
 from tests._support.fullapp import World
 from tests._support.p2util import login, new_user, system_role
 from tests._support.p3util import (
@@ -145,8 +145,7 @@ def test_malformed_invoke_bodies_are_422_and_audited(
         r = client.post(url, json=bad, headers=h)
         assert r.status_code == 422 and r.json()["code"] == "validation_error", bad
         assert "errors" in r.json()
-    ok = client.post(url, json={"method": "get", "path": "/echo"}, headers=h)
-    assert ok.status_code == 200
+    assert invoke_outcome(client, h, A, cid, {"method": "get", "path": "/echo"})[0] == 200
     failed = owner_session.execute(
         text(
             "SELECT count(*) FROM shifde.audit_events WHERE action = 'connection.invoked' "
