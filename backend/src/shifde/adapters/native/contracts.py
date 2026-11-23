@@ -1,4 +1,5 @@
-"""Databricks native delivery wire models and canonical hashing (FDE SDK `shifde_contracts`).
+"""Native delivery wire models (Databricks Apps and Snowflake Native Apps) and canonical hashing
+(FDE SDK `shifde_contracts`).
 
 The values an executor reports back in a job result carry length and count limits (`NAME_MAX`,
 `NATIVE_ID_MAX`, `EVIDENCE_MAX`, `HANDLES_MAX`, `RESOURCES_MAX`, `ITEMS_MAX`; B-2736): a value
@@ -170,25 +171,37 @@ class DatabricksApplicationSpec(Model):
     health_path: Literal["/health"] = "/health"
 
 
+class SnowflakeApplicationSpec(Model):
+    """A Snowflake Native App. No names: the package, application and warehouse come from the
+    target bindings (SP6 design 6.2)."""
+
+    kind: Literal["snowflake.native-app/v1"] = "snowflake.native-app/v1"
+
+
+ApplicationSpec = Annotated[
+    DatabricksApplicationSpec | SnowflakeApplicationSpec, Field(discriminator="kind")
+]
+
+
 # --------------------------------------------------------------------------- builds
 class BuildArtifact(Entity):
     application_id: UUID
     archive: SourceArchive
     source_digest: Digest
     spec_digest: Digest
-    spec: DatabricksApplicationSpec
+    spec: ApplicationSpec
     adapter_version: str
     toolchain_digest: Digest
     template_version: str = "0.1.0"
 
 
 class ScaffoldRequest(Model):
-    spec: DatabricksApplicationSpec
+    spec: ApplicationSpec
     template_version: str = "0.1.0"
 
 
 class ValidateRequest(Model):
-    spec: DatabricksApplicationSpec
+    spec: ApplicationSpec
     source: SourceArchive
 
 
@@ -235,7 +248,7 @@ class PlanRequest(Model):
 class InspectRequest(Model):
     application_id: UUID
     app_name: str
-    spec: DatabricksApplicationSpec | None = None
+    spec: ApplicationSpec | None = None
 
 
 # --------------------------------------------------------------------------- execution
@@ -254,7 +267,7 @@ class ApplyReceipt(Entity):
 
 class ObserveRequest(Model):
     receipt: ApplyReceipt
-    spec: DatabricksApplicationSpec | None = None
+    spec: ApplicationSpec | None = None
 
 
 class ReconcileRequest(Model):
@@ -263,7 +276,7 @@ class ReconcileRequest(Model):
 
 class VerifyRequest(Model):
     receipt: ApplyReceipt
-    spec: DatabricksApplicationSpec | None = None
+    spec: ApplicationSpec | None = None
 
 
 class NativeObservation(Model):
