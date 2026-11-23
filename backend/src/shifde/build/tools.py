@@ -25,6 +25,7 @@ from shifde.build.executors import (
     SIDE_EFFECT_CLASSES,
     WRITE_CLASSES,
 )
+from shifde.build.internal_functions import INTERNAL_FUNCTIONS
 from shifde.build.issues import Report, check_json_schema, schema_properties
 from shifde.core import sqlrules
 
@@ -255,7 +256,12 @@ def _validate_binding(
     if executor == "builtin.function":
         _allowed(report, binding, {"function_key"})
         key = binding.get("function_key")
-        fn = BUILTIN_FUNCTIONS.get(key) if isinstance(key, str) else None
+        # a vetted builtin, or a `seth.*` internal function (runs only inside a run)
+        fn = (
+            BUILTIN_FUNCTIONS.get(key) or INTERNAL_FUNCTIONS.get(key)
+            if isinstance(key, str)
+            else None
+        )
         if fn is None:
             report.error(
                 "binding.function_key", "unknown_function", "not a vetted builtin function"
