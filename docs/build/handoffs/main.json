@@ -1,8 +1,8 @@
 {
-  "session_id": "a0eef6a0-8154-4a4c-b201-6d9511f8cb1b",
-  "head_sha": "310a543e01ace5c95e2572973682608820c37572",
+  "session_id": "cdcd7d36-d94e-43b4-845e-e53acb977a12",
+  "head_sha": "9adf7d4ced215d84111a1a28d4b32aa35b4f90ce",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "PYTHONUTF8=1 factory/bin/job queue; spawn reviewers for 137, 138, 140, 141, 143, 146 (stage review); gate 145; job 133 feedback per HANDOFF.md (update depends_on-head test expectations); gates.py + hand merge 139; see docs/build/HANDOFF.md",
-  "written_at": "2026-11-23T17:10:37Z"
+  "next_step": "PYTHONUTF8=1 factory/bin/job queue; read .worktrees/_gate-logs/139-merge.summary (re-sync + hand merge 139 or rerun gates); gate 140 and 143; lead merges 133, 146, 141, 137 one gates.py at a time; then 145 builder; see docs/build/HANDOFF.md",
+  "written_at": "2026-11-23T17:47:14Z"
 }

@@ -178,6 +178,8 @@ class DatabricksAdapter:
         )
 
     def inspect(self, request: InspectRequest, ctx: ReadContext) -> EnvironmentSnapshot:
+        if request.spec is not None:
+            databricks_spec(request.spec)
         if request.app_name != app_name(request.application_id, ctx.target.id):
             raise PermissionError("app name is not the one derived for this application and target")
         app = self._workspace(ctx).get_app(request.app_name)
@@ -436,6 +438,8 @@ class DatabricksAdapter:
             return receipt
 
     def observe(self, request: ObserveRequest, ctx: ReadContext) -> NativeObservation:
+        if request.spec is not None:
+            databricks_spec(request.spec)
         receipt = request.receipt
         self._check_receipt(receipt, ctx)
         app = self._workspace(ctx).get_app(receipt.operation_handles["app_name"])
@@ -483,6 +487,8 @@ class DatabricksAdapter:
         )
 
     def verify(self, request: VerifyRequest, ctx: ReadContext) -> VerificationReport:
+        if request.spec is not None:
+            databricks_spec(request.spec)
         observed = self.observe(ObserveRequest(receipt=request.receipt), ctx)
         checks = [
             Check(
