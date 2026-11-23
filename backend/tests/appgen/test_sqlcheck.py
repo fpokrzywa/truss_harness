@@ -103,9 +103,7 @@ def test_tool_names_screen_titles_and_case_ids_are_unique() -> None:
 def test_an_empty_expected_text_is_a_warning(kind: str) -> None:
     value = _draft()
     value["evaluation_cases"][0]["assertions"][0] = {"id": "e", "kind": kind, "value": ""}
-    assert _codes(value) == [
-        ("evaluation_cases.0.assertions.0.value", "case_trivial", "warning")
-    ]
+    assert _codes(value) == [("evaluation_cases.0.assertions.0.value", "case_trivial", "warning")]
 
 
 def test_validation_never_raises_on_odd_sql() -> None:
