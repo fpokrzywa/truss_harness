@@ -10,7 +10,12 @@ and another client learns nothing of the tools (issue #316).
 SP6-4: a `snowflake.native-app/v1` solution's version with screens and Snowflake `connection.sql`
 tools seals under `/2` with `app.generator_version` `shifde.appgen.snowflake/1.0`; without
 screens it is refused `release_incompatible` with a failing `screens` diagnostic (S6-H, never a
-`/1` release); a tool or bound connection of the other platform is refused for either kind."""
+`/1` release); a tool or bound connection of the other platform is refused for either kind.
+
+SP8-1: a `docker.compose/v1` solution follows the Databricks `/2` rules with generator version
+`shifde.appgen.docker/1.0` and is refused without screens; a `fabric.solution/v1` or
+`palantir.marketplace/v1` solution seals under `/1` only: a version with screens and a pinned
+connection are each refused."""
 
 from __future__ import annotations
 
@@ -445,3 +450,115 @@ def test_a_tool_or_binding_of_the_other_platform_is_refused_for_either_kind(
         seal(h.client, h, sf_sid, version["id"], bindings({s.model: s.provider}, {sf: lake}))
     )
     assert refused == {f"connections.{sf}": NOT_SNOWFLAKE}
+
+
+# ------------------------------------------------------------------ Fabric, Palantir, Docker (SP8-1)
+DOCKER_KIND = "docker.compose/v1"
+NO_SCREENS = {
+    "fabric.solution/v1": "a Fabric solution has no screens",
+    "palantir.marketplace/v1": "a Palantir Marketplace solution has no screens",
+}
+NO_CONNECTION = {
+    "fabric.solution/v1": "a Fabric release binds no data connection",
+    "palantir.marketplace/v1": "a Palantir Marketplace release binds no data connection",
+}
+
+
+def test_a_docker_version_with_screens_seals_under_compiler_2(
+    client: TestClient, world: World
+) -> None:
+    wire(client)
+    h, s, _ = _setup(client, world)
+    sid = solution(h.client, h, "Container app", target_kind=DOCKER_KIND)["id"]
+    lake = databricks(h.client, h)
+    agent = _agent(h, s, "app", [_dbx_tool(h, s, lake)])
+    screens = [CHAT, _table("orders", "customer_id")]
+    version = new_version(h.client, h, sid, _with(version_body(agent, dataset=s.dataset), screens))
+    r = seal(h.client, h, sid, version["id"], bindings({s.model: s.provider}, {lake: lake}))
+    assert r.status_code == 201, r.text
+    release = r.json()
+    manifest = release["manifest"]
+    assert manifest["target_kind"] == DOCKER_KIND
+    assert manifest["compiler_version"] == "shifde.packaging/2"
+    assert manifest["app"] == {"generator_version": "shifde.appgen.docker/1.0"}
+    assert manifest["screens"] == screens
+    assert release["digest"] == digest(manifest)
+    assert all(d["status"] == "supported" for d in release["compatibility"])
+
+
+def test_a_docker_version_without_screens_is_refused(
+    client: TestClient, world: World, owner_session: Session
+) -> None:
+    wire(client)
+    h, s, _ = _setup(client, world)
+    sid = solution(h.client, h, "Container app", target_kind=DOCKER_KIND)["id"]
+    lake = databricks(h.client, h)
+    agent = _agent(h, s, "app", [_dbx_tool(h, s, lake)])
+    version = new_version(h.client, h, sid, version_body(agent, dataset=s.dataset))
+    r = seal(h.client, h, sid, version["id"], bindings({s.model: s.provider}, {lake: lake}))
+    assert _unsupported(r) == {"screens": "a Docker app needs screens"}
+    assert "models" in [e["path"] for e in r.json()["errors"]]  # the `/2` rules apply
+    releases = owner_session.execute(
+        text("SELECT count(*) FROM shifde.releases WHERE solution_version_id = :v"),
+        {"v": version["id"]},
+    ).scalar()
+    owner_session.rollback()
+    assert releases == 0
+
+
+def test_a_docker_solution_refuses_a_snowflake_tool_and_connection(
+    client: TestClient, world: World
+) -> None:
+    wire_snowflake(client)
+    h, s, _ = _setup(client, world)
+    sid = solution(h.client, h, "Container app", target_kind=DOCKER_KIND)["id"]
+    sf = snowflake(h.client, h)
+    tool = _sf_tool(h, s, sf)
+    body = version_body(_agent(h, s, "app", [tool]), dataset=s.dataset)
+    version = new_version(h.client, h, sid, _with(body, [CHAT]))
+    refused = _unsupported(
+        seal(h.client, h, sid, version["id"], bindings({s.model: s.provider}, {sf: sf}))
+    )
+    assert refused == {f"tools.{tool}": APP_TOOLS, f"connections.{sf}": NOT_DATABRICKS}
+
+
+@pytest.mark.parametrize("kind", NO_SCREENS)
+def test_a_fabric_or_palantir_version_seals_under_compiler_1_without_screens_only(
+    client: TestClient, world: World, kind: str
+) -> None:
+    h, s, _ = _setup(client, world)
+    sid = solution(h.client, h, "Marketplace solution", target_kind=kind)["id"]
+    body = version_body(s.agent_v1, dataset=s.dataset)
+    plain = new_version(h.client, h, sid, body)
+    sealed = seal(h.client, h, sid, plain["id"], bindings({s.model: s.provider}))
+    assert sealed.status_code == 201, sealed.text
+    manifest = sealed.json()["manifest"]
+    assert manifest["target_kind"] == kind
+    assert manifest["compiler_version"] == "shifde.packaging/1"
+    assert "screens" not in manifest and "app" not in manifest
+
+    version = new_version(h.client, h, sid, _with(body, [CHAT, _table("orders")]))
+    r = seal(h.client, h, sid, version["id"], bindings({s.model: s.provider}))
+    assert _unsupported(r) == {"screens": NO_SCREENS[kind]}
+    # no `/2` rule and no per-screen diagnostic
+    paths = {e["path"] for e in r.json()["errors"]}
+    assert "models" not in paths and not any(p.startswith("screens.") for p in paths)
+
+
+@pytest.mark.parametrize("kind", NO_CONNECTION)
+def test_a_fabric_or_palantir_release_refuses_every_pinned_connection(
+    client: TestClient, world: World, kind: str
+) -> None:
+    wire(client)
+    h, s, _ = _setup(client, world)
+    sid = solution(h.client, h, "Marketplace solution", target_kind=kind)["id"]
+    lake = databricks(h.client, h)
+    agent = _agent(h, s, "app", [_dbx_tool(h, s, lake)])
+    for body in (
+        version_body(agent, dataset=s.dataset),  # pinned by a tool
+        version_body(s.agent_v1, connection=lake, dataset=s.dataset),  # by a data read
+    ):
+        version = new_version(h.client, h, sid, body)
+        for bound in ({lake: lake}, {}):
+            r = seal(h.client, h, sid, version["id"], bindings({s.model: s.provider}, bound))
+            assert _unsupported(r) == {f"connections.{lake}": NO_CONNECTION[kind]}

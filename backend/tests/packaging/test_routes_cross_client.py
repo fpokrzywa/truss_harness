@@ -19,6 +19,10 @@ SP6-4, both ways: another client's `snowflake.native-app/v1` solution, its versi
 Snowflake solution version naming the other client's Snowflake connection gets the unknown-id
 422; and `shifde_app` in one client's context selects no row of the other's Snowflake solution,
 version or release.
+
+SP8-1, for a Fabric, Palantir and Docker solution alike: another client's solution is the
+unknown-id 404 on every solution route that names it and absent from the list, and a member bound
+only at project P1 gets on P2's solution the 404 an unknown id gets, under P1 and under P2.
 """
 
 from __future__ import annotations
@@ -41,7 +45,7 @@ from tests._support.fullapp import World
 from tests._support.p3util import ADMIN, ADMIN_B, A, B
 from tests._support.p4util import agent_spec, art, prompt_spec, publish
 from tests._support.p5util import Hdr, user_session
-from tests.appgen.helpers import snowflake, wire_snowflake
+from tests.appgen.helpers import add_project, snowflake, wire_snowflake
 from tests.authz.scoping.test_workspace_routes import _world
 from tests.packaging.helpers import (
     Stack,
@@ -56,6 +60,7 @@ from tests.packaging.helpers import (
 )
 from tests.packaging.helpers import version_body as body_for
 from tests.packaging.test_app_releases import CHAT, _table
+from tests.packaging.test_releases import _project_developer
 from tests.tenancy.conftest import app_session
 
 _VARYING = {"instance", "request_id"}
@@ -660,3 +665,74 @@ def test_shifde_app_selects_no_row_of_bs_snowflake_solution(
             text("SELECT target_kind FROM shifde.solutions WHERE id = :s"), {"s": me.solution}
         ).scalar_one()
         assert own == SNOWFLAKE_KIND
+
+
+# ------------------------------------------------------------------ Fabric, Palantir, Docker (SP8-1)
+SP8_KINDS = ("fabric.solution/v1", "palantir.marketplace/v1", "docker.compose/v1")
+
+
+def _solution_state(owner: Session, solution_id: str) -> tuple[Any, ...]:
+    row = owner.execute(
+        text(
+            "SELECT s.name, s.target_kind, s.status, s.updated_at, (SELECT count(*) FROM "
+            "shifde.solution_versions v WHERE v.solution_id = s.id) FROM shifde.solutions s "
+            "WHERE s.id = :s"
+        ),
+        {"s": solution_id},
+    ).one()
+    owner.rollback()
+    return tuple(row)
+
+
+def _same_on_every_solution_route(h: Hdr, base: str, theirs: str, body: dict[str, Any]) -> None:
+    nobody = str(uuid7())
+    for method, suffix, payload in (
+        ("GET", "", None),
+        ("GET", "/versions", None),
+        ("POST", "/versions", body),
+        ("POST", "/archive", None),
+    ):
+        _same(
+            h.client.request(method, f"{base}/{theirs}{suffix}", headers=h, json=payload),
+            h.client.request(method, f"{base}/{nobody}{suffix}", headers=h, json=payload),
+        )
+
+
+@pytest.mark.parametrize("kind", SP8_KINDS)
+def test_bs_sp8_solution_is_unknown_to_a(
+    client: TestClient, world: World, owner_session: Session, kind: str
+) -> None:
+    hb = user_session(client, world.passwords, ADMIN_B)
+    theirs = solution(hb.client, hb, "theirs", B, target_kind=kind)["id"]
+    h = user_session(client, world.passwords, ADMIN)
+    s = stack(h.client, h)
+    own = solution(h.client, h, "own", target_kind=kind)["id"]
+    before = _solution_state(owner_session, theirs)
+    assert h.client.get(f"{solutions()}/{own}", headers=h).status_code == 200  # own first
+    _same_on_every_solution_route(h, solutions(), theirs, body_for(s.agent_v1, dataset=s.dataset))
+    listed = h.client.get(solutions(), headers=h).json()["items"]
+    assert [x["id"] for x in listed] == [own]
+    assert _solution_state(owner_session, theirs) == before
+
+
+@pytest.mark.parametrize("kind", SP8_KINDS)
+def test_a_p1_only_member_cannot_reach_p2s_sp8_solution(
+    client: TestClient, world: World, owner_session: Session, kind: str
+) -> None:
+    h = user_session(client, world.passwords, ADMIN)
+    s = stack(h.client, h)
+    add_project(h.client, h, "elsewhere")
+    p2 = solutions().replace("/projects/sample/", "/projects/elsewhere/")
+    r = h.client.post(p2, headers=h, json={"name": "theirs", "target_kind": kind})
+    assert r.status_code == 201, r.text
+    theirs = r.json()["id"]
+    own = solution(h.client, h, "own", target_kind=kind)["id"]
+    before = _solution_state(owner_session, theirs)
+    m = _project_developer(client, world, owner_session, s.project_id)
+    assert m.client.get(f"{solutions()}/{own}", headers=m).status_code == 200
+    body = body_for(s.agent_v1, dataset=s.dataset)
+    for base in (solutions(), p2):
+        _same_on_every_solution_route(m, base, theirs, body)
+    listed = m.client.get(solutions(), headers=m).json()["items"]
+    assert [x["id"] for x in listed] == [own]
+    assert _solution_state(owner_session, theirs) == before
