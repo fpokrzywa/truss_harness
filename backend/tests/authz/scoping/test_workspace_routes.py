@@ -606,6 +606,9 @@ ROUTES: dict[Op, tuple[str, str]] = {
     ("GET", ASSIST + "/specialists"): (SCOPED, "assist"),
     ("POST", ASSIST + "/specialists/{key}/enable"): (SCOPED, "assist"),
     ("POST", ASSIST + "/specialists/{key}/disable"): (SCOPED, "assist"),
+    ("POST", ASSIST + "/requests"): (SCOPED, "assist"),
+    ("GET", ASSIST + "/requests"): (SCOPED, "assist"),
+    ("GET", "/api/v1/orgs/{org}/assist/requests/{request_id}"): (SCOPED, "assist"),
     # ------------------------------------------------------------------ models
     ("GET", "/api/v1/orgs/{org}/model-allowlists"): (SCOPED, "models"),
     ("PUT", "/api/v1/orgs/{org}/model-allowlists"): (SCOPED, "models"),
@@ -1727,6 +1730,12 @@ ASSIST_ROWS = (
     "SELECT * FROM shifde.assist_specialists WHERE workspace_id = :w ORDER BY id",
     *ART[:2],
 )
+ASSIST_REQUESTS = (
+    "SELECT * FROM shifde.assist_requests WHERE workspace_id = :w ORDER BY id",
+    "SELECT count(*) FROM shifde.runs WHERE workspace_id = :w",
+    "SELECT count(*) FROM shifde.jobs",
+)
+ASSIST_REQUEST = {"text": "how much did we spend last week"}
 
 
 def _assist(n: int, tail: str) -> str:
@@ -1758,6 +1767,16 @@ _register(
         ("POST", ASSIST + "/specialists/{key}/enable"): lambda w: _case(
             WRITE, "POST", lambda n: _assist(n, "/specialists/cost/enable"),
             state=w.snap(*ASSIST_ROWS),
+        ),
+        ("POST", ASSIST + "/requests"): lambda w: _case(
+            CREATE, "POST", lambda n: _assist(n, "/requests"), body=lambda n: ASSIST_REQUEST,
+            state=w.snap(*ASSIST_REQUESTS),
+        ),
+        ("GET", ASSIST + "/requests"): lambda w: _case(
+            LIST, "GET", lambda n: _assist(n, "/requests"), ids=lambda n: w("assist_request", n)
+        ),
+        ("GET", ORG + "/assist/requests/{request_id}"): lambda w: _case(
+            READ, "GET", lambda n: f"/assist/requests/{w('assist_request', n)}"
         ),
     },
 )  # fmt: skip
@@ -2476,6 +2495,9 @@ def test_assist(client: TestClient, world: World, owner_session: Session) -> Non
             200,
         )
         w.set("specialist", n, made["id"])
+        request = w.post(f"/workspaces/w{n}/projects/p{n}/assist/requests", ASSIST_REQUEST)
+        assert request["status"] == "routed", request
+        w.set("assist_request", n, request["id"])
     _check(w, "assist")
 
 
