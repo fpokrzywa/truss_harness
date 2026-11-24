@@ -19,6 +19,13 @@ client on legal hold and a cutoff later than now() minus the run retention floor
 `runtime_0009` (issue #347, B-3993) a cutoff inside the client's effective run retention. `delete`
 takes its cutoff from the database clock (the client transaction's `now()`, the one the guard
 compares with; B-3994). Usage, policy-decision and audit rows are kept.
+
+Assist requests are run content too (Call S7-J): in the same client transaction and with the same
+cutoff, `purge` blanks the text and context of ended requests (routed, refused or failed) whose
+run is gone or has ended, and `delete`, after the run families, deletes ended requests whose run
+is gone (the families just deleted included) and every proposal of them, proposals first; a
+request with a proposal newer than the cutoff is kept. Migration `assist_0001`'s guard admits
+these deletes only for rows created before `shifde.retention_delete_cutoff`.
 """
 
 from __future__ import annotations
@@ -31,6 +38,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from shifde.assist import repository as assist
 from shifde.audit import service as audit
 from shifde.core.context import RequestContext
 from shifde.core.db import Database, forget_tenant, platform_admin_context, set_tenant
@@ -63,6 +71,7 @@ class ClientPurge:
     runs: int = 0
     artifacts: int = 0
     tool_invocations: int = 0
+    assist_requests: int = 0
 
 
 def effective_days(older_than_days: int, stored: dict[str, int]) -> int:
@@ -103,8 +112,11 @@ def _client_pass(
             )
             if not dry_run:
                 runs.scrub_run_content(session, tenant_id, run_id)
+        requests = assist.scrub_requests(
+            session, tenant_id=tenant_id, cutoff=result.cutoff, dry_run=dry_run
+        )
         result = ClientPurge(
-            slug, legal_hold, days, result.cutoff, scrubbed_runs, artifacts, invocations
+            slug, legal_hold, days, result.cutoff, scrubbed_runs, artifacts, invocations, requests
         )
     if not dry_run:
         audit.record(
@@ -121,6 +133,7 @@ def _client_pass(
                 "runs": result.runs,
                 "artifacts": result.artifacts,
                 "tool_invocations": result.tool_invocations,
+                "assist_requests": result.assist_requests,
                 "legal_hold": legal_hold,
             },
         )
@@ -239,6 +252,8 @@ class ClientDelete:
     runs: int = 0
     runs_kept: int = 0
     counts: tuple[tuple[str, int], ...] = tuple((t, 0) for t in DELETE_TABLES)
+    assist_requests: int = 0
+    assist_proposals: int = 0
 
 
 def _deletable(session: Session, tenant_id: UUID, cutoff: datetime) -> tuple[list[UUID], int]:
@@ -287,8 +302,19 @@ def _delete_pass(
                 n = session.execute(text(f"DELETE {where}"), params).rowcount  # type: ignore[attr-defined]
             counts.append((table, int(n)))
         _, deleted_runs = counts.pop()
+        requests, proposals = assist.delete_requests(
+            session, tenant_id=tenant_id, cutoff=result.cutoff, gone=selected, dry_run=dry_run
+        )
         result = ClientDelete(
-            slug, legal_hold, days, result.cutoff, deleted_runs, kept, tuple(counts)
+            slug,
+            legal_hold,
+            days,
+            result.cutoff,
+            deleted_runs,
+            kept,
+            tuple(counts),
+            requests,
+            proposals,
         )
     if not dry_run:
         audit.record(
@@ -305,6 +331,8 @@ def _delete_pass(
                 "runs": result.runs,
                 "runs_kept": result.runs_kept,
                 **dict(result.counts),
+                "assist_requests": result.assist_requests,
+                "assist_proposals": result.assist_proposals,
                 "legal_hold": legal_hold,
             },
         )

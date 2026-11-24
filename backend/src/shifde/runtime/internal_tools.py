@@ -24,6 +24,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from shifde.adapters.runtime import IntegrationRuntime
 from shifde.build.internal_functions import INTERNAL_FUNCTIONS
 from shifde.tenancy.scope import TenantScope
 
@@ -34,6 +35,7 @@ class InternalToolCall:
 
     session: Session  # the run's step session (client context of the run)
     scope: TenantScope  # the run context's scope (the run principal)
+    runtime: IntegrationRuntime  # the worker's integration wiring (the services' constructors)
     tenant_id: UUID
     workspace_id: UUID
     project_id: UUID

@@ -348,3 +348,121 @@ def test_a_queued_request_found_ended_is_left_alone(
     set_status(owner_session, out["id"], "refused")
     assert run_route_job(c, owner_session, out["id"])
     assert read(c, admin, out["id"])["status"] == "refused" and calls.messages == []
+
+
+# ------------------------------------------------------------------ SP7-4: the SP7-3 follow-ups
+COST_TEXT = "how much did we spend last week"
+
+
+def _stuck(
+    admin: Hdr, monkeypatch: pytest.MonkeyPatch, owner: Session
+) -> dict[str, Any]:  # Any: the request row
+    """A request left `handing_over` with no run: the API's run creation crashed."""
+
+    def crash(*args: Any, **kwargs: Any) -> Any:  # Any: RunService.create's signature
+        raise RuntimeError("the API process died")
+
+    with monkeypatch.context() as m:
+        m.setattr(assist.RunService, "create", crash)
+        with pytest.raises(RuntimeError):
+            admin.client.post(f"{A}/workspaces/main/projects/sample/assist/requests",
+                              headers=admin, json={"text": COST_TEXT})  # fmt: skip
+    [(request_id,)] = rows(owner, "SELECT id::text FROM shifde.assist_requests")
+    row = request_row(owner, request_id)
+    assert (row["status"], row["run_id"]) == ("handing_over", None)
+    return row
+
+
+def test_a_resumed_handover_reruns_the_pre_checks(
+    admin: Hdr, owner_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installed(admin, assist_model(admin.client, admin), keys=["cost"])
+    row = _stuck(admin, monkeypatch, owner_session)
+    toggled = admin.client.post(
+        f"{A}/workspaces/main/projects/sample/assist/specialists/cost/disable", headers=admin
+    )
+    assert toggled.status_code == 200, toggled.text
+    assert run_route_job(admin.client, owner_session, str(row["id"]))
+    after = request_row(owner_session, str(row["id"]))
+    assert (after["status"], after["status_reason"], after["run_id"]) == (
+        "failed", "specialist_disabled", None,
+    )  # fmt: skip
+    assert rows(owner_session, "SELECT count(*) FROM shifde.runs") == [(0,)]
+    assert [a for a, _ in audit_of(owner_session, str(row["id"]))][-1] == "assist.request.failed"
+
+
+def test_a_job_that_is_not_the_requests_job_changes_nothing(
+    admin: Hdr, owner_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installed(admin, assist_model(admin.client, admin), keys=["cost"])
+    row = _stuck(admin, monkeypatch, owner_session)
+    owner_session.execute(
+        text("UPDATE shifde.assist_requests SET job_id = :j WHERE id = :r"),
+        {"j": uuid7(), "r": row["id"]},
+    )
+    owner_session.commit()
+    before = request_row(owner_session, str(row["id"]))
+    app: Any = admin.client.app  # Any: the FastAPI app behind the test client
+    tenant = tenant_id(owner_session, "demo-a")
+    assert assist.run_route_job(app.state.db, app.state.integration, tenant, row["job_id"]) is None
+    assert request_row(owner_session, str(row["id"])) == before
+    assert rows(owner_session, "SELECT count(*) FROM shifde.runs") == [(0,)]
+
+
+def test_an_unknown_request_column_is_a_value_error() -> None:
+    from shifde.assist import repository
+
+    with pytest.raises(ValueError, match="bogus"):
+        repository.change_request(
+            None,  # type: ignore[arg-type]  # refused before any statement
+            uuid7(),
+            tenant_id=uuid7(),
+            expected=["queued"],
+            status="failed",
+            bogus=1,
+        )
+
+
+def test_the_api_handover_and_the_recovery_job_racing_make_one_run(
+    admin: Hdr, owner_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from shifde.runtime.service import RunService
+
+    installed(admin, assist_model(admin.client, admin), keys=["cost"])
+    app: Any = admin.client.app  # Any: the FastAPI app behind the test client
+    tenant = tenant_id(owner_session, "demo-a")
+    both = threading.Barrier(2, timeout=30)
+    original = RunService.create
+    job: list[threading.Thread] = []
+    job_errors: list[BaseException] = []
+
+    def recover(request_id: str) -> None:
+        try:
+            job_id = request_row(owner_session, request_id)["job_id"]
+            assist.run_route_job(app.state.db, app.state.integration, tenant, job_id)
+        except BaseException as exc:  # reported by the test
+            job_errors.append(exc)
+
+    def racing(self: Any, body: Any, key: Any, **kwargs: Any) -> Any:  # Any: create's signature
+        if not job:  # the API's handover: start the recovery job, then race it
+            request_id = body.variables["assist_request_id"]
+            job.append(threading.Thread(target=recover, args=(request_id,)))
+            job[0].start()
+        both.wait()
+        return original(self, body, key, **kwargs)
+
+    monkeypatch.setattr(RunService, "create", racing)
+    out = sent(admin.client, admin, {"text": COST_TEXT})
+    job[0].join(30)
+    assert job_errors == []
+    assert (out["status"], out["status_reason"]) == ("routed", None)
+    runs = rows(owner_session, "SELECT id::text FROM shifde.runs WHERE idempotency_key = :k",
+                k=f"assist:{out['id']}")  # fmt: skip
+    assert runs == [(out["run_id"],)]
+    after = request_row(owner_session, out["id"])
+    assert (after["status"], str(after["run_id"])) == ("routed", out["run_id"])
+    actions = [a for a, _ in audit_of(owner_session, out["id"])]
+    assert actions.count("assist.request.routed") == 1
+    assert "assist.request.failed" not in actions

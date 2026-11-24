@@ -509,6 +509,31 @@ class EvaluationService:
             raise NotFound("evaluation run not found")
         return _run_out(self._scored(release, row))
 
+    def stored_runs(self, release_id: UUID, *, limit: int) -> list[s.EvaluationRunOut]:
+        """The release's evaluation runs as stored, unscored: no commit and no rollback, for a
+        reader inside a run step (assist); anything else answers as `list_runs`."""
+        self._release(release_id, RUN_READ)
+        rows = repository.list_runs(
+            self.sc.session, release_id, tenant_id=self.sc.tenant_id, after=None, limit=limit
+        )
+        return [_run_out(r) for r in rows]
+
+    def stored_run(self, run_id: UUID) -> s.EvaluationRunOut:
+        """`get_run` as stored, unscored (no commit and no rollback)."""
+        row = repository.get_run(self.sc.session, run_id, tenant_id=self.sc.tenant_id)
+        release = (
+            release_record(self.sc.session, row["release_id"], tenant_id=self.sc.tenant_id)
+            if row is not None and row["tenant_id"] == self.sc.tenant_id
+            else None
+        )
+        if (
+            row is None
+            or release is None
+            or not self.sc.pdp.authorize(RUN_READ, self._run_ref(release, run_id)).allowed
+        ):
+            raise NotFound("evaluation run not found")
+        return _run_out(row)
+
     def _model_overrides(self, release: Mapping[str, Any]) -> tuple[dict[UUID, UUID], str | None]:
         """(pinned model id -> the client's own model of the binding's provider and served
         name, None) or ({}, why) for the first binding that names no model of this client

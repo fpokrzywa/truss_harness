@@ -285,7 +285,7 @@ source_modules = [
   "shifde.appgen.render_snowflake",
   "shifde.board.service", "shifde.board.repository", "shifde.board.schemas",
   "shifde.assist.service", "shifde.assist.repository", "shifde.assist.schemas",
-  "shifde.assist.catalog", "shifde.assist.routing",
+  "shifde.assist.catalog", "shifde.assist.routing", "shifde.assist.tools",
 ]
 forbidden_modules = ["fastapi", "starlette"]
 

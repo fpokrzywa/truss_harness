@@ -312,6 +312,16 @@ class PlanService:
         self._require("delivery:plan:read", row)
         return self._out(row)
 
+    def readable(self, plan_id: UUID) -> bool:
+        """Whether the caller may read the plan `plan_id` of this client (False for an unknown
+        id and another client's alike), without the settle step: no commit."""
+        row = repository.get_plan(self.sc.session, plan_id, tenant_id=self.sc.tenant_id)
+        return bool(
+            row is not None
+            and row["tenant_id"] == self.sc.tenant_id
+            and self.sc.pdp.authorize("delivery:plan:read", self._ref(row)).allowed
+        )
+
     def request(self, body: s.PlanCreate) -> s.PlanOut:
         self._settle()
         target = TargetService(self.sc).plannable(body.target_id)
