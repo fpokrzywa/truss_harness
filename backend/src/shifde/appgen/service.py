@@ -1,32 +1,38 @@
 """App requests, their drafts and the `appgen.draft` job (SP5 design sections 4, 5.1, 5.2, 5.4 and
 5.6).
 
-A request belongs to one project of one organization. It names a Databricks connection the
-requester can read, in the project's scope, with `access_mode` read, active, and discovered; the
-tables it names come from that discovery, and the drafting model passes `models_admin`'s checks at
-that project. Creating it queues one `appgen.draft` job in the same transaction. The job
-(`run_draft_job`, run by `shifde-worker` through `shifde.worker_main`) re-derives the requester
-from the database, checks the permission and the connection again, commits `drafting` before the
-one model call (`ModelService.invoke_at`: budget hold, usage row and SHI switch stay in the
-client; only names and types are sent), and records the outcome on the request: revision 1 and
-`drafted`, or `failed` with a reason code. A job that finds its request already `drafting` (an
-earlier attempt may have reached the provider) records `model_call_unknown` without calling again.
+A request belongs to one project of one organization. It names a Databricks or Snowflake connection
+the requester can read (any other adapter is 422 `connection_platform_unsupported`), in the
+project's scope, with `access_mode` read, active, and discovered; the tables it names come from
+that discovery (on Snowflake each name part must also be a plain name, else 422
+`table_name_unsupported`, checked before `table_not_discovered`), and the drafting model passes
+`models_admin`'s checks at that project. Draft diagnostics and the stored SQL of accepted tools use
+the SQL dialect of the request's connection (`dialect_of`). Creating it queues one `appgen.draft`
+job in the same transaction. The job (`run_draft_job`, run by `shifde-worker` through
+`shifde.worker_main`) re-derives the requester from the database, checks the permission and the
+connection again, commits `drafting` before the one model call (`ModelService.invoke_at`: budget
+hold, usage row and SHI switch stay in the client; only names and types are sent), and records the
+outcome on the request: revision 1 and `drafted`, or `failed` with a reason code. A job that finds
+its request already `drafting` (an earlier attempt may have reached the provider) records
+`model_call_unknown` without calling again.
 
 Request routes reach a request under the organization; an unknown id, another client's or another
 project's request and one the caller cannot read get one answer (`app request not found`). Every
 state change is a conditional UPDATE on the state read and writes one audit event.
 
-Accepting a drafted revision (design 5.5) turns it into build, evaluation and packaging objects
-of the request's project, each made through its owning service under the caller's scope. Those
-services commit their own transactions, so accept is a resumable sequence. First a pre-check:
-the caller must hold every permission the steps need on the project (a missing one is 403 with
-nothing written); then the state, the revision's diagnostics, the runtime model and the artifact
-keys are checked. Step 1 sets `accepting` (committed). Steps 2.1 to 2.6 create and publish the
-prompt, one `connection.sql` tool per draft tool and the agent, then create the evaluation
-dataset, the solution (or reuse the active one of that name) and the solution version with the
-draft's screens. Each step locks the request row, re-reads `accept_progress`, is skipped when its
-id is there, and records its id right after the owning service commits. Step 3 sets `accepted`.
-A failed step records its error code as `status_reason`, writes `appgen.request.accept_failed`
+Accepting a drafted revision (design 5.5) turns it into build, evaluation and packaging objects of
+the request's project, each made through its owning service under the caller's scope. Those
+services commit their own transactions, so accept is a resumable sequence. First a pre-check: the
+caller must hold every permission the steps need on the project (a missing one is 403 with nothing
+written); then the state, the revision's diagnostics, the runtime model and the artifact keys are
+checked. Step 1 sets `accepting` (committed). Steps 2.1 to 2.6 create and publish the prompt, one
+`connection.sql` tool per draft tool and the agent, then create the evaluation dataset, the
+solution (or reuse the active one of that name) and the solution version with the draft's screens.
+The solution's target kind follows the connection: `snowflake.native-app/v1` on Snowflake, else
+`databricks.app/v1`; an active solution of that name of the other kind fails the solution step with
+409 `conflict`. Each step locks the request row, re-reads `accept_progress`, is skipped when its id
+is there, and records its id right after the owning service commits. Step 3 sets `accepted`. A
+failed step records its error code as `status_reason`, writes `appgen.request.accept_failed`
 (revision, step name and code, no draft content) and leaves the request `accepting` with its
 objects in place; accepting the same revision again resumes.
 
@@ -69,7 +75,7 @@ from shifde.connections.service import ConnectionService
 from shifde.core import db, sqlrules
 from shifde.core.context import RequestContext
 from shifde.core.db import Database
-from shifde.core.errors import AppError, NotFound, PublishPending
+from shifde.core.errors import AppError, Conflict, NotFound, PublishPending
 from shifde.core.ids import uuid7
 from shifde.core.pagination import Page, decode_cursor, encode_cursor, paginate
 from shifde.evaluation.schemas import DatasetCreate
@@ -86,6 +92,7 @@ from shifde.packaging.service import (
 from shifde.tenancy import service as tenancy
 from shifde.tenancy.scope import TenantScope
 
+PLATFORMS = frozenset({"databricks", "snowflake"})  # the adapters a request's connection may use
 DRAFT_JOB_KIND = "appgen.draft"  # `shifde.jobs.kind` of a queued draft (design 5.2)
 READ, WRITE = "appgen:request:read", "appgen:request:write"
 RESOURCE_TYPE = "appgen_request"
@@ -137,8 +144,8 @@ class ReleasePinsHidden(AppError):
     status, code, title = 409, "release_pins_hidden", "Conflict"
 
 
-class ConnectionNotDatabricks(AppError):
-    status, code, title = 422, "connection_not_databricks", "Unprocessable Entity"
+class ConnectionPlatformUnsupported(AppError):
+    status, code, title = 422, "connection_platform_unsupported", "Unprocessable Entity"
 
 
 class ConnectionNotReadOnly(AppError):
@@ -151,6 +158,10 @@ class ConnectionNotActive(AppError):
 
 class ConnectionNotDiscovered(AppError):
     status, code, title = 422, "connection_not_discovered", "Unprocessable Entity"
+
+
+class TableNameUnsupported(AppError):
+    status, code, title = 422, "table_name_unsupported", "Unprocessable Entity"
 
 
 class TableNotDiscovered(AppError):
@@ -244,13 +255,18 @@ def _summary_fields(r: Mapping[str, Any]) -> dict[str, Any]:  # Any: field value
     }
 
 
-def sql_template(sql: str) -> str:
+def dialect_of(adapter_key: str) -> sqlrules.Dialect:
+    """The SQL dialect of a connection's adapter (as `build.tools` picks it at publish)."""
+    return "snowflake" if adapter_key == "snowflake" else "databricks"
+
+
+def sql_template(sql: str, dialect: sqlrules.Dialect = "databricks") -> str:
     """A draft tool's SQL in `build`'s stored form: each `:name` parameter `sqlrules.tokenize`
-    finds (never one inside quoted text) as `%(name)s`, and every other `%` doubled, so
-    `build.tools.named_sql` gives the draft SQL back."""
+    finds in `dialect` (never one inside quoted text) as `%(name)s`, and every other `%` doubled,
+    so `build.tools.named_sql` gives the draft SQL back."""
     parts: list[str] = []
     at = 0
-    for token in sqlrules.tokenize(sql):
+    for token in sqlrules.tokenize(sql, dialect=dialect):
         if token.kind == "param":
             parts += [sql[at : token.start].replace("%", "%%"), f"%({token.value})s"]
             at = token.end
@@ -258,13 +274,16 @@ def sql_template(sql: str) -> str:
     return "".join(parts)
 
 
-def tool_spec(tool: s.DraftTool, connection_id: UUID) -> dict[str, Any]:  # Any: JSON spec
-    """The `connection.sql` tool spec of a draft tool over the request's connection."""
+def tool_spec(
+    tool: s.DraftTool, connection_id: UUID, dialect: sqlrules.Dialect = "databricks"
+) -> dict[str, Any]:  # Any: JSON spec
+    """The `connection.sql` tool spec of a draft tool over the request's connection (whose SQL
+    dialect is `dialect`)."""
     return {
         "executor": "connection.sql",
         "binding": {
             "connection_id": str(connection_id),
-            "sql_template": sql_template(tool.sql),
+            "sql_template": sql_template(tool.sql, dialect),
             "max_rows": tool.max_rows,
         },
         "input_schema": {
@@ -337,6 +356,10 @@ class AppGenService:
     def _session(self) -> Session:
         return self.sc.session
 
+    def _dialect(self, connection_id: UUID) -> sqlrules.Dialect:
+        """The SQL dialect of the request's connection."""
+        return dialect_of(self.conns.get_row(connection_id)["adapter_key"])
+
     def _request(self, request_id: UUID, action: str) -> Mapping[str, Any]:
         """The request the caller may `action` on; anything else is `app request not found`."""
         row = repository.get_request(self._session, request_id, tenant_id=self.sc.tenant_id)
@@ -399,8 +422,10 @@ class AppGenService:
         ):
             raise NotFound("connection not found")
         conn = self.conns.get_row(body.connection_id)
-        if conn["adapter_key"] != "databricks":
-            raise ConnectionNotDatabricks("the connection is not a Databricks connection")
+        if conn["adapter_key"] not in PLATFORMS:
+            raise ConnectionPlatformUnsupported(
+                "the connection is not a Databricks or Snowflake connection"
+            )
         if conn["access_mode"] != "read":
             raise ConnectionNotReadOnly("the connection is not read-only")
         if conn["status"] != "active":
@@ -408,6 +433,20 @@ class AppGenService:
         discovery = self.conns.discovery_of(body.connection_id)
         if discovery is None or discovery.kind != "schema":
             raise ConnectionNotDiscovered("the connection's schema has not been discovered")
+        dialect = dialect_of(conn["adapter_key"])
+        unsupported = [t for t in body.tables if not sqlrules.table_name_supported(t, dialect)]
+        if unsupported:
+            raise TableNameUnsupported(
+                "a table name cannot be used on this connection",
+                errors=[
+                    {
+                        "loc": ["body", "tables", name],
+                        "msg": f"{name} is not a plain table name on this connection",
+                        "type": TableNameUnsupported.code,
+                    }
+                    for name in unsupported
+                ],
+            )
         known = {drafting.table_key(t) for t in discovery.payload.get("tables") or []}
         tables = [t.lower() for t in body.tables]
         missing = [(i, t) for i, t in enumerate(tables) if t not in known]
@@ -526,7 +565,9 @@ class AppGenService:
         if body.base_revision_no != row["latest_revision_no"]:
             raise StaleRevision("the draft has a newer revision; reload and retry")
         revision_no = body.base_revision_no + 1
-        diagnostics = sqlcheck.validate(body.draft, row["tables"])
+        diagnostics = sqlcheck.validate(
+            body.draft, row["tables"], dialect=self._dialect(row["connection_id"])
+        )
         repository.insert_draft(
             self._session,
             {
@@ -868,6 +909,12 @@ class AppGenService:
         ws, proj = workspaces[row["workspace_id"]], projects[row["project_id"]]
         scope = build_schemas.ScopeRef(type="project", id=row["project_id"])
         name = draft.agent.name
+        dialect = self._dialect(row["connection_id"])
+        target_kind = (
+            packaging_schemas.SNOWFLAKE_TARGET_KIND
+            if dialect == "snowflake"
+            else packaging_schemas.TARGET_KIND
+        )
 
         def artifact(
             key: str, spec: dict[str, Any], description: str | None = None
@@ -891,7 +938,9 @@ class AppGenService:
                 claim,
                 "tools",
                 "tools",
-                artifact(tool.name, tool_spec(tool, row["connection_id"]), tool.description),
+                artifact(
+                    tool.name, tool_spec(tool, row["connection_id"], dialect), tool.description
+                ),
                 ("tool_artifact_ids", "tool_version_ids"),
                 f"tools.{i}.name",
                 tool.name,
@@ -936,9 +985,11 @@ class AppGenService:
                     ws,
                     proj,
                     packaging_schemas.SolutionCreate(
-                        name=body.solution_name, target_kind=packaging_schemas.TARGET_KIND
+                        name=body.solution_name, target_kind=target_kind
                     ),
                 )
+            elif found.target_kind != target_kind:
+                raise Conflict("an active solution of this name has another target kind")
             return found.id
 
         solution_id = self._step(row, claim, "solution_id", solution)
@@ -1135,7 +1186,7 @@ def _connection_usable(
         return False
     row = conns.get_row(connection_id)
     return bool(
-        row["adapter_key"] == "databricks"
+        row["adapter_key"] in PLATFORMS
         and row["access_mode"] == "read"
         and row["status"] == "active"
     )
@@ -1225,7 +1276,10 @@ def run_draft_job(
                 {"messages": parsed},
             )
             return None
-        diagnostics = sqlcheck.validate(parsed, row["tables"])
+        dialect = dialect_of(
+            ConnectionService(scope, runtime).get_row(row["connection_id"])["adapter_key"]
+        )
+        diagnostics = sqlcheck.validate(parsed, row["tables"], dialect=dialect)
         repository.insert_draft(
             session,
             {

@@ -18,12 +18,18 @@ shows the claim. A resume after a crash between a create and its next record ado
 of the id the request recorded, but a key held by another artifact is still `key_taken`. A failed
 step writes `appgen.request.accept_failed` naming the step. Key and runtime-model refusals say
 what they refuse.
+
+SP6-4: accepting a revision of a Snowflake request makes a `snowflake.native-app/v1` solution
+whose version carries the draft's screens, its tools' SQL tokenized in the Snowflake dialect; an
+active solution of the request's name of the other kind fails the solution step with 409
+`conflict`, recorded like any failed step.
 """
 
 from __future__ import annotations
 
 import contextlib
 import copy
+import json
 import threading
 import time
 from collections.abc import Iterator
@@ -47,7 +53,7 @@ from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.packaging.canonical import digest
 from shifde.runtime.worker import Worker
-from tests._support.appgen_fixtures import AGENT_SCRIPT, SAMPLE_DRAFT
+from tests._support.appgen_fixtures import AGENT_SCRIPT, SAMPLE_DRAFT, SNOWFLAKE_SAMPLE_DRAFT
 from tests._support.fullapp import World
 from tests._support.p2util import new_user, post, tenant_id
 from tests._support.p3util import ADMIN, A, fake_model_stack
@@ -57,6 +63,8 @@ from tests._support.p8util import rate_card, rate_version
 from tests.appgen.helpers import (
     INVALID,
     PROJECT,
+    SF_SAMPLE,
+    SF_TABLES,
     body,
     create,
     databricks,
@@ -66,7 +74,9 @@ from tests.appgen.helpers import (
     request_url,
     requests_url,
     run_job,
+    snowflake,
     wire,
+    wire_snowflake,
 )
 from tests.evaluation.helpers import capture
 
@@ -213,6 +223,16 @@ def test_only_parameter_tokens_become_named_placeholders() -> None:
         "where a = %(a)s and b like '50%%' and c = %(c_2)s -- :comment"
     )
     assert named_sql(template) == sql
+
+
+def test_snowflake_sql_is_templated_in_the_snowflake_dialect() -> None:
+    sql = "select ':a', x::int, $$:b$$ from t where a = :a and b like '50%' // :c"
+    template = sql_template(sql, "snowflake")
+    assert template == (
+        "select ':a', x::int, $$:b$$ from t where a = %(a)s and b like '50%%' // :c"
+    )
+    assert named_sql(template) == sql
+    assert "%(b)s" in sql_template(sql)  # the Databricks reading finds `:b` in `$$...$$`
 
 
 # ------------------------------------------------------------------ happy path
@@ -858,3 +878,76 @@ def test_a_refused_runtime_model_is_named_the_runtime_model(
     drafting = c.post(requests_url(), headers=admin, json=body(request["connection_id"], old))
     refused = _code(drafting, 422, "model_unavailable")
     assert refused["detail"] == "the drafting model cannot be used"
+
+
+# ------------------------------------------------------------------ Snowflake (SP6-4)
+def _sf_drafted(admin: Hdr, owner: Session) -> dict[str, Any]:
+    c = admin.client
+    wire_snowflake(c)
+    payload = body(
+        snowflake(c, admin), drafting_model(c, admin), f"Sales app {SF_SAMPLE}", tables=SF_TABLES
+    )
+    return drafted(c, admin, owner, payload)
+
+
+def test_a_snowflake_request_is_accepted_as_a_snowflake_solution(
+    admin: Hdr, owner_session: Session
+) -> None:
+    request = _sf_drafted(admin, owner_session)
+    assert request["revisions"][0]["draft"] == SNOWFLAKE_SAMPLE_DRAFT
+    model = _agent_model(admin)["model"]
+    r = _accept(admin, request["id"], _accept_body(1, model))
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["status"] == "accepted"
+    progress = out["accept_progress"]
+    [solution] = _rows(
+        owner_session,
+        "SELECT name, target_kind FROM shifde.solutions WHERE id = :s",
+        s=progress["solution_id"],
+    )
+    assert dict(solution) == {"name": "Sales app", "target_kind": "snowflake.native-app/v1"}
+    [version] = _rows(
+        owner_session,
+        "SELECT spec FROM shifde.solution_versions WHERE id = :v",
+        v=out["solution_version_id"],
+    )
+    assert version["spec"]["screens"] == SNOWFLAKE_SAMPLE_DRAFT["screens"]
+    assert len(version["spec"]["screens"]) == 2
+    assert version["spec"]["data_reads"] == [
+        {"connection_id": request["connection_id"], "tables": SF_TABLES}
+    ]
+    [orders] = _rows(
+        owner_session,
+        "SELECT v.spec FROM shifde.artifact_versions v WHERE v.id = :v",
+        v=progress["tool_version_ids"]["orders_by_customer"],
+    )
+    template = orders["spec"]["binding"]["sql_template"]
+    assert "from DEMO_DB.PUBLIC.ORDERS o" in template
+    assert "o.customer_id = %(customer_id)s and o.ordered_on >= %(since)s" in template
+    assert named_sql(template) == SNOWFLAKE_SAMPLE_DRAFT["tools"][0]["sql"]
+
+
+def test_a_same_named_solution_of_the_other_kind_fails_the_solution_step(
+    admin: Hdr, owner_session: Session
+) -> None:
+    c = admin.client
+    request = _sf_drafted(admin, owner_session)
+    model = _agent_model(admin)["model"]
+    made = post(
+        c,
+        f"{A}{PROJECT}/solutions",
+        admin,
+        {"name": "Sales app", "target_kind": "databricks.app/v1"},
+    )
+    refused = _code(_accept(admin, request["id"], _accept_body(1, model)), 409, "conflict")
+    assert refused["detail"] == "an active solution of this name has another target kind"
+    assert made["id"] not in json.dumps(refused)
+    state = _state(owner_session, request["id"])
+    assert state["status"] == "accepting" and state["status_reason"] == "conflict"
+    assert "solution_id" not in state["accept_progress"]
+    assert _audit_details(owner_session, request["id"], "appgen.request.accept_failed") == [
+        {"revision_no": 1, "step": "solution", "status_reason": "conflict"}
+    ]
+    kinds = _rows(owner_session, "SELECT target_kind FROM shifde.solutions")
+    assert [k["target_kind"] for k in kinds] == ["databricks.app/v1"]

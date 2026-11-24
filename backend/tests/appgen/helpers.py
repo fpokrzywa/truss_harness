@@ -1,6 +1,7 @@
 """Shortcuts of the appgen tests: the app's integration runtime pointed at an in-process
 `FakeDatabricksWorkspace(sample_data=True)`, a Databricks read connection made, activated and
-discovered through the routes, a drafting model on the fake provider scripted with
+discovered through the routes (or, after `wire_snowflake`, a Snowflake one on
+`FakeSnowflakeAccount(sample_data=True)`), a drafting model on the fake provider scripted with
 `DRAFT_SCRIPT`, app requests, running their `appgen.draft` job the way `shifde-worker` does, and
 a recorder of the provider calls."""
 
@@ -18,11 +19,11 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from shifde.adapters.base import ChatRequest, ChatResponse, ConnectionConfig, ExecContext
-from shifde.adapters.dataplatforms.fakes import FakeDatabricksWorkspace
+from shifde.adapters.dataplatforms.fakes import FakeDatabricksWorkspace, FakeSnowflakeAccount
 from shifde.adapters.model_providers import FakeProvider
 from shifde.appgen import service as appgen
 from shifde.core.ids import uuid7
-from tests._support.appgen_fixtures import DRAFT_SCRIPT
+from tests._support.appgen_fixtures import DRAFT_SCRIPT, SNOWFLAKE_SAMPLE_TABLES
 from tests._support.conntests import discovery_of, execute_job
 from tests._support.p2util import post, tenant_id
 from tests._support.p3util import A, activate, connection, fake_model_stack
@@ -33,6 +34,10 @@ TABLES = ["main.default.customers", "main.default.orders", "main.sales.invoices"
 SAMPLE = "[[appgen-sample]]"
 INVALID = "[[appgen-invalid]]"
 PROJECT = "/workspaces/main/projects/sample"
+SF_ACCOUNT = "acct1"
+SF_TOKEN = "sf-appgen-test-pat-0001"  # scan-secrets: allow, the fake's accepted token
+SF_TABLES = list(SNOWFLAKE_SAMPLE_TABLES)
+SF_SAMPLE = "[[appgen-sample-snowflake]]"
 
 
 def wire(
@@ -48,6 +53,59 @@ def wire(
         app.state.integration, resolver=lambda host: ["127.0.0.1"], inner=fake.transport()
     )
     return fake
+
+
+def wire_snowflake(client: TestClient) -> tuple[FakeSnowflakeAccount, FakeDatabricksWorkspace]:
+    """Route the app's data-platform calls to a fresh sample-data Snowflake account (its host)
+    and a fresh sample-data Databricks workspace (every other host)."""
+    sf = FakeSnowflakeAccount(account=SF_ACCOUNT, user="reader", pat=SF_TOKEN, sample_data=True)
+    dbx = FakeDatabricksWorkspace(host=HOST, warehouse_id="wh-0001", sample_data=True)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        host = request.headers.get("host", "").split(":")[0].lower()
+        return sf.handle(request) if host == sf.host else dbx.handle(request)
+
+    app: Any = client.app  # Any: the FastAPI app behind the test client
+    app.state.integration = dataclasses.replace(
+        app.state.integration,
+        resolver=lambda host: ["127.0.0.1"],
+        inner=httpx.MockTransport(handle),
+    )
+    return sf, dbx
+
+
+def snowflake(
+    client: TestClient,
+    h: dict[str, str],
+    name: str = "warehouse",
+    org: str = A,
+    *,
+    scope: dict[str, str] | None = None,
+    discover: bool = True,
+) -> str:
+    """An active Snowflake read connection of `org` (organization-wide unless `scope`) on the
+    `wire_snowflake` account, discovered unless told otherwise."""
+    made = connection(
+        client,
+        h,
+        {
+            "name": name,
+            "connection_type": "data_platform",
+            "adapter_key": "snowflake",
+            "config": {"account": SF_ACCOUNT, "user": "reader", "warehouse": "COMPUTE_WH"},
+            "auth_method": "bearer",
+            "credential": {"value": SF_TOKEN},
+            "access_mode": "read",
+            "scope": scope or {},
+            "read_only_confirmed": True,
+        },
+        org,
+    )
+    cid = str(made["id"])
+    activate(client, h, cid, org)
+    if discover:
+        discovery_of(client, h, org, cid)
+    return cid
 
 
 def requests_url(org: str = A, project: str = PROJECT) -> str:
