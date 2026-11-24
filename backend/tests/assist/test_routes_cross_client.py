@@ -1,10 +1,12 @@
-"""SP7-2 (design 9.1): assist routes, client A against client B, and project P1 against P2.
+"""SP7-2 and SP7-3 (design 9.1): assist routes, client A against client B, and project P1 against
+P2.
 
 Every route of `assist.api.router` has a test here (`ROUTE_TESTS`, matched against the router),
 run both ways. B's organization in the path gets A's user exactly the answer an unknown
 organization gets (404, same body) on every route, and changes nothing of B's; B's installs never
 appear in A's catalog. A member bound only at project P1 gets on every project route for P2 the
-answer a project that does not exist gets. Under row-level security, `shifde_app` in A's context
+answer a project that does not exist gets (the request list and a new request included), and on
+P2's request the answer an unknown request id gets. Under row-level security, `shifde_app` in A's context
 reads none of B's rows of the four assist tables (seeded as the schema owner), an UPDATE or a
 DELETE naming them touches nothing, and an INSERT with B's `tenant_id` is refused. A DELETE of a
 request or a proposal without the retention cutoff, or of a row not older than it, raises 42501;
@@ -59,7 +61,11 @@ ROUTE_TESTS = {
     ("GET", PROJECT_ROUTES + "/specialists"): "test_a_cannot_reach_bs_organization",
     ("POST", PROJECT_ROUTES + "/specialists/{key}/enable"): "test_a_cannot_reach_bs_organization",
     ("POST", PROJECT_ROUTES + "/specialists/{key}/disable"): "test_a_cannot_reach_bs_organization",
+    ("POST", PROJECT_ROUTES + "/requests"): "test_a_cannot_reach_bs_organization",
+    ("GET", PROJECT_ROUTES + "/requests"): "test_a_cannot_reach_bs_organization",
+    ("GET", ORG_ROUTES + "/requests/{request_id}"): "test_a_cannot_reach_bs_organization",
 }
+COST_REQUEST = {"text": "how much did we spend last week"}
 
 
 def _same(r: httpx.Response, reference: httpx.Response, status: int = 404) -> None:
@@ -78,6 +84,14 @@ class Side:
     slug: str
     model: str
     project_id: str
+    request_id: str
+
+
+def _request(h: Hdr, org: str, project: str = PROJECT) -> str:
+    """A rule-routed request of the project (it runs the project's `cost` specialist)."""
+    r = h.client.post(f"{org}{project}/assist/requests", headers=h, json=COST_REQUEST)
+    assert r.status_code == 201 and r.json()["status"] == "routed", r.text
+    return str(r.json()["id"])
 
 
 def _side(client: TestClient, world: World, email: str, org: str, slug: str) -> Side:
@@ -85,7 +99,7 @@ def _side(client: TestClient, world: World, email: str, org: str, slug: str) -> 
     enable(h, org)
     model_id = model(h, org)
     [cost] = installed(h, model_id, org, keys=["cost"])
-    return Side(h, org, slug, model_id, cost["project_id"])
+    return Side(h, org, slug, model_id, cost["project_id"], _request(h, org))
 
 
 @dataclass(frozen=True)
@@ -114,7 +128,9 @@ def test_every_assist_route_has_a_cross_client_test() -> None:
     assert set(ROUTE_TESTS.values()) <= set(globals())
 
 
-def _calls(org: str, project: str, model_id: str) -> list[tuple[str, str, Any]]:  # Any: bodies
+def _calls(
+    org: str, project: str, model_id: str, request_id: str
+) -> list[tuple[str, str, Any]]:  # Any: bodies
     settings = {"model_routing_enabled": False, "specialist_max_cost": "1"}
     return [
         ("GET", f"{org}/assist/catalog", None),
@@ -126,6 +142,9 @@ def _calls(org: str, project: str, model_id: str) -> list[tuple[str, str, Any]]:
         ("GET", f"{org}{project}/assist/specialists", None),
         ("POST", f"{org}{project}/assist/specialists/cost/disable", None),
         ("POST", f"{org}{project}/assist/specialists/cost/enable", None),
+        ("POST", f"{org}{project}/assist/requests", COST_REQUEST),
+        ("GET", f"{org}{project}/assist/requests", None),
+        ("GET", f"{org}/assist/requests/{request_id}", None),
     ]
 
 
@@ -152,7 +171,9 @@ def test_a_cannot_reach_bs_organization(two: Two, owner_session: Session, direct
     me, them = (two.a, two.b) if direction == "a->b" else (two.b, two.a)
     before = _state(owner_session, them.slug)
     for (method, url, body), (_, missing, _) in zip(
-        _calls(them.org, PROJECT, me.model), _calls(NO_ORG, PROJECT, me.model), strict=True
+        _calls(them.org, PROJECT, me.model, them.request_id),
+        _calls(NO_ORG, PROJECT, me.model, them.request_id),
+        strict=True,
     ):
         _same(_send(me.h, method, url, body), _send(me.h, method, missing, body))
     assert _state(owner_session, them.slug) == before
@@ -160,9 +181,13 @@ def test_a_cannot_reach_bs_organization(two: Two, owner_session: Session, direct
     mine = me.h.client.get(f"{me.org}/assist/catalog", headers=me.h)
     assert mine.status_code == 200, mine.text
     assert them.project_id not in mine.text and me.project_id in mine.text
+    # their request is not reachable under my organization either
+    unknown = me.h.client.get(f"{me.org}/assist/requests/{uuid7()}", headers=me.h)
+    _same(me.h.client.get(f"{me.org}/assist/requests/{them.request_id}", headers=me.h), unknown)
+    assert _state(owner_session, them.slug) == before
     # each route of my own organization answers
-    for method, url, body in _calls(me.org, PROJECT, me.model):
-        assert _send(me.h, method, url, body).status_code == 200, url
+    for method, url, body in _calls(me.org, PROJECT, me.model, me.request_id):
+        assert _send(me.h, method, url, body).status_code in (200, 201), url
 
 
 def test_a_p1_only_member_gets_404_on_every_p2_route(
@@ -174,13 +199,14 @@ def test_a_p1_only_member_gets_404_on_every_p2_route(
     enable(admin)
     model_id = model(admin)
     installed(admin, model_id, project=P2, keys=["cost"])
+    p2_request = _request(admin, A, P2)
     before = _state(owner_session, "demo-a")
     member = project_member(
         client, world, "p1-admin@demo-a.local", p1, "01900000-0000-7000-8000-000000000003"
     )  # project administrator: every project-level assist key at P1
-    calls = _calls(A, P2, model_id)[5:]
+    calls = _calls(A, P2, model_id, p2_request)[5:]
     for (method, url, body), (_, missing, _) in zip(
-        calls, _calls(A, NO_PROJECT, model_id)[5:], strict=True
+        calls, _calls(A, NO_PROJECT, model_id, str(uuid7()))[5:], strict=True
     ):
         _same(_send(member, method, url, body), _send(member, method, missing, body))
     assert _state(owner_session, "demo-a") == before

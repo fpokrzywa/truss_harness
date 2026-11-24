@@ -4,7 +4,8 @@
 `model.*`) and is immutable. A `Worker` given a registry runs a registered kind after its
 built-in kinds, in the job's own client: None ends the job `done`, a code ends it `dead` with that
 code; an unregistered kind still ends `dead` with `unknown job kind`. The composition root
-`shifde.worker_main` registers `appgen.draft` -> `appgen.service.run_draft_job`.
+`shifde.worker_main` registers `appgen.draft` -> `appgen.service.run_draft_job` and
+`assist.route` -> `assist.service.run_route_job`.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from sqlalchemy import text
 from shifde import worker_main
 from shifde.adapters.runtime import IntegrationRuntime
 from shifde.appgen import service as appgen
+from shifde.assist import service as assist
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
@@ -58,8 +60,11 @@ def test_the_registry_is_immutable() -> None:
 
 def test_the_composition_root_registers_the_draft_job() -> None:
     handlers = worker_main.job_handlers()
-    assert dict(handlers) == {appgen.DRAFT_JOB_KIND: appgen.run_draft_job}
-    assert appgen.DRAFT_JOB_KIND == "appgen.draft"
+    assert dict(handlers) == {
+        appgen.DRAFT_JOB_KIND: appgen.run_draft_job,
+        assist.ROUTE_JOB_KIND: assist.run_route_job,
+    }
+    assert (appgen.DRAFT_JOB_KIND, assist.ROUTE_JOB_KIND) == ("appgen.draft", "assist.route")
 
 
 @pytest.fixture

@@ -91,8 +91,7 @@ def test_the_catalog_is_the_design_table() -> None:
         assert (entry.tools, entry.required_permissions, entry.proposal_kinds) == (
             tools, perms, kinds,
         )  # fmt: skip
-        for name in catalog.VARIABLES:
-            assert "{{" + name + "}}" in entry.instructions
+        assert "{{" not in entry.instructions  # the variables are never at system level
 
 
 def test_catalog_tools_and_keys_are_declared_and_valid() -> None:
@@ -118,6 +117,12 @@ def test_catalog_tools_and_keys_are_declared_and_valid() -> None:
     prompt_spec = catalog.prompt_spec("cost")
     assert prompt_spec["sections"]["system"] == catalog.CATALOG["cost"].instructions
     assert [v["name"] for v in prompt_spec["variables"]] == list(catalog.VARIABLES)
+    for key in catalog.CATALOG:
+        sections = catalog.prompt_spec(key)["sections"]
+        assert "{{" not in sections["system"]
+        for name in catalog.VARIABLES:
+            assert "{{" + name + "}}" in sections["context"]
+        assert all(v["trusted"] is False for v in catalog.prompt_spec(key)["variables"])
 
 
 def test_every_catalog_and_assist_permission_is_a_permission_row(

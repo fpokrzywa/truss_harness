@@ -13,6 +13,7 @@ from __future__ import annotations
 import sys
 
 from shifde.appgen import service as appgen
+from shifde.assist import service as assist
 from shifde.runtime import worker
 from shifde.runtime.internal_tools import InternalToolRegistry
 from shifde.runtime.jobkinds import JobKindRegistry
@@ -20,7 +21,12 @@ from shifde.runtime.jobkinds import JobKindRegistry
 
 def job_handlers() -> JobKindRegistry:
     """The job kinds of the modules above `runtime`, with their handlers."""
-    return JobKindRegistry.of({appgen.DRAFT_JOB_KIND: appgen.run_draft_job})
+    return JobKindRegistry.of(
+        {
+            appgen.DRAFT_JOB_KIND: appgen.run_draft_job,
+            assist.ROUTE_JOB_KIND: assist.run_route_job,
+        }
+    )
 
 
 def internal_tools() -> InternalToolRegistry:
