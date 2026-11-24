@@ -1,6 +1,6 @@
 'use client';
 
-import { useId, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useId, useState, type FormEvent, type ReactNode } from 'react';
 import {
   PARAMETER_TYPES,
   type AppRequestOut,
@@ -53,6 +53,11 @@ function anchorsOf(draft: Draft): Anchor[] {
   );
   return out;
 }
+
+/** The paths the editor never renders an input for: the agent name, tool names and case ids. */
+const FIXED = [/^agent\.name$/, /^tools\.[0-9]+\.name$/, /^evaluation_cases\.[0-9]+\.case_id$/];
+
+export const isFixedPath = (path: string) => FIXED.some((re) => re.test(path));
 
 export const errorCount = (rev: DraftOut | undefined) =>
   rev?.validation.filter((d) => d.severity === 'error').length ?? 0;
@@ -124,6 +129,7 @@ export function DraftEditor({
   editable,
   onSaved,
   onReload,
+  onDirtyChange,
 }: {
   org: string;
   request: AppRequestOut;
@@ -132,6 +138,8 @@ export function DraftEditor({
   editable: boolean;
   onSaved: () => Promise<unknown>;
   onReload: () => void;
+  /** Called on each change of whether the editor holds unsaved edits, and with false on unmount. */
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const action = useAction();
   const [draft, setDraft] = useState(() => copy(revision.draft));
@@ -144,6 +152,11 @@ export function DraftEditor({
   );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const readOnly = !editable;
+
+  const [initial] = useState(() => JSON.stringify({ draft, maxRows, inputs, assertions }));
+  const dirty = editable && JSON.stringify({ draft, maxRows, inputs, assertions }) !== initial;
+  useEffect(() => onDirtyChange?.(dirty), [dirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
   const anchors = anchorsOf(revision.draft);
   const at = (path: string, prefix = false) =>
@@ -213,6 +226,12 @@ export function DraftEditor({
         <section aria-label="Draft diagnostics" className="rounded-md border border-slate-200 p-3">
           <h3 className="text-sm font-semibold">Draft diagnostics</h3>
           <Diagnostics items={unplaced} />
+          {unplaced.some((d) => isFixedPath(d.path)) && (
+            <p className="mt-2 text-sm text-slate-700">
+              This editor cannot change the agent name, tool names or case ids. To fix these,
+              discard this request and generate a new one with a revised brief.
+            </p>
+          )}
         </section>
       )}
 
