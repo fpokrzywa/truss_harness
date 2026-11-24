@@ -138,3 +138,30 @@ export interface AcceptIn {
   model_id: string;
   thresholds: AcceptThresholds;
 }
+
+// ---- App preview of a release (design section 7) ----------------------------------------
+
+/** One rendered file of the app: metadata only, never its content. */
+export interface AppPreviewFile {
+  path: string;
+  size: number;
+  sha256: string;
+}
+
+export interface AppPreviewTool {
+  name: string;
+  description: string;
+  sql: string;
+  parameters: { name: string; type: string; required: boolean }[];
+  max_rows: number;
+}
+
+export interface AppPreviewOut {
+  release_id: string;
+  release_digest: string;
+  generator_version: string;
+  files: AppPreviewFile[];
+  /** Screen-shaped documents; parse with `@shifde/appgen-web`'s `parseScreens` before drawing. */
+  screens: unknown[];
+  tools: AppPreviewTool[];
+}

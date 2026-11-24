@@ -1,6 +1,7 @@
 import type { ApiClient } from './client';
 import type {
   AcceptIn,
+  AppPreviewOut,
   AppRequestCreate,
   AppRequestOut,
   AppRequestSummary,
@@ -38,5 +39,7 @@ export function createAppgenEndpoints(client: ApiClient) {
     discardAppRequest: (org: string, id: string) =>
       post<AppRequestOut>(`${one$(org, id)}/discard`, {}),
     retryAppRequest: (org: string, id: string) => post<AppRequestOut>(`${one$(org, id)}/retry`, {}),
+    getAppPreview: (org: string, releaseId: string) =>
+      client.request<AppPreviewOut>(`${org$(org)}/releases/${enc(releaseId)}/app-preview`),
   };
 }

@@ -1,5 +1,11 @@
+import type { AppPreviewOut } from '@/lib/api/appgen-types';
 import type { DatasetOut, EvaluationRunOut } from '@/lib/api/evaluation-types';
-import type { ReleaseOut, SolutionOut, SolutionVersionOut } from '@/lib/api/packaging-types';
+import {
+  COMPILER_VERSION_APP,
+  type ReleaseOut,
+  type SolutionOut,
+  type SolutionVersionOut,
+} from '@/lib/api/packaging-types';
 import { ALL_PERMS, list, stubApi } from './security';
 import { jsonResponse, type Handler } from './utils';
 
@@ -114,6 +120,37 @@ export const RELEASE: ReleaseOut = {
   sealed_by: 'u-me',
   sealed_at: '2026-11-13T10:00:00Z',
   updated_at: null,
+};
+
+/** A generated-app (`/2`) release and its app preview. */
+export const APP_RELEASE: ReleaseOut = {
+  ...RELEASE,
+  id: 'r-2',
+  manifest: { ...RELEASE.manifest, compiler_version: COMPILER_VERSION_APP },
+};
+
+export const APP_PREVIEW: AppPreviewOut = {
+  release_id: 'r-2',
+  release_digest: RELEASE_DIGEST,
+  generator_version: 'shifde.appgen/1.0',
+  files: [
+    { path: 'app/app.py', size: 1200, sha256: 'a'.repeat(64) },
+    { path: 'app/config/screens.json', size: 210, sha256: 'b'.repeat(64) },
+    { path: 'release.json', size: 90, sha256: 'c'.repeat(64) },
+  ],
+  screens: [
+    { kind: 'chat', title: 'Ask about sales', placeholder: 'Ask a question' },
+    { kind: 'table', title: 'Orders by region', tool: 'orders_by_region', inputs: ['region'] },
+  ],
+  tools: [
+    {
+      name: 'orders_by_region',
+      description: 'Orders in a region',
+      sql: 'SELECT * FROM sales.orders WHERE region = :region',
+      parameters: [{ name: 'region', type: 'string', required: true }],
+      max_rows: 200,
+    },
+  ],
 };
 
 export const EVALUATION: EvaluationRunOut = {
