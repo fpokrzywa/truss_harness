@@ -17,9 +17,10 @@ never of the egress host.
 
 Fabric, Palantir and Docker (SP8 design section 2): a Fabric workspace normalizes to its REST
 collection URL `https://api.fabric.microsoft.com/v1/workspaces/<lowercase guid>`; a Palantir
-Foundry stack to `https://<host>` on `palantirfoundry.com` or an installation suffix; a Docker
-daemon to `docker://<daemon id>` (`contracts.DOCKER_HOST`), unchanged. Each claim keys on
-`address_key` of the normalized address.
+Foundry stack to `https://<label>.palantirfoundry.com` or `https://<label>.<installation suffix>`
+(one label, so a sub-host of a stack is no second claim key); a Docker daemon to
+`docker://<daemon id>` (`contracts.DOCKER_HOST`), unchanged. Each claim keys on `address_key` of
+the normalized address.
 """
 
 from __future__ import annotations
@@ -214,14 +215,16 @@ def normalize_palantir_address(url: str, extra_suffixes: Iterable[str] = ()) -> 
     """`https://<host>` for `https://<label>.palantirfoundry.com` or `<label>.<extra suffix>`
     (the host lowercased, `:443` dropped), else `PalantirAddressRefused`. Refused as the Databricks
     normalizer refuses: any other port, a path other than `/`, a query or fragment, IP literals,
-    malformed labels and any other suffix (a bare suffix included)."""
+    malformed labels and any other suffix (a bare suffix included). Also refused: two or
+    more labels before the suffix, so a sub-host of a stack never gets a claim key of its own; a
+    deeper site domain is listed as an extra suffix."""
     host = _https_host(url, PalantirAddressRefused)
     try:
         _host_labels(host)
     except AddressRefused:
         raise PalantirAddressRefused from None
     suffixes = (PALANTIR_HOST_SUFFIX, *(s.lower() for s in extra_suffixes))
-    if not any(host.endswith("." + suffix) for suffix in suffixes):
+    if host.partition(".")[2] not in suffixes:  # `_host_labels` refused an empty first label
         raise PalantirAddressRefused
     return f"https://{host}"
 

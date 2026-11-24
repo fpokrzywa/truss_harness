@@ -182,7 +182,6 @@ def test_fabric_refusals_never_echo_the_input(value: str) -> None:
         ("https://acme.palantirfoundry.com", "https://acme.palantirfoundry.com"),
         ("HTTPS://ACME.PalantirFoundry.COM", "https://acme.palantirfoundry.com"),
         ("https://acme.palantirfoundry.com:443/", "https://acme.palantirfoundry.com"),
-        ("https://eu.acme.palantirfoundry.com/", "https://eu.acme.palantirfoundry.com"),
     ],
 )
 def test_palantir_normalization(url: str, normalized: str) -> None:
@@ -203,6 +202,15 @@ def test_a_palantir_extra_suffix_is_accepted_only_when_passed() -> None:
         normalize_palantir_address("https://palantirfoundry.com")
 
 
+def test_a_palantir_stack_is_one_label_under_a_suffix() -> None:
+    """A sub-host of a stack would get its own claim key (isolation review 1 of job 173): two
+    labels under an extra suffix are refused, and a deeper site domain is its own suffix."""
+    url = "https://eu.stack-1.foundry.corp.example"
+    with pytest.raises(PalantirAddressRefused):
+        normalize_palantir_address(url, ["foundry.corp.example"])
+    assert normalize_palantir_address(url, ["stack-1.foundry.corp.example"]) == url
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -216,6 +224,7 @@ def test_a_palantir_extra_suffix_is_accepted_only_when_passed() -> None:
         "https://[::1]",
         "https://[::1",
         "https://[zz]",
+        "https://eu.acme.palantirfoundry.com/",
         "https://acme_1.palantirfoundry.com",
         "https://acme..palantirfoundry.com",
         "https://acme.palantirfoundry.com.evil.example",

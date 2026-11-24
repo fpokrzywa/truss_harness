@@ -682,6 +682,30 @@ def test_another_organization_registering_an_sp8_address_gets_the_fixed_409(
     assert counts(owner_db, world.a.tenant) == (1, 1)
 
 
+def test_another_organization_cannot_register_a_sub_host_of_a_palantir_stack(
+    client: TestClient, world: World, people: People, owner_db: Database
+) -> None:
+    """B's sub-host form of A's stack is refused and writes nothing (it would be a second claim
+    key of one stack)."""
+    url = sp8_address("palantir")
+    register(
+        client,
+        as_user(client, people.owner_a),
+        world.a.slug,
+        sp8_body("palantir", ws_slug(world.a), url),
+    )
+    sub_host = url.replace("https://", "https://eu.")
+    hb = as_user(client, people.owner_b)
+    r = client.post(
+        targets(world.b.slug), headers=hb, json=sp8_body("palantir", ws_slug(world.b), sub_host)
+    )
+    assert r.status_code == 422, r.text
+    assert r.json()["code"] == "validation_error"
+    assert sub_host not in r.text and url not in r.text
+    assert counts(owner_db, world.b.tenant) == (0, 0)
+    assert counts(owner_db, world.a.tenant) == (1, 1)
+
+
 @pytest.mark.parametrize("kind", SP8_KINDS)
 def test_archiving_the_last_sp8_target_releases_the_claim(
     client: TestClient, world: World, people: People, owner_db: Database, kind: str

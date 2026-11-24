@@ -555,6 +555,7 @@ BAD_ADDRESSES = {
     "palantir": [
         "https://acme.palantirfoundry.com:8443",
         "https://acme.palantirfoundry.com/path",
+        "https://eu.acme.palantirfoundry.com",
         "https://10.0.0.1",
         "https://acme.cloud.databricks.com",
     ],
