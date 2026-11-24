@@ -5,9 +5,13 @@ Snowflake), post its result (design 4 and 5, settled calls 5, 8 and 14; FDE SDK
 Every job reads its context (target, plan, deployment, owned resources) and a credential grant
 under its lease; a grant the broker refuses ends the job `credential_unavailable` before any
 adapter call. The deploying service principal comes from the credential entry, not the target.
-The job context's `platform_kind` picks the adapter: `databricks` (`DatabricksAdapter`, tokens
-from the broker) or `snowflake` (`SnowflakeNativeAdapter`, a key pair the broker re-checks and
-reads on every statement). An entry of another platform is refused like any other mismatch.
+The job context's `platform_kind` picks the adapter through `DISPATCH`: `databricks`
+(`DatabricksAdapter`, tokens from the broker) or `snowflake` (`SnowflakeNativeAdapter`, a key pair
+the broker re-checks and reads on every statement). An entry of another platform is refused like
+any other mismatch. A `fabric`, `palantir` or `docker` job runs its platform's broker check and
+then fails closed (`execution_failed`) before any adapter or platform call and before any journal
+intent, until SP8-5, SP8-7 and SP8-9 wire its call path; the platforms already build those
+adapters (`fabric_adapter`, `palantir_adapter`, `docker_adapter`).
 While a job runs it is heartbeated in the background; a 409 marks the lease lost.
 
 `apply` writes at most once: before each platform write the adapter's journal posts an `intent`
@@ -18,11 +22,11 @@ server re-queues read-only jobs after a lost lease. A failed result never carrie
 
 The platform is real (`RealPlatform`: the pinned Databricks CLI and workspace REST reads with
 tokens from the broker, or the Snowflake SQL API and the pinned Snowflake CLI's stage copy with the
-broker's key pair) or the in-memory fakes (`FakePlatform`, one Databricks and one Snowflake fake
-per process; the Snowflake fake is built with the executor's `SHIFDE_ENV`, so it refuses outside
-development and test). The toolchain digest names the adapter, its CLI version and the platform,
-so a plan made on a fake is never applied by a real executor, and the fake marks every `complete`
-receipt and the apply receipt's handles with `platform: fake`.
+broker's key pair) or the in-memory fakes (`FakePlatform`, one fake per platform per process;
+the Snowflake fake is built with the executor's `SHIFDE_ENV`, so it refuses outside development
+and test, as the Docker fake does). The toolchain digest names the adapter, its CLI version and
+the platform, so a plan made on a fake is never applied by a real executor, and the fake marks
+every `complete` receipt and the apply receipt's handles with `platform: fake`.
 
 Process control (SP4 design 6.2): `stop()` requests no new lease, while the job in flight runs to
 its normal end, result included. `last_tick` is the monotonic time of the last run-loop pass (or
@@ -53,6 +57,7 @@ from pydantic import BaseModel
 from shifde.adapters import snowflake_jwt
 from shifde.adapters.native.addresses import AddressRefused, normalize_databricks_address
 from shifde.adapters.native.base import (
+    ArtifactStore,
     DeployContext,
     InMemoryArtifactStore,
     NeedsAttention,
@@ -61,6 +66,7 @@ from shifde.adapters.native.base import (
     read_archive,
 )
 from shifde.adapters.native.contracts import (
+    DOCKER_HOST,
     ApplyRequest,
     BuildArtifact,
     ContextPlan,
@@ -93,6 +99,15 @@ from shifde.adapters.native.databricks.adapter import (
 from shifde.adapters.native.databricks.clients import DatabricksCLI, DatabricksWorkspaceGateway
 from shifde.adapters.native.databricks.fake import FakeDatabricksPlatform
 from shifde.adapters.native.databricks.source import ADAPTER_VERSION, CLI_VERSION
+from shifde.adapters.native.docker.adapter import DockerComposeAdapter
+from shifde.adapters.native.docker.fake import FakeContainerRuntime
+from shifde.adapters.native.docker.runtime import DockerCliRuntime
+from shifde.adapters.native.fabric.adapter import FabricAdapter
+from shifde.adapters.native.fabric.clients import EntraTokenProvider, FabricClient
+from shifde.adapters.native.fabric.fake import FakeFabricWorkspace
+from shifde.adapters.native.palantir.adapter import PalantirMarketplaceAdapter
+from shifde.adapters.native.palantir.clients import FoundryCredentials, PalantirClient
+from shifde.adapters.native.palantir.fake import FakeFoundryStack
 from shifde.adapters.native.planning import bindings_digest, seal_plan
 from shifde.adapters.native.snowflake import source as snowflake_source
 from shifde.adapters.native.snowflake.adapter import RESOURCE_KEY_OF_TYPE, SnowflakeNativeAdapter
@@ -104,7 +119,11 @@ from shifde.adapters.native.snowflake.clients import (
 )
 from shifde.adapters.native.snowflake.fake import FakeSnowflakeNativePlatform
 from shifde.executor.client import GatewayClient, LeaseLost
-from shifde.executor.credentials import CredentialBroker, CredentialUnavailable
+from shifde.executor.credentials import (
+    CredentialBroker,
+    CredentialUnavailable,
+    FabricCredentials,
+)
 
 log = logging.getLogger(__name__)
 
@@ -116,8 +135,10 @@ APPLICATION_NAMESPACE = UUID("6f1c2a4e-8d3b-5e7f-9a10-b2c3d4e5f607")
 RELEASE_ENTRY = "release.json"  # the release a plan deploys, at the artifact's root (SP3-4)
 
 TokenProvider = Callable[[str], str]
+FabricCredentialProvider = Callable[[], FabricCredentials]
+FoundryCredentialProvider = Callable[[str], FoundryCredentials]
 ErrorCode = Literal["execution_failed", "credential_unavailable"]
-TargetKind = Literal["databricks", "snowflake"]
+TargetKind = Literal["databricks", "snowflake", "fabric", "palantir", "docker"]
 Adapter = DatabricksAdapter | SnowflakeNativeAdapter
 
 
@@ -164,6 +185,16 @@ class Platform(Protocol):
         self, target: Target, credential_provider: CredentialProvider
     ) -> SnowflakeNativeAdapter: ...
 
+    def fabric_adapter(
+        self, target: Target, credential_provider: FabricCredentialProvider
+    ) -> FabricAdapter: ...
+
+    def palantir_adapter(
+        self, target: Target, credential_provider: FoundryCredentialProvider
+    ) -> PalantirMarketplaceAdapter: ...
+
+    def docker_adapter(self, target: Target, artifacts: ArtifactStore) -> DockerComposeAdapter: ...
+
 
 class RealPlatform:
     """A Databricks workspace (the pinned CLI writes, httpx reads, tokens from the broker) or a
@@ -190,13 +221,37 @@ class RealPlatform:
             ),
         )
 
+    def fabric_adapter(
+        self, target: Target, credential_provider: FabricCredentialProvider
+    ) -> FabricAdapter:
+        """Fabric REST calls with Entra client-credentials tokens; the secret is read from the
+        broker again whenever a token is fetched."""
+        ids = credential_provider()
+        tokens = EntraTokenProvider(
+            ids.entra_tenant_id, ids.client_id, lambda: credential_provider().client_secret
+        )
+        return FabricAdapter(client_factory=lambda t: FabricClient(t, tokens))
+
+    def palantir_adapter(
+        self, target: Target, credential_provider: FoundryCredentialProvider
+    ) -> PalantirMarketplaceAdapter:
+        return PalantirMarketplaceAdapter(
+            client_factory=lambda t: PalantirClient(t, credential_provider=credential_provider)
+        )
+
+    def docker_adapter(self, target: Target, artifacts: ArtifactStore) -> DockerComposeAdapter:
+        return DockerComposeAdapter(DockerCliRuntime(), artifacts=artifacts)
+
 
 class FakePlatform:
     """One in-memory fake per platform for the process: its state outlives a job, so observe sees
     what apply deployed. The Databricks fake accepts writes by the job's service principal and
     treats the target's bound warehouse as existing. The Snowflake fake is built on first use with
     `environment` (the executor's `SHIFDE_ENV`; it refuses anything but development and test) and
-    the public key of the job's key pair, so it accepts the JWTs signed with the entry's key."""
+    the public key of the job's key pair, so it accepts the JWTs signed with the entry's key.
+    The Fabric workspace, Foundry stack (for the first target's host, frontend origin and
+    ontology) and Docker daemon (for the first target's daemon id; it refuses outside development
+    and test) fakes are each built on first use and kept for the process."""
 
     kind = "fake"
 
@@ -205,10 +260,16 @@ class FakePlatform:
         fake: FakeDatabricksPlatform | None = None,
         *,
         snowflake: FakeSnowflakeNativePlatform | None = None,
+        fabric: FakeFabricWorkspace | None = None,
+        palantir: FakeFoundryStack | None = None,
+        docker: FakeContainerRuntime | None = None,
         environment: str = "",
     ) -> None:
         self.fake = fake or FakeDatabricksPlatform(service_principal="unset")
         self.snowflake = snowflake
+        self.fabric = fabric
+        self.palantir = palantir
+        self.docker = docker
         self.environment = environment
 
     def adapter(self, target: Target, token_provider: TokenProvider) -> DatabricksAdapter:
@@ -243,6 +304,35 @@ class FakePlatform:
             copier_factory=lambda t: self.snowflake_fake(credential_provider()).copier(t),
         )
 
+    def fabric_adapter(
+        self, target: Target, credential_provider: FabricCredentialProvider
+    ) -> FabricAdapter:
+        if self.fabric is None:
+            self.fabric = FakeFabricWorkspace()
+        return FabricAdapter(
+            client_factory=self.fabric.client_factory, env=self.environment or None
+        )
+
+    def palantir_adapter(
+        self, target: Target, credential_provider: FoundryCredentialProvider
+    ) -> PalantirMarketplaceAdapter:
+        if self.palantir is None:
+            self.palantir = FakeFoundryStack(
+                host=target.host,
+                frontend_origin=target.bindings["frontend_origin"],
+                ontology_rid=target.bindings["ontology_rid"],
+                object_type=target.bindings.get("object_type") or "Example",
+            )
+        return PalantirMarketplaceAdapter(client_factory=self.palantir.client_factory)
+
+    def docker_adapter(self, target: Target, artifacts: ArtifactStore) -> DockerComposeAdapter:
+        if self.docker is None:
+            daemon = DOCKER_HOST.fullmatch(target.host)
+            if daemon is None:
+                raise ValueError("the target is not a Docker daemon")
+            self.docker = FakeContainerRuntime(daemon.group(1))
+        return DockerComposeAdapter(self.docker, artifacts=artifacts)
+
 
 class JobFailure(Exception):
     def __init__(self, code: ErrorCode) -> None:
@@ -253,6 +343,18 @@ class JobFailure(Exception):
 class ArtifactMismatch(ValueError):
     def __init__(self) -> None:
         super().__init__("the artifact is not the plan's artifact")
+
+
+@dataclass(frozen=True)
+class Prepared:
+    """A job's platform half: the target as its adapter sees it, the application spec, the
+    adapter, its version and the owned resources as adapter bindings."""
+
+    target: Target
+    spec: DatabricksApplicationSpec | SnowflakeApplicationSpec
+    adapter_version: str
+    adapter: Adapter
+    owned: tuple[ResourceBinding, ...]
 
 
 @dataclass
@@ -521,62 +623,13 @@ class Runner:
             or (ctx.deployment is not None and ctx.deployment.tenant_id != tenant)
         ):
             raise ValueError("the context names another organization")
-        state.grant = self.client.credential_grant(lease)
+        grant = state.grant = self.client.credential_grant(lease)
         kind = ctx.platform_kind
-        toolchain = toolchain_digest(self.platform.kind, kind)
         app_id = application_id(ctx.target.id, ctx.plan.application_key)
-        spec: DatabricksApplicationSpec | SnowflakeApplicationSpec
-        adapter: Adapter
-        if kind == "snowflake":
-            self.broker.snowflake_entry_for(
-                state.grant,
-                job_id=job.id,
-                executor_id=self.executor_id,
-                target_id=ctx.target.id,
-                tenant_id=ctx.target.tenant_id,
-            )
-            target = ctx.target
-            spec = SnowflakeApplicationSpec()
-            adapter_version = snowflake_source.ADAPTER_VERSION
-            adapter = self.platform.snowflake_adapter(
-                target, self._key_pair_provider(state, target)
-            )
-            owned = tuple(
-                ResourceBinding(
-                    key=_snowflake_key(r.resource_type),
-                    native_id=r.native_id,
-                    resource_type=r.resource_type,
-                    application_id=app_id,
-                    target_id=target.id,
-                )
-                for r in ctx.owned_resources
-            )
-        else:
-            entry = self.broker.entry_for(
-                state.grant,
-                job_id=job.id,
-                executor_id=self.executor_id,
-                target_id=ctx.target.id,
-                tenant_id=ctx.target.tenant_id,
-            )
-            target = ctx.target.model_copy(
-                update={
-                    "bindings": {**ctx.target.bindings, PRINCIPAL_BINDING: entry.service_principal}
-                }
-            )
-            spec = DatabricksApplicationSpec()
-            adapter_version = ADAPTER_VERSION
-            adapter = self.platform.adapter(target, self._token_provider(state, target))
-            owned = tuple(
-                ResourceBinding(
-                    key=spec.app_resource_key,
-                    native_id=r.native_id,
-                    resource_type=r.resource_type,
-                    application_id=app_id,
-                    target_id=target.id,
-                )
-                for r in ctx.owned_resources
-            )
+        prepared = DISPATCH[kind](self, state, ctx, grant, app_id)
+        target, spec, adapter = prepared.target, prepared.spec, prepared.adapter
+        adapter_version, owned = prepared.adapter_version, prepared.owned
+        toolchain = toolchain_digest(self.platform.kind, kind)
         deadline = job.deadline or utcnow() + timedelta(hours=1)
         read = ReadContext(
             tenant_id=target.tenant_id, target=target, owned_resources=owned, deadline=deadline
@@ -642,6 +695,85 @@ class Runner:
                 raise ValueError("the generated app's plan has no release digest")
             release_digest = ctx.plan.release_digest
         return adapter.verify(VerifyRequest(receipt=receipt, release_digest=release_digest), read)
+
+    # ------------------------------------------------------------------ dispatch (DISPATCH)
+    def _grant_ids(self, state: LeaseState, ctx: JobContext) -> dict[str, UUID]:
+        """The broker's per-grant identities: this job, this executor, the context's target and
+        its organization."""
+        return {
+            "job_id": state.lease.job.id,
+            "executor_id": self.executor_id,
+            "target_id": ctx.target.id,
+            "tenant_id": ctx.target.tenant_id,
+        }
+
+    def _databricks(
+        self, state: LeaseState, ctx: JobContext, grant: CredentialGrant, app_id: UUID
+    ) -> Prepared:
+        entry = self.broker.entry_for(grant, **self._grant_ids(state, ctx))
+        target = ctx.target.model_copy(
+            update={"bindings": {**ctx.target.bindings, PRINCIPAL_BINDING: entry.service_principal}}
+        )
+        spec = DatabricksApplicationSpec()
+        return Prepared(
+            target=target,
+            spec=spec,
+            adapter_version=ADAPTER_VERSION,
+            adapter=self.platform.adapter(target, self._token_provider(state, target)),
+            owned=tuple(
+                ResourceBinding(
+                    key=spec.app_resource_key,
+                    native_id=r.native_id,
+                    resource_type=r.resource_type,
+                    application_id=app_id,
+                    target_id=target.id,
+                )
+                for r in ctx.owned_resources
+            ),
+        )
+
+    def _snowflake(
+        self, state: LeaseState, ctx: JobContext, grant: CredentialGrant, app_id: UUID
+    ) -> Prepared:
+        self.broker.snowflake_entry_for(grant, **self._grant_ids(state, ctx))
+        target = ctx.target
+        return Prepared(
+            target=target,
+            spec=SnowflakeApplicationSpec(),
+            adapter_version=snowflake_source.ADAPTER_VERSION,
+            adapter=self.platform.snowflake_adapter(target, self._key_pair_provider(state, target)),
+            owned=tuple(
+                ResourceBinding(
+                    key=_snowflake_key(r.resource_type),
+                    native_id=r.native_id,
+                    resource_type=r.resource_type,
+                    application_id=app_id,
+                    target_id=target.id,
+                )
+                for r in ctx.owned_resources
+            ),
+        )
+
+    # SP8-1: the platform's broker check (a mismatch is `credential_unavailable`), then fail closed
+    # before any adapter or platform call and any journal intent; SP8-5 (Fabric), SP8-7
+    # (Palantir) and SP8-9 (Docker) replace each with its call path.
+    def _fabric(
+        self, state: LeaseState, ctx: JobContext, grant: CredentialGrant, app_id: UUID
+    ) -> Prepared:
+        self.broker.fabric_entry_for(grant, **self._grant_ids(state, ctx))
+        raise JobFailure("execution_failed")
+
+    def _palantir(
+        self, state: LeaseState, ctx: JobContext, grant: CredentialGrant, app_id: UUID
+    ) -> Prepared:
+        self.broker.palantir_entry_for(grant, **self._grant_ids(state, ctx))
+        raise JobFailure("execution_failed")
+
+    def _docker(
+        self, state: LeaseState, ctx: JobContext, grant: CredentialGrant, app_id: UUID
+    ) -> Prepared:
+        self.broker.docker_entry_for(grant, **self._grant_ids(state, ctx))
+        raise JobFailure("execution_failed")
 
     def _artifact(
         self,
@@ -733,6 +865,19 @@ class Runner:
                 digest="0" * 64,
             )
         )
+
+
+# the job context's platform kind -> the runner step that checks its credential and builds its
+# adapter (or fails closed)
+DISPATCH: dict[
+    TargetKind, Callable[[Runner, LeaseState, JobContext, CredentialGrant, UUID], Prepared]
+] = {
+    "databricks": Runner._databricks,
+    "snowflake": Runner._snowflake,
+    "fabric": Runner._fabric,
+    "palantir": Runner._palantir,
+    "docker": Runner._docker,
+}
 
 
 def _snowflake_key(resource_type: str) -> str:
