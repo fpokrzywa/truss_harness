@@ -1,7 +1,8 @@
 """The generated Streamlit app of a Snowflake Native App: one tab per screen of config/screens.json.
 A chat screen answers with the agent loop on Cortex and records each answer's usage in
 APP_DATA.USAGE before showing it; a table screen runs its tool with the form's inputs and shows
-the rows. Chat text is shown as plain text, never as Markdown. Errors show only a stop code or the generic upstream error, never exception text."""
+the rows, every column under its own heading. Chat text is shown as plain text, never as Markdown.
+Errors show only a stop code or the generic upstream error, never exception text."""
 
 import datetime
 import json
@@ -16,6 +17,8 @@ import backend_snowflake
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "config"
 MAX_MESSAGE = 4000
+# Streamlit's default range is ten years around today; a year below 1000 has no four-digit text form
+MIN_DATE, MAX_DATE = datetime.date(1000, 1, 1), datetime.date(9999, 12, 31)
 UPSTREAM = "upstream_failed: the model or the warehouse did not answer"
 
 session = get_active_session()
@@ -60,9 +63,21 @@ def field(index, name, prop):
     if kind == "boolean":
         return st.checkbox(name, key=key)
     if prop.get("format") == "date":
-        value = st.date_input(name, value=None, key=key)
+        value = st.date_input(name, value=None, min_value=MIN_DATE, max_value=MAX_DATE, key=key)
         return value.isoformat() if isinstance(value, datetime.date) else None
     return st.text_input(name, key=key) or None
+
+
+def headings(columns):
+    """A distinct heading per column, by position: a repeated name gets ` (2)`, ` (3)`, ..."""
+    names = [c["name"] for c in columns]
+    result = []
+    for name in names:
+        heading, n = name, 2
+        while heading in result or (heading != name and heading in names):
+            heading, n = f"{name} ({n})", n + 1
+        result.append(heading)
+    return result
 
 
 def table(index, screen):
@@ -82,7 +97,7 @@ def table(index, screen):
     except agent_loop.UpstreamFailed:
         st.error(UPSTREAM)
         return
-    names = [c["name"] for c in result["columns"]]
+    names = headings(result["columns"])
     st.dataframe([dict(zip(names, row)) for row in result["rows"]], hide_index=True)
     if result.get("truncated"):
         st.caption(f"truncated: showing the first {result['row_count']} rows")

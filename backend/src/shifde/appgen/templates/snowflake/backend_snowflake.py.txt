@@ -4,8 +4,8 @@ form, `run_sql` runs a tool's positional SQL with its arguments in `param_order`
 `record_usage` inserts the one `APP_DATA.USAGE` row of an answer under the application's own
 rights. Any failure is `agent_loop.UpstreamFailed`, with no exception text. A tool result is
 SETH's Snowflake shape: `{columns: [{name, type}], rows, row_count}` and `truncated` when more than
-the tool's `max_rows` came back, with `type` the SQL API `rowType` name and every value in the SQL
-API text form (null stays null)."""
+the tool's `max_rows` came back, with `name` and `type` the SQL API `rowType` ones and every value
+in the SQL API text form (null stays null)."""
 
 from __future__ import annotations
 
@@ -41,6 +41,14 @@ ROW_TYPES = {
     "StructType": "object",
     "ArrayType": "array",
 }
+
+
+def column_name(name: str) -> str:
+    """The `rowType` name of a Snowpark field: Snowpark keeps quotes around a name that is not a
+    plain uppercase identifier (`"COUNT(*)"`, a `"` inside doubled)."""
+    if len(name) >= 2 and name.startswith('"') and name.endswith('"'):
+        return name[1:-1].replace('""', '"')
+    return name
 
 
 def row_type(datatype: Any) -> str:  # Any: a Snowpark data type
@@ -98,7 +106,7 @@ def run_sql(session: Any) -> agent_loop.RunSql:  # Any: the Snowpark session
             fields = frame.schema.fields
         except Exception as exc:
             raise agent_loop.UpstreamFailed() from exc
-        columns = [{"name": str(f.name), "type": row_type(f.datatype)} for f in fields]
+        columns = [{"name": column_name(str(f.name)), "type": row_type(f.datatype)} for f in fields]
         rows = [[text_value(v) for v in row] for row in data[:max_rows]]
         result: dict[str, Any] = {"columns": columns, "rows": rows, "row_count": len(rows)}
         if len(data) > max_rows:

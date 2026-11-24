@@ -4,7 +4,8 @@ run on a test-only Snowpark session (`tests/_support/snowpark_session.py`) backe
 `FakeSnowflakeAccount(sample_data=True, cortex={model: AGENT_SCRIPT})`. The three cases are
 answered through `agent_loop.ask` and pass their assertions; each tool's `run_tool` result is
 SETH's Snowflake answer; the stop codes and the 256 KiB cap are the Databricks app's; deep health
-passes, then names the denied table or the Cortex model; `streamlit_app.py` under
+passes, then names the denied table or the Cortex model, and never sends a name that is not a plain
+table name; `streamlit_app.py` under
 `streamlit.testing.v1.AppTest` answers on the chat screen (one `APP_DATA.USAGE` row per answer)
 and shows rows on the table screen; the generated modules import no SETH, HTTP or Snowflake
 library. Cross-client: accounts A and B each have their own app, and an answer writes usage only
@@ -39,12 +40,14 @@ from tests._support.appgen_fixtures import AGENT_SCRIPT, CASE_CALLS, SNOWFLAKE_S
 from tests._support.snowpark_session import TOKEN, FakeSnowparkSession
 from tests.adapters.dataplatforms.helpers import ctx_for, make_snowflake, sf_conn
 from tests.appgen.rendered import (
+    BAD_TABLES,
     CORTEX_MODEL,
     SNOWFLAKE_DIGEST,
     SNOWFLAKE_MANIFEST,
     SNOWFLAKE_RESOLVED,
     input_schema,
     load_module,
+    resolved_of,
     snowflake_manifest_of,
     write_files,
 )
@@ -109,6 +112,37 @@ def app_big(tmp_path_factory: pytest.TempPathFactory) -> App:
     return _package(tmp_path_factory.mktemp("sf-app-big"), SNOWFLAKE_MANIFEST, resolved)
 
 
+COUNT_TOOL = {
+    "name": "order_totals",
+    "description": "Order count and total from one id on.",
+    "sql": 'select count(*), sum(o.amount), o.customer_id as "CUSTOMER" '
+    "from DEMO_DB.PUBLIC.ORDERS o where o.id > :n group by o.customer_id",
+    "parameters": [{"name": "n", "type": "integer", "required": True}],
+    "max_rows": 200,
+}
+PAIR_TOOL = {
+    "name": "order_pairs",
+    "description": "Order and customer ids.",
+    "sql": "select o.id, c.id, o.customer_id as ID, c.name from DEMO_DB.PUBLIC.ORDERS o "
+    "join DEMO_DB.PUBLIC.CUSTOMERS c on c.id = o.customer_id where o.id <= 8 order by o.id",
+    "parameters": [],
+    "max_rows": 3,
+}
+
+
+@pytest.fixture(scope="module")
+def app_more(tmp_path_factory: pytest.TempPathFactory) -> App:
+    """The sample app with `COUNT_TOOL` and `PAIR_TOOL`, the latter on a third, table screen."""
+    draft = copy.deepcopy(SNOWFLAKE_SAMPLE_DRAFT)
+    draft["tools"] += [COUNT_TOOL, PAIR_TOOL]
+    draft["screens"].append(
+        {"kind": "table", "title": "Pairs", "tool": "order_pairs", "inputs": []}
+    )
+    manifest = snowflake_manifest_of(draft)
+    resolved = resolved_of(draft, endpoint=CORTEX_MODEL)
+    return _package(tmp_path_factory.mktemp("sf-app-more"), manifest, resolved)
+
+
 def account(script: list[dict[str, str]] = AGENT_SCRIPT, **options: Any) -> FakeSnowflakeAccount:
     return FakeSnowflakeAccount(
         sample_data=True, cortex={CORTEX_MODEL: script}, pat=TOKEN, **options
@@ -159,6 +193,23 @@ def test_run_tool_returns_what_seths_snowflake_tool_path_returns(app: App, index
     assert result == expected
     # the tool's positional SQL, its arguments in `param_order`, and no added row limit
     assert session.statements == [app.config["tools"][name]["sql"]]
+
+
+def test_an_unaliased_expression_has_seths_column_name(app_more: App) -> None:
+    """Snowpark quotes a field name that is not a plain identifier; the SQL API does not."""
+    session = session_on()
+    result = app_more.run_tool(session, "order_totals", {"n": 2})
+    assert [c["name"] for c in result["columns"]] == ["COUNT(*)", "SUM(O.AMOUNT)", "CUSTOMER"]
+    assert result["row_count"] >= 1
+    assert result == seth_answer(COUNT_TOOL, {"n": 2})
+
+
+@pytest.mark.parametrize(
+    ("snowpark", "name"),
+    [("ID", "ID"), ('"COUNT(*)"', "COUNT(*)"), ('"a ""b"" c"', 'a "b" c'), ('"', '"')],
+)
+def test_a_column_name_loses_snowparks_quotes(app: App, snowpark: str, name: str) -> None:
+    assert app.backend.column_name(snowpark) == name
 
 
 def test_the_row_cap_keeps_max_rows_and_marks_truncated(app: App) -> None:
@@ -281,6 +332,42 @@ def test_deep_health_names_a_table_the_app_cannot_read(app: App) -> None:
     ]
 
 
+def test_deep_health_reads_each_table_by_its_quoted_name(app: App) -> None:
+    session = session_on()
+    _deep(app, session)
+    assert [s for s in session.statements if s.startswith("SELECT * FROM")] == [
+        'SELECT * FROM "DEMO_DB"."PUBLIC"."CUSTOMERS" LIMIT 0',
+        'SELECT * FROM "DEMO_DB"."PUBLIC"."ORDERS" LIMIT 0',
+        'SELECT * FROM "DEMO_DB"."SALES"."INVOICES" LIMIT 0',
+    ]
+
+
+@pytest.mark.parametrize("table", BAD_TABLES)
+def test_deep_health_never_sends_a_name_that_is_not_a_plain_table(
+    app: App, tmp_path: Path, table: str
+) -> None:
+    """A hand-written `agent.json` (the render refuses such a release): the check fails without
+    any SQL, and the other tables are still checked."""
+    agent = json.loads((app.ui / "config" / "agent.json").read_text(encoding="utf-8"))
+    agent["tables"] = [table, "demo_db.public.orders"]
+    (tmp_path / "agent.json").write_text(json.dumps(agent), encoding="utf-8")
+    session = session_on()
+    doc = app.health.run(session, config_dir=str(tmp_path))
+    assert doc["status"] == "failed"
+    assert [c for c in doc["checks"] if c["status"] == "failed"] == [
+        {
+            "name": f"table:{table}",
+            "status": "failed",
+            "reason": f"the app cannot read {table}"[:200],
+        }
+    ]
+    assert session.statements == [
+        "SELECT 1",
+        app.health.COMPLETE,
+        'SELECT * FROM "DEMO_DB"."PUBLIC"."ORDERS" LIMIT 0',
+    ]
+
+
 def test_deep_health_names_the_cortex_model_without_the_grant(app: App) -> None:
     doc = _deep(app, session_on(faults={"cortex_denied"}))
     assert doc["status"] == "failed"
@@ -396,6 +483,44 @@ def test_the_table_screen_shows_the_tools_rows(
     assert list(frame.value.columns) == [c["name"] for c in expected["columns"]]
     assert frame.value.values.tolist() == expected["rows"]
     assert not at.caption  # not truncated
+
+
+def test_the_table_screen_takes_a_date_far_from_today(
+    app: App, streamlit_app: Callable[[App, Any], AppTest]
+) -> None:
+    at = streamlit_app(app, session_on())
+    at.run()
+    since = at.date_input(key="input-1-since")
+    assert (since.min, since.max) == (datetime.date(1000, 1, 1), datetime.date(9999, 12, 31))
+    at.number_input(key="input-1-customer_id").set_value(1)
+    since.set_value(datetime.date(1995, 1, 1))
+    at.button[0].click().run()
+    assert not at.exception, at.exception
+    [frame] = at.dataframe
+    expected = seth_answer(TOOLS["orders_by_customer"], {"customer_id": 1, "since": "1995-01-01"})
+    assert expected["row_count"] >= 1
+    assert frame.value.values.tolist() == expected["rows"]
+
+
+def test_the_table_screen_keeps_columns_of_one_name_and_marks_truncated(
+    app_more: App, streamlit_app: Callable[[App, Any], AppTest]
+) -> None:
+    """A repeated column name gets its own heading; the tool result itself is SETH's."""
+    result = app_more.run_tool(session_on(), "order_pairs", {})
+    whole = seth_answer(PAIR_TOOL, {})  # the adapter's answer, before `tool_runtime` cuts the rows
+    assert whole["row_count"] == 8
+    cut = {"rows": whole["rows"][:3], "row_count": 3, "truncated": True}
+    assert result == {**whole, **cut}
+    assert [c["name"] for c in result["columns"]] == ["ID", "ID", "ID", "NAME"]
+    at = streamlit_app(app_more, session_on())
+    at.run()
+    at.button[1].click().run()
+    assert not at.exception, at.exception
+    [frame] = at.dataframe
+    assert list(frame.value.columns) == ["ID", "ID (2)", "ID (3)", "NAME"]
+    assert frame.value.values.tolist() == result["rows"]
+    assert result["truncated"] is True
+    assert [c.value for c in at.caption] == ["truncated: showing the first 3 rows"]
 
 
 def test_the_generated_modules_import_no_seth_http_or_snowflake_library(app: App) -> None:
