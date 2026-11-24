@@ -70,6 +70,28 @@ def get_artifact(session: Session, tenant_id: UUID, artifact_id: UUID) -> Row | 
     )
 
 
+def artifact_id_by_key(
+    session: Session,
+    tenant_id: UUID,
+    *,
+    kind: str,
+    workspace_id: UUID | None,
+    project_id: UUID | None,
+    key: str,
+) -> UUID | None:
+    """The id of the artifact of `kind` holding `key` at exactly this scope (the
+    `uq_artifacts__scope_key` index), whatever its status or visibility."""
+    found = session.execute(
+        text(
+            "SELECT id FROM shifde.artifacts WHERE tenant_id = :t AND kind = :kind "
+            "AND workspace_id IS NOT DISTINCT FROM CAST(:w AS uuid) "
+            "AND project_id IS NOT DISTINCT FROM CAST(:p AS uuid) AND key = :key"
+        ),
+        {"t": tenant_id, "kind": kind, "w": workspace_id, "p": project_id, "key": key},
+    ).scalar_one_or_none()
+    return UUID(str(found)) if found is not None else None
+
+
 def list_artifacts(
     session: Session,
     tenant_id: UUID,

@@ -80,7 +80,7 @@ class EvaluationContract(BaseModel):
 
 
 # the screens of a generated app (SP5 design 5.3 and 6.2): a chat with the agent, or a table of one
-# read-only tool's rows; `appgen` drafts them, solution versions will carry them (SP5-3)
+# read-only tool's rows; `appgen` drafts them and solution versions carry them
 TOOL_NAME = r"^[a-z][a-z0-9_]{1,62}$"
 PARAMETER_NAME = r"^[a-z_][a-z0-9_]{0,62}$"
 ScreenTitle = Annotated[str, Field(min_length=1, max_length=80)]
@@ -112,6 +112,7 @@ class SolutionVersionCreate(BaseModel):
     entrypoint_version_id: UUID
     data_reads: list[DataRead] = Field(default_factory=list, max_length=50)
     evaluation: EvaluationContract | None = None
+    screens: list[Screen] = Field(default_factory=list)
 
 
 class EntrypointOut(BaseModel):

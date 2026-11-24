@@ -581,6 +581,7 @@ ROUTES: dict[Op, tuple[str, str]] = {
     ("POST", APP_REQUEST + "/drafts"): (SCOPED, "appgen"),
     ("POST", APP_REQUEST + "/discard"): (SCOPED, "appgen"),
     ("POST", APP_REQUEST + "/retry"): (SCOPED, "appgen"),
+    ("POST", APP_REQUEST + "/accept"): (SCOPED, "appgen"),
     # ------------------------------------------------------------------ mcp
     ("GET", "/api/v1/orgs/{org}/mcp/settings"): (CLIENT, "mcp:settings:read at the organization"),
     ("PUT", "/api/v1/orgs/{org}/mcp/settings"): (CLIENT, "mcp:settings:write at the organization"),
@@ -1571,7 +1572,7 @@ def _app_request_body(w: W, n: int) -> dict[str, Any]:  # Any: JSON body
 
 
 # the retry case before the discard case (W1's request stays drafted until the discard; its retry
-# is refused on state, 409)
+# is refused on state, 409), the accept case after it (W1's request is discarded, 409)
 _register(
     "appgen",
     {
@@ -1605,6 +1606,23 @@ _register(
         ),
         ("POST", APP_REQUEST + "/discard"): lambda w: _case(
             WRITE, "POST", lambda n: _app_request(w, n, "/discard"), state=w.snap(*APPGEN)
+        ),
+        ("POST", APP_REQUEST + "/accept"): lambda w: _case(
+            WRITE,
+            "POST",
+            lambda n: _app_request(w, n, "/accept"),
+            body=lambda n: {
+                "revision_no": 1,
+                "solution_name": "scoping",
+                "model_id": w("draft_model", 0),
+                "thresholds": {
+                    "min_accuracy": "0.9",
+                    "max_p95_latency_ms": 1000,
+                    "max_total_cost_usd": "1",
+                },
+            },
+            state=w.snap(*APPGEN),
+            also=(409,),
         ),
     },
 )
