@@ -10,10 +10,13 @@ is deleted. A client with a legal hold on any data class is skipped. A real run 
 
 `delete` (B-2783) uses the same clients, cutoff and legal-hold rule and deletes whole run families
 (the client's runs of one `root_run_id`) whose every run is eligible and none of which is pinned
-(a held budget reservation, a pending approval, a queued or leased job, or a case run of a passed
-evaluation of a release that is not withdrawn and that a delivery plan names). Migration
-`runtime_0006` admits the deletes only for runs that ended before the cutoff the pass sets in
-`shifde.retention_delete_cutoff`. Usage, policy-decision and audit rows are kept.
+(a held budget reservation, a pending approval, a queued or leased job, a case run of a passed
+evaluation of a release that is not withdrawn and that a delivery plan names, or a case run of an
+evaluation that has not ended, so one stuck in `running` can still be scored: issue #174,
+B-3987). Migration `runtime_0006` admits the deletes only for runs that ended before the cutoff
+the pass sets in `shifde.retention_delete_cutoff`; since `runtime_0008` the guard also refuses a
+client on legal hold and a cutoff later than now() minus the run retention floor. Usage,
+policy-decision and audit rows are kept.
 """
 
 from __future__ import annotations
@@ -211,7 +214,10 @@ _FAMILY_RUNS = text(
     "WHERE e.tenant_id = :t AND e.status = 'passed' AND rel.status <> 'withdrawn' "
     "AND e.case_runs @> jsonb_build_array(jsonb_build_object('run_id', r.id::text)) "
     "AND EXISTS (SELECT 1 FROM shifde.delivery_plans p WHERE p.tenant_id = :t "
-    "AND p.evaluation_run_id = e.id))) AS pinned "
+    "AND p.evaluation_run_id = e.id)) "
+    "OR EXISTS (SELECT 1 FROM shifde.evaluation_runs e WHERE e.tenant_id = :t "
+    "AND e.status IN ('queued', 'running') "
+    "AND e.case_runs @> jsonb_build_array(jsonb_build_object('run_id', r.id::text)))) AS pinned "
     "FROM shifde.runs r WHERE r.tenant_id = :t AND r.root_run_id IN "
     "(SELECT x.root_run_id FROM shifde.runs x WHERE x.tenant_id = :t "
     "AND x.id IN (SELECT id FROM eligible)) ORDER BY r.id"
