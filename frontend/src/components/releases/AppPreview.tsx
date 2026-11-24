@@ -2,6 +2,7 @@
 
 import { parseScreens, ScreenRenderer, type AppApi, type ToolResult } from '@shifde/appgen-web';
 import type { AppPreviewOut, AppPreviewTool } from '@/lib/api/appgen-types';
+import { useMemo } from 'react';
 import { ApiError } from '@/lib/api/errors';
 import { useAppPreview } from '@/lib/release-hooks';
 import { EmptyState, QueryGate } from '../admin/ui';
@@ -9,6 +10,8 @@ import { EmptyState, QueryGate } from '../admin/ui';
 /** Plain words for the 409s of the preview route; any other 409 shows its problem detail. */
 const CONFLICTS: Record<string, string> = {
   release_has_no_app: 'This release has no generated app.',
+  release_pins_hidden:
+    'This release pins a version you cannot see, so its app cannot be previewed.',
   release_source_changed:
     'A version this release pins has changed or cannot be read; seal the release again.',
 };
@@ -65,33 +68,36 @@ export function AppPreview({ org, releaseId }: { org: string; releaseId: string 
 
 function PreviewBody({ preview }: { preview: AppPreviewOut }) {
   const screens = parseScreens(preview.screens);
+  const api = useMemo(() => previewApi(preview.tools), [preview.tools]);
   return (
     <>
       <dl className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-[12rem_1fr]">
         <dt className="text-slate-600">Generator version</dt>
         <dd className="font-mono text-xs">{preview.generator_version}</dd>
       </dl>
-      <table className="w-full">
-        <caption className="text-left text-sm font-semibold">Files</caption>
-        <thead className="border-b border-slate-200">
-          <tr>
-            {['Path', 'Size (bytes)', 'SHA-256'].map((h) => (
-              <th key={h} scope="col" className="th">
-                {h}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-100">
-          {preview.files.map((f) => (
-            <tr key={f.path}>
-              <td className="td font-mono text-xs break-all">{f.path}</td>
-              <td className="td font-mono text-xs">{f.size}</td>
-              <td className="td font-mono text-xs break-all">{f.sha256}</td>
+      <div className="overflow-x-auto">
+        <table className="w-full">
+          <caption className="text-left text-sm font-semibold">Files</caption>
+          <thead className="border-b border-slate-200">
+            <tr>
+              {['Path', 'Size (bytes)', 'SHA-256'].map((h) => (
+                <th key={h} scope="col" className="th">
+                  {h}
+                </th>
+              ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {preview.files.map((f) => (
+              <tr key={f.path}>
+                <td className="td font-mono text-xs break-all">{f.path}</td>
+                <td className="td font-mono text-xs">{f.size}</td>
+                <td className="td font-mono text-xs break-all">{f.sha256}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
       <h3 className="text-sm font-semibold">Screens</h3>
       {screens === null ? (
         <EmptyState>The screens of this release cannot be shown.</EmptyState>
@@ -100,8 +106,9 @@ function PreviewBody({ preview }: { preview: AppPreviewOut }) {
           <p className="text-sm text-slate-600">
             The rows below are sample data; nothing is sent to the app, a model or a data platform.
           </p>
-          <div className="space-y-3 rounded border border-slate-200 p-3 text-sm [&_button]:rounded [&_button]:border [&_button]:border-slate-300 [&_button]:px-2 [&_button]:py-1 [&_button[aria-current=page]]:bg-slate-100 [&_form]:flex [&_form]:flex-wrap [&_form]:items-end [&_form]:gap-2 [&_h2]:font-semibold [&_input]:rounded [&_input]:border [&_input]:border-slate-300 [&_input]:px-2 [&_input]:py-1 [&_label]:flex [&_label]:flex-col [&_nav]:flex [&_nav]:flex-wrap [&_nav]:gap-2 [&_section]:space-y-2 [&_td]:border-t [&_td]:border-slate-100 [&_td]:px-2 [&_td]:py-1 [&_th]:px-2 [&_th]:py-1 [&_th]:text-left">
-            <ScreenRenderer screens={screens} api={previewApi(preview.tools)} />
+          {/* the package's own styles.css is not loaded in SETH: its elements are styled here */}
+          <div className="space-y-3 overflow-x-auto rounded border border-slate-200 p-3 text-sm [&_button]:rounded [&_button]:border [&_button]:border-slate-300 [&_button]:px-2 [&_button]:py-1 [&_button[aria-current=page]]:bg-slate-100 [&_form]:flex [&_form]:flex-wrap [&_form]:items-end [&_form]:gap-2 [&_h2]:font-semibold [&_input]:rounded [&_input]:border [&_input]:border-slate-300 [&_input]:px-2 [&_input]:py-1 [&_label]:flex [&_label]:flex-col [&_nav]:flex [&_nav]:flex-wrap [&_nav]:gap-2 [&_section]:space-y-2 [&_td]:border-t [&_td]:border-slate-100 [&_td]:px-2 [&_td]:py-1 [&_th]:px-2 [&_th]:py-1 [&_th]:text-left [&_.table-wrap]:overflow-x-auto">
+            <ScreenRenderer screens={screens} api={api} embedded />
           </div>
         </>
       )}

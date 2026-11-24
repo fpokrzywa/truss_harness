@@ -42,6 +42,14 @@ describe('AppPreview', () => {
     expect(screen.queryByRole('table', { name: 'Files' })).not.toBeInTheDocument();
   });
 
+  it('shows release_pins_hidden in plain words', async () => {
+    show(() => problemResponse(409, 'release_pins_hidden'));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'This release pins a version you cannot see, so its app cannot be previewed.',
+    );
+    expect(screen.queryByRole('table', { name: 'Files' })).not.toBeInTheDocument();
+  });
+
   it('shows the detail of any other 409', async () => {
     show(() =>
       problemResponse(409, 'generator_version_unsupported', {
@@ -62,6 +70,8 @@ describe('AppPreview', () => {
     expect(screen.getByText('shifde.appgen/1.0')).toBeInTheDocument();
     expect(screen.getByText(/sample data; nothing is sent/)).toBeInTheDocument();
     const nav = screen.getByRole('navigation', { name: 'Screens' });
+    // embedded in the page's own main landmark: the renderer adds none
+    expect(screen.queryByRole('main')).not.toBeInTheDocument();
     expect(within(nav).getByRole('button', { name: 'Ask about sales' })).toBeInTheDocument();
     const before = fetchMock.calls.length;
     await userEvent.click(within(nav).getByRole('button', { name: 'Orders by region' }));
