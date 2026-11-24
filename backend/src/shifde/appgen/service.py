@@ -44,6 +44,7 @@ instead of finding the key taken; a key held by any other artifact is still `key
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Callable, Mapping
@@ -57,6 +58,7 @@ from shifde.adapters.runtime import IntegrationRuntime
 from shifde.appgen import draft as drafting
 from shifde.appgen import repository, sqlcheck
 from shifde.appgen import schemas as s
+from shifde.appgen.render import render
 from shifde.audit import service as audit
 from shifde.authz import service as authz
 from shifde.authz.service import ResourceRef
@@ -75,7 +77,12 @@ from shifde.evaluation.service import EvaluationService
 from shifde.models_admin import schemas as model_schemas
 from shifde.models_admin.service import ModelService
 from shifde.packaging import schemas as packaging_schemas
-from shifde.packaging.service import SolutionService, in_scope
+from shifde.packaging.service import (
+    COMPILER_VERSION_APP,
+    SolutionService,
+    in_scope,
+    scoped_release,
+)
 from shifde.tenancy import service as tenancy
 from shifde.tenancy.scope import TenantScope
 
@@ -110,6 +117,8 @@ PARAMETER_SCHEMAS: dict[str, dict[str, Any]] = {
 TOOL_TIMEOUT_S = 60
 AGENT_LIMITS = {"max_iterations": 8, "max_tool_calls": 8, "max_tokens": 200_000, "deadline_s": 60}
 ACCEPT_CLAIM_SECONDS = 120  # the lease of an accept call's claim (database time), renewed per step
+# the fields of a resolved tool the preview leaves out
+PREVIEW_HIDDEN = {"version_id", "spec_hash", "input_schema"}
 CLAIM = "claim"  # the `accept_progress` entry of the claim, never returned by the API
 
 
@@ -118,6 +127,10 @@ class ReleaseSourceChanged(AppError):
 
 
 SOURCE_CHANGED = "a version the release pins has changed or cannot be read; seal the release again"
+
+
+class ReleaseHasNoApp(AppError):
+    status, code, title = 409, "release_has_no_app", "Conflict"
 
 
 class ConnectionNotDatabricks(AppError):
@@ -461,6 +474,30 @@ class AppGenService:
     def get(self, request_id: UUID) -> s.AppRequestOut:
         self._request(request_id, READ)
         return self._out(request_id)
+
+    def preview(self, release_id: UUID) -> s.AppPreviewOut:
+        """The app a `/2` release renders to (design section 7): file metadata, screens and tools,
+        gathered and rendered as plan time does under the caller's scope; nothing is written."""
+        release = scoped_release(self.sc, release_id)
+        manifest = release["manifest"]
+        if manifest.get("compiler_version") != COMPILER_VERSION_APP:
+            raise ReleaseHasNoApp("the release has no generated app")
+        resolved = resolved_for_release(self.sc, self.runtime, manifest)
+        files = render(manifest, release["digest"], resolved)
+        return s.AppPreviewOut(
+            release_id=release["id"],
+            release_digest=release["digest"],
+            generator_version=manifest["app"]["generator_version"],
+            files=[
+                s.AppPreviewFile(path=p, size=len(b), sha256=hashlib.sha256(b).hexdigest())
+                for p, b in sorted(files.items())
+            ],
+            screens=resolved.screens,
+            tools=[
+                s.AppPreviewTool.model_validate(t.model_dump(exclude=PREVIEW_HIDDEN))
+                for t in resolved.tools
+            ],
+        )
 
     # ================================================================== revise, discard, retry
     def revise(self, request_id: UUID, body: s.DraftEdit) -> s.DraftOut:

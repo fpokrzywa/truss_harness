@@ -125,7 +125,8 @@ EVALUATION = {
     ("POST", EVALUATIONS),
     ("GET", "/api/v1/orgs/{org}/evaluation-runs/{run_id}"),
 }
-# appgen: app requests and their drafts (SP5 design section 7, issue #255): not a SETH module
+# appgen: app requests and their drafts (SP5 design section 7, issue #255) and the app preview of
+# a release (issue #340): not a SETH module
 APP_REQUESTS = "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/app-requests"
 APP_REQUEST = "/api/v1/orgs/{org}/app-requests/{request_id}"
 APPGEN = {
@@ -136,6 +137,7 @@ APPGEN = {
     ("POST", APP_REQUEST + "/discard"),
     ("POST", APP_REQUEST + "/retry"),
     ("POST", APP_REQUEST + "/accept"),
+    ("GET", "/api/v1/orgs/{org}/releases/{release_id}/app-preview"),
 }
 # the project and release board (sub-project 7 design 7.2, Call S7-F): not a SETH module
 BOARD = {

@@ -600,6 +600,138 @@
         "title": "ApiKeyRotate",
         "type": "object"
       },
+      "AppPreviewFile": {
+        "description": "One rendered file of the app: its path, size and SHA-256, never its content.",
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "size",
+          "sha256"
+        ],
+        "title": "AppPreviewFile",
+        "type": "object"
+      },
+      "AppPreviewOut": {
+        "properties": {
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/AppPreviewFile"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "generator_version": {
+            "title": "Generator Version",
+            "type": "string"
+          },
+          "release_digest": {
+            "title": "Release Digest",
+            "type": "string"
+          },
+          "release_id": {
+            "format": "uuid",
+            "title": "Release Id",
+            "type": "string"
+          },
+          "screens": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Screens",
+            "type": "array"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/AppPreviewTool"
+            },
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "release_id",
+          "release_digest",
+          "generator_version",
+          "files",
+          "screens",
+          "tools"
+        ],
+        "title": "AppPreviewOut",
+        "type": "object"
+      },
+      "AppPreviewParameter": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "type",
+          "required"
+        ],
+        "title": "AppPreviewParameter",
+        "type": "object"
+      },
+      "AppPreviewTool": {
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "max_rows": {
+            "title": "Max Rows",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "parameters": {
+            "items": {
+              "$ref": "#/components/schemas/AppPreviewParameter"
+            },
+            "title": "Parameters",
+            "type": "array"
+          },
+          "sql": {
+            "title": "Sql",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "sql",
+          "parameters",
+          "max_rows"
+        ],
+        "title": "AppPreviewTool",
+        "type": "object"
+      },
       "AppRequestCreate": {
         "additionalProperties": false,
         "properties": {
@@ -47667,6 +47799,114 @@
         "summary": "Get Release",
         "tags": [
           "packaging"
+        ]
+      }
+    },
+    "/api/v1/orgs/{org}/releases/{release_id}/app-preview": {
+      "get": {
+        "operationId": "get_app_preview_api_v1_orgs__org__releases__release_id__app_preview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "release_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Release Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "org",
+            "required": true,
+            "schema": {
+              "title": "Org",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppPreviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "unauthenticated / invalid_credentials"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "forbidden / csrf_failed / auth_disabled"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "not_found (also for resources in other tenants)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "conflict / scope_archived"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "validation_error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "rate_limited"
+          }
+        },
+        "summary": "Get App Preview",
+        "tags": [
+          "appgen"
         ]
       }
     },

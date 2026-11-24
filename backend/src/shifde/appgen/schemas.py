@@ -189,3 +189,35 @@ class AppRequestOut(AppRequestSummary):
     accepted_revision_no: int | None
     accept_progress: dict[str, Any]
     revisions: list[DraftOut]
+
+
+# ------------------------------------------------------------------ app preview (design section 7)
+class AppPreviewFile(BaseModel):
+    """One rendered file of the app: its path, size and SHA-256, never its content."""
+
+    path: str
+    size: int
+    sha256: str
+
+
+class AppPreviewParameter(BaseModel):
+    name: str
+    type: str
+    required: bool
+
+
+class AppPreviewTool(BaseModel):
+    name: str
+    description: str
+    sql: str
+    parameters: list[AppPreviewParameter]
+    max_rows: int
+
+
+class AppPreviewOut(BaseModel):
+    release_id: UUID
+    release_digest: str
+    generator_version: str
+    files: list[AppPreviewFile]
+    screens: list[dict[str, Any]]
+    tools: list[AppPreviewTool]

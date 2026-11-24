@@ -48,6 +48,7 @@ from tests.appgen.helpers import (
     run_job,
     wire,
 )
+from tests.delivery.app_releases import add_provider, make_app_release
 from tests.tenancy.conftest import app_session
 
 _VARYING = {"instance", "request_id"}
@@ -147,6 +148,7 @@ def _state(owner: Session, org_slug: str) -> tuple[Any, ...]:  # Any: row values
 # ------------------------------------------------------------------ route table
 REQUESTS = "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/app-requests"
 REQUEST = "/api/v1/orgs/{org}/app-requests/{request_id}"
+APP_PREVIEW = "/api/v1/orgs/{org}/releases/{release_id}/app-preview"
 ROUTE_TESTS = {
     ("POST", REQUESTS): "test_a_cannot_name_bs_connection_or_organization",
     ("GET", REQUESTS): "test_a_lists_only_its_own_rows",
@@ -155,6 +157,7 @@ ROUTE_TESTS = {
     ("POST", REQUEST + "/discard"): "test_a_cannot_reach_bs_request",
     ("POST", REQUEST + "/retry"): "test_a_cannot_reach_bs_request",
     ("POST", REQUEST + "/accept"): "test_a_cannot_reach_bs_request",
+    ("GET", APP_PREVIEW): "test_a_cannot_preview_bs_release",
 }
 
 
@@ -240,6 +243,30 @@ def test_a_cannot_name_bs_connection_or_organization(
         create(h.client, h, body(me.connection, me.model), "/api/v1/orgs/no-such-org"),
     )
     assert _state(owner_session, _slug(them)) == before
+
+
+@DIRECTIONS
+def test_a_cannot_preview_bs_release(
+    two: Two, owner_session: Session, owner_db: Database, direction: str
+) -> None:
+    me, them = _ways(two, direction)
+    releases = {}
+    for side in (me, them):
+        tenant = UUID(str(tenant_id(owner_session, _slug(side))))
+        workspace = owner_session.execute(
+            text("SELECT id FROM shifde.workspaces WHERE tenant_id = :t AND slug = 'main'"),
+            {"t": tenant},
+        ).scalar_one()
+        owner_session.rollback()
+        provider = add_provider(owner_db, tenant, "fake", None)
+        releases[side.org] = make_app_release(owner_db, tenant, workspace, provider_id=provider).id
+    h = me.h
+
+    def preview(release_id: object) -> httpx.Response:
+        return _send(h, "GET", f"{me.org}/releases/{release_id}/app-preview", None)
+
+    _same(preview(releases[them.org]), preview(uuid7()))
+    assert preview(releases[me.org]).status_code == 200
 
 
 # ------------------------------------------------------------------ project P1 against P2
