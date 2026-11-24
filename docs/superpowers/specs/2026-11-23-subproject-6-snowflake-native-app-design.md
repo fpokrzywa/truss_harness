@@ -151,6 +151,7 @@ Two new migrations widen CHECK constraints only, each in its own branch's next f
   - `$$...$$` is an opaque string; `//` outside a string is `sql_comment`.
   - The shared write keywords are still refused anywhere in the statement. The Snowflake-only additions `list comment remove unset execute undrop begin commit rollback` are refused only as the first token of a statement.
   - A `?` outside a string literal in tool SQL is refused (`sql_positional_parameter`).
+  - A `:` directly followed by a digit outside quoted text and comments is refused (`sql_positional_bind`, #325), as the run-time check refuses it (`col:1` and `x::1` included).
   - A name followed by `(` after `from`/`join` (`TABLE(...)`, `IDENTIFIER(...)`) stays `sql_table_function`.
   - Table names and aliases are compared uppercased on both sides, against the discovered names uppercased.
   - Each dialect rule has golden test cases in the issue's acceptance checks.

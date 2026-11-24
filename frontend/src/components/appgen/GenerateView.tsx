@@ -10,8 +10,9 @@ import type { Connection } from '@/lib/api/integrate-types';
 import { useAppRequests } from '@/lib/appgen-hooks';
 import { normalizeDiscovery, type DiscoveredTable } from '@/lib/discovery';
 import { useCan } from '@/lib/hooks';
-import { useConnections, useEffectiveModels, useLatestDiscovery } from '@/lib/integrate-hooks';
+import { useConnections, useLatestDiscovery } from '@/lib/integrate-hooks';
 import { appRequestHref, connectionHref, connectionsHref } from '@/lib/scope';
+import { ModelSelect } from '../build/pickers';
 import { Tabs } from '../command/Tabs';
 import { ErrorMessage } from '../ErrorMessage';
 import {
@@ -103,7 +104,6 @@ interface Scope {
 function NewRequestForm({ org, ws, proj }: Scope) {
   const router = useRouter();
   const connections = useConnections(org, { workspace: ws, project: proj, include_shared: 'true' });
-  const models = useEffectiveModels(org, ws, proj);
   const action = useAction();
   const [connectionId, setConnectionId] = useState('');
   const [tables, setTables] = useState<string[]>([]);
@@ -195,17 +195,14 @@ function NewRequestForm({ org, ws, proj }: Scope) {
               error={errors.brief}
             />
             <div>
-              <SelectField
+              <ModelSelect
+                org={org}
+                workspace={ws}
+                project={proj}
                 label="Drafting model"
                 value={modelId}
                 onChange={setModelId}
-                options={[
-                  { value: '', label: 'Select...' },
-                  ...(models.data?.items ?? []).map((m) => ({
-                    value: m.id,
-                    label: m.display_name,
-                  })),
-                ]}
+                emptyLabel="Select..."
               />
               {errors.model && <p className="mt-1 text-sm text-red-700">{errors.model}</p>}
             </div>
@@ -248,13 +245,16 @@ function TablePicker({
   const names = discovery.isSuccess ? normalizeDiscovery(discovery.data).tables.map(tableName) : [];
   if (names.length === 0)
     return (
-      <p className="text-sm text-slate-700">
-        This connection has no discovered tables; run a discovery first on the{' '}
-        <Link className="text-blue-800 underline" href={connectionHref(org, connectionId)}>
-          connection
-        </Link>
-        .
-      </p>
+      <div>
+        <p className="text-sm text-slate-700">
+          This connection has no discovered tables; run a discovery first on the{' '}
+          <Link className="text-blue-800 underline" href={connectionHref(org, connectionId)}>
+            connection
+          </Link>
+          .
+        </p>
+        {error && <p className="mt-1 text-sm text-red-700">{error}</p>}
+      </div>
     );
 
   const full = selected.length >= MAX_TABLES;

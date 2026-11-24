@@ -16,6 +16,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from shifde.appgen.render import Resolved as Resolved  # re-exported: render may not import here
 from shifde.evaluation.schemas import Assertion
 from shifde.packaging.schemas import DECIMAL, PARAMETER_NAME, TOOL_NAME, Screen, normalize_decimal
 
