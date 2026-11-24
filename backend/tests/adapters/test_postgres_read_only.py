@@ -2,8 +2,10 @@
 and no write keyword (or `into`) anywhere in the code, quotes and comments read the way Postgres
 reads them, and ambiguous text refused. #285: no side-effecting function (backend kill/cancel,
 advisory locks, `set_config`, `pg_notify`, large-object import/export, `dblink*`) as a word of
-code or a `"..."` identifier, while a string or comment naming one still passes. Pure: no
-database."""
+code or a `"..."` identifier, while a string or comment naming one still passes. #312: no
+function that runs a SQL string or cursor (`query_to_xml*`, `cursor_to_xml*`, `ts_stat`,
+`ts_rewrite`) and no server-file or large-object read (`pg_read_file`, `pg_read_binary_file`,
+`pg_ls_dir`, `lo_get`). Pure: no database."""
 
 from __future__ import annotations
 
@@ -37,6 +39,13 @@ ACCEPTED = [
     # a bitwise & before a quoted identifier and UESCAPE in a string are not Unicode escapes
     'SELECT a & "b" FROM t',
     "SELECT 'U&\"x\" UESCAPE'",
+    # #312: a SQL-running or file-reading function named only in a string, a comment or a word
+    "SELECT 'query_to_xml(''x'', true, true, '''')'",
+    "SELECT 1 -- pg_read_file('/etc/passwd')",
+    "SELECT 1 /* cursor_to_xml ts_stat ts_rewrite pg_ls_dir lo_get */",
+    "SELECT 'pg_read_binary_file' AS f",
+    "SELECT query_to_xml_count FROM t",
+    "SELECT my_lo_get, pg_ls_dir_x FROM t",
 ]
 # #285: side-effecting functions a READ ONLY transaction still runs
 FUNCTIONS = [
@@ -51,6 +60,18 @@ FUNCTIONS = [
     "lo_export",
     "dblink",
     "dblink_exec",
+    # #312: functions that run a SQL string or cursor, server-file and large-object reads
+    "query_to_xml",
+    "query_to_xmlschema",
+    "query_to_xml_and_xmlschema",
+    "cursor_to_xml",
+    "cursor_to_xmlschema",
+    "ts_stat",
+    "ts_rewrite",
+    "pg_read_file",
+    "pg_read_binary_file",
+    "pg_ls_dir",
+    "lo_get",
 ]
 REFUSED = [
     "WITH a AS (SELECT 1) INSERT INTO t SELECT * FROM a",
@@ -96,6 +117,22 @@ REFUSED = [
     'SELECT U&"abc" FROM t',
     "SELECT u&'abc'",
     "SELECT a uescape FROM t",
+    # #312
+    "SELECT query_to_xml('select 1', true, true, '')",
+    "SELECT query_to_xmlschema('select 1', true, true, '')",
+    "SELECT query_to_xml_and_xmlschema('select 1', true, true, '')",
+    "SELECT cursor_to_xml('c', 1, true, true, '')",
+    "SELECT cursor_to_xmlschema('c', true, true, '')",
+    "SELECT * FROM ts_stat('SELECT v FROM t')",
+    "SELECT ts_rewrite('a'::tsquery, 'SELECT t, s FROM aliases')",
+    "SELECT pg_read_file('/etc/passwd')",
+    "SELECT pg_read_binary_file('/etc/passwd')",
+    "SELECT * FROM pg_ls_dir('.')",
+    "SELECT lo_get(1)",
+    "SELECT PG_CATALOG.Query_To_Xml('select 1', true, true, '')",
+    "SELECT Pg_Read_File('/etc/passwd')",
+    "SELECT \"pg_read_file\"('/etc/passwd')",
+    "SELECT \"pg_catalog\".\"cursor_to_xml\"('c', 1, true, true, '')",
 ]
 
 
@@ -142,3 +179,21 @@ def test_a_side_effecting_function_is_refused_before_any_connection(
         PostgresSession(ctx, conn).invoke({"sql": "SELECT pg_terminate_backend(1)"})
     assert raised.value.error_class is ErrorClass.CAPABILITY
     assert "pg_terminate_backend" not in raised.value.message
+
+
+def test_a_sql_running_function_is_refused_before_any_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*args: Any, **kwargs: Any) -> None:  # Any: whatever the adapter passes
+        raise AssertionError("no connection may be opened for a refused read")
+
+    monkeypatch.setattr(postgres, "run_query", fail)
+    monkeypatch.setattr(postgres, "_connect", fail)
+    ctx = ExecContext(tenant_id=None, principal_id=None, egress=None)  # type: ignore[arg-type]
+    conn = ConnectionConfig(id=None, name="db", adapter_key="postgres", config={})
+    with pytest.raises(AdapterFailure) as raised:
+        PostgresSession(ctx, conn).invoke(
+            {"sql": "SELECT query_to_xml('select 1', true, true, '')"}
+        )
+    assert raised.value.error_class is ErrorClass.CAPABILITY
+    assert "query_to_xml" not in raised.value.message

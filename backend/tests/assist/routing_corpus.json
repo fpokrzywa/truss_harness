@@ -1,0 +1,899 @@
+[
+  {
+    "text": "deploy the churn agent to production",
+    "expected": {
+      "specialist": "deployment",
+      "method": "rule",
+      "rule_id": "deploy",
+      "candidates": [
+        "deployment"
+      ]
+    }
+  },
+  {
+    "text": "please roll out version 2 to staging",
+    "expected": {
+      "specialist": "deployment",
+      "method": "rule",
+      "rule_id": "deploy",
+      "candidates": [
+        "deployment"
+      ]
+    }
+  },
+  {
+    "text": "promote the sales app to the prod target",
+    "expected": {
+      "specialist": "deployment",
+      "method": "rule",
+      "rule_id": "deploy",
+      "candidates": [
+        "deployment"
+      ]
+    }
+  },
+  {
+    "text": "Rollout plan for Friday",
+    "expected": {
+      "specialist": "deployment",
+      "method": "rule",
+      "rule_id": "deploy",
+      "candidates": [
+        "deployment"
+      ]
+    }
+  },
+  {
+    "text": "where is the sales app deployed",
+    "expected": {
+      "specialist": "deployment",
+      "method": "rule",
+      "rule_id": "deploy",
+      "candidates": [
+        "deployment"
+      ]
+    }
+  },
+  {
+    "text": "which release runs on the eu target",
+    "expected": {
+      "specialist": "deployment",
+      "method": "rule",
+      "rule_id": "status",
+      "candidates": [
+        "deployment"
+      ]
+    }
+  },
+  {
+    "text": "what release is on staging right now",
+    "expected": {
+      "specialist": "deployment",
+      "method": "rule",
+      "rule_id": "status",
+      "candidates": [
+        "deployment"
+      ]
+    }
+  },
+  {
+    "text": "check whether the churn agent is live",
+    "expected": {
+      "specialist": "deployment",
+      "method": "rule",
+      "rule_id": "status",
+      "candidates": [
+        "deployment"
+      ]
+    }
+  },
+  {
+    "text": "show the target status for prod",
+    "expected": {
+      "specialist": "deployment",
+      "method": "rule",
+      "rule_id": "status",
+      "candidates": [
+        "deployment"
+      ]
+    }
+  },
+  {
+    "text": "the nightly sync is running slowly",
+    "expected": {
+      "specialist": "deployment",
+      "method": "rule",
+      "rule_id": "status",
+      "candidates": [
+        "deployment"
+      ]
+    }
+  },
+  {
+    "text": "DEPLOY the App!!",
+    "expected": {
+      "specialist": "deployment",
+      "method": "rule",
+      "rule_id": "deploy",
+      "candidates": [
+        "deployment"
+      ]
+    }
+  },
+  {
+    "text": "ｄｅｐｌｏｙ ｒｅｌｅａｓｅ ２",
+    "expected": {
+      "specialist": "deployment",
+      "method": "rule",
+      "rule_id": "deploy",
+      "candidates": [
+        "deployment"
+      ]
+    }
+  },
+  {
+    "text": "how much did we spend last week",
+    "expected": {
+      "specialist": "cost",
+      "method": "rule",
+      "rule_id": "cost",
+      "candidates": [
+        "cost"
+      ]
+    }
+  },
+  {
+    "text": "what are the costs of the churn agent",
+    "expected": {
+      "specialist": "cost",
+      "method": "rule",
+      "rule_id": "cost",
+      "candidates": [
+        "cost"
+      ]
+    }
+  },
+  {
+    "text": "show the budget for project sample",
+    "expected": {
+      "specialist": "cost",
+      "method": "rule",
+      "rule_id": "cost",
+      "candidates": [
+        "cost"
+      ]
+    }
+  },
+  {
+    "text": "how many tokens did the run use",
+    "expected": {
+      "specialist": "cost",
+      "method": "rule",
+      "rule_id": "cost",
+      "candidates": [
+        "cost"
+      ]
+    }
+  },
+  {
+    "text": "what is the price of the gpt model",
+    "expected": {
+      "specialist": "cost",
+      "method": "rule",
+      "rule_id": "cost",
+      "candidates": [
+        "cost"
+      ]
+    }
+  },
+  {
+    "text": "explain this month's bill",
+    "expected": {
+      "specialist": "cost",
+      "method": "rule",
+      "rule_id": "cost",
+      "candidates": [
+        "cost"
+      ]
+    }
+  },
+  {
+    "text": "we spent too much yesterday",
+    "expected": {
+      "specialist": "cost",
+      "method": "rule",
+      "rule_id": "cost",
+      "candidates": [
+        "cost"
+      ]
+    }
+  },
+  {
+    "text": "remaining budgets please",
+    "expected": {
+      "specialist": "cost",
+      "method": "rule",
+      "rule_id": "cost",
+      "candidates": [
+        "cost"
+      ]
+    }
+  },
+  {
+    "text": "is our billing on track",
+    "expected": {
+      "specialist": "cost",
+      "method": "rule",
+      "rule_id": "cost",
+      "candidates": [
+        "cost"
+      ]
+    }
+  },
+  {
+    "text": "cost-centre report",
+    "expected": {
+      "specialist": "cost",
+      "method": "rule",
+      "rule_id": "cost",
+      "candidates": [
+        "cost"
+      ]
+    }
+  },
+  {
+    "text": "evaluate release 3 against the dataset",
+    "expected": {
+      "specialist": "evaluation",
+      "method": "rule",
+      "rule_id": "eval",
+      "candidates": [
+        "evaluation"
+      ]
+    }
+  },
+  {
+    "text": "what was the accuracy of the last run",
+    "expected": {
+      "specialist": "evaluation",
+      "method": "rule",
+      "rule_id": "eval",
+      "candidates": [
+        "evaluation"
+      ]
+    }
+  },
+  {
+    "text": "add more test cases for the faq agent",
+    "expected": {
+      "specialist": "evaluation",
+      "method": "rule",
+      "rule_id": "eval",
+      "candidates": [
+        "evaluation"
+      ]
+    }
+  },
+  {
+    "text": "did the thresholds pass",
+    "expected": {
+      "specialist": "evaluation",
+      "method": "rule",
+      "rule_id": "eval",
+      "candidates": [
+        "evaluation"
+      ]
+    }
+  },
+  {
+    "text": "explain the evaluation results",
+    "expected": {
+      "specialist": "evaluation",
+      "method": "rule",
+      "rule_id": "eval",
+      "candidates": [
+        "evaluation"
+      ]
+    }
+  },
+  {
+    "text": "why did one test case fail",
+    "expected": {
+      "specialist": "evaluation",
+      "method": "rule",
+      "rule_id": "eval",
+      "candidates": [
+        "evaluation"
+      ]
+    }
+  },
+  {
+    "text": "raise the threshold for latency",
+    "expected": {
+      "specialist": "evaluation",
+      "method": "rule",
+      "rule_id": "eval",
+      "candidates": [
+        "evaluation"
+      ]
+    }
+  },
+  {
+    "text": "the evaluator flagged two answers",
+    "expected": {
+      "specialist": "evaluation",
+      "method": "rule",
+      "rule_id": "eval",
+      "candidates": [
+        "evaluation"
+      ]
+    }
+  },
+  {
+    "text": "build an agent that answers HR questions",
+    "expected": {
+      "specialist": "build",
+      "method": "rule",
+      "rule_id": "build",
+      "candidates": [
+        "build"
+      ]
+    }
+  },
+  {
+    "text": "draft a tool for order lookups",
+    "expected": {
+      "specialist": "build",
+      "method": "rule",
+      "rule_id": "build",
+      "candidates": [
+        "build"
+      ]
+    }
+  },
+  {
+    "text": "generate a prompt for summaries",
+    "expected": {
+      "specialist": "build",
+      "method": "rule",
+      "rule_id": "build",
+      "candidates": [
+        "build"
+      ]
+    }
+  },
+  {
+    "text": "create an app over the orders table",
+    "expected": {
+      "specialist": "build",
+      "method": "rule",
+      "rule_id": "build",
+      "candidates": [
+        "build"
+      ]
+    }
+  },
+  {
+    "text": "make a screen for the support team",
+    "expected": {
+      "specialist": "build",
+      "method": "rule",
+      "rule_id": "build",
+      "candidates": [
+        "build"
+      ]
+    }
+  },
+  {
+    "text": "please create agent for invoices",
+    "expected": {
+      "specialist": "build",
+      "method": "rule",
+      "rule_id": "build",
+      "candidates": [
+        "build"
+      ]
+    }
+  },
+  {
+    "text": "make an app for the sales team",
+    "expected": {
+      "specialist": "build",
+      "method": "rule",
+      "rule_id": "build",
+      "candidates": [
+        "build"
+      ]
+    }
+  },
+  {
+    "text": "generate a screen with a chat box",
+    "expected": {
+      "specialist": "build",
+      "method": "rule",
+      "rule_id": "build",
+      "candidates": [
+        "build"
+      ]
+    }
+  },
+  {
+    "text": "design a solution for churn prediction",
+    "expected": {
+      "specialist": "solution_design",
+      "method": "rule",
+      "rule_id": "design",
+      "candidates": [
+        "solution_design"
+      ]
+    }
+  },
+  {
+    "text": "what approach fits a ticket triage bot",
+    "expected": {
+      "specialist": "solution_design",
+      "method": "rule",
+      "rule_id": "design",
+      "candidates": [
+        "solution_design"
+      ]
+    }
+  },
+  {
+    "text": "how should we structure the claims app",
+    "expected": {
+      "specialist": "solution_design",
+      "method": "rule",
+      "rule_id": "design",
+      "candidates": [
+        "solution_design"
+      ]
+    }
+  },
+  {
+    "text": "help me architect a reporting solution",
+    "expected": {
+      "specialist": "solution_design",
+      "method": "rule",
+      "rule_id": "design",
+      "candidates": [
+        "solution_design"
+      ]
+    }
+  },
+  {
+    "text": "how should i build the onboarding flow",
+    "expected": {
+      "specialist": "solution_design",
+      "method": "rule",
+      "rule_id": "design",
+      "candidates": [
+        "solution_design"
+      ]
+    }
+  },
+  {
+    "text": "propose an architecture for the faq bot",
+    "expected": {
+      "specialist": "solution_design",
+      "method": "rule",
+      "rule_id": "design",
+      "candidates": [
+        "solution_design"
+      ]
+    }
+  },
+  {
+    "text": "which design suits a multi tenant agent",
+    "expected": {
+      "specialist": "solution_design",
+      "method": "rule",
+      "rule_id": "design",
+      "candidates": [
+        "solution_design"
+      ]
+    }
+  },
+  {
+    "text": "outline the approach for invoice matching",
+    "expected": {
+      "specialist": "solution_design",
+      "method": "rule",
+      "rule_id": "design",
+      "candidates": [
+        "solution_design"
+      ]
+    }
+  },
+  {
+    "text": "research our customer data",
+    "expected": {
+      "specialist": "research",
+      "method": "rule",
+      "rule_id": "research",
+      "candidates": [
+        "research"
+      ]
+    }
+  },
+  {
+    "text": "look up the orders schema",
+    "expected": {
+      "specialist": "research",
+      "method": "rule",
+      "rule_id": "research",
+      "candidates": [
+        "research"
+      ]
+    }
+  },
+  {
+    "text": "find out what the invoices table holds",
+    "expected": {
+      "specialist": "research",
+      "method": "rule",
+      "rule_id": "research",
+      "candidates": [
+        "research"
+      ]
+    }
+  },
+  {
+    "text": "which tables do we have",
+    "expected": {
+      "specialist": "research",
+      "method": "rule",
+      "rule_id": "research",
+      "candidates": [
+        "research"
+      ]
+    }
+  },
+  {
+    "text": "What data is in the lakehouse?",
+    "expected": {
+      "specialist": "research",
+      "method": "rule",
+      "rule_id": "research",
+      "candidates": [
+        "research"
+      ]
+    }
+  },
+  {
+    "text": "summarize the existing solutions",
+    "expected": {
+      "specialist": "research",
+      "method": "rule",
+      "rule_id": "research",
+      "candidates": [
+        "research"
+      ]
+    }
+  },
+  {
+    "text": "summarise the sales schema",
+    "expected": {
+      "specialist": "research",
+      "method": "rule",
+      "rule_id": "research",
+      "candidates": [
+        "research"
+      ]
+    }
+  },
+  {
+    "text": "review the document on data retention",
+    "expected": {
+      "specialist": "research",
+      "method": "rule",
+      "rule_id": "research",
+      "candidates": [
+        "research"
+      ]
+    }
+  },
+  {
+    "text": "Which—Tables?",
+    "expected": {
+      "specialist": "research",
+      "method": "rule",
+      "rule_id": "research",
+      "candidates": [
+        "research"
+      ]
+    }
+  },
+  {
+    "text": "what will it cost to deploy release 3",
+    "expected": {
+      "specialist": null,
+      "method": "undecided",
+      "rule_id": null,
+      "candidates": [
+        "deployment",
+        "cost"
+      ]
+    }
+  },
+  {
+    "text": "evaluate the cost of this agent",
+    "expected": {
+      "specialist": null,
+      "method": "undecided",
+      "rule_id": null,
+      "candidates": [
+        "cost",
+        "evaluation"
+      ]
+    }
+  },
+  {
+    "text": "design an evaluation for the churn agent",
+    "expected": {
+      "specialist": null,
+      "method": "undecided",
+      "rule_id": null,
+      "candidates": [
+        "evaluation",
+        "solution_design"
+      ]
+    }
+  },
+  {
+    "text": "research which release is live",
+    "expected": {
+      "specialist": null,
+      "method": "undecided",
+      "rule_id": null,
+      "candidates": [
+        "deployment",
+        "research"
+      ]
+    }
+  },
+  {
+    "text": "build an app and deploy it",
+    "expected": {
+      "specialist": null,
+      "method": "undecided",
+      "rule_id": null,
+      "candidates": [
+        "deployment",
+        "build"
+      ]
+    }
+  },
+  {
+    "text": "what is the budget for the evaluation run",
+    "expected": {
+      "specialist": null,
+      "method": "undecided",
+      "rule_id": null,
+      "candidates": [
+        "cost",
+        "evaluation"
+      ]
+    }
+  },
+  {
+    "text": "hello there",
+    "expected": {
+      "specialist": null,
+      "method": "undecided",
+      "rule_id": null,
+      "candidates": []
+    }
+  },
+  {
+    "text": "what can you do",
+    "expected": {
+      "specialist": null,
+      "method": "undecided",
+      "rule_id": null,
+      "candidates": []
+    }
+  },
+  {
+    "text": "tell me a joke",
+    "expected": {
+      "specialist": null,
+      "method": "undecided",
+      "rule_id": null,
+      "candidates": []
+    }
+  },
+  {
+    "text": "thanks",
+    "expected": {
+      "specialist": null,
+      "method": "undecided",
+      "rule_id": null,
+      "candidates": []
+    }
+  },
+  {
+    "text": "who owns project sample",
+    "expected": {
+      "specialist": null,
+      "method": "undecided",
+      "rule_id": null,
+      "candidates": []
+    }
+  },
+  {
+    "text": "list the users of this workspace",
+    "expected": {
+      "specialist": null,
+      "method": "undecided",
+      "rule_id": null,
+      "candidates": []
+    }
+  },
+  {
+    "text": "?!?",
+    "expected": {
+      "specialist": null,
+      "method": "undecided",
+      "rule_id": null,
+      "candidates": []
+    }
+  },
+  {
+    "text": "what happened here",
+    "context_kind": "release",
+    "expected": {
+      "specialist": "deployment",
+      "method": "rule",
+      "rule_id": "context:release",
+      "candidates": [
+        "deployment"
+      ]
+    }
+  },
+  {
+    "text": "explain this",
+    "context_kind": "plan",
+    "expected": {
+      "specialist": "deployment",
+      "method": "rule",
+      "rule_id": "context:plan",
+      "candidates": [
+        "deployment"
+      ]
+    }
+  },
+  {
+    "text": "tell me about it",
+    "context_kind": "target",
+    "expected": {
+      "specialist": "deployment",
+      "method": "rule",
+      "rule_id": "context:target",
+      "candidates": [
+        "deployment"
+      ]
+    }
+  },
+  {
+    "text": "and this one",
+    "context_kind": "deployment",
+    "expected": {
+      "specialist": "deployment",
+      "method": "rule",
+      "rule_id": "context:deployment",
+      "candidates": [
+        "deployment"
+      ]
+    }
+  },
+  {
+    "text": "what happened here",
+    "context_kind": "evaluation_run",
+    "expected": {
+      "specialist": "evaluation",
+      "method": "rule",
+      "rule_id": "context:evaluation_run",
+      "candidates": [
+        "evaluation"
+      ]
+    }
+  },
+  {
+    "text": "deploy this",
+    "context_kind": "release",
+    "expected": {
+      "specialist": "deployment",
+      "method": "rule",
+      "rule_id": "deploy",
+      "candidates": [
+        "deployment"
+      ]
+    }
+  },
+  {
+    "text": "how much did this cost",
+    "context_kind": "solution",
+    "expected": {
+      "specialist": "cost",
+      "method": "rule",
+      "rule_id": "cost",
+      "candidates": [
+        "cost"
+      ]
+    }
+  },
+  {
+    "text": "what happened here",
+    "context_kind": "solution",
+    "expected": {
+      "specialist": null,
+      "method": "undecided",
+      "rule_id": null,
+      "candidates": []
+    }
+  },
+  {
+    "text": "how much did this cost",
+    "context_kind": "evaluation_run",
+    "expected": {
+      "specialist": null,
+      "method": "undecided",
+      "rule_id": null,
+      "candidates": [
+        "cost",
+        "evaluation"
+      ]
+    }
+  },
+  {
+    "text": "summarize this",
+    "context_kind": "deployment",
+    "expected": {
+      "specialist": null,
+      "method": "undecided",
+      "rule_id": null,
+      "candidates": [
+        "research",
+        "deployment"
+      ]
+    }
+  },
+  {
+    "text": "anything at all",
+    "specialist": "cost",
+    "expected": {
+      "specialist": "cost",
+      "method": "explicit",
+      "rule_id": null,
+      "candidates": [
+        "cost"
+      ]
+    }
+  },
+  {
+    "text": "deploy it now",
+    "specialist": "research",
+    "expected": {
+      "specialist": "research",
+      "method": "explicit",
+      "rule_id": null,
+      "candidates": [
+        "research"
+      ]
+    }
+  },
+  {
+    "text": "what will it cost to deploy release 3",
+    "specialist": "deployment",
+    "context_kind": "release",
+    "expected": {
+      "specialist": "deployment",
+      "method": "explicit",
+      "rule_id": null,
+      "candidates": [
+        "deployment"
+      ]
+    }
+  }
+]

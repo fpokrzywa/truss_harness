@@ -25,9 +25,11 @@ AGENT_LIMITS = {"max_iterations": 8, "max_tool_calls": 12, "max_tokens": 100_000
 
 _FOOTER = (
     "\n\nWork only inside the project this request belongs to. You read SETH through your tools "
-    "and never change anything yourself: anything to be done is a proposal a person accepts. "
-    "Assist request: {{assist_request_id}}. Context: {{context}}."
+    "and never change anything yourself: anything to be done is a proposal a person accepts."
 )
+# the request's variables, in the task message: a caller may set them on a direct run, so they
+# are untrusted and render inside `<untrusted>` blocks, never at system level
+CONTEXT_SECTION = "Assist request: {{assist_request_id}}. Context: {{context}}."
 
 
 @dataclass(frozen=True)
@@ -150,13 +152,13 @@ def tool_spec(internal_key: str) -> dict[str, Any]:
 
 
 def prompt_spec(key: str) -> dict[str, Any]:
-    """The prompt `assist-<key>`: the entry's instructions as the system section. The two
-    variables are set by the handover (SP7-3), not by run input, hence trusted; they are optional
-    so the agent needs no `variables_map`."""
+    """The prompt `assist-<key>`: the entry's instructions as the system section and the two
+    variables in the context section. The handover sets them, but any caller of a direct run can
+    too, so they are untrusted; they are optional so the agent needs no `variables_map`."""
     return {
-        "sections": {"system": CATALOG[key].instructions},
+        "sections": {"system": CATALOG[key].instructions, "context": CONTEXT_SECTION},
         "variables": [
-            {"name": name, "type": "string", "required": False, "default": "", "trusted": True}
+            {"name": name, "type": "string", "required": False, "default": "", "trusted": False}
             for name in VARIABLES
         ],
     }
