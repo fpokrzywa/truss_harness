@@ -1,16 +1,20 @@
-"""Assist DTOs (SP7 design section 11): settings, the catalog and the project's specialists."""
+"""Assist DTOs (SP7 design section 11): settings, the catalog, the project's specialists and
+requests."""
 
 from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Annotated, Any, Literal  # Any: proposal JSON documents
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 Strict = ConfigDict(extra="forbid")
 SpecialistStatus = Literal["installing", "enabled", "disabled"]
+RequestStatus = Literal["queued", "classifying", "handing_over", "routed", "refused", "failed"]
+ContextKind = Literal["solution", "release", "target", "plan", "deployment", "evaluation_run"]
+RouteMethod = Literal["explicit", "rule", "model"]
 
 
 class AssistSettingsOut(BaseModel):
@@ -88,3 +92,73 @@ class AssistCatalogOut(BaseModel):
     catalog_version: str
     assist_enabled: bool
     entries: list[CatalogEntryOut]
+
+
+# ====================================================================== requests
+class ContextIn(BaseModel):
+    """The object a request is about; it must be in the request's project (design 5.1)."""
+
+    model_config = Strict
+    kind: ContextKind
+    id: UUID
+
+
+class AssistRequestIn(BaseModel):
+    """`POST .../assist/requests`: the person's text, their pick of specialist and a context."""
+
+    model_config = Strict
+    text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
+    specialist: str | None = None
+    context: ContextIn | None = None
+
+
+class RunRefOut(BaseModel):
+    """The request's run, read live under the caller's `run:read`."""
+
+    id: UUID
+    status: str
+    error_code: str | None
+
+
+class ProposalOut(BaseModel):
+    id: UUID
+    run_id: UUID
+    kind: str
+    payload: dict[str, Any]
+    status: str
+    status_reason: str | None
+    result_ref: dict[str, Any] | None
+    decided_by: UUID | None
+    decided_at: datetime | None
+    created_at: datetime
+    updated_at: datetime | None
+
+
+class AssistRequestSummary(BaseModel):
+    id: UUID
+    workspace_id: UUID
+    project_id: UUID
+    status: RequestStatus
+    status_reason: str | None
+    requested_specialist: str | None
+    specialist_key: str | None
+    route_method: RouteMethod | None
+    run_id: UUID | None
+    requested_by: UUID
+    created_at: datetime
+    updated_at: datetime | None
+
+
+class AssistRequestOut(AssistRequestSummary):
+    """A request with its routing decision, its run and its proposals; never its text.
+    `candidates` is recomputed from the stored request (empty once the text is scrubbed);
+    `missing_permissions` is set only on the answer to the request that was refused
+    `specialist_not_permitted`."""
+
+    rule_id: str | None
+    router_version: str | None
+    candidates: list[str]
+    missing_permissions: list[str] | None = None
+    context: ContextIn | None
+    run: RunRefOut | None
+    proposals: list[ProposalOut]
