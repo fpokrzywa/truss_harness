@@ -64,6 +64,47 @@ describe('SolutionDetailView', () => {
     expect(link).toHaveAttribute('title', RELEASE.digest);
   });
 
+  it('lists the screens of a generated app version and marks its app release', async () => {
+    stubReleases({
+      ...LOOKUPS,
+      [`GET ${S}/s-1/versions`]: () =>
+        list([
+          {
+            ...VERSION,
+            spec: {
+              ...VERSION.spec,
+              screens: [
+                { kind: 'chat', title: 'Ask sales', placeholder: 'Ask' },
+                { kind: 'table', title: 'Orders', tool: 'orders_by_region', inputs: ['region'] },
+              ],
+            },
+          },
+        ]),
+      [`GET ${S}/s-1/versions/sv-1/releases`]: () =>
+        list([
+          { ...RELEASE, manifest: { ...RELEASE.manifest, compiler_version: 'shifde.packaging/2' } },
+        ]),
+    });
+    renderWithClient(<SolutionDetailView id="s-1" />);
+    const screens = await screen.findByRole('region', { name: 'Screens of v1' });
+    const items = within(screens).getAllByRole('listitem');
+    expect(items[0]).toHaveTextContent('chat: Ask sales');
+    expect(items[1]).toHaveTextContent('table: Orders (tool orders_by_region, inputs region)');
+    const releases = await screen.findByRole('table', { name: 'Releases of v1' });
+    const link = within(releases).getByRole('link', { name: 'abcdef012345' });
+    expect(link).toHaveAttribute('href', '/o/acme/releases/r-1');
+    expect(within(link.closest('td')!).getByText('App')).toBeInTheDocument();
+  });
+
+  it('has no screens section and no App mark for a /1 release without screens', async () => {
+    stubReleases(LOOKUPS);
+    renderWithClient(<SolutionDetailView id="s-1" />);
+    const releases = await screen.findByRole('table', { name: 'Releases of v1' });
+    expect(within(releases).getByRole('link', { name: 'abcdef012345' })).toBeInTheDocument();
+    expect(within(releases).queryByText('App')).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Screens of v1' })).not.toBeInTheDocument();
+  });
+
   it('asks for a project when the URL names none', async () => {
     nav.query = '';
     const fetchMock = stubReleases(LOOKUPS);

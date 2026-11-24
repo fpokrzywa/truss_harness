@@ -28,6 +28,7 @@ describe('navigation config (FR-UI-003)', () => {
       'deliver-deployments',
       'deliver-evaluation-datasets',
       'deliver-executors',
+      'deliver-generate',
       'deliver-plans',
       'deliver-solutions',
       'deliver-targets',
@@ -396,6 +397,20 @@ describe('permission-aware navigation (FR-UI-004)', () => {
       expect(items(['evaluation:dataset:read'])).toEqual([
         'Evaluation datasets=/o/acme/evaluations/datasets',
       ]);
+    });
+
+    it('gates Generate solution (SP5-7) on appgen:request:read, after Solutions', () => {
+      expect(items(['appgen:request:read'])).toEqual([
+        'Generate solution=/o/acme/solutions/generate',
+      ]);
+      expect(items(['packaging:solution:read', 'appgen:request:write'])).not.toContain(
+        'Generate solution=/o/acme/solutions/generate',
+      );
+      expect(items(['packaging:solution:read', 'appgen:request:read']).slice(-2)).toEqual([
+        'Solutions=/o/acme/solutions',
+        'Generate solution=/o/acme/solutions/generate',
+      ]);
+      expect(parseScope('/o/acme/solutions/generate/r-1')).toEqual({ org: 'acme', area: 'other' });
     });
 
     it('gates Board (SP7-6) on packaging:solution:read and lists it first', () => {

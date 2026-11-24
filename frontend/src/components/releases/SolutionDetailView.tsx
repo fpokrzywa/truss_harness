@@ -5,11 +5,12 @@ import { useRouter } from 'next/navigation';
 import { useState, type FormEvent } from 'react';
 import type { ConnectionType } from '@/lib/api/integrate-types';
 import { endpoints } from '@/lib/api/endpoints';
-import type {
-  EntrypointKind,
-  EnvironmentBindings,
-  SolutionOut,
-  SolutionVersionOut,
+import {
+  COMPILER_VERSION_APP,
+  type EntrypointKind,
+  type EnvironmentBindings,
+  type SolutionOut,
+  type SolutionVersionOut,
 } from '@/lib/api/packaging-types';
 import { useCan } from '@/lib/hooks';
 import { useProviders } from '@/lib/integrate-hooks';
@@ -24,6 +25,7 @@ import { compatibilityReport, shortDigest } from '@/lib/release-utils';
 import { datasetsHref, releaseHref, solutionsHref } from '@/lib/scope';
 import {
   ActionError,
+  Badge,
   EmptyState,
   formatDate,
   Modal,
@@ -171,6 +173,9 @@ function SolutionBody({ scope, solution }: { scope: Scope; solution: SolutionOut
                 </table>
               </section>
               {data.items.map((v) => (
+                <VersionScreens key={`screens-${v.id}`} version={v} />
+              ))}
+              {data.items.map((v) => (
                 <VersionReleases key={v.id} scope={scope} solutionId={solution.id} version={v} />
               ))}
             </>
@@ -239,6 +244,11 @@ function VersionReleases({
                       >
                         {shortDigest(r.digest)}
                       </Link>
+                      {r.manifest.compiler_version === COMPILER_VERSION_APP && (
+                        <span className="ml-2">
+                          <Badge>App</Badge>
+                        </span>
+                      )}
                     </td>
                     <td className="td">
                       <StatusBadge status={r.status} />
@@ -251,6 +261,37 @@ function VersionReleases({
           )
         }
       </QueryGate>
+    </section>
+  );
+}
+
+/** The screens of a generated app's version, as a plain list. */
+function VersionScreens({ version }: { version: SolutionVersionOut }) {
+  const screens = version.spec.screens;
+  if (!Array.isArray(screens) || screens.length === 0) return null;
+  const title = `Screens of v${version.version_no}`;
+  return (
+    <section aria-label={title} className="card">
+      <h2 className="text-base font-semibold">{title}</h2>
+      <ul className="mt-2 space-y-1 text-sm">
+        {screens.map((s, i) => (
+          <li key={i}>
+            <span className="text-slate-600">{s.kind}</span>: {s.title}
+            {s.kind === 'table' && (
+              <>
+                {' '}
+                (tool <code className="font-mono text-xs">{s.tool}</code>
+                {s.inputs.length > 0 && (
+                  <>
+                    , inputs <code className="font-mono text-xs">{s.inputs.join(', ')}</code>
+                  </>
+                )}
+                )
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }
