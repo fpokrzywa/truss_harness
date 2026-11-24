@@ -1,31 +1,31 @@
-# Handoff — 2026-11-23 ~17:10 EST, charter 7 factory run (lead session a76bd9e5)
+# Handoff — 2026-11-23 ~21:50 EST, charter 7 factory run (lead session 282359fa)
 
-Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` (sub-projects table), then this file.
+Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` (newest progress entry and sub-projects table), then this file.
 
-**State:** main = origin/main after this commit. Cluster on 55450 running. Lead context ~190k at handoff. No agent running.
+**State:** main = origin/main after this commit. Cluster on 55450 running. Lead context ~180k at handoff. No agent running, no gate run.
 
 ## Finished this session
-- Merged 139 SP8-6 (#291, PR #302, 13/13 at e2410d5), 141 SP6-1 (#268, PR #307, 13/13 at 0d48f8f) and 137 SP8-2 shifde-mcp (#287, PR #310, 13/13 at c742c99; sync classified `/mcp/settings` routes as CLIENT and split the catalog count into SETH base (92, 8, 339) plus exact mcp (3, 5)). File 137 follow-ups: limiter order, docstring, removed-member key test.
-- Added the appgen-web lines to protected `factory/checks.sh` (B-3951, commit c35f37f), then started #257.
-- New jobs: 148 (#257 SP5-4 appgen-web), 149 (#277 SP7-1 internal tools), 150 (#318 home page redirect, owner request via supervisor ruling S-038 — reply to the supervisor session when it merges).
-- Follow-ups filed (label factory): #315 (deadlock on secret `last_used_at` under concurrent evaluation case runs), #316 (SP5-3 accept retry robustness / screens visibility / failed-step audit; depends on #256), #319 (Snowflake `:<digit>` refusal; depends on #268).
-- **Next free lead decision id: B-3952.**
+- Merged 147 (#256, PR #314), 148 (#257, PR #313), 150 (#318, PR #320), 149 (#277, PR #317), 145 (#270, PR #311), 152 (#319, PR #321), 154 (#260, PR #326, `job merge`). Gate counts in the STATUS entry.
+- 150 (home page redirect, supervisor ruling S-038) is merged; the supervisor session was not identified in `ListAgents`, so tell it if it asks.
+- Lead rulings B-3966 (job 155 findings) and B-3967 (job 151 deviation). Follow-ups filed: #324, #325, #327, #329.
+- **Next free lead decision id: B-3968.** (B-3960 is job 153's builder row on its branch; B-3963-B-3965 were offered to job 154's builder, which used none.)
 
-## Exact next step: gate and merge, strictly one gate run at a time
-All branches below were synced with origin/main at ~17:05 (main has since gained PR #310, so sync again first) and pushed, clean worktrees. For each, in this order: if `git rev-list --count origin/factory/<branch>..origin/main` > 0, sync again (merge origin/main, keep both, main first; alembic-heads lists include every head); then `python scripts/gates.py --ref <full sha> --name <id>-merge > .worktrees/_gate-logs/<id>-merge.out 2>&1`, read the **final** `gates: N/M passed` line (the first `gates: ref ...` line is NOT the result — that trap caused an overlapping run this session), then `gh pr merge <pr> --merge --match-head-commit <sha>`, then `PYTHONUTF8=1 factory/bin/job queue`.
-1. **147** SP5-3 appgen accept (#256, PR #314), head 64f0c82, needs-human only because `job merge` hit a conflict (now resolved and pushed). Approver APPROVE, reviews PASS. Run 13 gates, then merge.
-2. **148** SP5-4 appgen-web (#257, PR #313), head 2154caa, needs-human (approver escalated for the `scripts/gates.py` change; lead reviewed: additive only, lockfile drop of optional `@babel/core` peer accepted). gates.py on this branch has 18 gates; all must pass. Then merge.
-3. **150** home page (#318, PR #320): stage approve, APPROVE. Run `PYTHONUTF8=1 factory/bin/job merge 150-home-page-send-people` (it gates and merges). Tell the supervisor session the result.
-4. **149** SP7-1 internal tools (#277, PR #317): stage approve, APPROVE. `job merge 149-sp7-1-runtime-internal`.
-5. Then the remaining needs-human: 145 (PR #311; add notes to B-3934/B-3936 that B-3947 supersedes them), 140 (PR #303), 143 (PR #308) — sync, 13 gates, merge, as before.
-Use a general-purpose sonnet agent per merge (sync, touched tests, push, gates.py, report gate lines); never two gate runs at once (no `factory/bin/gate` during a `gates.py` run).
+## Exact next step
+1. `PYTHONUTF8=1 factory/bin/job queue`; start every `resume`/`new` line (check "Depends on" in each issue body before `job create`; `job queue` does not know dependencies).
+2. **155** (#278 SP7-2, PR #328) at stage gate: `factory/bin/gate 155-sp7-2-assist-skeleton`. It adds protected migration `assist_0001`, so the gate may fail on the protected path by design (B-2530): then the lead runs reviews (code, security; plus `isolation-reviewer`, new client-owned tables), then the full `scripts/gates.py` on the synced head, then `gh pr merge`.
+3. **151** (#315, PR #322) needs-human: sync with main (DECISIONS: renumber its B-3952 row to the next free id; 152's B-3952 is on main), push, `scripts/gates.py --ref <sha> --name 151-merge`, `gh pr merge 322 --merge --match-head-commit <sha>`.
+4. **153** (#258 SP5-5, PR #323) needs-human (new dev deps flask/databricks-sdk; generated app calls Databricks with no access check of its own, design 6.4). Run `isolation-reviewer` (marked C), sync, full gates, merge. #327 (body cap) must merge before #259 deploys the app.
+5. **143** (#285, PR #308) and **140** (#293, PR #303) needs-human, isolation APPROVED (docs/build/reviews): sync, full gates, merge.
+Startable now: #316 (needs #256, merged), #324 (after #315), #325 (#319 merged), #327 (after #258), #329 (after #260), #259 (after #258), #261 (after #259+#260).
 
 ## Open jobs (stage)
-140 needs-human · 143 needs-human · 145 needs-human · 147 needs-human · 148 needs-human · 149 approve · 150 approve.
-Startable after merges: #258 (needs #256+#257), #260 (needs #256+#257), #278 (needs #277), #316 (needs #256), #319 (#268 merged — startable), #315 (startable), #312 (needs #285). Others per dependency rules in the issues and previous handoffs. `job queue` does not know dependencies; check "Depends on" in the issue body before `job create`.
+140 needs-human · 143 needs-human · 151 needs-human · 153 needs-human · 155 gate.
 
 ## Traps learned
-- Short job ids resolve to issue numbers (`route 148` hit issue #148). Always pass the full job id.
-- Reviewers sometimes don't write their file (reviewer-ui did not); the lead writes it verbatim from the report, marked as such.
-- `agent-browser` is not installed: UX/UI reviews are diff-and-test only.
-- Earlier traps hold (PYTHONUTF8=1, UV_LINK_MODE=copy, unset VIRTUAL_ENV, `gates.py` writes no `.summary`, builders may stall after reporting READY — check build.md first line).
+- `scripts/gates.py` from main now has 18 gates (appgen-web). A branch that changes `gates.py` must run its own copy: `python .worktrees/<job>/scripts/gates.py --ref <sha> ...`.
+- `gates.py` output is buffered until it exits; progress is the files in `.worktrees/_gate-logs/<name>/` (pytest's log appears only when the suite ends).
+- `job merge` fails fast on a conflict with main and moves the job to needs-human; most conflicts are DECISIONS.md rows: keep both sides, main first.
+- Don't `git reset --hard` in job worktrees (auto mode refuses it, and it is not needed: check `git status` and the pushed head instead).
+- Builders sometimes keep running after reporting READY; check build.md's first line and the pushed head, then stop them.
+- Isolation-reviewer is read-only and cannot write its file: the lead writes it from the report, marked as such.
+- Earlier traps hold (PYTHONUTF8=1, UV_LINK_MODE=copy, unset VIRTUAL_ENV, full job ids only, never two gate runs at once).

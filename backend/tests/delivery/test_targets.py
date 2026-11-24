@@ -1,6 +1,7 @@
 """Deployment targets through the routes, as `shifde_app` (design 3, 9; B-2501): register, list,
 get, archive, address refusal before any request, validation, permissions, audit, the setting
-and the seeded delivery permissions.
+and the seeded delivery permissions; Snowflake targets (SP6-3): their bindings, their address
+refusal, `binding_in_use` on one claim and the interim plan refusal.
 """
 
 from __future__ import annotations
@@ -18,16 +19,21 @@ from sqlalchemy.orm import Session
 from shifde.core.db import Database
 from shifde.core.settings import Settings
 from tests.connections.routes import as_user, limited_user, system_role_user
+from tests.delivery.releases import release_for_target
 from tests.delivery.routes import (
+    SNOWFLAKE_BINDINGS,
     address,
     counts,
     delivery_client,
     register,
+    request_plan,
+    snowflake_address,
+    snowflake_body,
     target_body,
     targets,
 )
 from tests.tenancy.conftest import World
-from tests.tenancy.routes import People, project_slug, ws_slug
+from tests.tenancy.routes import People, project_slug, ws2_slug, ws_slug
 
 ALL_KEYS = {
     "delivery:target:read",
@@ -318,3 +324,201 @@ def test_the_catalog_holds_the_nine_delivery_keys(owner_session: Session) -> Non
     for role, key in grants:
         by_role.setdefault(role, set()).add(key)
     assert by_role == {"tenant_administrator": ALL_KEYS, "developer": DEVELOPER_KEYS}
+
+
+# ------------------------------------------------------------------ Snowflake targets (SP6-3)
+SNOWFLAKE_REFUSED = (
+    "the address is not a Snowflake account URL (https://<account>.snowflakecomputing.com)"
+)
+
+
+def test_a_snowflake_target_is_registered_listed_got_and_archived(
+    client: TestClient, world: World, people: People
+) -> None:
+    a = world.a
+    h = as_user(client, people.owner_a)
+    example = snowflake_body(ws_slug(a), "https://Acct_1.snowflakecomputing.com")
+    made = register(client, h, a.slug, example)
+    assert set(made) == OUT_FIELDS
+    assert made["platform_kind"] == "snowflake"
+    assert made["address"] == "https://acct-1.snowflakecomputing.com"
+    assert made["bindings"] == SNOWFLAKE_BINDINGS
+    url = snowflake_address()
+    host = url.removeprefix("https://").removesuffix(".snowflakecomputing.com")
+    private = register(
+        client,
+        h,
+        a.slug,
+        snowflake_body(
+            ws2_slug(a),
+            f"https://{host.upper()}.privatelink.snowflakecomputing.com:443/",
+            bindings={**SNOWFLAKE_BINDINGS, "package": "OTHER_PKG", "application": "OTHER_APP"},
+        ),
+    )
+    assert private["address"] == f"https://{host}.privatelink.snowflakecomputing.com"
+    listed = client.get(targets(a.slug), headers=h).json()["items"]
+    assert {t["id"] for t in listed} == {made["id"], private["id"]}
+    got = client.get(f"{targets(a.slug)}/{made['id']}", headers=h)
+    assert got.status_code == 200 and got.json() == made
+    archived = client.post(f"{targets(a.slug)}/{made['id']}/archive", headers=h)
+    assert archived.status_code == 200, archived.text
+    assert archived.json()["status"] == "archived"
+    assert archived.json()["bindings"] == SNOWFLAKE_BINDINGS
+
+
+@pytest.mark.parametrize(
+    "bindings",
+    [
+        {**SNOWFLAKE_BINDINGS, "package": "1PKG"},
+        {**SNOWFLAKE_BINDINGS, "application": "APP-1"},
+        {**SNOWFLAKE_BINDINGS, "warehouse": "WH; DROP"},
+        {**SNOWFLAKE_BINDINGS, "cortex_model": "Mistral-Large2"},
+        {**SNOWFLAKE_BINDINGS, "cortex_model": "-model"},
+        {k: v for k, v in SNOWFLAKE_BINDINGS.items() if k != "cortex_model"},
+        {k: v for k, v in SNOWFLAKE_BINDINGS.items() if k != "package"},
+        {**SNOWFLAKE_BINDINGS, "extra": "x"},
+        {"warehouse_id": "abc123def456"},
+    ],
+    ids=[
+        "package",
+        "application",
+        "warehouse",
+        "cortex-upper",
+        "cortex-start",
+        "no-cortex",
+        "no-package",
+        "extra",
+        "databricks-bindings",
+    ],
+)
+def test_snowflake_bindings_are_validated(
+    client: TestClient, world: World, people: People, owner_db: Database, bindings: dict[str, str]
+) -> None:
+    h = as_user(client, people.owner_a)
+    body = snowflake_body(ws_slug(world.a), snowflake_address(), bindings=bindings)
+    r = client.post(targets(world.a.slug), headers=h, json=body)
+    assert r.status_code == 422, r.text
+    assert all(e["loc"][:2] == ["body", "bindings"] for e in r.json()["errors"]), r.text
+    assert counts(owner_db, world.a.tenant) == (0, 0)
+
+
+def test_snowflake_bindings_on_a_databricks_target_are_refused(
+    client: TestClient, world: World, people: People, owner_db: Database
+) -> None:
+    h = as_user(client, people.owner_a)
+    body = target_body(ws_slug(world.a), address(), bindings=dict(SNOWFLAKE_BINDINGS))
+    r = client.post(targets(world.a.slug), headers=h, json=body)
+    assert r.status_code == 422, r.text
+    assert all(e["loc"][:2] == ["body", "bindings"] for e in r.json()["errors"]), r.text
+    assert counts(owner_db, world.a.tenant) == (0, 0)
+
+
+def test_an_off_pattern_snowflake_address_is_refused_with_the_fixed_message(
+    client: TestClient, world: World, people: People, owner_db: Database
+) -> None:
+    h = as_user(client, people.owner_a)
+    for url in (
+        "https://acct1.snowflakecomputing.cn",
+        "http://acct1.snowflakecomputing.com",
+        "https://acct1.snowflakecomputing.com/path",
+        "https://acct1.snowflakecomputing.com:8443",
+        "https://adb-1.cloud.databricks.com",
+        "https://a.b.c.d.snowflakecomputing.com",
+    ):
+        body = snowflake_body(ws_slug(world.a), url)
+        r = client.post(targets(world.a.slug), headers=h, json=body)
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"] == SNOWFLAKE_REFUSED
+        assert r.json()["errors"][0]["loc"] == ["body", "address"]
+        assert url not in r.text
+    assert counts(owner_db, world.a.tenant) == (0, 0)
+
+
+def test_a_body_without_platform_kind_is_databricks(
+    client: TestClient, world: World, people: People
+) -> None:
+    h = as_user(client, people.owner_a)
+    body = target_body(ws_slug(world.a), address())
+    assert "platform_kind" not in body
+    assert register(client, h, world.a.slug, body)["platform_kind"] == "databricks"
+    snowflake = target_body(ws_slug(world.a), snowflake_address(), bindings=SNOWFLAKE_BINDINGS)
+    assert client.post(targets(world.a.slug), headers=h, json=snowflake).status_code == 422
+
+
+@pytest.mark.parametrize("reused", ["package", "application"])
+def test_a_reused_package_or_application_on_one_claim_is_binding_in_use(
+    client: TestClient, world: World, people: People, owner_db: Database, reused: str
+) -> None:
+    a = world.a
+    h = as_user(client, people.owner_a)
+    url = snowflake_address()
+    first = register(client, h, a.slug, snowflake_body(ws_slug(a), url))
+    other = {"package": "OTHER_PKG", "application": "OTHER_APP"}
+    # the same name in another case is the same Snowflake object
+    bindings = {**SNOWFLAKE_BINDINGS, **other, reused: SNOWFLAKE_BINDINGS[reused].lower()}
+    body = snowflake_body(ws2_slug(a), url, bindings=bindings)
+    r = client.post(targets(a.slug), headers=h, json=body)
+    assert r.status_code == 409, r.text
+    assert r.json()["code"] == "binding_in_use"
+    assert first["id"] not in r.text and first["name"] not in r.text
+    assert counts(owner_db, a.tenant) == (1, 1)
+    # another account may bind the same names
+    register(client, h, a.slug, snowflake_body(ws2_slug(a), snowflake_address()))
+    # archiving frees the names on the claim
+    assert client.post(f"{targets(a.slug)}/{first['id']}/archive", headers=h).is_success
+    assert register(client, h, a.slug, body)["bindings"] == bindings
+
+
+def test_distinct_names_on_one_claim_are_accepted(
+    client: TestClient, world: World, people: People, owner_db: Database
+) -> None:
+    h = as_user(client, people.owner_a)
+    url = snowflake_address()
+    register(client, h, world.a.slug, snowflake_body(ws_slug(world.a), url))
+    bindings = {**SNOWFLAKE_BINDINGS, "package": "PKG_2", "application": "APP_2"}
+    register(client, h, world.a.slug, snowflake_body(ws2_slug(world.a), url, bindings=bindings))
+    assert counts(owner_db, world.a.tenant) == (2, 1)
+
+
+def test_a_snowflake_target_is_audited_with_its_platform_kind(
+    client: TestClient, world: World, people: People, owner_db: Database
+) -> None:
+    h = as_user(client, people.owner_a)
+    body = snowflake_body(ws_slug(world.a), snowflake_address())
+    made = register(client, h, world.a.slug, body)
+    with owner_db.session() as o:
+        details = o.execute(
+            text(
+                "SELECT details FROM shifde.audit_events WHERE tenant_id = :t AND target_id = :i "
+                "AND action = 'delivery.target.registered'"
+            ),
+            {"t": world.a.tenant, "i": made["id"]},
+        ).scalar_one()
+    assert details["platform_kind"] == "snowflake"
+    assert made["address"] not in str(details)
+
+
+def test_a_plan_request_on_a_snowflake_target_is_refused_without_a_write(
+    client: TestClient, world: World, people: People, owner_db: Database
+) -> None:
+    h = as_user(client, people.owner_a)
+    body = snowflake_body(ws_slug(world.a), snowflake_address())
+    made = register(client, h, world.a.slug, body)
+    release = release_for_target(owner_db, made["id"]).id
+
+    def rows() -> tuple[int, int, int]:
+        with owner_db.session() as o:
+            row = o.execute(
+                text(
+                    "SELECT (SELECT count(*) FROM shifde.delivery_plans WHERE tenant_id = :t), "
+                    "(SELECT count(*) FROM shifde.delivery_artifacts WHERE tenant_id = :t), "
+                    "(SELECT count(*) FROM shifde.delivery_jobs WHERE tenant_id = :t)"
+                ),
+                {"t": world.a.tenant},
+            ).one()
+        return int(row[0]), int(row[1]), int(row[2])
+
+    h = as_user(client, people.owner_a)
+    refused = request_plan(client, h, world.a.slug, made["id"], release, status=409)
+    assert refused["code"] == "release_target_mismatch"
+    assert rows() == (0, 0, 0)

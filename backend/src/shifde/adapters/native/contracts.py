@@ -547,10 +547,13 @@ class OwnedResource(Model):
 
 
 class JobContext(Model):
-    """What a leased job runs against (never a credential, the claim or the artifact bytes)."""
+    """What a leased job runs against (never a credential, the claim or the artifact bytes).
+    `platform_kind` is the target's platform; it is not on `Target`, whose digest every sealed
+    plan's `bindings_digest` is."""
 
     job: LeasedJob
     target: Target
+    platform_kind: Literal["databricks", "snowflake"] = "databricks"
     plan: ContextPlan | None
     deployment: ContextDeployment | None
     owned_resources: list[OwnedResource]

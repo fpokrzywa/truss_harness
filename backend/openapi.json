@@ -7884,7 +7884,7 @@
       },
       "JobContext": {
         "additionalProperties": false,
-        "description": "What a leased job runs against (never a credential, the claim or the artifact bytes).",
+        "description": "What a leased job runs against (never a credential, the claim or the artifact bytes).\n`platform_kind` is the target's platform; it is not on `Target`, whose digest every sealed\nplan's `bindings_digest` is.",
         "properties": {
           "deployment": {
             "anyOf": [
@@ -7916,6 +7916,15 @@
               }
             ]
           },
+          "platform_kind": {
+            "default": "databricks",
+            "enum": [
+              "databricks",
+              "snowflake"
+            ],
+            "title": "Platform Kind",
+            "type": "string"
+          },
           "target": {
             "$ref": "#/components/schemas/Target"
           }
@@ -7923,6 +7932,7 @@
         "required": [
           "job",
           "target",
+          "platform_kind",
           "plan",
           "deployment",
           "owned_resources"
@@ -15865,6 +15875,40 @@
         "title": "ShiProviderPut",
         "type": "object"
       },
+      "SnowflakeBindings": {
+        "additionalProperties": false,
+        "description": "A Snowflake target's bindings: the Native App package, application and warehouse names\nand the Cortex model (SP6 design 6.4).",
+        "properties": {
+          "application": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_$]{0,254}$",
+            "title": "Application",
+            "type": "string"
+          },
+          "cortex_model": {
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+            "title": "Cortex Model",
+            "type": "string"
+          },
+          "package": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_$]{0,254}$",
+            "title": "Package",
+            "type": "string"
+          },
+          "warehouse": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_$]{0,254}$",
+            "title": "Warehouse",
+            "type": "string"
+          }
+        },
+        "required": [
+          "package",
+          "application",
+          "warehouse",
+          "cortex_model"
+        ],
+        "title": "SnowflakeBindings",
+        "type": "object"
+      },
       "SolutionCreate": {
         "additionalProperties": false,
         "properties": {
@@ -16534,6 +16578,7 @@
       },
       "TargetBindings": {
         "additionalProperties": false,
+        "description": "A Databricks target's bindings.",
         "properties": {
           "warehouse_id": {
             "pattern": "^[A-Za-z0-9-]{1,64}$",
@@ -16557,7 +16602,15 @@
             "type": "string"
           },
           "bindings": {
-            "$ref": "#/components/schemas/TargetBindings"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TargetBindings"
+              },
+              {
+                "$ref": "#/components/schemas/SnowflakeBindings"
+              }
+            ],
+            "title": "Bindings"
           },
           "credential_ref": {
             "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$",
@@ -16580,8 +16633,11 @@
             "type": "string"
           },
           "platform_kind": {
-            "const": "databricks",
             "default": "databricks",
+            "enum": [
+              "databricks",
+              "snowflake"
+            ],
             "title": "Platform Kind",
             "type": "string"
           },
@@ -16619,7 +16675,15 @@
             "type": "string"
           },
           "bindings": {
-            "$ref": "#/components/schemas/TargetBindings"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TargetBindings"
+              },
+              {
+                "$ref": "#/components/schemas/SnowflakeBindings"
+              }
+            ],
+            "title": "Bindings"
           },
           "created_at": {
             "format": "date-time",
@@ -16649,6 +16713,10 @@
             "type": "string"
           },
           "platform_kind": {
+            "enum": [
+              "databricks",
+              "snowflake"
+            ],
             "title": "Platform Kind",
             "type": "string"
           },
