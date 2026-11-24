@@ -813,6 +813,43 @@ class GovernanceService:
             },
         )
 
+    def project_costs(self, project_id: UUID, days: int) -> dict[str, Any]:  # Any: JSON
+        """The project's usage of the last `days` days by UTC day, model and root run kind, each
+        per currency (`usage:read`; read only: no commit, no rollback, for assist)."""
+        vis = self._vis("usage:read")
+        since = utcnow() - timedelta(days=days)
+        rows = repo.project_cost_rows(self.session, self.tenant_id, project_id, since, vis)
+
+        def grouped(key: str) -> list[dict[str, Any]]:  # Any: JSON
+            sums: dict[tuple[str, str | None], dict[str, Any]] = {}
+            for r in rows:
+                g = sums.setdefault(
+                    (str(r[key]), r["currency"]),
+                    {key: r[key], "currency": r["currency"], "input_tokens": 0,
+                     "output_tokens": 0, "calls": 0, "cost": Decimal(0)},
+                )  # fmt: skip
+                g["input_tokens"] += int(r["input_tokens"])
+                g["output_tokens"] += int(r["output_tokens"])
+                g["calls"] += int(r["calls"])
+                g["cost"] += Decimal(r["cost"])
+            return [{**g, "cost": format(g["cost"], "f")} for _, g in sorted(sums.items())]
+
+        by_model = grouped("model_id")
+        names = repo.labels(
+            self.session,
+            self.tenant_id,
+            "model",
+            sorted({g["model_id"] for g in by_model if g["model_id"]}),
+        )
+        for g in by_model:
+            g["model_name"] = names.get(g["model_id"]) if g["model_id"] else None
+        return {
+            "since": since.isoformat(),
+            "by_day": grouped("day"),
+            "by_model": by_model,
+            "by_run_kind": grouped("run_kind"),
+        }
+
     def rebuild_rollups(self, start: datetime | None, end: datetime | None) -> s.ReconciliationOut:
         self._require_manage("usage:manage")
         from_day, to_day = self._window(start, end, 30)

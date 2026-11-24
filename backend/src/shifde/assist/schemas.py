@@ -1,5 +1,5 @@
-"""Assist DTOs (SP7 design section 11): settings, the catalog, the project's specialists and
-requests."""
+"""Assist DTOs (SP7 design section 11): settings, the catalog, the project's specialists,
+requests and proposals."""
 
 from __future__ import annotations
 
@@ -121,10 +121,14 @@ class RunRefOut(BaseModel):
 
 
 class ProposalOut(BaseModel):
+    """A specialist's proposal (design section 6). `payload` is null unless the caller holds,
+    on the request's project, the read permissions of what it names; `result_ref` is null unless
+    the caller can read the object the accept created."""
+
     id: UUID
     run_id: UUID
     kind: str
-    payload: dict[str, Any]
+    payload: dict[str, Any] | None
     status: str
     status_reason: str | None
     result_ref: dict[str, Any] | None
@@ -132,6 +136,12 @@ class ProposalOut(BaseModel):
     decided_at: datetime | None
     created_at: datetime
     updated_at: datetime | None
+
+
+class ProposalDecision(BaseModel):
+    """`POST .../assist/proposals/{id}/accept` and `/dismiss`: an empty body."""
+
+    model_config = Strict
 
 
 class AssistRequestSummary(BaseModel):

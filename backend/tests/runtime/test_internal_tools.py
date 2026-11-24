@@ -1,9 +1,9 @@
 """SP7-1 (design section 3): the worker's internal tool registry and the `seth.*` dispatch.
 
 `InternalToolRegistry.of` refuses an undeclared key and is immutable; the composition root
-(`worker_main`) hands an empty registry to `runtime.worker.run`. A worker given a registry (the
-`p5util.thread_worker` wiring) runs a published `builtin.function` tool bound to `seth.board.read`
-inside an agent run: the function gets the run's ids, its principal and step key, and runs on the
+(`worker_main`) hands `runtime.worker.run` a registry of every declared key (`assist.tools`).
+A worker given a registry (the `p5util.thread_worker` wiring) runs a published
+`builtin.function` tool bound to `seth.board.read` inside an agent run: the function gets the run's ids, its principal and step key, and runs on the
 step's session in the run's client (A's run sees A, B's run sees B). Without a registry, or
 without the key in it, the run fails with `internal_function_unavailable` and nothing runs. The
 runtime never commits inside the call: a row the function writes is gone when it raises and kept
@@ -25,6 +25,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from shifde import worker_main
+from shifde.assist import tools as assist_tools
 from shifde.audit import service as audit
 from shifde.build.internal_functions import INTERNAL_FUNCTIONS
 from shifde.core.errors import NotFound
@@ -112,9 +113,11 @@ def test_the_registry_is_immutable() -> None:
     assert "seth.costs.read" not in registry
 
 
-def test_the_composition_root_registry_is_empty_for_now() -> None:
+def test_the_composition_root_registers_every_declared_function() -> None:
     registry = worker_main.internal_tools()
-    assert isinstance(registry, InternalToolRegistry) and dict(registry) == {}
+    assert isinstance(registry, InternalToolRegistry)
+    assert set(registry) == set(INTERNAL_FUNCTIONS)
+    assert dict(registry) == dict(assist_tools.REGISTRY)
 
 
 def test_the_composition_root_passes_the_registry_to_the_worker(
@@ -254,6 +257,20 @@ def test_a_seth_tool_runs_inside_a_run_in_its_own_client(
         assert step[2] == {"columns": ["todo"], "truncated": False}
         assert (step[3], step[4]) == ("read", "succeeded")  # journaled, class read
     assert calls[0][1] != calls[1][1]
+
+
+def test_a_worker_of_the_composition_root_runs_the_real_board_function(
+    client: TestClient, world: World, owner_session: Session, settings: Settings
+) -> None:
+    set_tenant_setting(owner_session, "demo-a", "capture_content", "full")
+    a = user_session(client, world.passwords, ADMIN)
+    run = _run(a, A, _agent(a, owner_session, A, "demo-a"))
+    with thread_worker(settings):  # worker_main.internal_tools(): `assist.tools.REGISTRY`
+        assert _ended(a, A, run)["status"] == "completed"
+    [step] = _tool_steps(owner_session, run)
+    assert step[0] == "succeeded" and step[2]["truncated"] is False
+    [project] = step[2]["board"]["projects"]
+    assert project["project"]["id"] == str(_run_row(owner_session, run).project_id)
 
 
 @pytest.mark.parametrize("registered", ["nothing", "another key"])

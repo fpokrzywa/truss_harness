@@ -1,6 +1,6 @@
 """Assist routes (SP7 design section 11): the catalog, settings and switch under the organization;
 install, the specialists and requests under a project, `{ws}` and `{proj}` named as in the tenancy
-routes; one request is reached under the organization."""
+routes; one request and a proposal's accept and dismiss are reached under the organization."""
 
 from __future__ import annotations
 
@@ -109,3 +109,19 @@ def list_assist_requests(
 @router.get(ORG + "/requests/{request_id}", tags=["assist"])
 def get_assist_request(svc: Service, request_id: UUID) -> s.AssistRequestOut:
     return svc.get_request(request_id)
+
+
+@router.post(ORG + "/proposals/{proposal_id}/accept", tags=["assist"])
+def accept_assist_proposal(
+    svc: Service, proposal_id: UUID, body: s.ProposalDecision
+) -> s.ProposalOut:
+    del body  # `{}`
+    return svc.accept_proposal(proposal_id)
+
+
+@router.post(ORG + "/proposals/{proposal_id}/dismiss", tags=["assist"])
+def dismiss_assist_proposal(
+    svc: Service, proposal_id: UUID, body: s.ProposalDecision
+) -> s.ProposalOut:
+    del body  # `{}`
+    return svc.dismiss_proposal(proposal_id)

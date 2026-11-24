@@ -31,9 +31,12 @@ from typing import Any  # Any: rows and JSON specs
 from uuid import UUID
 
 from jsonschema import Draft202012Validator
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from shifde.adapters.runtime import IntegrationRuntime
+from shifde.appgen.schemas import AppRequestCreate
+from shifde.appgen.service import AppGenService
 from shifde.assist import catalog, repository, routing
 from shifde.assist import schemas as s
 from shifde.assist.routing import SpecialistUnknown
@@ -52,12 +55,15 @@ from shifde.core.errors import (
     NotFound,
     PublishPending,
     ScopeArchived,
+    ValidationFailed,
 )
 from shifde.core.ids import uuid7
 from shifde.core.pagination import Page, decode_cursor, encode_cursor, paginate
 from shifde.delivery.deployments import DeploymentService
 from shifde.delivery.plans import PlanService
+from shifde.delivery.schemas import PlanCreate
 from shifde.delivery.service import TargetService
+from shifde.evaluation.schemas import EvaluationRequest
 from shifde.evaluation.service import EvaluationService
 from shifde.models_admin import schemas as model_schemas
 from shifde.models_admin.service import ModelService
@@ -100,6 +106,16 @@ DONE = frozenset({"routed", "refused", "failed"})
 ROUTER_MAX_TOKENS = 300
 INVALID_OUTPUT = "invalid_model_output"
 INSTALL_AGAIN = "the specialist differs from its catalog entry; run install again"
+ACCEPT = "assist:proposal:accept"
+PROPOSAL_TARGET = "assist_proposal"
+PROPOSAL_NOT_FOUND = "proposal not found"
+# the read permissions, on the request's project, of what a proposal's payload names: only a
+# caller holding all of them sees the payload (advisory item 5 of issue #280)
+PAYLOAD_READ: dict[str, tuple[str, ...]] = {
+    "appgen_request": ("connection:read",),
+    "evaluation_run": ("packaging:solution:read", "evaluation:run:read"),
+    "delivery_plan": ("packaging:solution:read", "delivery:target:read", "delivery:plan:read"),
+}
 ROUTER_PROMPT = (
     "You route a person's request to exactly one SETH specialist. The user message is a JSON "
     'object with the request "text" and the "candidates" the routing rules found (empty when '
@@ -140,6 +156,10 @@ class RouterModelRequired(AppError):
 
 class RouterModelNotAllowed(AppError):
     status, code, title = 422, "router_model_not_allowed", "Unprocessable Entity"
+
+
+class ProposalNotOpen(AppError):
+    status, code, title = 409, "proposal_not_open", "Conflict"
 
 
 class ModelUnavailable(AppError):
@@ -973,6 +993,7 @@ class AssistService:
         proposals = repository.list_proposals(
             self._session, tenant_id=self.sc.tenant_id, request_id=row["id"]
         )
+        project = ResourceRef(self.sc.tenant_id, row["workspace_id"], row["project_id"])
         return s.AssistRequestOut(
             **_summary_fields(row),
             rule_id=row["rule_id"],
@@ -981,23 +1002,44 @@ class AssistService:
             missing_permissions=missing,
             context=s.ContextIn(**row["context"]) if row["context"] else None,
             run=run,
-            proposals=[
-                s.ProposalOut(
-                    id=p["id"],
-                    run_id=p["run_id"],
-                    kind=p["kind"],
-                    payload=p["payload"],
-                    status=p["status"],
-                    status_reason=p["status_reason"],
-                    result_ref=p["result_ref"],
-                    decided_by=p["decided_by"],
-                    decided_at=p["decided_at"],
-                    created_at=p["created_at"],
-                    updated_at=p["updated_at"],
-                )
-                for p in proposals
-            ],
+            proposals=[self._proposal_out(p, project) for p in proposals],
         )
+
+    def _proposal_out(self, p: Mapping[str, Any], project: ResourceRef) -> s.ProposalOut:
+        """The proposal as the caller may see it: the payload only with the read permissions of
+        what it names on the request's project, `result_ref` only when the caller can read the
+        object it names (design section 6)."""
+        shown = not self.sc.pdp.missing_permissions(set(PAYLOAD_READ[p["kind"]]), project)
+        ref = p["result_ref"]
+        return s.ProposalOut(
+            id=p["id"],
+            run_id=p["run_id"],
+            kind=p["kind"],
+            payload=p["payload"] if shown else None,
+            status=p["status"],
+            status_reason=p["status_reason"],
+            result_ref=ref if ref is not None and self._result_readable(ref) else None,
+            decided_by=p["decided_by"],
+            decided_at=p["decided_at"],
+            created_at=p["created_at"],
+            updated_at=p["updated_at"],
+        )
+
+    def _result_readable(self, ref: Mapping[str, Any]) -> bool:
+        """Whether the caller can read the object an accepted proposal created (no settle step,
+        no scoring: nothing commits)."""
+        object_id = UUID(str(ref["id"]))
+        evaluations = EvaluationService(self.sc, self.runtime, self.hooks)
+        try:
+            if ref["kind"] == "delivery_plan":
+                return PlanService(self.sc, self.runtime).readable(object_id)
+            if ref["kind"] == "evaluation_run":
+                evaluations.stored_run(object_id)
+            else:
+                AppGenService(self.sc, self.runtime, evaluations).get(object_id)
+        except (NotFound, Forbidden):
+            return False
+        return True
 
     def list_requests(
         self, ws: str, proj: str, *, status: str | None, limit: int, cursor: str | None
@@ -1036,21 +1078,176 @@ class AssistService:
         self._session.rollback()
         return out
 
+    # ================================================================== proposals (design 6)
+    def _proposal(self, proposal_id: UUID) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+        """(proposal, its request) under `assist:request:read` on the request's project; an
+        unknown id, another client's and an unreadable one get one answer."""
+        p = repository.get_proposal(
+            self._session, tenant_id=self.sc.tenant_id, proposal_id=proposal_id
+        )
+        row = (
+            repository.get_request(
+                self._session, tenant_id=self.sc.tenant_id, request_id=p["request_id"]
+            )
+            if p is not None
+            else None
+        )
+        if p is None or row is None:
+            raise NotFound(PROPOSAL_NOT_FOUND)
+        try:
+            self.sc.pdp.require(READ, _request_ref(self.sc.tenant_id, row), hide_unless=READ)
+        except NotFound as exc:
+            raise NotFound(PROPOSAL_NOT_FOUND) from exc
+        return p, row
+
+    def _proposal_answer(self, p: Mapping[str, Any], row: Mapping[str, Any]) -> s.ProposalOut:
+        out = self._proposal_out(p, ResourceRef(self.sc.tenant_id, row["workspace_id"],
+                                                row["project_id"]))  # fmt: skip
+        self._session.rollback()
+        return out
+
+    def _audit_proposal(self, action: str, p: Mapping[str, Any], row: Mapping[str, Any]) -> None:
+        """The audit event of a proposal decision: kind, status reason and result, no payload."""
+        audit.record(
+            self._session,
+            self.sc.ctx,
+            action=action,
+            tenant_id=self.sc.tenant_id,
+            target_type=PROPOSAL_TARGET,
+            target_id=p["id"],
+            workspace_id=row["workspace_id"],
+            project_id=row["project_id"],
+            details={
+                "kind": p["kind"],
+                "request_id": str(row["id"]),
+                "status_reason": p["status_reason"],
+                "result_ref": p["result_ref"],
+            },
+        )
+
+    def accept_proposal(self, proposal_id: UUID) -> s.ProposalOut:
+        """Accept a proposal as the caller, through the owning service, in the request's project
+        (design section 6). An accepted proposal is answered unchanged; a dismissed or failed one
+        is 409. The proposal is claimed in a committed conditional UPDATE before the service call,
+        so of two concurrent accepts one creates the object and the other gets 409."""
+        p, row = self._proposal(proposal_id)
+        self.sc.pdp.require(ACCEPT, _request_ref(self.sc.tenant_id, row), hide_unless=READ)
+        if p["status"] == "accepted":
+            return self._proposal_answer(p, row)
+        if p["status"] != "open":
+            raise ProposalNotOpen("the proposal is no longer open")
+        me = self.sc.principal.principal_id
+        claimed = repository.claim_proposal(
+            self._session, p["id"], tenant_id=self.sc.tenant_id, decided_by=me
+        )
+        if claimed is None:
+            self._session.rollback()
+            fresh = repository.get_proposal(
+                self._session, tenant_id=self.sc.tenant_id, proposal_id=p["id"]
+            )
+            if fresh is not None and fresh["status"] == "accepted":
+                return self._proposal_answer(fresh, row)
+            raise ProposalNotOpen("the proposal is no longer open")
+        self._session.commit()
+        try:
+            result_ref: dict[str, str] | None = self._accepted(claimed, row)
+            status, reason = "accepted", None
+        except AppError as exc:
+            self._session.rollback()
+            result_ref, status, reason = None, "failed", exc.code
+        decided = repository.decide_proposal(
+            self._session,
+            p["id"],
+            tenant_id=self.sc.tenant_id,
+            expected=["open"],
+            status=status,
+            decided_by=me,
+            status_reason=reason,
+            result_ref=result_ref,
+        )
+        if decided is None:  # dismissed while this accept held the claim
+            self._session.rollback()
+            fresh = repository.get_proposal(
+                self._session, tenant_id=self.sc.tenant_id, proposal_id=p["id"]
+            )
+            assert fresh is not None
+            return self._proposal_answer(fresh, row)
+        self._audit_proposal(f"assist.proposal.{status}", decided, row)
+        self._session.commit()
+        return self._proposal_answer(decided, row)
+
+    def _accepted(self, p: Mapping[str, Any], row: Mapping[str, Any]) -> dict[str, str]:
+        """Create the proposed object through its owning service as the caller, in the request's
+        project; its `result_ref`. Any refusal is the service's `AppError`."""
+        ws_slugs, proj_slugs = tenancy.scope_slug_map(
+            self.sc, [row["workspace_id"]], [row["project_id"]]
+        )
+        ws, proj = ws_slugs[row["workspace_id"]], proj_slugs[row["project_id"]]
+        evaluations = EvaluationService(self.sc, self.runtime, self.hooks)
+        try:
+            if p["kind"] == "appgen_request":
+                body = AppRequestCreate(**p["payload"])
+                created = AppGenService(self.sc, self.runtime, evaluations).create(ws, proj, body)
+                return {"kind": p["kind"], "id": str(created.id)}
+            release_id = UUID(str(p["payload"]["release_id"]))
+            if scoped_release(self.sc, release_id)["project_id"] != row["project_id"]:
+                raise NotFound("release not found")
+            if p["kind"] == "evaluation_run":
+                run = evaluations.request(release_id, EvaluationRequest())
+                return {"kind": p["kind"], "id": str(run.id)}
+            plan = PlanCreate(**p["payload"])
+            target = TargetService(self.sc).get(plan.target_id)
+            if target.workspace != ws or target.project not in (None, proj):
+                raise NotFound("target not found")
+            return {
+                "kind": p["kind"],
+                "id": str(PlanService(self.sc, self.runtime).request(plan).id),
+            }
+        except (ValidationError, KeyError, ValueError) as exc:
+            raise ValidationFailed("the proposal's payload is not valid") from exc
+
+    def dismiss_proposal(self, proposal_id: UUID) -> s.ProposalOut:
+        """Dismiss an open or failed proposal; a dismissed one is answered unchanged, an accepted
+        one is 409."""
+        p, row = self._proposal(proposal_id)
+        self.sc.pdp.require(ACCEPT, _request_ref(self.sc.tenant_id, row), hide_unless=READ)
+        if p["status"] == "dismissed":
+            return self._proposal_answer(p, row)
+        decided = repository.decide_proposal(
+            self._session,
+            p["id"],
+            tenant_id=self.sc.tenant_id,
+            expected=["open", "failed"],
+            status="dismissed",
+            decided_by=self.sc.principal.principal_id,
+            status_reason=p["status_reason"],
+        )
+        if decided is None:
+            self._session.rollback()
+            fresh = repository.get_proposal(
+                self._session, tenant_id=self.sc.tenant_id, proposal_id=p["id"]
+            )
+            if fresh is not None and fresh["status"] == "dismissed":
+                return self._proposal_answer(fresh, row)
+            raise ProposalNotOpen("an accepted proposal cannot be dismissed")
+        self._audit_proposal("assist.proposal.dismissed", decided, row)
+        self._session.commit()
+        return self._proposal_answer(decided, row)
+
     # ================================================================== the job (design 5.3)
     def _resume(self, row: Mapping[str, Any]) -> None:
-        """An interrupted handover: step 4 again (the idempotency key returns the same run)."""
-        spec = repository.get_specialist(
-            self._session,
-            tenant_id=self.sc.tenant_id,
-            project_id=row["project_id"],
-            key=row["specialist_key"],
-        )
-        if spec is None:
+        """An interrupted handover: the step 1-3 pre-checks again, then step 4 (the idempotency
+        key returns the same run). A refusal fails the request with its code and starts no run
+        (design 5.5 has no `handing_over -> refused`)."""
+        settings = self._settings()
+        project = ResourceRef(self.sc.tenant_id, row["workspace_id"], row["project_id"])
+        checked = self._precheck(project, row["specialist_key"], settings)
+        if isinstance(checked, _Refusal):
             self._transition(
-                row, ["handing_over"], "failed", status_reason="specialists_not_installed"
+                row, ["handing_over"], "failed", checked.details(), status_reason=checked.code
             )
             return
-        self._hand_over(row, spec, self._settings())
+        self._hand_over(row, checked, settings)
 
     def route(self, row: Mapping[str, Any], database: Database) -> None:
         """The `assist.route` job's work for a `queued` or `handing_over` request, as the
@@ -1126,6 +1323,45 @@ class AssistService:
             self._hand_over(handing, checked, settings)
 
 
+def record_proposal(
+    scope: TenantScope,
+    request: Mapping[str, Any],
+    *,
+    run_id: UUID,
+    step_key: str,
+    kind: str,
+    payload: Mapping[str, Any],
+) -> UUID:
+    """Store a specialist's `open` proposal of the run step `step_key` with its
+    `assist.proposal.created` audit event (kind only, never the payload), in the caller's
+    transaction (a run step's: no commit). A replay of the step returns the stored proposal's id
+    and writes nothing (UNIQUE (`tenant_id`, `run_id`, `step_key`))."""
+    session, tenant = scope.session, scope.tenant_id
+    proposal_id = repository.insert_proposal(
+        session,
+        {"tenant_id": tenant, "id": uuid7(), "request_id": request["id"], "run_id": run_id,
+         "step_key": step_key, "kind": kind, "payload": dict(payload)},
+    )  # fmt: skip
+    if proposal_id is None:
+        found = repository.step_proposal(
+            session, tenant_id=tenant, run_id=run_id, step_key=step_key
+        )
+        assert found is not None
+        return UUID(str(found["id"]))
+    audit.record(
+        session,
+        scope.ctx,
+        action="assist.proposal.created",
+        tenant_id=tenant,
+        target_type=PROPOSAL_TARGET,
+        target_id=proposal_id,
+        workspace_id=request["workspace_id"],
+        project_id=request["project_id"],
+        details={"kind": kind, "request_id": str(request["id"]), "run_id": str(run_id)},
+    )
+    return proposal_id
+
+
 def _summary_fields(r: Mapping[str, Any]) -> dict[str, Any]:  # Any: field values
     return {
         "id": r["id"],
@@ -1188,7 +1424,8 @@ def run_route_job(
     """Execute the `assist.route` job `job_id` of `tenant_id` (called by `shifde-worker`).
 
     Returns None once the outcome is recorded on the request (or there is nothing to do: the
-    request is gone or already ended), `not_found` when the job is not this client's route job.
+    request is gone, already ended, or names another job), `not_found` when the job is not this
+    client's route job.
     The router model is called at most once per request."""
     tag = f"assist-route-{job_id}"
     session = database.session()
@@ -1202,7 +1439,7 @@ def run_route_job(
         row = repository.get_request(
             session, tenant_id=tenant_id, request_id=UUID(payload["request_id"])
         )
-        if row is None or row["status"] in DONE:
+        if row is None or row["status"] in DONE or row["job_id"] != job_id:
             return None
         system_ctx = RequestContext(request_id=tag, tenant_id=tenant_id)
         if row["status"] == "classifying":
