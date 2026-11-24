@@ -53,6 +53,8 @@ dev = [
   "filelock>=3.16",
   "bandit==1.9.4",
   "pytest-cov>=7.1.0",
+  "flask==3.1.3",
+  "databricks-sdk==0.163.0",
 ]
 
 [build-system]
@@ -217,6 +219,13 @@ forbidden_modules = [
   "shifde.models_admin", "shifde.packaging", "shifde.evaluation", "shifde.runtime",
   "shifde.appgen.service", "shifde.appgen.repository",
 ]
+
+[[tool.importlinter.contracts]]
+name = "SETH never imports the generated app's libraries"
+type = "forbidden"
+# flask and databricks-sdk are dev-only pins for the generated app's tests (SP5 design R32)
+source_modules = ["shifde"]
+forbidden_modules = ["flask", "databricks"]
 
 [[tool.importlinter.contracts]]
 name = "Only API layers and the app factory may import FastAPI routing; services stay HTTP-free"
