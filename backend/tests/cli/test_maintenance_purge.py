@@ -174,7 +174,9 @@ def test_dry_run_reports_counts_and_changes_nothing(cli: CliRunner, owner_db: Da
     result = _purge(cli, "--older-than", "30", "--dry-run")
     assert result.exit_code == 0, result.output
     line = _line(result.output, c.slug)
-    assert line.startswith(f"{c.slug}: runs 1, artifacts 2, tool invocations 1 (cutoff ")
+    assert line.startswith(
+        f"{c.slug}: runs 1, artifacts 2, tool invocations 1, assist requests 0 (cutoff "
+    )
     assert result.output.rstrip().endswith("dry run: nothing changed")
     assert _snapshot(owner_db, run) == before
     assert _events(owner_db, c.tenant) == []
@@ -196,7 +198,7 @@ def test_real_purge_scrubs_an_old_ended_run_and_keeps_size_and_hash(
     assert result.exit_code == 0, result.output
     assert "dry run" not in result.output
     assert _line(result.output, c.slug).startswith(
-        f"{c.slug}: runs 1, artifacts 2, tool invocations 1 (cutoff "
+        f"{c.slug}: runs 1, artifacts 2, tool invocations 1, assist requests 0 (cutoff "
     )
     after = _snapshot(owner_db, run)
     assert _scrubbed(owner_db, run)
@@ -234,7 +236,7 @@ def test_stored_retention_longer_than_older_than_keeps_the_run(
     result = _purge(cli, "--older-than", "30")
     assert result.exit_code == 0, result.output
     assert _line(result.output, c.slug).startswith(
-        f"{c.slug}: runs 0, artifacts 0, tool invocations 0 (cutoff "
+        f"{c.slug}: runs 0, artifacts 0, tool invocations 0, assist requests 0 (cutoff "
     )
     assert _snapshot(owner_db, run) == before
     (event,) = _events(owner_db, c.tenant)
@@ -291,7 +293,9 @@ def test_purging_b_leaves_a_with_longer_retention_byte_for_byte_unchanged(
     result = _purge(cli, "--older-than", "30")
     assert result.exit_code == 0, result.output
     a_line = _line(result.output, a.slug)
-    assert a_line.startswith(f"{a.slug}: runs 0, artifacts 0, tool invocations 0 (cutoff ")
+    assert a_line.startswith(
+        f"{a.slug}: runs 0, artifacts 0, tool invocations 0, assist requests 0 (cutoff "
+    )
     assert a_line != f"{a.slug}: skipped (legal hold)"
     assert _line(result.output, b.slug).startswith(f"{b.slug}: runs 2, artifacts 4, ")
     assert {r: _snapshot(owner_db, r) for r in a_runs} == a_before
@@ -349,7 +353,7 @@ def test_a_second_run_reports_zero(cli: CliRunner, owner_db: Database) -> None:
     second = _purge(cli, "--older-than", "30")
     assert second.exit_code == 0, second.output
     assert _line(second.output, c.slug).startswith(
-        f"{c.slug}: runs 0, artifacts 0, tool invocations 0 (cutoff "
+        f"{c.slug}: runs 0, artifacts 0, tool invocations 0, assist requests 0 (cutoff "
     )
 
 

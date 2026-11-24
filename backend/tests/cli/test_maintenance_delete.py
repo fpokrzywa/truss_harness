@@ -219,9 +219,12 @@ def _line(output: str, slug: str) -> str:
 
 
 def _counts(runs: int, kept: int, n: int) -> str:
-    """The start of a client's line: `runs` deleted, `kept` kept, `n` rows in each table."""
+    """The start of a client's line: `runs` deleted, `kept` kept, `n` rows in each table (no
+    assist rows)."""
     tables = ", ".join(f"{t} {n}" for t in DELETE_TABLES)
-    return f"runs {runs}, runs kept {kept}, {tables} (cutoff "
+    return (
+        f"runs {runs}, runs kept {kept}, {tables}, assist_requests 0, assist_proposals 0 (cutoff "
+    )
 
 
 def test_dry_run_reports_counts_and_changes_nothing(cli: CliRunner, owner_db: Database) -> None:
