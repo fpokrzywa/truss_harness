@@ -9,14 +9,15 @@ a person's edit. A draft never holds a float (`packaging.canonical` refuses them
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Any, Literal, Self  # Any: JSON documents
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shifde.evaluation.schemas import Assertion
-from shifde.packaging.schemas import PARAMETER_NAME, TOOL_NAME, Screen
+from shifde.packaging.schemas import DECIMAL, PARAMETER_NAME, TOOL_NAME, Screen, normalize_decimal
 
 Strict = ConfigDict(extra="forbid")
 AGENT_NAME = r"^[a-z][a-z0-9-]{1,62}$"
@@ -109,6 +110,37 @@ class DraftEdit(BaseModel):
     model_config = Strict
     base_revision_no: int = Field(ge=1)
     draft: Draft
+
+
+class AcceptThresholds(BaseModel):
+    """The solution version's evaluation thresholds, as `packaging.schemas.EvaluationContract`
+    takes them (decimal strings, normalized)."""
+
+    model_config = Strict
+    min_accuracy: str = Field(pattern=DECIMAL)
+    max_p95_latency_ms: int = Field(gt=0, strict=True)
+    max_total_cost_usd: str = Field(pattern=DECIMAL)
+
+    @field_validator("min_accuracy")
+    @classmethod
+    def _accuracy(cls, value: str) -> str:
+        normalized = normalize_decimal(value)
+        if Decimal(normalized) > 1:
+            raise ValueError("min_accuracy must be between 0 and 1")
+        return normalized
+
+    @field_validator("max_total_cost_usd")
+    @classmethod
+    def _cost(cls, value: str) -> str:
+        return normalize_decimal(value)
+
+
+class AcceptIn(BaseModel):
+    model_config = Strict
+    revision_no: int = Field(ge=1)
+    solution_name: str = Field(min_length=1, max_length=200)
+    model_id: UUID
+    thresholds: AcceptThresholds
 
 
 class DraftDiagnostic(BaseModel):

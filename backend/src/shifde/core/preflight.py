@@ -154,6 +154,12 @@ def run_preflight(environ: Mapping[str, str], register: Path) -> PreflightResult
         out.append("ok: metrics token")
     else:
         out.append("refused: metrics token: SHIFDE_METRICS_TOKEN is not set")
+    if not settings.mcp_enabled or settings.mcp_allowed_hosts:
+        out.append("ok: mcp access")
+    else:
+        out.append(
+            "refused: mcp access: SHIFDE_MCP_ENABLED is true and SHIFDE_MCP_ALLOWED_HOSTS is empty"
+        )
 
     reachable = True
     try:

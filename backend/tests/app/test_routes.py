@@ -135,11 +135,19 @@ APPGEN = {
     ("POST", APP_REQUEST + "/drafts"),
     ("POST", APP_REQUEST + "/discard"),
     ("POST", APP_REQUEST + "/retry"),
+    ("POST", APP_REQUEST + "/accept"),
 }
 # the project and release board (sub-project 7 design 7.2, Call S7-F): not a SETH module
 BOARD = {
     ("GET", "/api/v1/orgs/{org}/board"),
     ("GET", "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/board"),
+}
+
+# MCP access: the organization's MCP settings (SP8 design 3.6, issue #287); `/mcp` itself is a
+# mounted ASGI app (only with SHIFDE_MCP_ENABLED) and never in OpenAPI
+MCP = {
+    ("GET", "/api/v1/orgs/{org}/mcp/settings"),
+    ("PUT", "/api/v1/orgs/{org}/mcp/settings"),
 }
 
 
@@ -166,6 +174,7 @@ def test_the_mounted_route_table_is_sethss_minus_branding(
         | PACKAGING
         | EVALUATION
         | APPGEN
+        | MCP
         | BOARD
     )
     mounted = _mounted(client)

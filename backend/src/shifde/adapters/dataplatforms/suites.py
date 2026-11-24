@@ -133,7 +133,8 @@ class SnowflakeSqlSuite(ConformanceSuite):
             finally:
                 session.close()
             expect(result.result["rows"] == [["1"]], f"rows {result.result['rows']}")
-            expect(result.result["columns"] == ["1"], "one column")
+            names = [c["name"] for c in result.result["columns"]]
+            expect(names == ["1"], "one column")
             return "SELECT 1 through the SQL API v2 with a key-pair JWT"
 
         def discover(t: SnowflakeTarget) -> str:

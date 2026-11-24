@@ -50,6 +50,7 @@ CATEGORY_PREFIXES: dict[str, tuple[str, ...]] = {
     "execution": ("run.", "approval."),
     "governance": ("governance.",),
     "data": ("ontology.", "data.", "governance.usage.exported", "audit.exported"),
+    "mcp": ("mcp.",),
 }  # fmt: skip
 
 

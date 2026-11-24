@@ -30,7 +30,12 @@ describe('HomeRedirect', () => {
   it('does not redirect without an active organization', async () => {
     stubSession([]);
     renderWithClient(<HomeRedirect />);
-    expect(await screen.findByText(/not a member of any organization/)).toBeVisible();
+    expect(
+      await screen.findByRole('heading', { name: 'Your account has no organization yet' }),
+    ).toBeVisible();
+    expect(screen.getByText('Ask an administrator to add you to an organization.')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Sign out' })).toBeVisible();
+    expect(screen.queryByRole('link', { name: 'Manage organizations' })).not.toBeInTheDocument();
     expect(replace).not.toHaveBeenCalled();
   });
 });

@@ -73,6 +73,16 @@ class ValidationFailed(AppError):
 class RateLimited(AppError):
     status, code, title = 429, "rate_limited", "Too Many Requests"
 
+    def __init__(
+        self,
+        detail: str | None = None,
+        *,
+        errors: list[dict[str, Any]] | None = None,
+        retry_after: int | None = None,
+    ):
+        super().__init__(detail, errors=errors)
+        self.retry_after = retry_after  # seconds; rendered as `Retry-After` when set
+
 
 # ---------------------------------------------------------------- P3: integrations
 class AdapterNotImplemented(AppError):
