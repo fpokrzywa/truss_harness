@@ -329,7 +329,7 @@ class SnowflakeSession:
         if not statement.strip():
             raise AdapterFailure(ErrorClass.CONFIG, "request needs `sql`")
         if not write:
-            sqlapi.check_read_only(statement, dialect="snowflake")
+            sqlapi.check_read_only(statement, dialect="snowflake", params=request.get("params"))
         params = request.get("params")
         if isinstance(params, dict):
             raise AdapterFailure(

@@ -578,6 +578,64 @@ def test_write_skips_the_keyword_check(sf: FakeSnowflakeAccount) -> None:
     assert [b["statement"] for b in sf.bodies()] == ["INSERT INTO t VALUES (1)"]
 
 
+# a bound `IDENTIFIER(?)`/`IDENTIFIER(:name)` call refuses any string param with `system$` (#339)
+REFUSED_BOUND = [
+    ("SELECT IDENTIFIER(?)(1)", ["SYSTEM$CANCEL_ALL_QUERIES"]),
+    ("SELECT IDENTIFIER(?)(1)", ["System$Abort_Session"]),
+    ("SELECT IDENTIFIER(?)(1)", ["SNOWFLAKE.X.SYSTEM$X"]),
+    ("SELECT * FROM TABLE(IDENTIFIER(:fn))", ["system$x"]),
+    ("SELECT IDENTIFIER( ? )(1)", ["SYSTEM$X"]),
+    ("SELECT IDENTIFIER(?)(?)", ["ordinary", "SYSTEM$X"]),
+    ("SELECT * FROM TABLE(IDENTIFIER(:fn))", {"fn": "SYSTEM$X"}),
+]
+
+
+@pytest.mark.parametrize(("sql", "params"), REFUSED_BOUND)
+def test_a_bound_system_name_is_refused_before_any_request(
+    sf: FakeSnowflakeAccount,
+    sql: str,
+    params: Any,  # Any: list or dict params
+) -> None:
+    with pytest.raises(AdapterFailure) as raised:
+        _invoke(sf, {"sql": sql, "params": params})
+    assert raised.value.error_class is ErrorClass.CAPABILITY
+    assert raised.value.message == sqlapi._NOT_READ
+    assert "system$" not in raised.value.message.lower()
+    assert sf.requests == []
+
+
+@pytest.mark.parametrize(
+    ("sql", "value"),
+    [
+        ("SELECT * FROM IDENTIFIER(?)", "MY_DB.PUBLIC.T"),
+        ("SELECT * FROM IDENTIFIER(:tbl)", "my_table"),
+    ],
+)
+def test_a_bound_table_name_reaches_the_account(
+    sf: FakeSnowflakeAccount, sql: str, value: str
+) -> None:
+    _invoke(sf, {"sql": sql, "params": [value]})
+    (body,) = sf.bodies()
+    assert body["statement"] == sql
+    assert body["bindings"]["1"]["value"] == value
+
+
+def test_a_system_string_without_a_bound_identifier_is_accepted(sf: FakeSnowflakeAccount) -> None:
+    _invoke(sf, {"sql": "SELECT ?", "params": ["SYSTEM$X"]})
+    (body,) = sf.bodies()
+    assert body["bindings"]["1"]["value"] == "SYSTEM$X"
+
+
+def test_write_skips_the_bound_value_check(sf: FakeSnowflakeAccount) -> None:
+    _invoke(sf, {"sql": "SELECT IDENTIFIER(?)(1)", "params": ["SYSTEM$X"]}, write=True)
+    assert [b["statement"] for b in sf.bodies()] == ["SELECT IDENTIFIER(?)(1)"]
+
+
+def test_the_databricks_dialect_ignores_params() -> None:
+    sqlapi.check_read_only("SELECT * FROM IDENTIFIER(?)", params=["SYSTEM$X"])
+    sqlapi.check_read_only("SELECT * FROM IDENTIFIER(:fn)", params={"fn": "SYSTEM$X"})
+
+
 def test_a_failed_statement_does_not_echo_sql(sf: FakeSnowflakeAccount) -> None:
     sf.faults.add("server_error")
     with pytest.raises(AdapterFailure) as raised:

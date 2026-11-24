@@ -2,9 +2,10 @@
 
 * `check_read_only`: the keyword check a `read` invoke passes before any network call (a read
   first keyword, no write keyword anywhere in the code; in the Snowflake dialect also no
-  `procedure`/`call` word, no `SYSTEM$` function, #285, and an `IDENTIFIER(...)` call only
-  with one simple argument, #312). Its function deny-list is best-effort defense in depth; the
-  least-privileged read credential (B-1507) is the real control.
+  `procedure`/`call` word, no `SYSTEM$` function, #285, an `IDENTIFIER(...)` call only
+  with one simple argument, #312, and with a bound `IDENTIFIER(?)`/`IDENTIFIER(:name)` call no
+  string param containing `system$`, #339). Its function deny-list is best-effort defense in
+  depth; the least-privileged read credential (B-1507) is the real control.
 * `classify_status`: HTTP status -> `ErrorClass`, with fixed messages (never a body).
 * `send`: one request through an egress-guarded client, with one `Retry-After` retry on 429.
 * `run_statement`: submit, poll, cancel at the deadline.
@@ -155,7 +156,7 @@ def _code_of(sql: str, dialect: Dialect = "databricks") -> tuple[str, list[int],
     return "".join(out), semicolons, "".join(bare), identifiers
 
 
-def check_read_only(sql: str, *, dialect: Dialect = "databricks") -> None:
+def check_read_only(sql: str, *, dialect: Dialect = "databricks", params: object = None) -> None:
     """Refuse (CAPABILITY, 422) anything but one statement whose first keyword is a read keyword
     and whose code holds no word of `WRITE_KEYWORDS` (the set publish refuses, shared through
     `core/sqlrules.py`); comments are stripped first, quoted text is never read as code. The
@@ -164,8 +165,11 @@ def check_read_only(sql: str, *, dialect: Dialect = "databricks") -> None:
     functions, #285), a `:` directly followed by a digit (a positional bind reference, #319) and
     an `IDENTIFIER(...)` call whose argument is not exactly one `'...'` literal without a
     backslash and without `system$` anywhere, one `?`, one `:name` or one plain name (#312);
-    `'...'`, `$$...$$` and comments stay unread otherwise. The function deny-list is
-    best-effort; the least-privileged read credential (B-1507) is the limiting control."""
+    `'...'`, `$$...$$` and comments stay unread otherwise. When the Snowflake code has a bound
+    `IDENTIFIER(?)` or `IDENTIFIER(:name)` call, any string in `params` (list or tuple items,
+    dict values) containing `system$` in any case is refused too (#339); the Databricks dialect
+    ignores `params`. The function deny-list is best-effort; the least-privileged read
+    credential (B-1507) is the limiting control."""
     code, semicolons, bare, identifiers = _code_of(sql, dialect)
     stripped = code.rstrip()
     if semicolons:
@@ -187,14 +191,29 @@ def check_read_only(sql: str, *, dialect: Dialect = "databricks") -> None:
         raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
     if dialect == "snowflake" and _SNOWFLAKE_POSITIONAL_BIND.search(bare):
         raise AdapterFailure(ErrorClass.CAPABILITY, _POSITIONAL_BIND)
-    if dialect == "snowflake":
-        _check_identifier_calls(code)
+    if dialect == "snowflake" and _check_identifier_calls(code) and _refused_param(params):
+        raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
 
 
-def _check_identifier_calls(code: str) -> None:
+def _refused_param(params: object) -> bool:
+    """True when a string item of a list or tuple `params`, or a string value of a dict
+    `params`, contains `system$` in any case (#339); other values are not inspected."""
+    if isinstance(params, dict):
+        values: Sequence[object] = list(params.values())
+    elif isinstance(params, list | tuple):
+        values = params
+    else:
+        return False
+    return any(isinstance(v, str) and _SNOWFLAKE_REFUSED_PREFIX in v.lower() for v in values)
+
+
+def _check_identifier_calls(code: str) -> bool:
     """Refuse (CAPABILITY) a Snowflake `IDENTIFIER(` word of code whose argument, trimmed, is
     not one `'...'` literal without a backslash or `system$`, `?`, `:name` or a plain name
-    (#312): `_code_of` blanks the literal, so `IDENTIFIER('SYSTEM$X')` passes the word rule."""
+    (#312): `_code_of` blanks the literal, so `IDENTIFIER('SYSTEM$X')` passes the word rule.
+    Returns True when some call's argument is bound (`?` or `:name`), so the caller checks the
+    bound values (#339)."""
+    bound = False
     tokens = [m.group() for m in _SNOWFLAKE_TOKEN.finditer(code)]
     for at, token in enumerate(tokens):
         if token.lower() != "identifier":
@@ -217,6 +236,8 @@ def _check_identifier_calls(code: str) -> None:
             or (text.startswith("'") and _SNOWFLAKE_REFUSED_PREFIX in text.lower())
         ):
             raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
+        bound = bound or text == "?" or text.startswith(":")
+    return bound
 
 
 def classify_status(status: int, *, subject: str = "the platform") -> AdapterFailure | None:
