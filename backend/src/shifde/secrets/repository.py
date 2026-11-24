@@ -7,10 +7,11 @@ security would not apply (DECISIONS B-802).
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Any  # Any: column value dicts
 from uuid import UUID
 
-from sqlalchemy import insert, select, text, update
+from sqlalchemy import insert, or_, select, text, update
 from sqlalchemy.orm import Session
 
 from shifde.secrets.models import Secret
@@ -55,6 +56,42 @@ def update_secret(
         .execution_options(synchronize_session=False, populate_existing=True)
     )
     return session.scalars(stmt).first()
+
+
+def touch_secret(
+    session: Session,
+    secret_id: UUID,
+    now: datetime,
+    min_interval_seconds: int,
+    *,
+    tenant_id: UUID | None,
+) -> bool:
+    """Throttled, non-blocking last-used update: at most once per interval per secret, and only
+    if the row can be locked at once (`FOR UPDATE SKIP LOCKED`), so a read never waits on another
+    transaction's lock on the secret row (B-3968). Every UPDATE of a secret is a key update (the
+    stored generated `installation_secret_id` is in a unique constraint), so the lock must also
+    skip a row another read holds `FOR KEY SHARE` through its access-log foreign key; a weaker
+    lock would then wait in the UPDATE itself. True if the row changed."""
+    locked = (
+        select(Secret.id)
+        .where(
+            Secret.id == secret_id,
+            _owned_by(tenant_id),
+            or_(
+                Secret.last_used_at.is_(None),
+                Secret.last_used_at < now - timedelta(seconds=min_interval_seconds),
+            ),
+        )
+        .with_for_update(skip_locked=True)
+        .scalar_subquery()
+    )
+    res = session.execute(
+        update(Secret)
+        .where(Secret.id == locked)
+        .values(last_used_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    return bool(res.rowcount)  # type: ignore[attr-defined]  # DML returns a CursorResult
 
 
 def all_secrets(session: Session) -> list[Secret]:
