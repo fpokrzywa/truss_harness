@@ -37,7 +37,7 @@ Status column: `ported` = in `frontend/` verbatim; `ported, modified` = in `fron
 
 The `shell` count includes 12 top-level config and tooling files. No SETH front-end file belongs to `admin` (its pages are the `integrate/models` and `integrate/providers` screens, assigned to `models_admin`) or to `core`/`adapters`.
 
-New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src/app/page.test.tsx`; the Deliver screens (SP2-8, SP2-9): `src/app/(app)/o/[org]/deliver/**`, `src/components/deliver/**`, `src/lib/api/delivery-*.ts`, `src/lib/delivery-hooks.ts`, `src/lib/use-now.ts`, `src/test/delivery.ts`; the solutions, releases and evaluations screens (SP3-7): `src/app/(app)/o/[org]/solutions/**`, `src/app/(app)/o/[org]/releases/**`, `src/app/(app)/o/[org]/evaluations/**`, `src/components/releases/**`, `src/lib/api/packaging-*.ts`, `src/lib/api/evaluation-*.ts`, `src/lib/release-hooks.ts`, `src/lib/release-utils.ts`, `src/test/releases.ts`.
+New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src/app/page.test.tsx`, `src/components/SignOutButton.tsx`, `src/components/SignOutButton.test.tsx`; the Deliver screens (SP2-8, SP2-9): `src/app/(app)/o/[org]/deliver/**`, `src/components/deliver/**`, `src/lib/api/delivery-*.ts`, `src/lib/delivery-hooks.ts`, `src/lib/use-now.ts`, `src/test/delivery.ts`; the solutions, releases and evaluations screens (SP3-7): `src/app/(app)/o/[org]/solutions/**`, `src/app/(app)/o/[org]/releases/**`, `src/app/(app)/o/[org]/evaluations/**`, `src/components/releases/**`, `src/lib/api/packaging-*.ts`, `src/lib/api/evaluation-*.ts`, `src/lib/release-hooks.ts`, `src/lib/release-utils.ts`, `src/test/releases.ts`.
 
 ## shell
 
@@ -55,7 +55,7 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 | `postcss.config.mjs` | ported |  |
 | `src/app/(app)/error.tsx` | ported |  |
 | `src/app/(app)/layout.tsx` | ported |  |
-| `src/app/(app)/page.tsx` | not ported | `HomeRedirect` landing route; replaced by static `src/app/page.tsx` so the shell renders without a backend. Restore when identity/tenancy land. |
+| `src/app/(app)/page.tsx` | not ported | `HomeRedirect` landing route; `HomeRedirect` is now routed from `src/app/page.tsx` (issue #318), outside the `(app)` group. |
 | `src/app/globals.css` | ported |  |
 | `src/app/icon.svg` | ported |  |
 | `src/app/layout.tsx` | ported, modified | product name read from `lib/product.ts` instead of `lib/branding.ts` |
@@ -66,8 +66,8 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 | `src/components/ErrorMessage.tsx` | ported |  |
 | `src/components/FeatureGate.test.tsx` | ported |  |
 | `src/components/FeatureGate.tsx` | ported | gates every area layout; shell. |
-| `src/components/HomeRedirect.test.tsx` | ported |  |
-| `src/components/HomeRedirect.tsx` | ported |  |
+| `src/components/HomeRedirect.test.tsx` | ported, modified | Empty-state test asserts the new text and the sign-out button. |
+| `src/components/HomeRedirect.tsx` | ported, modified | 401 -> `/login`; platform admin without an active organization -> `/platform/organizations`; sign out (`SignOutButton`) on the empty state. |
 | `src/components/NavGroupIcon.tsx` | ported |  |
 | `src/components/NoAccess.tsx` | ported |  |
 | `src/components/Providers.tsx` | ported, modified | `BrandingApplier` removed (installation) |
@@ -81,7 +81,7 @@ New in `frontend/` (not in SETH): `src/lib/product.ts`, `src/app/page.tsx`, `src
 | `src/components/Sidebar.tsx` | ported |  |
 | `src/components/SidebarFrame.test.tsx` | ported |  |
 | `src/components/SidebarFrame.tsx` | ported |  |
-| `src/components/UserMenu.tsx` | ported |  |
+| `src/components/UserMenu.tsx` | ported, modified | Sign out moved into `SignOutButton`. |
 | `src/components/admin/ui.tsx` | ported, modified | generic form/page primitives used by 80+ files; shell. `TextField` takes `readOnly` (SP3-8) |
 | `src/components/command/BrandLockup.tsx` | ported | logo lockup used by `AppBrand` and the sign-in page; shell. |
 | `src/components/governance/GovernGate.test.tsx` | ported | tests `FeatureGate` and `Sidebar` only; shell. |
