@@ -264,6 +264,7 @@ def test_every_function_runs_without_commit_or_rollback(w: W, owner_session: Ses
         "seth.releases.read": ({}, None),
         "seth.evaluations.read": ({"release_id": w.release["p1"]}, None),
         "seth.costs.read": ({}, None),
+        "seth.costs.read#run": ({"run_id": w.runs["build"]}, None),
         "seth.budgets.read": ({}, None),
         "seth.board.read": ({}, None),
         "seth.targets.read": ({}, None),
@@ -271,17 +272,18 @@ def test_every_function_runs_without_commit_or_rollback(w: W, owner_session: Ses
         "seth.propose.evaluation_run": ({"release_id": w.release["p1"]}, w.runs["evaluation"]),
         "seth.propose.delivery_plan": (_plan(w), w.runs["deployment"]),
     }
-    assert set(calls) == set(tools.REGISTRY)
+    assert {key.split("#")[0] for key in calls} == set(tools.REGISTRY)
 
     def refused() -> None:
         raise AssertionError("a function committed or rolled back")
 
     for key, (args, run) in calls.items():
-        with _call(w, owner_session, key, args, run=run) as call:
+        name = key.split("#")[0]
+        with _call(w, owner_session, name, args, run=run) as call:
             session: Any = call.session  # Any: the session with its methods replaced
             session.commit, session.rollback = refused, refused
             try:
-                out = tools.REGISTRY[key](call)
+                out = tools.REGISTRY[name](call)
             finally:
                 del session.commit, session.rollback
         assert "error" not in out, (key, out)
@@ -345,6 +347,30 @@ def test_ids_of_another_client_or_project_are_not_found(
     for key, args, specialist in proposes:
         out = _run(w, owner_session, key, args, run=w.runs[specialist], commit=True)
         assert out == not_found, (key, args)
+    assert _proposals(owner_session) == []
+
+
+def test_an_id_that_is_not_a_uuid_is_not_found_or_an_invalid_payload(
+    w: W, owner_session: Session
+) -> None:
+    not_found = {"error": "not_found", "truncated": False}
+    reads = [
+        ("seth.catalog.read", {"connection_id": "conn-1"}),
+        ("seth.solutions.read", {"solution_id": "sol-1"}),
+        ("seth.releases.read", {"release_id": "rel-1"}),
+        ("seth.evaluations.read", {"release_id": "rel-1"}),
+        ("seth.evaluations.read", {"release_id": w.release["p1"], "evaluation_run_id": "run-1"}),
+        ("seth.costs.read", {"run_id": "run-1"}),
+    ]
+    for key, args in reads:
+        assert _run(w, owner_session, key, args) == not_found, key
+    run = w.runs["evaluation"]
+    out = _run(w, owner_session, "seth.propose.evaluation_run", {"release_id": "rel-1"}, run=run,
+               commit=True)  # fmt: skip
+    assert out["error"] == "invalid_payload" and out["problems"], out
+    out = _run(w, owner_session, "seth.propose.delivery_plan", {**_plan(w), "target_id": "t-1"},
+               run=w.runs["deployment"], commit=True)  # fmt: skip
+    assert out["error"] == "invalid_payload", out
     assert _proposals(owner_session) == []
 
 

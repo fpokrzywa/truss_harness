@@ -1,9 +1,9 @@
 """SP7-1 (design section 3): the worker's internal tool registry and the `seth.*` dispatch.
 
 `InternalToolRegistry.of` refuses an undeclared key and is immutable; the composition root
-(`worker_main`) hands `runtime.worker.run` a registry of every declared key (`assist.tools`). A worker given a registry (the
-`p5util.thread_worker` wiring) runs a published `builtin.function` tool bound to `seth.board.read`
-inside an agent run: the function gets the run's ids, its principal and step key, and runs on the
+(`worker_main`) hands `runtime.worker.run` a registry of every declared key (`assist.tools`).
+A worker given a registry (the `p5util.thread_worker` wiring) runs a published
+`builtin.function` tool bound to `seth.board.read` inside an agent run: the function gets the run's ids, its principal and step key, and runs on the
 step's session in the run's client (A's run sees A, B's run sees B). Without a registry, or
 without the key in it, the run fails with `internal_function_unavailable` and nothing runs. The
 runtime never commits inside the call: a row the function writes is gone when it raises and kept

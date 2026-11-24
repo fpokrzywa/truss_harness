@@ -16,7 +16,8 @@ Each function first requires its read permission on the run's project through th
 propagates and ends the tool call with the 403 failure. Every id in `args` is then resolved
 through its owning service and must belong to the run's project (a target: the project or its
 workspace with no project); an unknown id, another project's and another client's all answer
-`{"error": "not_found"}`, also when the service answers 404 or 403. Results hold names, kinds,
+`{"error": "not_found"}`, also when the service answers 404 or 403 or the id is not a UUID
+(the step's argument check does not enforce `format`). Results hold names, kinds,
 column types and SETH records, never client row values, and no target's `credential_ref`; they
 are capped at 64 KiB of JSON by trimming list items (`truncated: true`).
 
@@ -72,6 +73,11 @@ RUN_KEY_PREFIX = "assist:"  # the idempotency key of a handover's run (`assist:{
 UNKNOWN = (NotFound, Forbidden)  # an owning service's answers for an id the caller cannot use
 
 
+class MalformedId(ValueError):
+    """An id argument that is not a UUID: `not_found` from a read, `invalid_payload` from a
+    propose."""
+
+
 def _error(code: str, **details: Any) -> dict[str, Any]:  # Any: JSON details
     return {"error": code, **details, "truncated": False}
 
@@ -121,9 +127,28 @@ def _slugs(call: InternalToolCall) -> tuple[str, str]:
     return workspaces[call.workspace_id], projects[call.project_id]
 
 
+def _parsed(value: Any) -> UUID:  # Any: a JSON argument
+    try:
+        return UUID(str(value))
+    except ValueError:
+        raise MalformedId from None
+
+
 def _uuid(call: InternalToolCall, name: str) -> UUID | None:
     value = call.args.get(name)
-    return UUID(str(value)) if value is not None else None
+    return _parsed(value) if value is not None else None
+
+
+def _read(fn: Callable[[InternalToolCall], dict[str, Any]]) -> InternalToolFn:
+    """`fn`, answering `not_found` for an id argument that is not a UUID."""
+
+    def read(call: InternalToolCall) -> dict[str, Any]:
+        try:
+            return fn(call)
+        except MalformedId:
+            return _error(NOT_FOUND)
+
+    return read
 
 
 def _without_credential_ref(value: Any) -> Any:  # Any: a JSON document
@@ -178,7 +203,10 @@ def catalog_read(call: InternalToolCall) -> dict[str, Any]:
         here = {"workspace_id": call.workspace_id, "project_id": call.project_id}
         if placement is None or not in_scope(here, placement.workspace_id, placement.project_id):
             return _error(NOT_FOUND)
-        found = [conns.get(connection_id)]
+        try:
+            found = [conns.get(connection_id)]
+        except UNKNOWN:
+            return _error(NOT_FOUND)
     else:
         ws, proj = _slugs(call)
         found, cursor = [], None
@@ -518,6 +546,8 @@ def _propose(
         payload = checked(call)
     except ValidationError as exc:
         return _error("invalid_payload", problems=[e["msg"] for e in exc.errors()][:20])
+    except MalformedId:
+        return _error("invalid_payload", problems=["release_id is not a UUID"])
     if "error" in payload:
         return payload
     proposal_id = record_proposal(
@@ -555,7 +585,7 @@ def _app_request(call: InternalToolCall) -> dict[str, Any]:
 
 def _evaluation_run(call: InternalToolCall) -> dict[str, Any]:
     """`{release_id}`: a release of the run's project."""
-    release_id = UUID(str(call.args["release_id"]))
+    release_id = _parsed(call.args["release_id"])
     if not _release_in_project(call, release_id):
         return _error(NOT_FOUND)
     return {"release_id": str(release_id)}
@@ -589,11 +619,11 @@ def propose_delivery_plan(call: InternalToolCall) -> dict[str, Any]:
 
 REGISTRY: Mapping[str, InternalToolFn] = MappingProxyType(
     {
-        "seth.catalog.read": catalog_read,
-        "seth.solutions.read": solutions_read,
-        "seth.releases.read": releases_read,
-        "seth.evaluations.read": evaluations_read,
-        "seth.costs.read": costs_read,
+        "seth.catalog.read": _read(catalog_read),
+        "seth.solutions.read": _read(solutions_read),
+        "seth.releases.read": _read(releases_read),
+        "seth.evaluations.read": _read(evaluations_read),
+        "seth.costs.read": _read(costs_read),
         "seth.budgets.read": budgets_read,
         "seth.board.read": board_read,
         "seth.targets.read": targets_read,

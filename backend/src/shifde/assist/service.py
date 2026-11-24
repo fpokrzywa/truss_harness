@@ -1037,7 +1037,7 @@ class AssistService:
                 evaluations.stored_run(object_id)
             else:
                 AppGenService(self.sc, self.runtime, evaluations).get(object_id)
-        except NotFound:
+        except (NotFound, Forbidden):
             return False
         return True
 
