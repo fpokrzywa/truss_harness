@@ -216,7 +216,10 @@ class Settings(BaseSettings):
     # is a bare domain of two or more labels (no scheme, port, wildcard or leading dot).
     delivery_databricks_host_suffixes: Annotated[list[str], NoDecode] = []
     # Palantir Foundry stack host suffixes accepted for `palantir` deployment targets in addition
-    # to the built-in palantirfoundry.com (SP8-1); same format as the Databricks list.
+    # to the built-in palantirfoundry.com (SP8-1); same format as the Databricks list. A stack is
+    # exactly one label under a suffix, so a deeper site domain is listed here in full. Never list
+    # a vanity alias of a palantirfoundry.com stack: the alias and the stack's own host would give
+    # one stack two claim keys, and two organizations could each claim it.
     delivery_palantir_host_suffixes: Annotated[list[str], NoDecode] = []
     # Development switch (design 2026-11-22 7.5, B-2755): `databricks` and `snowflake` connections
     # reach the in-process fakes (`shifde.adapters.dataplatforms.fakes`) instead of the network,
