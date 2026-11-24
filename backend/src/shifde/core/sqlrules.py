@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 WRITE_KEYWORDS = frozenset(
@@ -55,11 +55,14 @@ class Token:
     (a quote or backtick that never closes; always the last token). The Snowflake dialect adds
     `//` comments, `quoted_unsupported` (a `"..."` identifier that is not a plain uppercase
     name, its content as written), `positional` (a `?`) and `syntax` (a backtick, or a `$$`
-    right after a name character)."""
+    right after a name character). A `param` also carries its span in the text (`start`, `end`),
+    outside equality."""
 
     kind: str
     value: str
     quoted: bool = False
+    start: int = field(default=0, compare=False, repr=False)
+    end: int = field(default=0, compare=False, repr=False)
 
 
 def _is_name_start(ch: str) -> bool:
@@ -134,7 +137,7 @@ def tokenize(sql: str, *, dialect: Dialect = "databricks") -> list[Token]:
                 j = i + 1
                 while j < n and _is_name_char(sql[j]):
                     j += 1
-                tokens.append(Token("param", sql[i + 1 : j]))
+                tokens.append(Token("param", sql[i + 1 : j], start=i, end=j))
                 i = j
             else:
                 i += 1

@@ -208,16 +208,17 @@ def list_projects(
     session: Session,
     *,
     tenant_id: UUID,
-    workspace_id: UUID,
+    workspace_id: UUID | None,
     visible_workspace_ids: Collection[UUID] | None,
     visible_project_ids: Collection[UUID],
     include_archived: bool,
     after: UUID | None,
     limit: int,
 ) -> list[Project]:
-    stmt = select(Project).where(
-        Project.tenant_id == tenant_id, Project.workspace_id == workspace_id
-    )
+    """Projects of one workspace, or of every workspace when `workspace_id` is None."""
+    stmt = select(Project).where(Project.tenant_id == tenant_id)
+    if workspace_id is not None:
+        stmt = stmt.where(Project.workspace_id == workspace_id)
     clause = _visibility(visible_workspace_ids, visible_project_ids)
     if clause is not None:
         stmt = stmt.where(clause)

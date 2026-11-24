@@ -1,6 +1,66 @@
 {
   "components": {
     "schemas": {
+      "AcceptIn": {
+        "additionalProperties": false,
+        "properties": {
+          "model_id": {
+            "format": "uuid",
+            "title": "Model Id",
+            "type": "string"
+          },
+          "revision_no": {
+            "minimum": 1.0,
+            "title": "Revision No",
+            "type": "integer"
+          },
+          "solution_name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Solution Name",
+            "type": "string"
+          },
+          "thresholds": {
+            "$ref": "#/components/schemas/AcceptThresholds"
+          }
+        },
+        "required": [
+          "revision_no",
+          "solution_name",
+          "model_id",
+          "thresholds"
+        ],
+        "title": "AcceptIn",
+        "type": "object"
+      },
+      "AcceptThresholds": {
+        "additionalProperties": false,
+        "description": "The solution version's evaluation thresholds, as `packaging.schemas.EvaluationContract`\ntakes them (decimal strings, normalized).",
+        "properties": {
+          "max_p95_latency_ms": {
+            "exclusiveMinimum": 0.0,
+            "title": "Max P95 Latency Ms",
+            "type": "integer"
+          },
+          "max_total_cost_usd": {
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,12})?$",
+            "title": "Max Total Cost Usd",
+            "type": "string"
+          },
+          "min_accuracy": {
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,12})?$",
+            "title": "Min Accuracy",
+            "type": "string"
+          }
+        },
+        "required": [
+          "min_accuracy",
+          "max_p95_latency_ms",
+          "max_total_cost_usd"
+        ],
+        "title": "AcceptThresholds",
+        "type": "object"
+      },
       "ActionInvokeIn": {
         "additionalProperties": false,
         "description": "`POST .../ontologies/{id}/actions/{key}/invoke` (contract section 4). `workspace` /\n`project` (slugs) are needed only when the ontology is not project-scoped.",
@@ -8336,6 +8396,145 @@
         "title": "MappingOut",
         "type": "object"
       },
+      "McpSettingsOut": {
+        "description": "The organization's MCP settings; a missing row reads as the defaults. `endpoint_url` is\nthe installation's `SHIFDE_MCP_PUBLIC_URL` (null when unset).",
+        "properties": {
+          "allowed_tools": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Tools"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "endpoint_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint Url"
+          },
+          "max_cost_per_call": {
+            "title": "Max Cost Per Call",
+            "type": "number"
+          },
+          "rate_per_minute": {
+            "title": "Rate Per Minute",
+            "type": "integer"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "updated_by": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By"
+          }
+        },
+        "required": [
+          "enabled",
+          "rate_per_minute",
+          "max_cost_per_call",
+          "allowed_tools",
+          "updated_by",
+          "updated_at",
+          "endpoint_url"
+        ],
+        "title": "McpSettingsOut",
+        "type": "object"
+      },
+      "McpSettingsPut": {
+        "additionalProperties": false,
+        "description": "`PUT .../mcp/settings`: the whole settings document. `allowed_tools` null is the default\nset (every v1 tool except `start_run`), an empty list allows no tool.",
+        "properties": {
+          "allowed_tools": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "whoami",
+                    "list_projects",
+                    "list_agents",
+                    "start_run",
+                    "get_run",
+                    "list_releases",
+                    "get_release",
+                    "list_deployments",
+                    "get_deployment"
+                  ],
+                  "type": "string"
+                },
+                "maxItems": 9,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Tools"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "max_cost_per_call": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 25.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Max Cost Per Call"
+          },
+          "rate_per_minute": {
+            "maximum": 600.0,
+            "minimum": 1.0,
+            "title": "Rate Per Minute",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "rate_per_minute",
+          "max_cost_per_call"
+        ],
+        "title": "McpSettingsPut",
+        "type": "object"
+      },
       "MePermissionsOut": {
         "properties": {
           "permissions": {
@@ -15582,6 +15781,27 @@
                 "type": "null"
               }
             ]
+          },
+          "screens": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "chat": "#/components/schemas/ChatScreen",
+                  "table": "#/components/schemas/TableScreen"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/ChatScreen"
+                },
+                {
+                  "$ref": "#/components/schemas/TableScreen"
+                }
+              ]
+            },
+            "title": "Screens",
+            "type": "array"
           }
         },
         "required": [
@@ -23784,6 +24004,124 @@
           }
         },
         "summary": "Get App Request",
+        "tags": [
+          "appgen"
+        ]
+      }
+    },
+    "/api/v1/orgs/{org}/app-requests/{request_id}/accept": {
+      "post": {
+        "operationId": "accept_app_request_api_v1_orgs__org__app_requests__request_id__accept_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Request Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "org",
+            "required": true,
+            "schema": {
+              "title": "Org",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcceptIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppRequestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "unauthenticated / invalid_credentials"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "forbidden / csrf_failed / auth_disabled"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "not_found (also for resources in other tenants)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "conflict / scope_archived"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "validation_error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "rate_limited"
+          }
+        },
+        "summary": "Accept App Request",
         "tags": [
           "appgen"
         ]
@@ -32693,6 +33031,210 @@
         "summary": "Test Tenant Idp",
         "tags": [
           "idps"
+        ]
+      }
+    },
+    "/api/v1/orgs/{org}/mcp/settings": {
+      "get": {
+        "operationId": "get_mcp_settings_api_v1_orgs__org__mcp_settings_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "org",
+            "required": true,
+            "schema": {
+              "title": "Org",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpSettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "unauthenticated / invalid_credentials"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "forbidden / csrf_failed / auth_disabled"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "not_found (also for resources in other tenants)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "conflict / scope_archived"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "validation_error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "rate_limited"
+          }
+        },
+        "summary": "Get Mcp Settings",
+        "tags": [
+          "mcp"
+        ]
+      },
+      "put": {
+        "operationId": "put_mcp_settings_api_v1_orgs__org__mcp_settings_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "org",
+            "required": true,
+            "schema": {
+              "title": "Org",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpSettingsPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpSettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "unauthenticated / invalid_credentials"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "forbidden / csrf_failed / auth_disabled"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "not_found (also for resources in other tenants)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "conflict / scope_archived"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "validation_error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "rate_limited"
+          }
+        },
+        "summary": "Put Mcp Settings",
+        "tags": [
+          "mcp"
         ]
       }
     },

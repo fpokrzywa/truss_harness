@@ -19,6 +19,15 @@ an incompatible one is refused with the whole report (`release_incompatible`). A
 is its solution's; it is reached under the organization (`/orgs/{org}/releases/{id}`) and gets
 the answer an unknown id gets when the caller cannot read its solution.
 
+The compiler is chosen from the version's `spec.screens` (SP5 design 6.2). A version without
+screens is compiled by `shifde.packaging/1`, its manifest exactly the SP3 one. A version with
+screens is a generated app, compiled by `shifde.packaging/2`: its manifest adds `screens` and
+`app.generator_version`, and its report has four stricter mandatory checks: the `entrypoint` is
+an agent, each `screens.<i>` is a chat screen or a table screen of a pinned tool (by artifact
+key) whose inputs are that tool's parameters, `models` counts exactly one model pin (a route
+counts), and each `tools.<pin>` is a `connection.sql` tool on a Databricks connection the sealer
+can read.
+
 A model or connection is hidden from the caller when only versions the caller cannot see name it
 (a version's own data reads always count as seen), and a connection also when the caller cannot
 read it. Its paths in the refused report, its audit row and a release's `compatibility` read
@@ -76,8 +85,12 @@ CONNECTION_REFUSED = "the connection is not a connection of this organization yo
 DUPLICATE_NAME = "a solution with this name already exists in the project"
 UNKNOWN_BINDING = "the binding names no pin of this solution version"
 
-# the databricks.app/v1 compatibility check (design section 5, settled calls 14 and 15)
+# the databricks.app/v1 compatibility check (design section 5, settled calls 14 and 15); a
+# version with screens is a generated app, compiled by `/2` (SP5 design 6.2)
 COMPILER_VERSION = "shifde.packaging/1"
+COMPILER_VERSION_APP = "shifde.packaging/2"
+APP_GENERATOR_VERSION = "shifde.appgen/1.0"  # equal to `appgen.render.GENERATOR_VERSION` (tested)
+SCREEN_KINDS = frozenset({"chat", "table"})
 DATABRICKS = "databricks"
 READ_ONLY_TOOL_EXECUTORS = frozenset({"connection.sql"})
 READ_ONLY_SIDE_EFFECTS = frozenset({"none", "read"})
@@ -99,6 +112,9 @@ NOT_DATABRICKS = (
 NO_EVALUATION = "a release needs an evaluation dataset"
 DATASET_REFUSED = "the evaluation dataset is not a dataset of this project you can read"
 DATASET_READ = "evaluation:dataset:read"
+ONE_AGENT = "a generated app runs one agent"
+ONE_MODEL = "a generated app uses exactly one model"
+APP_TOOLS = "a generated app's tools are SQL tools over a Databricks connection"
 HIDDEN_TOOL = "tools.hidden"
 HIDDEN_MODEL = "models.hidden"
 HIDDEN_CONNECTION = "connections.hidden"
@@ -470,7 +486,7 @@ class SolutionService:
                 {"connection_id": str(r.connection_id), "tables": list(r.tables)}
                 for r in body.data_reads
             ],
-            "screens": [],
+            "screens": [screen.model_dump(mode="json") for screen in body.screens],
             "evaluation": (
                 {
                     "dataset_id": str(body.evaluation.dataset_id),
@@ -543,6 +559,16 @@ class SolutionService:
 
     def get(self, ws: str, proj: str, solution_id: UUID) -> s.SolutionOut:
         return self._out(self._solution(ws, proj, solution_id, READ), ws, proj)
+
+    def active_named(self, ws: str, proj: str, name: str) -> s.SolutionOut | None:
+        """The project's active solution named `name`, or None."""
+        project = self._project(ws, proj)
+        self.sc.pdp.require(READ, project)
+        assert project.project_id is not None
+        solution_id = repository.active_solution_id(
+            self.sc.session, project.project_id, name, tenant_id=self.sc.tenant_id
+        )
+        return None if solution_id is None else self.get(ws, proj, solution_id)
 
     def archive(self, ws: str, proj: str, solution_id: UUID) -> s.SolutionOut:
         row = self._solution(ws, proj, solution_id, WRITE)
@@ -758,6 +784,39 @@ class SolutionService:
             return NOT_DATABRICKS
         return None
 
+    def _app_tool_reason(self, spec: Mapping[str, Any]) -> str | None:
+        """None for a `connection.sql` tool on a Databricks connection the caller can read."""
+        binding = spec.get("binding")
+        connection_id = _uuid(binding.get("connection_id")) if isinstance(binding, dict) else None
+        placement = self.conns.placement(connection_id) if connection_id is not None else None
+        if (
+            spec.get("executor") != "connection.sql"
+            or placement is None
+            or placement.adapter_key != DATABRICKS
+        ):
+            return APP_TOOLS
+        return None
+
+    @staticmethod
+    def _screen_reason(screen: Mapping[str, Any], tools: Mapping[str, Any]) -> str | None:
+        """None for a chat screen, or a table screen of a pinned tool (`tools`: artifact key ->
+        spec) whose inputs are that tool's parameters; else the problem."""
+        kind = screen.get("kind")
+        if kind not in SCREEN_KINDS:
+            return f"the screen kind {kind!r} is not chat or table"
+        if kind == "chat":
+            return None
+        tool = screen.get("tool")
+        spec = tools.get(tool) if isinstance(tool, str) else None
+        if spec is None:
+            return f"the version pins no tool {tool!r}"
+        schema = spec.get("input_schema")
+        properties = schema.get("properties") if isinstance(schema, dict) else None
+        for name in screen.get("inputs") or []:
+            if not isinstance(properties, dict) or name not in properties:
+                return f"{name!r} is not a parameter of tool {tool!r}"
+        return None
+
     def _report(
         self,
         solution: Mapping[str, Any],
@@ -767,16 +826,28 @@ class SolutionService:
         bindings: s.EnvironmentBindings,
     ) -> Report:
         """One diagnostic per feature: entrypoint, tools, models, connections (each group by pin
-        name), evaluation. Every one is mandatory (no accepted deviations, B-2699)."""
+        name), evaluation; a version with screens (`/2`) also gets `models` and one `screens.<i>`
+        per screen, and stricter entrypoint and tool rules. Every one is mandatory (no accepted
+        deviations, B-2699)."""
+        screens = version["spec"].get("screens") or []
         published = (
             entry.state == "published"
             and entry.kind == ENTRYPOINT_KINDS[version["entrypoint_kind"]]
         )
-        report = [_diagnostic("entrypoint", None if published else ENTRYPOINT_GONE)]
+        entrypoint = None if published else ENTRYPOINT_GONE
+        if screens and entrypoint is None and version["entrypoint_kind"] != "agent":
+            entrypoint = ONE_AGENT
+        report = [_diagnostic("entrypoint", entrypoint)]
         report += [
-            _diagnostic(f"tools.{name}", _tool_reason(found.tool_specs[name]))
+            _diagnostic(
+                f"tools.{name}",
+                _tool_reason(found.tool_specs[name])
+                or (self._app_tool_reason(found.tool_specs[name]) if screens else None),
+            )
             for name in sorted(found.tools)
         ]
+        if screens:
+            report.append(_diagnostic("models", None if len(found.models) == 1 else ONE_MODEL))
         report += [
             _diagnostic(
                 f"models.{name}",
@@ -791,6 +862,17 @@ class SolutionService:
             )
             for name in sorted(found.connections)
         ]
+        if screens:
+            tools = {
+                self.artifacts.artifact_row("tools", access.artifact_id)["key"]: (
+                    found.tool_specs[name]
+                )
+                for name, access in found.tools.items()
+            }
+            report += [
+                _diagnostic(f"screens.{i}", self._screen_reason(screen, tools))
+                for i, screen in enumerate(screens)
+            ]
         report.append(_diagnostic("evaluation", self._evaluation_reason(solution, version)))
         return report
 
@@ -810,7 +892,9 @@ class SolutionService:
         and `connections.<pin>` of a hidden model or connection (`_hidden`) are `models.hidden`
         and `connections.hidden`."""
         kind, _, name = path.partition(".")
-        return HIDDEN_PATHS[kind] if kind in HIDDEN_PATHS and hidden(kind, name) else path
+        if kind in HIDDEN_PATHS and name and hidden(kind, name):
+            return HIDDEN_PATHS[kind]
+        return path
 
     def _manifest(
         self,
@@ -820,11 +904,13 @@ class SolutionService:
         pins: Sequence[PinnedVersion],
         bindings: s.EnvironmentBindings,
     ) -> dict[str, Any]:
-        """The release manifest: no digest, sealing time or sealer (settled call 12)."""
+        """The release manifest: no digest, sealing time or sealer (settled call 12). A version
+        with screens adds `screens` and `app` and is compiled by `/2`; any other gets exactly the
+        `/1` manifest."""
         evaluation = version["spec"]["evaluation"]
         dataset = self._dataset(solution, _uuid(evaluation["dataset_id"]))
         assert dataset is not None  # the report's `evaluation` diagnostic was supported
-        return {
+        manifest: dict[str, Any] = {
             "schema_version": 1,
             "solution_id": str(solution["id"]),
             "solution_version_id": str(version["id"]),
@@ -858,6 +944,12 @@ class SolutionService:
             },
             "compiler_version": COMPILER_VERSION,
         }
+        screens = version["spec"].get("screens") or []
+        if screens:
+            manifest["screens"] = screens
+            manifest["app"] = {"generator_version": APP_GENERATOR_VERSION}
+            manifest["compiler_version"] = COMPILER_VERSION_APP
+        return manifest
 
     def _release_out(self, row: Mapping[str, Any]) -> s.ReleaseOut:
         """The release, redacted for the caller (the stored row is not): the manifest's
