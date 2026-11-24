@@ -485,6 +485,23 @@ REFUSED_SQL = [
     "SELECT :1",
     "SELECT :12",
     "SELECT * FROM t WHERE id = :1",
+    # an IDENTIFIER(...) argument other than one plain literal, bind or name (#312)
+    "SELECT * FROM TABLE(IDENTIFIER('SYSTEM$CANCEL_ALL_QUERIES'))",
+    "SELECT IDENTIFIER('system$abort_session')(1)",
+    "select identifier( '  System$Cancel_All_Queries ' )()",
+    "SELECT IDENTIFIER /* c */ ('SYSTEM$X')()",
+    "SELECT IDENTIFIER('SNOWFLAKE.X.SYSTEM$X')()",
+    "SELECT IDENTIFIER('\"SYSTEM$X\"')()",
+    "SELECT IDENTIFIER('\\SYSTEM$X')()",
+    "SELECT IDENTIFIER($$SYSTEM$X$$)()",
+    "SELECT IDENTIFIER('SYS' || 'TEM$X')()",
+    "SELECT IDENTIFIER('a''b')",
+    "SELECT * FROM IDENTIFIER($t)",
+    "SELECT * FROM IDENTIFIER()",
+    "SELECT * FROM IDENTIFIER('t'",
+    'SELECT * FROM IDENTIFIER("t")',
+    "SELECT * FROM IDENTIFIER('a', 'b')",
+    "SELECT * FROM IDENTIFIER(CONCAT('a', 'b'))",
 ]
 ACCEPTED_SQL = [
     "SELECT $$hello$$",
@@ -513,6 +530,19 @@ ACCEPTED_SQL = [
     "SELECT 1 -- :1",
     "SELECT x::int FROM t",
     "SELECT * FROM t WHERE id = :id",
+    # IDENTIFIER(...) with one plain literal, bind or name, or only in a string or comment (#312)
+    "SELECT * FROM IDENTIFIER('db.schema.table')",
+    "SELECT * FROM identifier( 'MY_TABLE' )",
+    "SELECT * FROM IDENTIFIER(?)",
+    "SELECT * FROM IDENTIFIER(:tbl)",
+    "SELECT * FROM IDENTIFIER(my_var)",
+    "SELECT * FROM IDENTIFIER /* c */ ( 'a)b' )",
+    "SELECT * FROM IDENTIFIER('t' -- )\n)",
+    "SELECT identifier FROM t",
+    "SELECT my_identifier('SYSTEM$X') FROM t",
+    "SELECT 'IDENTIFIER($$x$$)'",
+    "SELECT 1 -- IDENTIFIER('SYSTEM$X')",
+    "SELECT \"IDENTIFIER('SYSTEM$X')\" FROM t",
 ]
 
 

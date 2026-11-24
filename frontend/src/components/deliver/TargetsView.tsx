@@ -27,9 +27,11 @@ const COLUMNS = [
   'Environment',
   'Workspace / project',
   'Warehouse ID',
+  'Serving endpoint',
   'Credential reference',
   'Status',
 ];
+const SERVING_ENDPOINT = /^[A-Za-z0-9_-]{1,63}$/;
 
 /** Deployment targets: list, register, archive. Server text renders as plain React text only. */
 export function TargetsView() {
@@ -105,6 +107,7 @@ export function TargetsView() {
                         {t.project && <> / {t.project}</>}
                       </td>
                       <td className="td font-mono text-xs">{t.bindings.warehouse_id}</td>
+                      <td className="td font-mono text-xs">{t.bindings.serving_endpoint || '-'}</td>
                       <td className="td font-mono text-xs">{t.credential_ref}</td>
                       <td className="td">
                         <StatusBadge status={t.status} />
@@ -155,6 +158,7 @@ function RegisterTargetDialog({ org, onClose }: { org: string; onClose: () => vo
   const [address, setAddress] = useState('');
   const [environment, setEnvironment] = useState<DeliveryEnvironment>('dev');
   const [warehouseId, setWarehouseId] = useState('');
+  const [servingEndpoint, setServingEndpoint] = useState('');
   const [credentialRef, setCredentialRef] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const projects = useProjects(org, workspace || undefined);
@@ -166,6 +170,10 @@ function RegisterTargetDialog({ org, onClose }: { org: string; onClose: () => vo
     if (workspace === '') next.workspace = 'Choose a workspace.';
     if (address.trim() === '') next.address = 'Address is required.';
     if (warehouseId.trim() === '') next.warehouseId = 'Warehouse ID is required.';
+    const endpoint = servingEndpoint.trim();
+    if (endpoint !== '' && !SERVING_ENDPOINT.test(endpoint)) {
+      next.servingEndpoint = 'Use 1-63 letters, digits, underscores or hyphens.';
+    }
     if (credentialRef.trim() === '') next.credentialRef = 'Credential reference is required.';
     setErrors(next);
     if (Object.keys(next).length > 0) return;
@@ -178,7 +186,10 @@ function RegisterTargetDialog({ org, onClose }: { org: string; onClose: () => vo
         platform_kind: 'databricks',
         address: address.trim(),
         environment,
-        bindings: { warehouse_id: warehouseId.trim() },
+        bindings: {
+          warehouse_id: warehouseId.trim(),
+          ...(endpoint ? { serving_endpoint: endpoint } : {}),
+        },
         credential_ref: credentialRef.trim(),
       }),
     );
@@ -260,15 +271,24 @@ function RegisterTargetDialog({ org, onClose }: { org: string; onClose: () => vo
             monospace
           />
           <TextField
-            label="Credential reference"
-            value={credentialRef}
-            onChange={setCredentialRef}
-            error={errors.credentialRef}
-            maxLength={128}
+            label="Serving endpoint (optional)"
+            value={servingEndpoint}
+            onChange={setServingEndpoint}
+            error={errors.servingEndpoint}
+            maxLength={63}
             monospace
-            help="The name the executor resolves to a platform credential."
+            help="The model serving endpoint a generated app queries. Needed to deploy a generated app."
           />
         </div>
+        <TextField
+          label="Credential reference"
+          value={credentialRef}
+          onChange={setCredentialRef}
+          error={errors.credentialRef}
+          maxLength={128}
+          monospace
+          help="The name the executor resolves to a platform credential."
+        />
         <ActionError error={action.error} title="Could not register the target" />
         <ModalActions onCancel={onClose} busy={action.busy} submitLabel="Register target" />
       </form>

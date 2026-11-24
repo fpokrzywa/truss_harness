@@ -5,6 +5,7 @@ export type TargetStatus = 'active' | 'archived';
 
 export interface TargetBindings {
   warehouse_id: string;
+  serving_endpoint?: string | null;
 }
 
 export interface TargetCreate {
