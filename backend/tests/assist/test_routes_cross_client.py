@@ -277,7 +277,7 @@ def test_proposals_answer_like_unknown_ids(
 
 # ------------------------------------------------------------------ SQL level
 def _seed(owner: Session, side: Side) -> dict[str, UUID]:
-    """A request and a proposal of `side`'s client, a day old, written as the schema owner."""
+    """A request and a proposal of `side`'s client, 200 days old, written as the schema owner."""
     t = tenant_id(owner, side.slug)
     owner.rollback()
     user = owner.execute(
@@ -291,13 +291,13 @@ def _seed(owner: Session, side: Side) -> dict[str, UUID]:
     owner.execute(
         text("INSERT INTO shifde.assist_requests (tenant_id, id, workspace_id, project_id, "
              "requested_by, text, status, created_at) VALUES (:t, :id, :w, :p, :u, 'hello', "
-             "'refused', now() - interval '1 day')"),
+             "'refused', now() - interval '200 days')"),
         {"t": t, "id": request_id, "w": ws, "p": side.project_id, "u": user},
     )  # fmt: skip
     owner.execute(
         text("INSERT INTO shifde.assist_proposals (tenant_id, id, request_id, run_id, step_key, "
              "kind, payload, created_at) VALUES (:t, :id, :r, :run, 'k', 'evaluation_run', "
-             "'{}'::jsonb, now() - interval '1 day')"),
+             "'{}'::jsonb, now() - interval '200 days')"),
         {"t": t, "id": proposal_id, "r": request_id, "run": uuid7()},
     )  # fmt: skip
     owner.commit()
@@ -331,8 +331,8 @@ def test_shifde_app_reaches_none_of_bs_rows(
                 {"t": tenant_b},
             ).all()  # fmt: skip
             assert changed == [], table
-        s.execute(text("SELECT set_config('shifde.retention_delete_cutoff', :c, true)"),
-                  {"c": "2999-01-01T00:00:00Z"})  # fmt: skip
+        s.execute(text("SELECT set_config('shifde.retention_delete_cutoff', "
+                       "CAST(now() - interval '100 days' AS text), true)"))  # fmt: skip
         for table, key in (("assist_proposals", "proposal"), ("assist_requests", "request")):
             gone = s.execute(
                 text(f"DELETE FROM shifde.{table} WHERE id = :id RETURNING 1"),  # nosec B608
@@ -371,8 +371,8 @@ def test_a_delete_outside_the_retention_cutoff_is_refused(
             s.rollback()
     # before the cutoff: deleted (the proposal first; the request's cascade passes the guard too)
     with app_session(app_db, tenant_a) as s:
-        s.execute(text("SELECT set_config('shifde.retention_delete_cutoff', :c, true)"),
-                  {"c": "2999-01-01T00:00:00Z"})  # fmt: skip
+        s.execute(text("SELECT set_config('shifde.retention_delete_cutoff', "
+                       "CAST(now() - interval '100 days' AS text), true)"))  # fmt: skip
         gone = s.execute(
             text("DELETE FROM shifde.assist_requests WHERE id = :id RETURNING 1"),
             {"id": mine["request"]},
