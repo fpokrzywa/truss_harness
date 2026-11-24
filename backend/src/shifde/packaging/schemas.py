@@ -16,6 +16,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 Strict = ConfigDict(extra="forbid")
 TARGET_KIND = "databricks.app/v1"
+SNOWFLAKE_TARGET_KIND = "snowflake.native-app/v1"
+TARGET_KINDS = (TARGET_KIND, SNOWFLAKE_TARGET_KIND)
+# the connection adapter a solution's tools and bindings use, by its target kind (SP6 design 4)
+TARGET_ADAPTERS = {TARGET_KIND: "databricks", SNOWFLAKE_TARGET_KIND: "snowflake"}
 DECIMAL = r"^[0-9]{1,12}(\.[0-9]{1,12})?$"
 
 TableName = Annotated[str, Field(min_length=1, max_length=256)]
@@ -37,7 +41,7 @@ def normalize_decimal(value: str) -> str:
 class SolutionCreate(BaseModel):
     model_config = Strict
     name: str = Field(min_length=1, max_length=200)
-    target_kind: Literal["databricks.app/v1"]
+    target_kind: Literal["databricks.app/v1", "snowflake.native-app/v1"]
 
 
 class SolutionOut(BaseModel):

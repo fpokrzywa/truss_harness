@@ -228,7 +228,7 @@ def _tokenize_snowflake(sql: str) -> list[Token]:
                 i += 1
             elif _is_name_start(nxt):
                 j = _snowflake_name_end(sql, i + 1)
-                tokens.append(Token("param", sql[i + 1 : j]))
+                tokens.append(Token("param", sql[i + 1 : j], start=i, end=j))
                 i = j
             else:
                 i += 1

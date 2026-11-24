@@ -2,7 +2,9 @@
 
 `sqlcheck.validate` forwards every `core.sqlrules` issue of a tool as an error at
 `tools.<i>.sql` and adds `screen_tool_unknown`, `screen_input_unknown`, `duplicate_name` and the
-`case_trivial` warning; it never raises. `SAMPLE_DRAFT` over `SAMPLE_TABLES` has no error.
+`case_trivial` warning; it never raises. `SAMPLE_DRAFT` over `SAMPLE_TABLES` has no error, and
+`SNOWFLAKE_SAMPLE_DRAFT` over `SNOWFLAKE_SAMPLE_TABLES` none in the Snowflake dialect (SP6-4),
+where Snowflake-only refusals (a `?` parameter, a backtick) show and nowhere else.
 `draft.parse_reply` strips one fenced block, refuses anything but one closed draft object (floats
 included) with at most 20 messages of at most 300 characters, and the prompt holds the schema.
 """
@@ -19,7 +21,12 @@ from shifde.appgen import draft as drafting
 from shifde.appgen import sqlcheck
 from shifde.appgen.schemas import Draft
 from shifde.packaging.canonical import digest
-from tests._support.appgen_fixtures import SAMPLE_DRAFT, SAMPLE_TABLES
+from tests._support.appgen_fixtures import (
+    SAMPLE_DRAFT,
+    SAMPLE_TABLES,
+    SNOWFLAKE_SAMPLE_DRAFT,
+    SNOWFLAKE_SAMPLE_TABLES,
+)
 
 
 def _draft(**changes: Any) -> dict[str, Any]:  # Any: draft JSON
@@ -44,6 +51,29 @@ def _with_sql(sql: str, params: list[str] | None = None) -> dict[str, Any]:  # A
 
 def test_the_sample_draft_has_no_error() -> None:
     assert _codes(SAMPLE_DRAFT) == []
+
+
+def test_the_snowflake_sample_draft_has_no_error_in_the_snowflake_dialect() -> None:
+    draft = Draft.model_validate(SNOWFLAKE_SAMPLE_DRAFT)
+    assert sqlcheck.validate(draft, SNOWFLAKE_SAMPLE_TABLES, dialect="snowflake") == []
+
+
+@pytest.mark.parametrize(
+    ("sql", "code"),
+    [
+        ("select 1 from DEMO_DB.PUBLIC.ORDERS where id = ?", "sql_positional_parameter"),
+        ("select `id` from DEMO_DB.PUBLIC.ORDERS", "sql_syntax"),
+    ],
+)
+def test_a_snowflake_only_refusal_shows_only_in_the_snowflake_dialect(sql: str, code: str) -> None:
+    value = copy.deepcopy(SNOWFLAKE_SAMPLE_DRAFT)
+    value["tools"][1]["sql"] = sql
+    value["tools"][1]["parameters"] = []
+    draft = Draft.model_validate(value)
+    found = sqlcheck.validate(draft, SNOWFLAKE_SAMPLE_TABLES, dialect="snowflake")
+    assert [(d.path, d.code) for d in found] == [("tools.1.sql", code)]
+    default = sqlcheck.validate(draft, SNOWFLAKE_SAMPLE_TABLES)
+    assert code not in {d.code for d in default}, default
 
 
 def test_the_hash_is_the_canonical_digest() -> None:

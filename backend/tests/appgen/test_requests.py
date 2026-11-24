@@ -2,8 +2,11 @@
 
 A create on the fake Databricks workspace answers 202 with one queued `appgen.draft` job. Each
 refusal of 5.1 queues nothing: another client's or another project's connection (the 404 an
-unknown connection gets), a connection that is not Databricks, not read-only, not active or not
-discovered, a table not in its latest discovery (`loc` names it) and an unknown model. The list
+unknown connection gets), a connection that is neither Databricks nor Snowflake
+(`connection_platform_unsupported`), not read-only, not active or not discovered, a table not in its
+latest discovery (`loc` names it) and an unknown model. A Snowflake read connection (SP6-4) answers
+202 too; on it a table name with a quoted or otherwise non-plain part is 422
+`table_name_unsupported` (a Databricks request with the same name gets `table_not_discovered`). The list
 pages newest first and filters by status; an edit stores revision n+1 with its diagnostics (never
 blocking), refuses a stale base (the loser of two racing edits too) and a request that is not
 drafted, and 422s a schema error; discard and retry move only from their states (409 otherwise),
@@ -29,6 +32,8 @@ from tests._support.p3util import ADMIN, ADMIN_B, B, connection
 from tests._support.p5util import Hdr, user_session
 from tests.appgen.helpers import (
     INVALID,
+    SF_SAMPLE,
+    SF_TABLES,
     TABLES,
     add_project,
     body,
@@ -42,7 +47,9 @@ from tests.appgen.helpers import (
     request_url,
     requests_url,
     run_job,
+    snowflake,
     wire,
+    wire_snowflake,
 )
 
 
@@ -102,7 +109,7 @@ def test_each_create_refusal_queues_nothing(
     add_project(c, admin, "other")
     p2_conn = databricks(c, admin, "p2-lake", scope={"workspace": "main", "project": "other"})
     _code(create(c, admin, body(p2_conn, model)), 404, "not_found")
-    # not Databricks
+    # neither Databricks nor Snowflake
     rest = connection(
         c,
         admin,
@@ -113,7 +120,7 @@ def test_each_create_refusal_queues_nothing(
             "config": {"base_url": "https://api.example.test"},
         },
     )
-    _code(create(c, admin, body(rest["id"], model)), 422, "connection_not_databricks")
+    _code(create(c, admin, body(rest["id"], model)), 422, "connection_platform_unsupported")
     writable = databricks(c, admin, "rw-lake", access_mode="read_write", discover=False)
     _code(create(c, admin, body(writable, model)), 422, "connection_not_read_only")
     draft = databricks(c, admin, "draft-lake", active=False, discover=False)
@@ -128,6 +135,45 @@ def test_each_create_refusal_queues_nothing(
     assert [e["loc"] for e in missing["errors"]] == [["body", "tables", "main.default.nope"]]
     unknown_model = _code(create(c, admin, body(cid, str(uuid7()))), 404, "not_found")
     assert unknown_model["detail"] == "model not found"
+    assert draft_jobs(owner_session) == []
+    assert owner_session.execute(text("SELECT count(*) FROM shifde.appgen_requests")).scalar() == 0
+
+
+def test_a_snowflake_read_connection_answers_202_with_one_queued_draft_job(
+    admin: Hdr, owner_session: Session
+) -> None:
+    c = admin.client
+    wire_snowflake(c)
+    cid, model = snowflake(c, admin), drafting_model(c, admin)
+    out = created(c, admin, body(cid, model, f"Sales app {SF_SAMPLE}", tables=SF_TABLES))
+    assert out["status"] == "queued" and out["tables"] == SF_TABLES
+    jobs = draft_jobs(owner_session)
+    assert len(jobs) == 1 and jobs[0][1] == "queued"
+    assert jobs[0][2]["request_id"] == out["id"]
+
+
+@pytest.mark.parametrize(
+    "name", ['DEMO_DB.PUBLIC."orders"', "DEMO_DB.PUBLIC.my-table", "demo-db.public.orders"]
+)
+def test_a_snowflake_table_name_that_is_not_plain_is_refused(
+    admin: Hdr, owner_session: Session, name: str
+) -> None:
+    c = admin.client
+    wire_snowflake(c)
+    sf, model = snowflake(c, admin), drafting_model(c, admin)
+    out = _code(
+        create(c, admin, body(sf, model, tables=[*SF_TABLES, name])),
+        422,
+        "table_name_unsupported",
+    )
+    assert [e["loc"] for e in out["errors"]] == [["body", "tables", name]]
+    assert out["errors"][0]["type"] == "table_name_unsupported"
+    # the same name on a Databricks connection is refused only as not discovered
+    dbx = databricks(c, admin)
+    missing = _code(
+        create(c, admin, body(dbx, model, tables=[*TABLES, name])), 422, "table_not_discovered"
+    )
+    assert [e["loc"] for e in missing["errors"]] == [["body", "tables", name]]
     assert draft_jobs(owner_session) == []
     assert owner_session.execute(text("SELECT count(*) FROM shifde.appgen_requests")).scalar() == 0
 

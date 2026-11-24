@@ -16645,7 +16645,10 @@
             "type": "string"
           },
           "target_kind": {
-            "const": "databricks.app/v1",
+            "enum": [
+              "databricks.app/v1",
+              "snowflake.native-app/v1"
+            ],
             "title": "Target Kind",
             "type": "string"
           }

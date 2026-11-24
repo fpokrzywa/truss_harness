@@ -105,10 +105,14 @@ def stack(client: TestClient, h: dict[str, str], org: str = A) -> Stack:
     )
 
 
-def solution(client: TestClient, h: dict[str, str], name: str, org: str = A) -> Any:
-    r = client.post(
-        solutions(org), headers=h, json={"name": name, "target_kind": "databricks.app/v1"}
-    )
+def solution(
+    client: TestClient,
+    h: dict[str, str],
+    name: str,
+    org: str = A,
+    target_kind: str = "databricks.app/v1",
+) -> Any:
+    r = client.post(solutions(org), headers=h, json={"name": name, "target_kind": target_kind})
     assert r.status_code == 201, r.text
     return r.json()
 

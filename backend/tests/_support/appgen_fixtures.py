@@ -8,10 +8,16 @@ case message, then the final text matched on a substring of the tool's `<untrust
 `FakeDatabricksWorkspace(sample_data=True)` answers it. The same list configures the fake serving
 endpoint. `tests/adapters/dataplatforms/test_databricks_appgen_fixtures.py` proves the properties
 SP5-3, SP5-5 and SP5-9 rely on.
+
+`SNOWFLAKE_SAMPLE_DRAFT` (SP6-4) is `SAMPLE_DRAFT` with its tool SQL naming the `DEMO_DB` tables
+of `FakeSnowflakeAccount(sample_data=True)` (`SNOWFLAKE_SAMPLE_TABLES`) and everything else
+identical, so `AGENT_SCRIPT` is reused unchanged; `DRAFT_SCRIPT` answers a brief carrying
+`[[appgen-sample-snowflake]]` with it.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 from typing import Any  # Any: draft JSON
 
@@ -90,9 +96,32 @@ SAMPLE_DRAFT: dict[str, Any] = {
     ],
 }
 
+SNOWFLAKE_SAMPLE_TABLES = (
+    "demo_db.public.customers",
+    "demo_db.public.orders",
+    "demo_db.sales.invoices",
+)
+SNOWFLAKE_NAMES = {
+    "main.default.customers": "DEMO_DB.PUBLIC.CUSTOMERS",
+    "main.default.orders": "DEMO_DB.PUBLIC.ORDERS",
+    "main.sales.invoices": "DEMO_DB.SALES.INVOICES",
+}
+
+
+def _on_snowflake(sql: str) -> str:
+    for databricks, snowflake in SNOWFLAKE_NAMES.items():
+        sql = sql.replace(databricks, snowflake)
+    return sql
+
+
+SNOWFLAKE_SAMPLE_DRAFT: dict[str, Any] = copy.deepcopy(SAMPLE_DRAFT)
+for _tool in SNOWFLAKE_SAMPLE_DRAFT["tools"]:
+    _tool["sql"] = _on_snowflake(_tool["sql"])
+
 DRAFT_SCRIPT: list[dict[str, str]] = [
     {"match": "[[appgen-sample]]", "reply": json.dumps(SAMPLE_DRAFT)},
     {"match": "[[appgen-invalid]]", "reply": "not json"},
+    {"match": "[[appgen-sample-snowflake]]", "reply": json.dumps(SNOWFLAKE_SAMPLE_DRAFT)},
 ]
 
 
