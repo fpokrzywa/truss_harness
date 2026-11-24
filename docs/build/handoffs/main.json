@@ -1,8 +1,8 @@
 {
-  "session_id": "5c5285b9-8f1d-4930-8c98-a5a7d1c59ec2",
-  "head_sha": "5ee2f6d62e73f794b1f76998d9e08e52f03728d1",
+  "session_id": "09217743-d3af-451d-b13f-f282fa2f3084",
+  "head_sha": "0b03ac745a6d8e4663e77f2b47a1a10a4ba6463a",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "Per docs/build/HANDOFF.md: job queue; spawn reviewers for job 170 (review r1); sync+gate+merge PR #349 (job 171); spawn spec-writers for jobs 172 and 173",
-  "written_at": "2026-11-24T11:35:54Z"
+  "next_step": "Per docs/build/HANDOFF.md: start cluster; job queue; spawn approver for job 170 (PR #350, renumber B-3987 to B-3997 at merge); restart builders for jobs 172 and 173 on their uncommitted worktrees",
+  "written_at": "2026-11-24T12:17:06Z"
 }
