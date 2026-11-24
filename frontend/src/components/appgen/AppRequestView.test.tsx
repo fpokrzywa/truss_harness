@@ -1,8 +1,8 @@
 import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DRAFT, ONE, request, revision, stubAppgen } from '@/test/appgen';
-import { ALL_PERMS, bodyOf } from '@/test/security';
+import { DRAFT, ONE, ORG, request, revision, stubAppgen } from '@/test/appgen';
+import { ALL_PERMS, bodyOf, list } from '@/test/security';
 import { jsonResponse, problemResponse, renderWithClient } from '@/test/utils';
 import { AppRequestView } from './AppRequestView';
 
@@ -407,6 +407,124 @@ describe('AppRequestView accept', () => {
     const accepted = await screen.findByRole('region', { name: 'Accepted' });
     expect(within(accepted).queryByRole('link')).not.toBeInTheDocument();
     expect(within(accepted).getByText('sv-7')).toBeInTheDocument();
+  });
+});
+
+describe('AppRequestView unsaved edits and fixed names', () => {
+  const UNSAVED = /Save your draft edits as a new revision before accepting/;
+  const FIXED_TEXT = 'This editor cannot change the agent name, tool names or case ids';
+  const FIXED_REASON = /discard this request and generate a new one/;
+
+  it('blocks Accept while the draft has unsaved edits, and not after a revert', async () => {
+    stubAppgen();
+    renderWithClient(<AppRequestView id="ar-1" />);
+    await editable();
+    const accept = await screen.findByRole('button', { name: 'Accept' });
+    expect(accept).toBeEnabled();
+    const instructions = screen.getByLabelText('Agent instructions');
+    await userEvent.type(instructions, ' More.');
+    expect(accept).toBeDisabled();
+    expect(accept).toHaveAccessibleDescription(UNSAVED);
+    expect(screen.getByText(UNSAVED)).toHaveTextContent('Accept uses the latest saved revision.');
+    await userEvent.clear(instructions);
+    await userEvent.type(instructions, DRAFT.agent.instructions);
+    expect(accept).toBeEnabled();
+    expect(screen.queryByText(UNSAVED)).not.toBeInTheDocument();
+  });
+
+  it('enables Accept again once the edit is saved as a new revision', async () => {
+    let saved = false;
+    const fetchMock = stubAppgen({
+      [`GET ${ONE}`]: () =>
+        jsonResponse(
+          saved
+            ? request({
+                latest_revision_no: 2,
+                revisions: [revision(), revision({ revision_no: 2, source: 'edited' })],
+              })
+            : request(),
+        ),
+      [`POST ${ONE}/drafts`]: () => {
+        saved = true;
+        return jsonResponse(revision({ revision_no: 2, source: 'edited' }), { status: 201 });
+      },
+    });
+    renderWithClient(<AppRequestView id="ar-1" />);
+    await editable();
+    await userEvent.type(screen.getByLabelText('Agent instructions'), ' More.');
+    expect(screen.getByRole('button', { name: 'Accept' })).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Save as new revision' }));
+    expect(await screen.findByRole('form', { name: 'Draft revision 2' })).toBeInTheDocument();
+    expect(fetchMock.calls.some((c) => c.key === `POST ${ONE}/drafts`)).toBe(true);
+    await waitFor(() => expect(screen.queryByText(UNSAVED)).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Accept' })).toBeEnabled();
+    expect(screen.getByRole('form', { name: 'Accept draft' })).toHaveTextContent('r2');
+  });
+
+  it('shows both reasons when the draft has errors and unsaved edits', async () => {
+    stubAppgen({
+      [`GET ${ONE}`]: () =>
+        jsonResponse(request({ revisions: [revision({ validation: [SQL_ERROR] })] })),
+    });
+    renderWithClient(<AppRequestView id="ar-1" />);
+    await editable();
+    await userEvent.type(screen.getByLabelText('Agent instructions'), ' More.');
+    const accept = screen.getByRole('button', { name: 'Accept' });
+    expect(accept).toHaveAccessibleDescription(/Fix the 1 error/);
+    expect(accept).toHaveAccessibleDescription(UNSAVED);
+  });
+
+  it('explains a diagnostic on a tool name and keeps Accept blocked', async () => {
+    stubAppgen({
+      [`GET ${ONE}`]: () =>
+        jsonResponse(
+          request({
+            revisions: [
+              revision({
+                validation: [
+                  {
+                    path: 'tools.0.name',
+                    code: 'duplicate_name',
+                    message: "tool name 'orders_by_region' is repeated",
+                    severity: 'error',
+                  },
+                ],
+              }),
+            ],
+          }),
+        ),
+    });
+    renderWithClient(<AppRequestView id="ar-1" />);
+    const top = await screen.findByRole('region', { name: 'Draft diagnostics' });
+    expect(top).toHaveTextContent('duplicate_name');
+    expect(top).toHaveTextContent(FIXED_TEXT);
+    expect(top).toHaveTextContent('generate a new one with a revised brief');
+    const accept = await screen.findByRole('button', { name: 'Accept' });
+    expect(accept).toBeDisabled();
+    expect(accept).toHaveAccessibleDescription(/Fix the 1 error/);
+    expect(accept).toHaveAccessibleDescription(FIXED_REASON);
+  });
+
+  it('shows neither fixed-name text for an error on an editable path', async () => {
+    stubAppgen({
+      [`GET ${ONE}`]: () =>
+        jsonResponse(request({ revisions: [revision({ validation: [SQL_ERROR] })] })),
+    });
+    renderWithClient(<AppRequestView id="ar-1" />);
+    const accept = await screen.findByRole('button', { name: 'Accept' });
+    expect(accept).toBeDisabled();
+    expect(accept).toHaveAccessibleDescription(/Fix the 1 error/);
+    expect(accept).not.toHaveAccessibleDescription(FIXED_REASON);
+    expect(screen.queryByText(new RegExp(FIXED_TEXT))).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Draft diagnostics' })).not.toBeInTheDocument();
+  });
+
+  it('shows the empty state of the runtime model list', async () => {
+    stubAppgen({ [`GET ${ORG}/models/effective`]: () => list([]) });
+    renderWithClient(<AppRequestView id="ar-1" />);
+    const form = await screen.findByRole('form', { name: 'Accept draft' });
+    expect(await within(form).findByText(/No models are available here/)).toBeInTheDocument();
+    expect(within(form).getByLabelText('Runtime model')).toBeDisabled();
   });
 });
 

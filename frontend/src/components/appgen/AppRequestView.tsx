@@ -6,7 +6,6 @@ import type { AppRequestOut, DraftOut } from '@/lib/api/appgen-types';
 import { endpoints } from '@/lib/api/endpoints';
 import { useAppRequest, useRefreshAppRequests } from '@/lib/appgen-hooks';
 import { useCan } from '@/lib/hooks';
-import { useEffectiveModels } from '@/lib/integrate-hooks';
 import { generateHref, solutionHref } from '@/lib/scope';
 import { ConfirmDialog } from '../ConfirmDialog';
 import {
@@ -15,14 +14,14 @@ import {
   formatDate,
   PageHeader,
   QueryGate,
-  SelectField,
   TextField,
   useAction,
 } from '../admin/ui';
+import { ModelSelect } from '../build/pickers';
 import { StatusBadge } from '../integrate/Maturity';
 import { useProjectQuery } from '../releases/ProjectScope';
 import { useOrgParam } from '../security/useOrg';
-import { DraftEditor, errorCount, RevisionHistory } from './DraftEditor';
+import { DraftEditor, errorCount, isFixedPath, RevisionHistory } from './DraftEditor';
 
 // The same checks as the evaluation contract of a new solution version.
 const DECIMAL = /^[0-9]{1,12}(\.[0-9]{1,12})?$/;
@@ -91,6 +90,7 @@ function RequestBody({
   const discard = useAction();
   const retry = useAction();
   const [confirming, setConfirming] = useState(false);
+  const [dirty, setDirty] = useState(false);
 
   const latest = latestOf(request.revisions);
   const shown = request.revisions.find((r) => r.revision_no === shownNo) ?? latest;
@@ -200,11 +200,12 @@ function RequestBody({
               await refresh();
             }}
             onReload={() => void refetch()}
+            onDirtyChange={setDirty}
           />
         </>
       )}
 
-      {showAccept && <AcceptForm scope={scope} request={request} latest={latest} />}
+      {showAccept && <AcceptForm scope={scope} request={request} latest={latest} unsaved={dirty} />}
 
       <ConfirmDialog
         open={confirming}
@@ -246,14 +247,15 @@ function AcceptForm({
   scope,
   request,
   latest,
+  unsaved,
 }: {
   scope: Scope;
   request: AppRequestOut;
   latest: DraftOut | undefined;
+  /** The draft editor holds edits that are not saved as a revision yet. */
+  unsaved: boolean;
 }) {
   const { org, ws, proj } = scope;
-  // The project's model list; without `?ws=&proj=` the organization's.
-  const models = useEffectiveModels(org, ws || undefined, proj || undefined);
   const refresh = useRefreshAppRequests(org);
   const action = useAction();
   const [name, setName] = useState('');
@@ -263,11 +265,19 @@ function AcceptForm({
   const [maxCost, setMaxCost] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const reasonId = useId();
+  const unsavedId = useId();
 
   const resuming = request.status === 'accepting';
   const revisionNo = resuming ? request.accepted_revision_no : (latest?.revision_no ?? null);
-  const errorsInDraft = errorCount(request.revisions.find((r) => r.revision_no === revisionNo));
-  const blocked = errorsInDraft > 0 || revisionNo === null;
+  const accepted = request.revisions.find((r) => r.revision_no === revisionNo);
+  const errorsInDraft = errorCount(accepted);
+  const fixedErrors = (accepted?.validation ?? []).some(
+    (d) => d.severity === 'error' && isFixedPath(d.path),
+  );
+  const blocked = errorsInDraft > 0 || revisionNo === null || unsaved;
+  const describedBy = [errorsInDraft > 0 ? reasonId : null, unsaved ? unsavedId : null].filter(
+    Boolean,
+  );
   const label = resuming ? 'Resume accept' : 'Accept';
 
   async function submit(e: FormEvent) {
@@ -301,11 +311,6 @@ function AcceptForm({
     if (res.ok) await refresh();
   }
 
-  const modelOptions = (models.data?.items ?? []).map((m) => ({
-    value: m.id,
-    label: m.display_name,
-  }));
-
   return (
     <form
       onSubmit={(e) => void submit(e)}
@@ -329,11 +334,15 @@ function AcceptForm({
         error={errors.name}
       />
       <div>
-        <SelectField
+        {/* The project's model list; without `?ws=&proj=` the organization's. */}
+        <ModelSelect
+          org={org}
+          workspace={ws || undefined}
+          project={proj || undefined}
           label="Runtime model"
           value={modelId}
           onChange={setModelId}
-          options={[{ value: '', label: 'Select...' }, ...modelOptions]}
+          emptyLabel="Select..."
         />
         {errors.model && <p className="mt-1 text-sm text-red-700">{errors.model}</p>}
       </div>
@@ -364,13 +373,21 @@ function AcceptForm({
           <p id={reasonId} className="text-sm text-red-800">
             Fix the {errorsInDraft} {errorsInDraft === 1 ? 'error' : 'errors'} in this draft before
             accepting.
+            {fixedErrors &&
+              ' Some of these errors are on names this editor cannot change; discard this request and generate a new one.'}
+          </p>
+        )}
+        {unsaved && (
+          <p id={unsavedId} className="text-sm text-red-800">
+            Save your draft edits as a new revision before accepting; Accept uses the latest saved
+            revision.
           </p>
         )}
         <button
           type="submit"
           className="btn btn-primary"
           disabled={action.busy || blocked}
-          aria-describedby={errorsInDraft > 0 ? reasonId : undefined}
+          aria-describedby={describedBy.join(' ') || undefined}
         >
           {action.busy ? 'Working...' : label}
         </button>
