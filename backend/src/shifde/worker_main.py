@@ -14,6 +14,7 @@ import sys
 
 from shifde.appgen import service as appgen
 from shifde.assist import service as assist
+from shifde.assist import tools as assist_tools
 from shifde.runtime import worker
 from shifde.runtime.internal_tools import InternalToolRegistry
 from shifde.runtime.jobkinds import JobKindRegistry
@@ -30,8 +31,8 @@ def job_handlers() -> JobKindRegistry:
 
 
 def internal_tools() -> InternalToolRegistry:
-    """The `seth.*` internal functions runs may call (none yet: SP7-4 registers them)."""
-    return InternalToolRegistry.of({})
+    """The `seth.*` internal functions runs may call: the specialists' (`assist.tools`)."""
+    return InternalToolRegistry.of(assist_tools.REGISTRY)
 
 
 def run(argv: list[str] | None = None) -> int:

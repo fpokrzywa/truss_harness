@@ -153,7 +153,7 @@ MCP = {
 }
 
 # assist: the organization's settings and switch, the project's specialists (SP7 design 8, issue
-# #278) and requests (design 11, issue #279): not a SETH module
+# #278), requests (design 11, issue #279) and proposals (design 6, issue #280): not a SETH module
 ASSIST_ORG = "/api/v1/orgs/{org}/assist"
 ASSIST_PROJECT = "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/assist"
 ASSIST = {
@@ -169,6 +169,8 @@ ASSIST = {
     ("POST", ASSIST_PROJECT + "/requests"),
     ("GET", ASSIST_PROJECT + "/requests"),
     ("GET", ASSIST_ORG + "/requests/{request_id}"),
+    ("POST", ASSIST_ORG + "/proposals/{proposal_id}/accept"),
+    ("POST", ASSIST_ORG + "/proposals/{proposal_id}/dismiss"),
 }
 
 

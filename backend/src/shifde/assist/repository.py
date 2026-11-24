@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from decimal import Decimal
 from typing import Any  # Any: SQL parameter values / JSON documents
 from uuid import UUID
@@ -279,7 +280,8 @@ def change_request(
     """Set `status` (and `fields`) while the request is in one of `expected`; the changed row, or
     None when it was in another state."""
     unknown = set(fields) - CHANGEABLE
-    assert not unknown, unknown
+    if unknown:
+        raise ValueError(f"not changeable request columns: {', '.join(sorted(unknown))}")
     sets = "".join(f", {name} = :{name}" for name in sorted(fields))
     return (
         session.execute(
@@ -290,6 +292,133 @@ def change_request(
                 f"AND status = ANY (CAST(:e AS text[])) RETURNING {REQUEST_COLUMNS}"
             ),
             {"t": tenant_id, "id": request_id, "s": status, "e": list(expected), **fields},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def bound_requests(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    run_id: UUID,
+    named: UUID | None,
+    project_id: UUID,
+    requested_by: UUID,
+) -> list[Row]:
+    """The project's requests by `requested_by` that name the run (`run_id`) or that its stored
+    idempotency key names (`named`), while they hand over to it or are routed to it."""
+    return list(
+        session.execute(
+            text(
+                # columns are module constants; values are bound
+                f"SELECT {REQUEST_COLUMNS} FROM shifde.assist_requests "  # nosec B608
+                "WHERE tenant_id = :t AND (id = :n OR run_id = :r) AND project_id = :p "
+                "AND requested_by = :u AND status IN ('handing_over', 'routed') "
+                "AND (run_id IS NULL OR run_id = :r) ORDER BY id"
+            ),
+            {"t": tenant_id, "n": named, "r": run_id, "p": project_id, "u": requested_by},
+        )
+        .mappings()
+        .all()
+    )
+
+
+# ====================================================================== proposals
+def insert_proposal(session: Session, values: Mapping[str, Any]) -> UUID | None:
+    """Insert the proposal of a run step; None when that step already has one (a replay)."""
+    found = session.execute(
+        text(
+            "INSERT INTO shifde.assist_proposals (tenant_id, id, request_id, run_id, step_key, "
+            "kind, payload) VALUES (:tenant_id, :id, :request_id, :run_id, :step_key, :kind, "
+            "CAST(:payload AS jsonb)) ON CONFLICT (tenant_id, run_id, step_key) DO NOTHING "
+            "RETURNING id"
+        ),
+        {**values, "payload": json.dumps(values["payload"])},
+    ).first()
+    return None if found is None else UUID(str(found[0]))
+
+
+def step_proposal(session: Session, *, tenant_id: UUID, run_id: UUID, step_key: str) -> Row | None:
+    return (
+        session.execute(
+            text(
+                # columns are module constants; values are bound
+                f"SELECT {PROPOSAL_COLUMNS} FROM shifde.assist_proposals "  # nosec B608
+                "WHERE tenant_id = :t AND run_id = :r AND step_key = :k"
+            ),
+            {"t": tenant_id, "r": run_id, "k": step_key},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def get_proposal(session: Session, *, tenant_id: UUID, proposal_id: UUID) -> Row | None:
+    return (
+        session.execute(
+            text(
+                # columns are module constants; values are bound
+                f"SELECT {PROPOSAL_COLUMNS} FROM shifde.assist_proposals "  # nosec B608
+                "WHERE tenant_id = :t AND id = :id"
+            ),
+            {"t": tenant_id, "id": proposal_id},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def claim_proposal(
+    session: Session, proposal_id: UUID, *, tenant_id: UUID, decided_by: UUID
+) -> Row | None:
+    """Claim an open, unclaimed proposal for one accept (`decided_by` set); None otherwise."""
+    return (
+        session.execute(
+            text(
+                # columns are module constants; values are bound
+                "UPDATE shifde.assist_proposals SET decided_by = :u, "  # nosec B608
+                "updated_at = now() WHERE tenant_id = :t AND id = :id AND status = 'open' "
+                f"AND decided_by IS NULL RETURNING {PROPOSAL_COLUMNS}"
+            ),
+            {"t": tenant_id, "id": proposal_id, "u": decided_by},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def decide_proposal(
+    session: Session,
+    proposal_id: UUID,
+    *,
+    tenant_id: UUID,
+    expected: Sequence[str],
+    status: str,
+    decided_by: UUID,
+    status_reason: str | None = None,
+    result_ref: Mapping[str, Any] | None = None,
+) -> Row | None:
+    """Set the decision while the proposal is in one of `expected`; None otherwise."""
+    return (
+        session.execute(
+            text(
+                # columns are module constants; values are bound
+                "UPDATE shifde.assist_proposals SET status = :s, "  # nosec B608
+                "status_reason = :sr, result_ref = CAST(:rr AS jsonb), decided_by = :u, "
+                "decided_at = now(), updated_at = now() WHERE tenant_id = :t AND id = :id "
+                f"AND status = ANY (CAST(:e AS text[])) RETURNING {PROPOSAL_COLUMNS}"
+            ),
+            {
+                "t": tenant_id,
+                "id": proposal_id,
+                "s": status,
+                "e": list(expected),
+                "u": decided_by,
+                "sr": status_reason,
+                "rr": json.dumps(dict(result_ref)) if result_ref else None,
+            },
         )
         .mappings()
         .first()
@@ -309,6 +438,70 @@ def list_proposals(session: Session, *, tenant_id: UUID, request_id: UUID) -> li
         .mappings()
         .all()
     )
+
+
+# ====================================================================== retention (Call S7-J)
+# an ended request: routed, refused or failed, created before the cutoff, its run gone (or ended)
+_ENDED_REQUEST = (
+    "r.tenant_id = :t AND r.created_at < :c AND r.status IN ('routed', 'refused', 'failed') "
+    "AND (r.run_id IS NULL OR NOT EXISTS (SELECT 1 FROM shifde.runs x WHERE x.tenant_id = :t "
+    "AND x.id = r.run_id{live}))"
+)
+_SCRUBBABLE = (
+    _ENDED_REQUEST.format(
+        live=" AND x.status NOT IN ('completed', 'failed', 'cancelled', 'timed_out')"
+    )
+    + " AND (r.text <> '' OR r.context IS NOT NULL)"
+)
+# every proposal of a deletable request is older than the cutoff too (the delete guard's rule)
+# (a dry run counts the runs the same pass would delete, `:gone`, as gone)
+_DELETABLE = _ENDED_REQUEST.format(live=" AND x.id <> ALL (CAST(:gone AS uuid[]))") + (
+    " AND NOT EXISTS (SELECT 1 FROM shifde.assist_proposals p WHERE p.tenant_id = :t "
+    "AND p.request_id = r.id AND p.created_at >= :c)"
+)
+
+
+def scrub_requests(session: Session, *, tenant_id: UUID, cutoff: datetime, dry_run: bool) -> int:
+    """Blank the text and context of the client's ended requests created before `cutoff` whose
+    run is gone or has ended; the number of requests (only counted on `dry_run`)."""
+    params = {"t": tenant_id, "c": cutoff}
+    if dry_run:
+        # fragments are module constants; values are bound
+        sql = f"SELECT count(*) FROM shifde.assist_requests r WHERE {_SCRUBBABLE}"  # nosec B608
+        return int(session.execute(text(sql), params).scalar_one())
+    sql = (
+        # fragments are module constants; values are bound
+        "UPDATE shifde.assist_requests r SET text = '', context = NULL, "  # nosec B608
+        f"updated_at = now() WHERE {_SCRUBBABLE}"
+    )
+    return int(session.execute(text(sql), params).rowcount)  # type: ignore[attr-defined]
+
+
+def delete_requests(
+    session: Session, *, tenant_id: UUID, cutoff: datetime, gone: Sequence[UUID], dry_run: bool
+) -> tuple[int, int]:
+    """Delete the client's ended requests created before `cutoff` whose run is gone and whose
+    proposals are older than `cutoff` too, proposals first; (requests, proposals). Unless
+    `dry_run` (only counted then) the retention delete has set `shifde.retention_delete_cutoff`."""
+    ids = list(
+        session.execute(
+            # fragments are module constants; values are bound
+            text(f"SELECT r.id FROM shifde.assist_requests r WHERE {_DELETABLE}"),  # nosec B608
+            {"t": tenant_id, "c": cutoff, "gone": list(gone)},
+        ).scalars()
+    )
+    if not ids:
+        return 0, 0
+    params = {"t": tenant_id, "ids": ids}
+    where = "FROM shifde.assist_proposals WHERE tenant_id = :t AND request_id = ANY(:ids)"
+    if dry_run:
+        proposals = session.execute(text(f"SELECT count(*) {where}"), params).scalar_one()
+        return len(ids), int(proposals)
+    proposals = session.execute(text(f"DELETE {where}"), params).rowcount  # type: ignore[attr-defined]
+    requests = session.execute(
+        text("DELETE FROM shifde.assist_requests WHERE tenant_id = :t AND id = ANY(:ids)"), params
+    ).rowcount  # type: ignore[attr-defined]
+    return int(requests), int(proposals)
 
 
 # ====================================================================== jobs
