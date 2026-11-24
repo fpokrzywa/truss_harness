@@ -1110,7 +1110,8 @@ def on_observe_result(session: Session, job: Mapping[str, Any], body: JobResultS
 def on_verify_result(session: Session, job: Mapping[str, Any], body: JobResultSubmission) -> None:
     """The `verify` kind's result hook: `verified` only when `native-runtime` and
     `runtime-warehouse` both passed, and for a generated app (the plan's release is `/2`, SP5 6.6)
-    `app-deep-health` too, even when the report omits it; otherwise `failed`."""
+    `app-deep-health` too, even when the report omits it; otherwise `failed`. It fails closed: a
+    plan that cannot be read, or a plan release that cannot be read, is `failed`."""
     row = _deployment(session, job, ("verifying",))
     if row is None:
         return
@@ -1122,9 +1123,8 @@ def on_verify_result(session: Session, job: Mapping[str, Any], body: JobResultSu
         session, row["id"], report.model_dump(mode="json"), tenant_id=row["tenant_id"]
     )
     passed = {check.name for check in report.checks if check.status == "passed"}
-    plan = repository.get_plan(session, row["plan_id"], tenant_id=row["tenant_id"])
-    generated = plan is not None and plan_generator_version(session, plan) is not None
-    if all(name in passed for name in (APP_REQUIRED_CHECKS if generated else REQUIRED_CHECKS)):
+    required = _required_checks(session, row)
+    if required is not None and all(name in passed for name in required):
         repository.set_deployment_status(
             session,
             row["id"],
@@ -1135,6 +1135,21 @@ def on_verify_result(session: Session, job: Mapping[str, Any], body: JobResultSu
         )
     else:
         _fail(session, row, "verification failed")
+
+
+def _required_checks(session: Session, row: Mapping[str, Any]) -> tuple[str, ...] | None:
+    """The checks the deployment's verification needs, read in its organization only; None
+    when its plan, or the plan's release, cannot be read."""
+    plan = repository.get_plan(session, row["plan_id"], tenant_id=row["tenant_id"])
+    if plan is None:
+        return None
+    if plan["release_id"] is None:
+        return REQUIRED_CHECKS
+    release = release_record(session, plan["release_id"], tenant_id=plan["tenant_id"])
+    if release is None:
+        return None
+    generated = app_generator_version(release["manifest"]) is not None
+    return APP_REQUIRED_CHECKS if generated else REQUIRED_CHECKS
 
 
 def on_reconcile_result(

@@ -19,13 +19,15 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from shifde.adapters.native.base import create_archive, read_archive
-from shifde.adapters.native.contracts import DatabricksApplicationSpec
+from shifde.adapters.native.contracts import DatabricksApplicationSpec, JobContext, JobLease
 from shifde.adapters.native.databricks.source import scaffold_files
 from shifde.appgen.render import GENERATOR_VERSION, render
 from shifde.appgen.schemas import Resolved
+from shifde.connections.service import ConnectionService
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.delivery import service
+from shifde.executor.client import GatewayClient
 from shifde.packaging.canonical import canonical, digest
 from tests.appgen.rendered import ENDPOINT
 from tests.connections.routes import as_user
@@ -149,6 +151,24 @@ def test_model_not_in_target_workspace_for_another_provider(
         provider = uuid7()
     rel = app_release_for_target(flow.owner_db, target["id"], provider_id=provider)
     _refused(flow, target, rel.id, "model_not_in_target_workspace")
+
+
+def test_model_not_in_target_workspace_when_the_provider_connection_is_unreadable(
+    flow: Flow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = app_target(flow)
+    base = f"{target['address']}/serving-endpoints/{ENDPOINT}/invocations"
+    provider = add_provider(flow.owner_db, flow.tenant, "openai_compatible", base)
+    rel = app_release_for_target(flow.owner_db, target["id"], provider_id=provider)
+    asked: list[UUID] = []
+
+    def unreadable(_: ConnectionService, connection_id: UUID) -> bool:
+        asked.append(connection_id)
+        return False
+
+    monkeypatch.setattr(ConnectionService, "readable", unreadable)
+    _refused(flow, target, rel.id, "model_not_in_target_workspace")
+    assert len(asked) == 1
 
 
 def test_release_source_changed_for_a_changed_spec_hash(flow: Flow) -> None:
@@ -293,6 +313,24 @@ def test_plan_digest_adds_the_generator_version_only_when_given() -> None:
 
 
 # ------------------------------------------------------------------ server verification rule
+def _verifying(
+    flow: Flow, owner_db: Database, target: dict[str, Any], release_id: object
+) -> tuple[str, Any]:  # Any: the verify job's lease
+    """A deployment of `release_id` on `target` with its verify job leased."""
+    sealed = flow.sealed(target["id"], release_id=release_id)
+    approved = flow.approve(sealed)
+    flow.apply(approved)
+    deployment = approved["deployment_id"]
+    make_due(owner_db, deployment)
+    leased = lease_kind(flow.client, flow.token, "observe")
+    r = job_result(
+        flow.client, flow.token, leased, status="succeeded", value={"state": "succeeded"}
+    )
+    assert r.status_code == 200, r.text
+    make_due(owner_db, deployment)
+    return deployment, lease_kind(flow.client, flow.token, "verify")
+
+
 @pytest.mark.parametrize(
     ("checks", "status"),
     [
@@ -306,21 +344,26 @@ def test_a_generated_deployment_needs_app_deep_health(
     flow: Flow, owner_db: Database, checks: list[dict[str, str]], status: str
 ) -> None:
     target = app_target(flow)
-    sealed = flow.sealed(target["id"], release_id=_fake_release(flow, target).id)
-    approved = flow.approve(sealed)
-    flow.apply(approved)
-    deployment = approved["deployment_id"]
-    make_due(owner_db, deployment)
-    leased = lease_kind(flow.client, flow.token, "observe")
-    r = job_result(
-        flow.client, flow.token, leased, status="succeeded", value={"state": "succeeded"}
-    )
-    assert r.status_code == 200, r.text
-    make_due(owner_db, deployment)
-    leased = lease_kind(flow.client, flow.token, "verify")
+    deployment, leased = _verifying(flow, owner_db, target, _fake_release(flow, target).id)
     r = job_result(flow.client, flow.token, leased, status="succeeded", value={"checks": checks})
     assert r.status_code == 200, r.text
     assert deployment_row(owner_db, deployment)["status"] == status
+
+
+@pytest.mark.parametrize("unreadable", ["plan", "release"])
+def test_a_verification_whose_plan_or_release_cannot_be_read_fails_closed(
+    flow: Flow, owner_db: Database, monkeypatch: pytest.MonkeyPatch, unreadable: str
+) -> None:
+    target = app_target(flow)
+    deployment, leased = _verifying(flow, owner_db, target, _fake_release(flow, target).id)
+    if unreadable == "plan":
+        monkeypatch.setattr(service.repository, "get_plan", lambda *a, **k: None)
+    else:
+        monkeypatch.setattr(service, "release_record", lambda *a, **k: None)
+    checks = [*BOTH_CHECKS, DEEP_HEALTH]
+    r = job_result(flow.client, flow.token, leased, status="succeeded", value={"checks": checks})
+    assert r.status_code == 200, r.text
+    assert deployment_row(owner_db, deployment)["status"] == "failed"
 
 
 # ------------------------------------------------------------------ end to end (native fake)
@@ -424,3 +467,41 @@ def test_a_generated_app_end_to_end_on_the_native_fake(
         assert body["status"] == "failed", body
         assert checks["app-deep-health"]["status"] == "failed"
         assert "the app cannot read" in checks["app-deep-health"]["evidence"]
+
+
+def test_a_generated_plan_without_a_release_digest_fails_verify_in_the_runner(
+    client: TestClient,
+    flow: Flow,
+    owner_db: Database,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = fake_platform()
+    target = app_target(flow)
+    rel = _fake_release(flow, target)
+    runner = make_runner(
+        client,
+        flow.token,
+        credentials_file(tmp_path, target["address"], tenant=flow.tenant, name="a.json"),
+        fake,
+    )
+    plan = ask_plan(flow, target["id"], release_id=rel.id)
+    assert runner.run_once()
+    deployment = flow.approve(flow.get_plan(plan["id"]))["deployment_id"]
+    assert runner.run_once()  # apply
+    make_due(owner_db, deployment)
+    assert runner.run_once()  # observe
+    context = GatewayClient.context
+
+    def no_release_digest(self: GatewayClient, lease: JobLease) -> JobContext:
+        ctx = context(self, lease)
+        assert ctx.plan is not None and ctx.plan.generator_version == GENERATOR_VERSION
+        plan = ctx.plan.model_copy(update={"release_digest": None})
+        return ctx.model_copy(update={"plan": plan})
+
+    monkeypatch.setattr(GatewayClient, "context", no_release_digest)
+    make_due(owner_db, deployment)
+    assert runner.run_once()  # verify
+    body = flow.get(deployment)
+    assert body["status"] == "failed", body
+    assert body["verification"] is None
