@@ -4,7 +4,8 @@
 pin that authz_0001 seeds SETH's final catalog (counts replayed from SETH's migrations, over the
 keys outside `delivery:%`, `packaging:%` and `evaluation:%`), that delivery_0001 adds exactly its
 nine `delivery:*` keys and fifteen template grants (B-2501), that packaging_0001 adds exactly its
-eight `packaging:*` and `evaluation:*` keys and fifteen template grants (issue #78), and that
+eight `packaging:*` and `evaluation:*` keys and fifteen template grants (issue #78), that
+assist_0001 adds exactly its five `assist:*` keys and nineteen template grants (issue #278), and that
 `permissions` is read-only for the application role.
 """
 
@@ -55,12 +56,12 @@ def test_catalog_is_seths_final_catalog(owner_session: Session) -> None:
         text(
             "SELECT (SELECT count(*) FROM shifde.permissions WHERE key NOT LIKE 'delivery:%' "
             "AND key NOT LIKE 'packaging:%' AND key NOT LIKE 'evaluation:%' "
-            "AND key NOT LIKE 'appgen:%' AND key NOT LIKE 'mcp:%'), "
+            "AND key NOT LIKE 'appgen:%' AND key NOT LIKE 'mcp:%' AND key NOT LIKE 'assist:%'), "
             "(SELECT count(*) FROM shifde.roles WHERE is_system), "
             "(SELECT count(*) FROM shifde.role_permissions WHERE tenant_id IS NULL "
             "AND permission_key NOT LIKE 'delivery:%' AND permission_key NOT LIKE 'packaging:%' "
             "AND permission_key NOT LIKE 'evaluation:%' AND permission_key NOT LIKE 'appgen:%' "
-            "AND permission_key NOT LIKE 'mcp:%')"
+            "AND permission_key NOT LIKE 'mcp:%' AND permission_key NOT LIKE 'assist:%')"
         )
     ).one()
     assert tuple(counts) == (92, 8, 339)
@@ -100,6 +101,14 @@ def test_catalog_is_seths_final_catalog(owner_session: Session) -> None:
         )
     ).one()
     assert tuple(mcp) == (3, 5)
+    assert _assist_permissions(owner_session) == {
+        ("assist:request:read", False),
+        ("assist:request:write", False),
+        ("assist:proposal:accept", False),
+        ("assist:install", True),
+        ("assist:admin", True),
+    }
+    assert _assist_grants(owner_session) == ASSIST_GRANTS
     platform = set(
         owner_session.execute(
             text(
@@ -109,6 +118,44 @@ def test_catalog_is_seths_final_catalog(owner_session: Session) -> None:
         ).scalars()
     )
     assert platform == {"platform:admin"}
+
+
+ASSIST_ALL_BUT_ADMIN = frozenset(
+    {"assist:request:read", "assist:request:write", "assist:proposal:accept", "assist:install"}
+)
+# assist_0001's template grants (SP7 design 8, issue #278): 19 rows, none to platform_administrator
+ASSIST_GRANTS = {
+    "tenant_administrator": ASSIST_ALL_BUT_ADMIN | {"assist:admin"},
+    "workspace_administrator": ASSIST_ALL_BUT_ADMIN,
+    "project_administrator": ASSIST_ALL_BUT_ADMIN,
+    "developer": frozenset(
+        {"assist:request:read", "assist:request:write", "assist:proposal:accept"}
+    ),
+    "viewer": frozenset({"assist:request:read"}),
+    "operator": frozenset({"assist:request:read"}),
+    "auditor": frozenset({"assist:request:read"}),
+}
+
+
+def _assist_permissions(s: Session) -> set[tuple[str, bool]]:
+    rows = s.execute(
+        text("SELECT key, is_privileged FROM shifde.permissions WHERE key LIKE 'assist:%'")
+    ).all()
+    return {(key, privileged) for key, privileged in rows}
+
+
+def _assist_grants(s: Session) -> dict[str, frozenset[str]]:
+    rows = s.execute(
+        text(
+            "SELECT r.key, rp.permission_key FROM shifde.role_permissions rp JOIN shifde.roles r "
+            "ON r.id = rp.role_id WHERE rp.tenant_id IS NULL AND rp.permission_key LIKE 'assist:%'"
+        )
+    ).all()
+    grants: dict[str, set[str]] = {}
+    for role, key in rows:
+        grants.setdefault(role, set()).add(key)
+    assert len(rows) == 19
+    return {role: frozenset(keys) for role, keys in grants.items()}
 
 
 def test_app_reads_the_catalog_in_any_context_but_cannot_write_it(app_db: Database) -> None:

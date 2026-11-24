@@ -150,6 +150,22 @@ MCP = {
     ("PUT", "/api/v1/orgs/{org}/mcp/settings"),
 }
 
+# assist: the organization's settings and switch and the project's specialists (SP7 design 8,
+# issue #278): not a SETH module
+ASSIST_ORG = "/api/v1/orgs/{org}/assist"
+ASSIST_PROJECT = "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/assist"
+ASSIST = {
+    ("GET", ASSIST_ORG + "/catalog"),
+    ("GET", ASSIST_ORG + "/settings"),
+    ("PUT", ASSIST_ORG + "/settings"),
+    ("POST", ASSIST_ORG + "/enable"),
+    ("POST", ASSIST_ORG + "/disable"),
+    ("POST", ASSIST_PROJECT + "/install"),
+    ("GET", ASSIST_PROJECT + "/specialists"),
+    ("POST", ASSIST_PROJECT + "/specialists/{key}/enable"),
+    ("POST", ASSIST_PROJECT + "/specialists/{key}/disable"),
+}
+
 
 def _pairs(rows: list[list[str]]) -> set[tuple[str, str]]:
     return {(m, p) for m, p in rows}
@@ -175,6 +191,7 @@ def test_the_mounted_route_table_is_sethss_minus_branding(
         | EVALUATION
         | APPGEN
         | MCP
+        | ASSIST
         | BOARD
     )
     mounted = _mounted(client)
