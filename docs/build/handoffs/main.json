@@ -1,8 +1,8 @@
 {
-  "session_id": "dbf449f7-2c92-45f1-ba74-7ae70829ac59",
-  "head_sha": "a300c0a0797205294b39876ba4ae88fcf68a62c0",
+  "session_id": "98413370-998a-4725-99b7-6abcd8f3073b",
+  "head_sha": "0b4fb93ac29bc194e27cdf87173eddfb2a6ab3bb",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "Per docs/build/HANDOFF.md: job queue; start #261 and #279; human-merge 163 (PR #338) after full gates",
-  "written_at": "2026-11-24T07:42:30Z"
+  "next_step": "Per docs/build/HANDOFF.md: job queue; spawn intake for jobs 169 (#271) and 170 (#280); then start SP6/SP7/SP8 issues in dependency order",
+  "written_at": "2026-11-24T09:51:37Z"
 }
