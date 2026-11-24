@@ -66,6 +66,32 @@ def target_body(workspace: str, url: str, **overrides: Any) -> dict[str, Any]:
     return body
 
 
+def snowflake_address() -> str:
+    """A Snowflake account URL no other test uses (normalized form)."""
+    return f"https://acct-{uuid7().hex[-16:]}.snowflakecomputing.com"
+
+
+SNOWFLAKE_BINDINGS = {
+    "package": "SHIFDE_PKG",
+    "application": "SHIFDE_APP",
+    "warehouse": "APP_WH",
+    "cortex_model": "mistral-large2",
+}
+
+
+def snowflake_body(workspace: str, url: str, **overrides: Any) -> dict[str, Any]:
+    """A Snowflake target body (default bindings `SNOWFLAKE_BINDINGS`)."""
+    body = target_body(
+        workspace,
+        url,
+        platform_kind="snowflake",
+        bindings=dict(SNOWFLAKE_BINDINGS),
+        credential_ref="snowflake-dev",
+    )
+    body.update(overrides)
+    return body
+
+
 def register(
     client: TestClient, h: dict[str, str], slug: str, body: dict[str, Any], status: int = 201
 ) -> Any:  # Any: a JSON body

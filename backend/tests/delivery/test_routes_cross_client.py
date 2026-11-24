@@ -16,7 +16,9 @@ resource row cannot name A's deployment or A's target (`fk_delivery_native_resou
 settle step is scoped to the caller's organization: B's lost apply, expired plan and held apply
 behind an unknown outcome stay byte for byte unchanged through A's lease and A's plan and
 deployment list and get, until B's own call settles them. The executor gateway routes (`delivery.gateway_api.router`) have
-their own table, `GATEWAY_ROUTE_TESTS`, in `test_gateway_cross_client.py`.
+their own table, `GATEWAY_ROUTE_TESTS`, in `test_gateway_cross_client.py`. Snowflake targets
+(SP6-3) answer A the same 404s and stay out of A's list, and B's executor leases none of A's
+Snowflake plan jobs.
 """
 
 from __future__ import annotations
@@ -55,6 +57,7 @@ from tests.delivery.routes import (
     executors,
     expire,
     issue,
+    job_row,
     job_url,
     lease,
     lease_kind,
@@ -67,9 +70,12 @@ from tests.delivery.routes import (
     proof,
     register,
     request_plan,
+    snowflake_address,
+    snowflake_body,
     target_body,
     targets,
 )
+from tests.delivery.snowflake import snowflake_plan
 from tests.tenancy.conftest import World, app_session
 from tests.tenancy.routes import People, ws_slug
 
@@ -951,3 +957,61 @@ def test_as_settle_step_leaves_bs_rows_unchanged(
     assert job_status == "lost"
     assert plan_row(owner_db, expired_plan)["status"] == "expired"
     assert deployment_row(owner_db, lost)["status"] == "unknown_outcome"
+
+
+# ------------------------------------------------------------------ Snowflake targets (SP6-3)
+@pytest.fixture
+def two_snowflake(client: TestClient, world: World, people: People) -> Two:
+    """A Snowflake target of each organization."""
+    sides = []
+    for c, email in ((world.b, people.owner_b), (world.a, people.owner_a)):
+        body = snowflake_body(ws_slug(c), snowflake_address())
+        made = register(client, as_user(client, email), c.slug, body)
+        sides.append(Side(c.slug, email, made["id"]))
+    return Two(sides[1], sides[0])
+
+
+def test_a_cannot_reach_bs_snowflake_target(
+    client: TestClient, owner_db: Database, two_snowflake: Two
+) -> None:
+    two = two_snowflake
+    A, h = targets(two.a.slug), as_user(client, two.a.email)
+    before = _b_state(owner_db, two)
+    nobody = str(uuid7())
+    for method, suffix, ok in (("GET", "", 200), ("POST", "/archive", 200)):
+        r = client.request(method, f"{A}/{two.a.target}{suffix}", headers=h)
+        assert r.status_code == ok, (method, suffix, r.text)  # own object first
+        _same_404(
+            client.request(method, f"{A}/{two.b.target}{suffix}", headers=h),
+            client.request(method, f"{A}/{nobody}{suffix}", headers=h),
+        )
+    assert _b_state(owner_db, two) == before
+
+
+def test_a_lists_none_of_bs_snowflake_targets(client: TestClient, two_snowflake: Two) -> None:
+    two = two_snowflake
+    for me, other in ((two.a, two.b), (two.b, two.a)):
+        h = as_user(client, me.email)
+        listed = client.get(f"{targets(me.slug)}?limit=200", headers=h)
+        assert listed.status_code == 200, listed.text
+        ids = [t["id"] for t in listed.json()["items"]]
+        assert ids == [me.target] and other.target not in ids
+
+
+def test_bs_executor_leases_none_of_as_snowflake_plan_jobs(
+    client: TestClient,
+    world: World,
+    people: People,
+    app_db: Database,
+    owner_db: Database,
+    two_snowflake: Two,
+) -> None:
+    a = make_executor(client, world.a, people.owner_a)
+    b = make_executor(client, world.b, people.owner_b)
+    plan = snowflake_plan(app_db, world.a.tenant, two_snowflake.a.target)
+    before = job_row(owner_db, plan.job_id)
+    r = lease(client, b.token, kinds=["plan"])
+    assert r.status_code == 204, r.text
+    assert job_row(owner_db, plan.job_id) == before
+    r = lease(client, a.token, kinds=["plan"])
+    assert r.status_code == 200 and r.json()["job"]["id"] == str(plan.job_id), r.text
