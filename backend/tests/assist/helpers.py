@@ -1,9 +1,10 @@
 """Shortcuts of the assist tests: the organization switch, a specialists' model on the fake
 provider, a second project, install and the specialists list through the routes, a member bound
-only at one project, and schema-owner reads of the assist and build rows."""
+only at one project, schema-owner reads of the assist and build rows, and seeded proposals."""
 
 from __future__ import annotations
 
+import json
 from typing import Any  # Any: JSON bodies and row values
 
 import httpx
@@ -117,3 +118,83 @@ def set_settings(owner: Session, org_slug: str, **values: Any) -> None:
         {"t": t, **values},
     )  # fmt: skip
     owner.commit()
+
+
+# ------------------------------------------------------------------ SP7-4: rows of the proposals
+def user_of(owner: Session, email: str) -> str:
+    [(uid,)] = rows(owner, "SELECT id::text FROM shifde.users WHERE primary_email = :e", e=email)
+    return str(uid)
+
+
+def project_of(owner: Session, org_slug: str, slug: str = "sample") -> tuple[str, str]:
+    """(workspace id, project id) of `org_slug`'s project `main/<slug>`."""
+    [(ws, proj)] = rows(
+        owner,
+        "SELECT p.workspace_id::text, p.id::text FROM shifde.projects p JOIN shifde.workspaces w "
+        "ON w.id = p.workspace_id WHERE p.tenant_id = :t AND w.slug = 'main' AND p.slug = :s",
+        t=tenant_id(owner, org_slug),
+        s=slug,
+    )
+    return str(ws), str(proj)
+
+
+def seed_proposal(
+    owner: Session,
+    org_slug: str,
+    kind: str,
+    payload: dict[str, Any],
+    *,
+    project: str = "sample",
+    email: str = "admin@demo-a.local",
+    age: str = "0 seconds",
+) -> tuple[str, str]:
+    """A `routed` request of `email` in `org_slug`'s project and one `open` proposal of it of
+    `kind` with `payload`, both created `age` ago (schema owner); (request id, proposal id)."""
+    t = tenant_id(owner, org_slug)
+    ws, proj = project_of(owner, org_slug, project)
+    request_id, proposal_id = uuid7(), uuid7()
+    owner.rollback()
+    owner.execute(
+        text("INSERT INTO shifde.assist_requests (tenant_id, id, workspace_id, project_id, "
+             "requested_by, text, status, specialist_key, route_method, run_id, created_at) "
+             "VALUES (:t, :id, :w, :p, :u, 'deploy it', 'routed', 'deployment', 'rule', :run, "
+             "now() - CAST(:age AS interval))"),
+        {"t": t, "id": request_id, "w": ws, "p": proj, "u": user_of(owner, email), "run": uuid7(),
+         "age": age},
+    )  # fmt: skip
+    owner.execute(
+        text("INSERT INTO shifde.assist_proposals (tenant_id, id, request_id, run_id, step_key, "
+             "kind, payload, created_at) VALUES (:t, :id, :r, :run, :k, :kind, "
+             "CAST(:payload AS jsonb), now() - CAST(:age AS interval))"),
+        {"t": t, "id": proposal_id, "r": request_id, "run": uuid7(), "k": uuid7().hex,
+         "kind": kind, "payload": json.dumps(payload), "age": age},
+    )  # fmt: skip
+    owner.commit()
+    return str(request_id), str(proposal_id)
+
+
+def proposal_row(owner: Session, proposal_id: str) -> dict[str, Any]:
+    owner.rollback()
+    row = owner.execute(
+        text("SELECT * FROM shifde.assist_proposals WHERE id = :p"), {"p": proposal_id}
+    ).mappings().one()  # fmt: skip
+    owner.rollback()
+    return dict(row)
+
+
+def set_payload(owner: Session, proposal_id: str, payload: dict[str, Any]) -> None:
+    """Rewrite a stored proposal's payload (schema owner): state that changed since."""
+    owner.rollback()
+    owner.execute(
+        text("UPDATE shifde.assist_proposals SET payload = CAST(:p AS jsonb) WHERE id = :i"),
+        {"p": json.dumps(payload), "i": proposal_id},
+    )
+    owner.commit()
+
+
+def decide(h: Hdr, proposal_id: str, action: str, org: str = A) -> httpx.Response:
+    """`POST .../assist/proposals/{id}/accept` or `/dismiss` (body `{}`)."""
+    sent: httpx.Response = h.client.post(
+        f"{org}/assist/proposals/{proposal_id}/{action}", headers=h, json={}
+    )
+    return sent

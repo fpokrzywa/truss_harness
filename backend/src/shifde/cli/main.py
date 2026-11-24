@@ -369,8 +369,9 @@ def maintenance_purge(
 ) -> None:
     """Scrub the stored content of old, ended runs, client by client (as the application role).
 
-    Artifact content becomes {"scrubbed": true} and tool-call arguments NULL; nothing is deleted.
-    A client on legal hold is skipped. A real run writes one audit event per client."""
+    Artifact content becomes {"scrubbed": true} and tool-call arguments NULL; the text and context
+    of ended assist requests are blanked; nothing is deleted. A client on legal hold is skipped. A
+    real run writes one audit event per client."""
     settings = _settings()
     try:
         database = Database(settings.database_url, pool_size=1, max_overflow=0)
@@ -391,7 +392,8 @@ def maintenance_purge(
                 continue
             typer.echo(
                 f"{client.slug}: runs {client.runs}, artifacts {client.artifacts}, "
-                f"tool invocations {client.tool_invocations} (cutoff {client.cutoff.isoformat()})"
+                f"tool invocations {client.tool_invocations}, assist requests "
+                f"{client.assist_requests} (cutoff {client.cutoff.isoformat()})"
             )
     except SQLAlchemyError as exc:
         raise _fail(f"database error: {exc.__class__.__name__}") from exc
@@ -420,8 +422,9 @@ def maintenance_delete(
     """Delete old, ended run families and their rows, client by client (as the application role).
 
     A family is kept whole while any run of it is recent, running or pinned (a held reservation,
-    a pending approval, a live job, a passing evaluation a delivery plan uses). Usage, policy and
-    audit rows stay. A client on legal hold is skipped. A real run writes one audit event per
+    a pending approval, a live job, a passing evaluation a delivery plan uses). Ended assist
+    requests whose run is gone are deleted with their proposals. Usage, policy and audit rows
+    stay. A client on legal hold is skipped. A real run writes one audit event per
     client."""
     settings = _settings()
     try:
@@ -442,8 +445,9 @@ def maintenance_delete(
                 continue
             counts = ", ".join(f"{table} {n}" for table, n in client.counts)
             typer.echo(
-                f"{client.slug}: runs {client.runs}, runs kept {client.runs_kept}, {counts} "
-                f"(cutoff {client.cutoff.isoformat()})"
+                f"{client.slug}: runs {client.runs}, runs kept {client.runs_kept}, {counts}, "
+                f"assist_requests {client.assist_requests}, assist_proposals "
+                f"{client.assist_proposals} (cutoff {client.cutoff.isoformat()})"
             )
     except SQLAlchemyError as exc:
         raise _fail(f"database error: {exc.__class__.__name__}") from exc

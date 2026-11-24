@@ -24,6 +24,7 @@ leaves the secret's row unchanged.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -611,6 +612,8 @@ ROUTES: dict[Op, tuple[str, str]] = {
     ("POST", ASSIST + "/requests"): (SCOPED, "assist"),
     ("GET", ASSIST + "/requests"): (SCOPED, "assist"),
     ("GET", "/api/v1/orgs/{org}/assist/requests/{request_id}"): (SCOPED, "assist"),
+    ("POST", "/api/v1/orgs/{org}/assist/proposals/{proposal_id}/accept"): (SCOPED, "assist"),
+    ("POST", "/api/v1/orgs/{org}/assist/proposals/{proposal_id}/dismiss"): (SCOPED, "assist"),
     # ------------------------------------------------------------------ models
     ("GET", "/api/v1/orgs/{org}/model-allowlists"): (SCOPED, "models"),
     ("PUT", "/api/v1/orgs/{org}/model-allowlists"): (SCOPED, "models"),
@@ -1744,6 +1747,11 @@ ASSIST_REQUESTS = (
     "SELECT count(*) FROM shifde.jobs",
 )
 ASSIST_REQUEST = {"text": "how much did we spend last week"}
+ASSIST_PROPOSALS = (
+    "SELECT p.* FROM shifde.assist_proposals p JOIN shifde.assist_requests r "
+    "ON r.id = p.request_id WHERE r.workspace_id = :w ORDER BY p.id",
+    "SELECT count(*) FROM shifde.evaluation_runs",
+)
 
 
 def _assist(n: int, tail: str) -> str:
@@ -1785,6 +1793,14 @@ _register(
         ),
         ("GET", ORG + "/assist/requests/{request_id}"): lambda w: _case(
             READ, "GET", lambda n: f"/assist/requests/{w('assist_request', n)}"
+        ),
+        ("POST", ORG + "/assist/proposals/{proposal_id}/accept"): lambda w: _case(
+            WRITE, "POST", lambda n: f"/assist/proposals/{w('assist_proposal', n)}/accept",
+            body=lambda n: {}, state=w.snap(*ASSIST_PROPOSALS),
+        ),
+        ("POST", ORG + "/assist/proposals/{proposal_id}/dismiss"): lambda w: _case(
+            WRITE, "POST", lambda n: f"/assist/proposals/{w('assist_dismissed', n)}/dismiss",
+            body=lambda n: {}, state=w.snap(*ASSIST_PROPOSALS),
         ),
     },
 )  # fmt: skip
@@ -2507,6 +2523,18 @@ def test_assist(client: TestClient, world: World, owner_session: Session) -> Non
         request = w.post(f"/workspaces/w{n}/projects/p{n}/assist/requests", ASSIST_REQUEST)
         assert request["status"] == "routed", request
         w.set("assist_request", n, request["id"])
+        for key in ("assist_proposal", "assist_dismissed"):
+            proposal = uuid7()
+            w.owner.execute(
+                text("INSERT INTO shifde.assist_proposals (tenant_id, id, request_id, run_id, "
+                     "step_key, kind, payload) SELECT tenant_id, :id, id, run_id, :k, "
+                     "'evaluation_run', CAST(:p AS jsonb) FROM shifde.assist_requests "
+                     "WHERE id = :r"),
+                {"id": proposal, "k": key, "r": request["id"],
+                 "p": json.dumps({"release_id": str(uuid7())})},
+            )  # fmt: skip
+            w.owner.commit()
+            w.set(key, n, str(proposal))
     _check(w, "assist")
 
 

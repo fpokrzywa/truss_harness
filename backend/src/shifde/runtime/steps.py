@@ -1323,6 +1323,7 @@ def _execute_attempts(
                         InternalToolCall(
                             session=ctx.session,
                             scope=ctx.scope,
+                            runtime=ctx.runtime,
                             tenant_id=ctx.tenant_id,
                             workspace_id=ctx.run["workspace_id"],
                             project_id=ctx.run["project_id"],

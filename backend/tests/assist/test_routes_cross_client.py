@@ -6,7 +6,7 @@ run both ways. B's organization in the path gets A's user exactly the answer an 
 organization gets (404, same body) on every route, and changes nothing of B's; B's installs never
 appear in A's catalog. A member bound only at project P1 gets on every project route for P2 the
 answer a project that does not exist gets (the request list and a new request included), and on
-P2's request the answer an unknown request id gets. Under row-level security, `shifde_app` in A's context
+P2's request (and proposal) the answer an unknown id gets. Under row-level security, `shifde_app` in A's context
 reads none of B's rows of the four assist tables (seeded as the schema owner), an UPDATE or a
 DELETE naming them touches nothing, and an INSERT with B's `tenant_id` is refused. A DELETE of a
 request or a proposal without the retention cutoff, or of a row not older than it, raises 42501;
@@ -64,6 +64,14 @@ ROUTE_TESTS = {
     ("POST", PROJECT_ROUTES + "/requests"): "test_a_cannot_reach_bs_organization",
     ("GET", PROJECT_ROUTES + "/requests"): "test_a_cannot_reach_bs_organization",
     ("GET", ORG_ROUTES + "/requests/{request_id}"): "test_a_cannot_reach_bs_organization",
+    (
+        "POST",
+        ORG_ROUTES + "/proposals/{proposal_id}/accept",
+    ): "test_proposals_answer_like_unknown_ids",
+    (
+        "POST",
+        ORG_ROUTES + "/proposals/{proposal_id}/dismiss",
+    ): "test_proposals_answer_like_unknown_ids",
 }
 COST_REQUEST = {"text": "how much did we spend last week"}
 
@@ -213,6 +221,58 @@ def test_a_p1_only_member_gets_404_on_every_p2_route(
     catalog_out = member.client.get(f"{A}/assist/catalog", headers=member)
     assert catalog_out.status_code == 200, catalog_out.text
     assert all(e["installs"] == [] for e in catalog_out.json()["entries"])
+
+
+# ------------------------------------------------------------------ proposals (SP7-4)
+def _proposal(owner: Session, slug: str, request_id: str) -> str:
+    """An open evaluation-run proposal of the request (schema owner)."""
+    proposal_id = uuid7()
+    owner.rollback()
+    owner.execute(
+        text("INSERT INTO shifde.assist_proposals (tenant_id, id, request_id, run_id, step_key, "
+             "kind, payload) SELECT tenant_id, :id, id, run_id, 'k', 'evaluation_run', "
+             "CAST(:p AS jsonb) FROM shifde.assist_requests WHERE id = :r"),
+        {"id": proposal_id, "r": request_id, "p": f'{{"release_id": "{uuid7()}"}}'},
+    )  # fmt: skip
+    owner.commit()
+    return str(proposal_id)
+
+
+def _decide(h: Hdr, org: str, proposal_id: str, action: str) -> httpx.Response:
+    return _send(h, "POST", f"{org}/assist/proposals/{proposal_id}/{action}", {})
+
+
+@DIRECTIONS
+def test_proposals_answer_like_unknown_ids(
+    two: Two, client: TestClient, world: World, owner_session: Session, direction: str
+) -> None:
+    """Client A's user on B's proposal, under B's organization and under A's, gets the answer an
+    unknown organization or proposal gets; a P1-only member gets on P2's proposal the answer an
+    unknown proposal gets. Nothing changes."""
+    me, them = (two.a, two.b) if direction == "a->b" else (two.b, two.a)
+    theirs = _proposal(owner_session, them.slug, them.request_id)
+    before = _state(owner_session, them.slug)
+    for action in ("accept", "dismiss"):
+        _same(_decide(me.h, them.org, theirs, action), _decide(me.h, NO_ORG, theirs, action))
+        _same(_decide(me.h, me.org, theirs, action), _decide(me.h, me.org, str(uuid7()), action))
+    assert _state(owner_session, them.slug) == before
+    mine = _proposal(owner_session, me.slug, me.request_id)
+    assert _decide(me.h, me.org, mine, "dismiss").json()["status"] == "dismissed"
+    if direction == "b->a":
+        return
+    # project P1 against P2, within A
+    admin = two.a.h
+    p1 = admin.client.get(f"{A}{PROJECT}", headers=admin).json()["id"]
+    add_project(admin, "other")
+    installed(admin, two.a.model, project=P2, keys=["cost"])
+    p2_proposal = _proposal(owner_session, "demo-a", _request(admin, A, P2))
+    member = project_member(
+        client, world, "p1-admin@demo-a.local", p1, "01900000-0000-7000-8000-000000000003"
+    )
+    before = _state(owner_session, "demo-a")
+    for action in ("accept", "dismiss"):
+        _same(_decide(member, A, p2_proposal, action), _decide(member, A, str(uuid7()), action))
+    assert _state(owner_session, "demo-a") == before
 
 
 # ------------------------------------------------------------------ SQL level
