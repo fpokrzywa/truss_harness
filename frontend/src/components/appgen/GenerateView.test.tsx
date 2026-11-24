@@ -177,6 +177,35 @@ describe('GenerateView new request', () => {
     expect(await screen.findByText(/no discovered tables/)).toBeInTheDocument();
   });
 
+  it.each([
+    ['a 404 latest discovery', () => problemResponse(404, 'not_found')],
+    ['a discovery without tables', () => jsonResponse({ kind: 'schema', payload: { tables: [] } })],
+  ])('shows the table error for %s', async (_, discovery) => {
+    const fetchMock = stubAppgen({
+      [`GET ${ORG}/connections/conn-dbx/discoveries/latest`]: discovery,
+    });
+    renderWithClient(<GenerateView />);
+    const form = await screen.findByRole('form', { name: 'New app request' });
+    await userEvent.selectOptions(within(form).getByLabelText('Connection'), 'conn-dbx');
+    await within(form).findByText(/no discovered tables/);
+    await userEvent.type(within(form).getByLabelText('Brief'), 'Sales by region');
+    await userEvent.selectOptions(within(form).getByLabelText('Drafting model'), 'm-1');
+    await userEvent.click(within(form).getByRole('button', { name: 'Generate draft' }));
+    expect(within(form).getByText('Choose at least one table.')).toBeInTheDocument();
+    expect(fetchMock.calls.some((c) => c.key === CREATE)).toBe(false);
+  });
+
+  it('shows the empty state of the drafting model list', async () => {
+    const fetchMock = stubAppgen({ [`GET ${ORG}/models/effective`]: () => list([]) });
+    renderWithClient(<GenerateView />);
+    const form = await screen.findByRole('form', { name: 'New app request' });
+    expect(await within(form).findByText(/No models are available here/)).toBeInTheDocument();
+    expect(within(form).getByLabelText('Drafting model')).toBeDisabled();
+    const url = fetchMock.calls.find((c) => c.key === `GET ${ORG}/models/effective`)!.url;
+    expect(url).toContain('workspace=eng');
+    expect(url).toContain('project=api');
+  });
+
   it('has no New request tab without appgen:request:write', async () => {
     stubAppgen({}, [...ALL_PERMS, 'appgen:request:read']);
     renderWithClient(<GenerateView />);

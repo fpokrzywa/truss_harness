@@ -3,7 +3,8 @@
 Client A cannot read, list, use, rotate, disable or overwrite client B's secret by id, through
 the service or raw SQL; B's secrets are absent from A's lists; with no tenant context nothing is
 visible; the platform-administrator flag reaches installation-level rows only, never a client's;
-and a refusal for B's id is the same as for an id that does not exist.
+the last-used touch is keyed by the owning tenant; and a refusal for B's id is the same as for an
+id that does not exist.
 
 The module has no routes yet: the secret API arrives with admin (and the resolve paths with
 connections and identity), whose cross-client tests cover the routes (docs/build/carry_forward.md).
@@ -20,13 +21,15 @@ from sqlalchemy import Engine, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
+from shifde.core.clock import utcnow
 from shifde.core.context import RequestContext
 from shifde.core.crypto import KeyRing
 from shifde.core.db import Database, platform_admin_context, set_tenant
 from shifde.core.errors import AppError
 from shifde.core.ids import uuid7
 from shifde.secrets import service as secrets_service
-from shifde.secrets.service import SecretMeta, SecretProvider
+from shifde.secrets.repository import touch_secret
+from shifde.secrets.service import LAST_USED_INTERVAL_SECONDS, SecretMeta, SecretProvider
 from tests._support.tenants import add_project, add_workspace
 from tests.secrets.conftest import Clients, app_session, caller
 
@@ -130,6 +133,41 @@ def test_the_service_key_holds_without_row_level_security(
         with pytest.raises(AppError, match="secret not found"):
             c.provider.resolve_system(world.b_secret.id, "steal", tenant_id=a.tenant)
         o.rollback()
+
+
+def test_touch_secret_is_keyed_by_the_owning_tenant(owner_db: Database, world: World) -> None:
+    """The owner bypasses RLS, so only `touch_secret`'s own tenant key stops B's id (or the
+    installation's NULL) from touching A's row; as `shifde_app`, RLS alone would hide it."""
+    a, b = world.clients.a.tenant, world.clients.b.tenant
+    now = utcnow()
+
+    def a_last_used(o: Session) -> object:
+        return o.execute(
+            text("SELECT last_used_at FROM shifde.secrets WHERE id = :i"), {"i": world.a_secret.id}
+        ).scalar_one()
+
+    with owner_db.session() as o:
+        set_tenant(o, b)
+        assert (
+            touch_secret(o, world.a_secret.id, now, LAST_USED_INTERVAL_SECONDS, tenant_id=b)
+            is False
+        )
+        o.commit()
+    with owner_db.session() as o:
+        assert (
+            touch_secret(o, world.a_secret.id, now, LAST_USED_INTERVAL_SECONDS, tenant_id=None)
+            is False
+        )
+        o.commit()
+    with owner_db.session() as o:
+        assert a_last_used(o) is None
+        set_tenant(o, a)
+        assert (
+            touch_secret(o, world.a_secret.id, now, LAST_USED_INTERVAL_SECONDS, tenant_id=a) is True
+        )
+        o.commit()
+    with owner_db.session() as o:
+        assert a_last_used(o) == now
 
 
 def test_nothing_is_visible_without_a_tenant_context(app_db: Database, world: World) -> None:

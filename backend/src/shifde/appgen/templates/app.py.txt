@@ -1,0 +1,144 @@
+"""The generated Databricks App: the agent at /api/ask, its tools at /api/tools/<name>, the React
+bundle at / and the health checks at /health (deep with ?deep=1). Configuration is the files of
+./config; the warehouse and the serving endpoint come from the app resources."""
+
+import json
+import os
+from pathlib import Path
+
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.sql import ExecuteStatementRequestOnWaitTimeout, StatementState
+from flask import Flask, jsonify, request, send_from_directory
+
+import agent_loop
+
+HERE = Path(__file__).resolve().parent
+STATIC = HERE / "static"
+CONFIG = HERE / "config"
+MAX_MESSAGE = 4000
+MAX_BODY = 1024 * 1024
+WAREHOUSE_REASON = "the app cannot run SELECT 1 on the warehouse"
+SERVING_REASON = "the serving endpoint is not ready"
+
+
+def _quoted(table):
+    return ".".join("`" + part.replace("`", "``") + "`" for part in table.split("."))
+
+
+def _succeeded(client, warehouse_id, statement):
+    try:
+        result = client.statement_execution.execute_statement(
+            warehouse_id=warehouse_id,
+            statement=statement, wait_timeout="10s", on_wait_timeout=ExecuteStatementRequestOnWaitTimeout.CANCEL,
+        )
+    except Exception:
+        return False
+    return result.status is not None and result.status.state == StatementState.SUCCEEDED
+
+
+def _ready(client, endpoint):
+    try:
+        state = client.serving_endpoints.get(endpoint).state
+        return state is not None and state.ready is not None and state.ready.value == "READY"
+    except Exception:
+        return False
+
+
+def _check(name, passed, reason):
+    return {"name": name, "status": "passed" if passed else "failed", "reason": None if passed else reason[:200]}
+
+
+# The app has no access check of its own: it relies on Databricks Apps authentication in front of
+# it (design 6.4). Request bodies are capped at MAX_BODY (413 request_too_large).
+def create_app(workspace_client=None):
+    client = workspace_client or WorkspaceClient()
+    warehouse_id = os.environ["DATABRICKS_WAREHOUSE_ID"]
+    endpoint = os.environ["SERVING_ENDPOINT"]
+    config = agent_loop.load_config(CONFIG)
+    agent = config["agent"]
+    app = Flask(__name__, static_folder=None)
+    app.config["MAX_CONTENT_LENGTH"] = MAX_BODY
+
+    @app.errorhandler(413)
+    def too_large(_error):
+        return jsonify(error="request_too_large"), 413
+
+    @app.get("/")
+    def index():
+        return send_from_directory(STATIC, "index.html")
+
+    @app.get("/assets/<path:name>")
+    def assets(name):
+        return send_from_directory(STATIC / "assets", name)
+
+    @app.get("/config/screens.json")
+    def screens():
+        return send_from_directory(CONFIG, "screens.json")
+
+    @app.post("/api/ask")
+    def ask():
+        body = request.get_json(silent=True)
+        message = body.get("message") if isinstance(body, dict) else None
+        if not isinstance(message, str) or not 1 <= len(message) <= MAX_MESSAGE:
+            return jsonify(error="invalid_request"), 400
+        try:
+            answer = agent_loop.ask(client, config, warehouse_id, endpoint, message)
+        except agent_loop.Stop as stop:
+            return jsonify(error=stop.code), 422
+        except agent_loop.UpstreamFailed:
+            return jsonify(error="upstream_failed"), 502
+        usage = {
+            "event": "usage",
+            "prompt_tokens": answer["prompt_tokens"],
+            "completion_tokens": answer["completion_tokens"],
+            "endpoint": endpoint,
+        }
+        print(json.dumps(usage, separators=(",", ":")), flush=True)
+        return jsonify(answer=answer["answer"], tool_calls=answer["tool_calls"]), 200
+
+    @app.post("/api/tools/<name>")
+    def tool(name):
+        found = config["tools"].get(name)
+        if found is None:
+            return jsonify(error="unknown_tool"), 404
+        body = request.get_json(silent=True)
+        params = body.get("params", {}) if isinstance(body, dict) else None
+        if not isinstance(params, dict):
+            return jsonify(error="invalid_tool_call"), 422
+        try:
+            return jsonify(agent_loop.run_tool(client, warehouse_id, found, params)), 200
+        except agent_loop.Stop as stop:
+            return jsonify(error=stop.code), 422
+        except agent_loop.UpstreamFailed:
+            return jsonify(error="upstream_failed"), 502
+
+    @app.get("/health")
+    def health():
+        if request.args.get("deep") == "1":
+            return deep_health()
+        # The app runtime identity performs this bounded check, not the deployment principal.
+        passed = _succeeded(client, warehouse_id, "SELECT 1")
+        return jsonify(status="ok" if passed else "failed", warehouse="ok" if passed else "failed"), 200 if passed else 503
+
+    def deep_health():
+        checks = [
+            _check("warehouse", _succeeded(client, warehouse_id, "SELECT 1"), WAREHOUSE_REASON),
+            _check("serving_endpoint", _ready(client, endpoint), SERVING_REASON),
+        ]
+        for table in sorted(agent["tables"]):
+            readable = _succeeded(client, warehouse_id, f"SELECT * FROM {_quoted(table)} LIMIT 0")
+            checks.append(_check(f"table:{table}", readable, f"the app cannot read {table}"))
+        passed = all(c["status"] == "passed" for c in checks)
+        doc = {
+            "status": "ok" if passed else "failed",
+            "generator_version": agent["generator_version"],
+            "release_digest": agent["release_digest"],
+            "checks": checks,
+        }
+        return jsonify(doc), 200 if passed else 503
+
+    return app
+
+
+if __name__ == "__main__":
+    create_app().run(host="0.0.0.0", port=int(os.environ.get("DATABRICKS_APP_PORT", "8000")))

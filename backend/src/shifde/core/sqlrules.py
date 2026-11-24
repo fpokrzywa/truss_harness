@@ -12,9 +12,11 @@ every issue is an error (callers add severity and path).
 `'...'` takes backslash escapes, `$$...$$` is an opaque string, `"..."` is an identifier, `//` is
 a comment and a backtick is no quote (`sql_syntax`). A quoted identifier is accepted only when it
 equals the unquoted, uppercased name (`sql_quoted_identifier_unsupported` otherwise), a `?` is a
-positional parameter (`sql_positional_parameter`), `SNOWFLAKE_FIRST_WORDS` are refused as the
-first word, and table names are compared and reported uppercased. `table_name_supported` is the
-check behind the request-table 422 `table_name_unsupported`.
+positional parameter (`sql_positional_parameter`), a `:` directly followed by a digit is a
+positional bind reference (`sql_positional_bind`, as the runtime check refuses it, `x::1` and
+`col:1` included), `SNOWFLAKE_FIRST_WORDS` are refused as the first word, and table names are
+compared and reported uppercased. `table_name_supported` is the check behind the request-table
+422 `table_name_unsupported`.
 """
 
 from __future__ import annotations
@@ -54,7 +56,8 @@ class Token:
     `param` (a `:name`, the name as written), `punct`, `comment` (`--` or `/*`) or `unterminated`
     (a quote or backtick that never closes; always the last token). The Snowflake dialect adds
     `//` comments, `quoted_unsupported` (a `"..."` identifier that is not a plain uppercase
-    name, its content as written), `positional` (a `?`) and `syntax` (a backtick, or a `$$`
+    name, its content as written), `positional` (a `?`), `positional_bind` (a `:` directly
+    followed by a digit, the second `:` of `::` included) and `syntax` (a backtick, or a `$$`
     right after a name character). A `param` also carries its span in the text (`start`, `end`),
     outside equality."""
 
@@ -217,7 +220,12 @@ def _tokenize_snowflake(sql: str) -> list[Token]:
             i += 1
         elif ch == ":":
             if nxt == ":":  # a cast (`x::int`), never a parameter
+                if "0" <= sql[i + 2 : i + 3] <= "9":  # `x::1`, refused as the runtime check does
+                    tokens.append(Token("positional_bind", ":"))
                 i += 2
+            elif "0" <= nxt <= "9":
+                tokens.append(Token("positional_bind", ":"))
+                i += 1
             elif _is_name_start(nxt):
                 j = _snowflake_name_end(sql, i + 1)
                 tokens.append(Token("param", sql[i + 1 : j]))
@@ -299,6 +307,14 @@ def _snowflake_rules(tokens: list[Token]) -> list[SqlIssue]:
             SqlIssue(
                 "sql_positional_parameter",
                 "positional ? parameters are not allowed; use named parameters",
+            )
+        )
+    if any(t.kind == "positional_bind" for t in tokens):
+        # the text of `adapters/dataplatforms/sqlapi._POSITIONAL_BIND` (`core` imports no layer)
+        issues.append(
+            SqlIssue(
+                "sql_positional_bind",
+                "positional :n bind references are not allowed; use named parameters",
             )
         )
     return issues

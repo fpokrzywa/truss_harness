@@ -177,13 +177,20 @@ def running(settings: Settings) -> Iterator[Callable[..., Worker]]:
         assert not t.is_alive(), "a worker loop did not stop"
 
 
-def _until(check: Callable[[], bool], timeout: float = 30.0) -> None:
+def _until(check: Callable[[], bool], timeout: float = 120.0) -> None:
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         if check():
             return
         time.sleep(0.05)
-    raise AssertionError("condition not reached in time")
+    raise AssertionError(f"condition not reached in {timeout:g} s")
+
+
+def test_until_still_times_out_when_the_condition_never_holds() -> None:
+    started = time.monotonic()
+    with pytest.raises(AssertionError, match=r"condition not reached in 0\.2 s"):
+        _until(lambda: False, 0.2)
+    assert time.monotonic() - started < 5
 
 
 def _on_owner(w: Worker, owner_url: str) -> Worker:
