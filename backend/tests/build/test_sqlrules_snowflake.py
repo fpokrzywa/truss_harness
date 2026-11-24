@@ -11,7 +11,7 @@ import string
 import pytest
 
 from shifde.adapters.base import AdapterFailure
-from shifde.adapters.dataplatforms.sqlapi import check_read_only
+from shifde.adapters.dataplatforms.sqlapi import _POSITIONAL_BIND, check_read_only
 from shifde.core.sqlrules import (
     Token,
     check,
@@ -72,6 +72,22 @@ STATEMENTS = [
     ("select 'it''s' as s", [], []),
     ("select 'a\\'; delete' as s", [], []),
     ("select x::int from t", [], []),
+    # a `:` directly followed by a digit, as the runtime check refuses it (#325)
+    ("select :1", ["sql_positional_bind"], []),
+    ("select * from t where id = :12", ["sql_positional_bind"], []),
+    ("select :1abc", ["sql_positional_bind"], []),
+    ("select col:1 from t", ["sql_positional_bind"], []),
+    ("select x::1 from t", ["sql_positional_bind"], []),
+    ("select ':1'", [], []),
+    ("select $$:1$$", [], []),
+    ('select ":1" from t', ["sql_quoted_identifier_unsupported"], []),
+    ("select 1 -- :1", ["sql_comment"], ["sql_comment"]),
+    ("select :id from t", [], []),
+    (
+        "select * from t where a = ? and b = :1",
+        ["sql_positional_parameter", "sql_positional_bind"],
+        [],
+    ),
 ]
 
 
@@ -135,6 +151,39 @@ def test_snowflake_publish_and_the_runtime_check_agree_on_refused_text(sql: str)
     assert _codes(sql) != []
     with pytest.raises(AdapterFailure):
         check_read_only(sql, dialect="snowflake")
+
+
+def test_snowflake_positional_bind_has_the_runtime_message() -> None:
+    issues = statement_rules("SELECT :1", dialect="snowflake")
+    assert [(i.code, i.message) for i in issues] == [("sql_positional_bind", _POSITIONAL_BIND)]
+    assert statement_rules("select :1") == []  # the Databricks default is unchanged
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "select :1",
+        "select * from t where id = :12",
+        "select :1abc",
+        "select col:1 from t",
+        "select x::1 from t",
+        "select ':1'",
+        "select $$:1$$",
+        'select ":1" from t',
+        "select 1 -- :1",
+        "select x::int from t",
+        "select :id from t",
+        "select * from t where a = ? and b = :1",
+    ],
+)
+def test_snowflake_publish_and_the_runtime_check_agree_on_positional_binds(sql: str) -> None:
+    published = "sql_positional_bind" in _codes(sql)
+    try:
+        check_read_only(sql, dialect="snowflake")
+        runtime = False
+    except AdapterFailure as exc:
+        runtime = exc.message == _POSITIONAL_BIND
+    assert published is runtime
 
 
 ALLOWED = ["DEMO_DB.PUBLIC.CUSTOMERS", "demo_db.public.orders"]
