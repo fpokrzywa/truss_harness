@@ -354,7 +354,8 @@ class ModelService:
     def provider_destination(self, provider_id: UUID) -> tuple[str, str | None] | None:
         """(adapter key, its connection's `base_url`) of a provider of this client the caller may
         read (`model:read`); None for an unknown id, another client's, the shared SHI provider and
-        an unreadable one alike. For comparison only: never write the `base_url` anywhere."""
+        an unreadable one alike. The `base_url` is None unless the caller may read the connection
+        (`connection:read`). For comparison only: never write the `base_url` anywhere."""
         if not self.sc.pdp.authorize("model:read", self.sc.tenant_ref).allowed:
             return None
         row = repository.get_provider(
@@ -362,12 +363,9 @@ class ModelService:
         )
         if row is None or row["tenant_id"] != self.sc.tenant_id:
             return None
-        if row["connection_id"] is None:
+        if row["connection_id"] is None or not self.conns.readable(row["connection_id"]):
             return row["adapter_key"], None
-        try:
-            config = self.conns.get_row(row["connection_id"])["config"] or {}
-        except NotFound:
-            return row["adapter_key"], None
+        config = self.conns.get_row(row["connection_id"])["config"] or {}
         base_url = config.get("base_url")
         return row["adapter_key"], base_url if isinstance(base_url, str) else None
 
