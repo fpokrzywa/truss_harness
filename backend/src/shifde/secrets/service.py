@@ -9,7 +9,7 @@
   has locked (``FOR UPDATE SKIP LOCKED``), made after the audit event: a read no longer holds
   the secret row lock across ``audit.record``, whose chain lock a concurrent read of the same
   secret may hold, so concurrent reads cannot deadlock. ``last_used_at`` may lag by the interval,
-  or longer while other reads of the secret are in flight (B-3952).
+  or longer while other reads of the secret are in flight (B-3968).
 * Resolved plaintext is wrapped in ``SecretValue`` (repr/str are masked) and registered with the
   redaction registry so it can never reach logs, problem details or audit payloads verbatim.
 * Reads return ``SecretMeta`` (metadata only): the ORM row with the ciphertext, wrapped DEK, nonce

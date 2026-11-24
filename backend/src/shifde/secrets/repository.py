@@ -68,7 +68,7 @@ def touch_secret(
 ) -> bool:
     """Throttled, non-blocking last-used update: at most once per interval per secret, and only
     if the row can be locked at once (`FOR UPDATE SKIP LOCKED`), so a read never waits on another
-    transaction's lock on the secret row (B-3952). Every UPDATE of a secret is a key update (the
+    transaction's lock on the secret row (B-3968). Every UPDATE of a secret is a key update (the
     stored generated `installation_secret_id` is in a unique constraint), so the lock must also
     skip a row another read holds `FOR KEY SHARE` through its access-log foreign key; a weaker
     lock would then wait in the UPDATE itself. True if the row changed."""

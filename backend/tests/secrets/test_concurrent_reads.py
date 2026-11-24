@@ -1,8 +1,8 @@
-"""Concurrent reads of one secret, as `shifde_app` (issue #315, B-3952).
+"""Concurrent reads of one secret, as `shifde_app` (issue #315, B-3968).
 
 A read writes the access-log row (whose foreign key takes `FOR KEY SHARE` on the secret row),
 appends the `secret.resolved` audit event (the client's audit-chain lock, held to commit) and
-touches `last_used_at`. Before B-3952 the touch was a plain UPDATE before the audit event: a read
+touches `last_used_at`. Before B-3968 the touch was a plain UPDATE before the audit event: a read
 held the secret row while it waited for the chain lock, and a second read that already held the
 chain lock waited for the row, a deadlock (40P01). Every UPDATE of a secret is a key update (the
 stored generated `installation_secret_id` is in a unique constraint), so it also conflicts with

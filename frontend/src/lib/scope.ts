@@ -64,6 +64,11 @@ export const solutionsHref = (org: string, ws?: string, proj?: string) =>
   `${orgHref(org)}/solutions${projQuery(ws, proj)}`;
 export const solutionHref = (org: string, id: string, ws: string, proj: string) =>
   `${orgHref(org)}/solutions/${e(id)}${projQuery(ws, proj)}`;
+/** The solution generator (SP5): the request form and list, and one app request. */
+export const generateHref = (org: string, ws?: string, proj?: string) =>
+  `${orgHref(org)}/solutions/generate${projQuery(ws, proj)}`;
+export const appRequestHref = (org: string, id: string, ws?: string, proj?: string) =>
+  `${orgHref(org)}/solutions/generate/${e(id)}${projQuery(ws, proj)}`;
 export const releaseHref = (org: string, id: string) => `${orgHref(org)}/releases/${e(id)}`;
 /** `evaluations/datasets` or one evaluation run (`evaluations/{id}`). */
 export const evaluationsHref = (org: string, area = '') =>

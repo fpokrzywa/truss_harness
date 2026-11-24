@@ -127,6 +127,65 @@ def change_status(
     return changed is not None
 
 
+# ------------------------------------------------------------------ accept (design 5.5)
+def start_accepting(
+    session: Session, request_id: UUID, *, tenant_id: UUID, revision_no: int, accepted_by: UUID
+) -> bool:
+    """`drafted` -> `accepting` with the accepted revision and the accepter; False when the
+    request was not `drafted`."""
+    changed = session.execute(
+        text(
+            "UPDATE shifde.appgen_requests SET status = 'accepting', status_reason = NULL, "
+            "accepted_revision_no = :rev, accepted_by = :by, updated_at = now() "
+            "WHERE tenant_id = :t AND id = :id AND status = 'drafted' RETURNING id"
+        ),
+        {"t": tenant_id, "id": request_id, "rev": revision_no, "by": accepted_by},
+    ).first()
+    return changed is not None
+
+
+def record_progress(
+    session: Session, request_id: UUID, *, tenant_id: UUID, key: str, value: Any
+) -> bool:
+    """Merge `{key: value}` into `accept_progress` while `accepting`; False when it is not."""
+    changed = session.execute(
+        text(
+            "UPDATE shifde.appgen_requests SET accept_progress = accept_progress || "
+            "jsonb_build_object(CAST(:k AS text), CAST(:v AS jsonb)), updated_at = now() "
+            "WHERE tenant_id = :t AND id = :id AND status = 'accepting' RETURNING id"
+        ),
+        {"t": tenant_id, "id": request_id, "k": key, "v": json.dumps(value)},
+    ).first()
+    return changed is not None
+
+
+def accept_failed(session: Session, request_id: UUID, *, tenant_id: UUID, reason: str) -> bool:
+    """Record a failed accept step's `reason` while `accepting`; False when it is not."""
+    changed = session.execute(
+        text(
+            "UPDATE shifde.appgen_requests SET status_reason = :reason, updated_at = now() "
+            "WHERE tenant_id = :t AND id = :id AND status = 'accepting' RETURNING id"
+        ),
+        {"t": tenant_id, "id": request_id, "reason": reason},
+    ).first()
+    return changed is not None
+
+
+def finish_accepting(
+    session: Session, request_id: UUID, *, tenant_id: UUID, solution_version_id: UUID
+) -> bool:
+    """`accepting` -> `accepted` with the solution version; False when it was not `accepting`."""
+    changed = session.execute(
+        text(
+            "UPDATE shifde.appgen_requests SET status = 'accepted', status_reason = NULL, "
+            "solution_version_id = :v, updated_at = now() "
+            "WHERE tenant_id = :t AND id = :id AND status = 'accepting' RETURNING id"
+        ),
+        {"t": tenant_id, "id": request_id, "v": solution_version_id},
+    ).first()
+    return changed is not None
+
+
 def insert_draft(session: Session, values: Mapping[str, Any]) -> None:
     session.execute(
         text(
