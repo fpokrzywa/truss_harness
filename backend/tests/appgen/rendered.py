@@ -125,6 +125,32 @@ SNOWFLAKE_DIGEST = digest(SNOWFLAKE_MANIFEST)
 SNOWFLAKE_RESOLVED = resolved_of(SNOWFLAKE_SAMPLE_DRAFT, endpoint=CORTEX_MODEL)
 
 
+# data-read names a sealed `/2` release may carry (`packaging.schemas.TableName` is any text) that
+# are not `database.schema.table` of plain names
+BAD_TABLES = [
+    "(SELECT 1) --",
+    "(select system$wait(5)) --",
+    "DEMO_DB.PUBLIC.ORDERS UNION ALL SELECT * FROM DEMO_DB.SALES.INVOICES --",
+    "DEMO_DB.PUBLIC.ORDERS WHERE 1=(SELECT COUNT(*) FROM DEMO_DB.SALES.INVOICES) --",
+    "DEMO_DB.PUBLIC.ORDERS WHERE 1=1 --",
+    "DEMO_DB.PUBLIC.ORDERS; SELECT 1",
+    'DEMO_DB.PUBLIC."ORDERS"',
+    'DEMO_DB.PUBLIC.ORDERS" --',
+    "TABLE(f())",
+    "DEMO_DB.PUBLIC.TABLE(f())",
+    "DEMO_DB.PUBLIC.ORDERS\n",
+    "DEMO_DB.PUBLIC\n.ORDERS",
+    " DEMO_DB.PUBLIC.ORDERS",
+    "ORDERS",
+    "PUBLIC.ORDERS",
+    "X.DEMO_DB.PUBLIC.ORDERS",
+    "DEMO_DB..ORDERS",
+    "DEMO_DB.PUBLIC.",
+    "DEMO_DB.PUBLIC.1ORDERS",
+    "DEMO_DB.PUBLIC.ORDER\u017f",  # a long s, whose uppercase is a plain S
+]
+
+
 def write_files(directory: Path, files: dict[str, bytes]) -> Path:
     for name, content in files.items():
         path = directory / name

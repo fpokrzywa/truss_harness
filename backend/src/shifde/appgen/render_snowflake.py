@@ -10,6 +10,11 @@ The package is the fixed `manifest.yml`, `setup.sql` and `ui/environment.yml`, t
 under `ui/config/` and `release.json`. `agent.json` names the release's single model binding as
 `cortex_model` and the data-read tables uppercased; each `tools.json` entry carries the tool's
 `:name` SQL with every parameter as `?` and the names in occurrence order (`param_order`).
+
+A release the app may not run is refused before any byte is rendered (`ReleaseNotRenderable`, 409
+`release_not_renderable`): a data-read table that is not `database.schema.table` of plain names
+(deep health puts it into SQL that runs under the application owner's rights), or a tool whose SQL
+breaks the Snowflake statement rules or uses a `:name` the tool does not declare.
 """
 
 from __future__ import annotations
@@ -19,10 +24,11 @@ from collections.abc import Mapping
 from importlib.resources import files
 from typing import TYPE_CHECKING, Any  # Any: JSON documents
 
-from shifde.core.sqlrules import tokenize
+from shifde.core.errors import AppError
+from shifde.core.sqlrules import statement_rules, table_name_supported, tokenize
 
 if TYPE_CHECKING:
-    from shifde.appgen.render import Resolved
+    from shifde.appgen.render import Resolved, ResolvedTool
 
 TARGET_KIND = "snowflake.native-app/v1"
 GENERATOR_VERSION = "shifde.appgen.snowflake/1.0"
@@ -35,6 +41,10 @@ FIXED = {
     "ui/backend_snowflake.py": "backend_snowflake.py.txt",
     "ui/deep_health.py": "deep_health.py.txt",
 }
+
+
+class ReleaseNotRenderable(AppError):
+    status, code, title = 409, "release_not_renderable", "Conflict"
 
 
 def _json(value: Any) -> bytes:  # Any: a JSON value
@@ -58,30 +68,51 @@ def positional(sql: str) -> tuple[str, list[str]]:
     return "".join(out), order
 
 
+def _tables(manifest: Mapping[str, Any]) -> list[str]:  # Any: the release manifest
+    """The data-read tables uppercased, de-duplicated and sorted. The names are checked as written:
+    uppercasing first would turn some non-ASCII letters into plain ones."""
+    tables: set[str] = set()
+    for read in manifest.get("data_reads") or []:
+        for value in read.get("tables") or []:
+            table = str(value)
+            if table.count(".") != 2 or not table_name_supported(table, "snowflake"):
+                raise ReleaseNotRenderable(
+                    f"the data-read table {table!r} is not database.schema.table of plain names"
+                )
+            tables.add(table.upper())
+    return sorted(tables)
+
+
+def _tool_sql(tool: ResolvedTool) -> tuple[str, list[str]]:
+    """`positional` of the tool's SQL; refused unless it keeps the Snowflake statement rules (a
+    tool published before them may not) and uses only declared parameters (SETH binds
+    `%(name)s`, so another `:name` is SQL text there, not a parameter)."""
+    issues = [issue.message for issue in statement_rules(tool.sql, dialect="snowflake")]
+    sql, order = positional(tool.sql)
+    declared = {p.name for p in tool.parameters}
+    issues += [f":{n} is not a declared parameter" for n in order if n not in declared]
+    if issues:
+        raise ReleaseNotRenderable(f"the SQL of tool {tool.name!r} is refused: {issues[0]}")
+    return sql, order
+
+
 def render_snowflake(
     manifest: Mapping[str, Any], release_digest: str, resolved: Resolved
 ) -> dict[str, bytes]:  # Any: the release manifest
     """The Native App package files of a `snowflake.native-app/v1` release, by package path."""
     templates = files("shifde.appgen").joinpath("templates")
     snowflake = templates.joinpath("snowflake")
-    tables = sorted(
-        {
-            str(table).upper()
-            for read in manifest.get("data_reads") or []
-            for table in read.get("tables") or []
-        }
-    )
     agent = {
         "name": resolved.agent.name,
         "instructions": resolved.agent.instructions,
         "cortex_model": resolved.model.serving_endpoint,
         "generator_version": GENERATOR_VERSION,
         "release_digest": release_digest,
-        "tables": tables,
+        "tables": _tables(manifest),
     }
     tools = []
     for t in sorted(resolved.tools, key=lambda t: t.name):
-        sql, order = positional(t.sql)
+        sql, order = _tool_sql(t)
         tools.append(
             {
                 "name": t.name,

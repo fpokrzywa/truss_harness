@@ -5,8 +5,9 @@ every release, the `setup.sql` rules (no INSERT grant, no `EXECUTE IMMEDIATE`, n
 no references, `IMPORTS` exactly the deep-health handler and its two config files, a stdlib-only
 handler), `agent.json` and `tools.json` (positional SQL and `param_order`), `RUNTIME_VERSION` and
 the Streamlit and Snowpark pins equal in `environment.yml` and the dev group (Call S6-G), no SETH
-origin, account address, key material or secret-scan finding, the artifact cap, and the generator
-version of the other platform refused both ways."""
+origin, account address, key material or secret-scan finding, the artifact cap, the generator
+version of the other platform refused both ways, and a data-read table or tool SQL the app may not
+run refused before any byte (`release_not_renderable`)."""
 
 from __future__ import annotations
 
@@ -31,10 +32,12 @@ from shifde.appgen.render import (
     GeneratorVersionUnsupported,
     render,
 )
+from shifde.appgen.render_snowflake import ReleaseNotRenderable
 from shifde.delivery.plans import MAX_ARTIFACT_BYTES
 from shifde.packaging.canonical import canonical, digest
 from tests._support.appgen_fixtures import SNOWFLAKE_SAMPLE_DRAFT
 from tests.appgen.rendered import (
+    BAD_TABLES,
     CORTEX_MODEL,
     SAMPLE_DIGEST,
     SAMPLE_MANIFEST,
@@ -234,6 +237,7 @@ def test_tools_json_has_positional_sql_and_the_parameter_order() -> None:
     assert by_name["invoiced_by_region"]["param_order"] == ["region"]
     # a name used twice is listed twice; `:name` inside a string literal stays as written
     resolved = copy.deepcopy(SNOWFLAKE_RESOLVED)
+    resolved["tools"][0]["parameters"].append({"name": "n", "type": "integer", "required": True})
     resolved["tools"][0]["sql"] = (
         "select ':region' as label, ':x''s' as q from DEMO_DB.PUBLIC.CUSTOMERS c "
         "where c.region = :region or c.name = :region or c.id = :n"
@@ -244,6 +248,60 @@ def test_tools_json_has_positional_sql_and_the_parameter_order() -> None:
         "where c.region = ? or c.name = ? or c.id = ?"
     )
     assert tool["param_order"] == ["region", "region", "n"]
+
+
+def _refused(manifest: dict[str, Any], resolved: dict[str, Any]) -> str:  # Any: JSON
+    """The detail of the 409 the render raises."""
+    with pytest.raises(ReleaseNotRenderable) as caught:
+        render(manifest, digest(manifest), resolved)
+    assert caught.value.status == 409 and caught.value.code == "release_not_renderable"
+    return caught.value.detail
+
+
+@pytest.mark.parametrize("table", BAD_TABLES)
+def test_a_data_read_that_is_not_a_plain_table_name_is_refused(table: str) -> None:
+    """The sealed-release API takes any text as a table name; deep health would put it into SQL."""
+    manifest = copy.deepcopy(SNOWFLAKE_MANIFEST)
+    manifest["data_reads"][0]["tables"].append(table)
+    assert "is not database.schema.table of plain names" in _refused(manifest, SNOWFLAKE_RESOLVED)
+
+
+@pytest.mark.parametrize("table", ["demo_db.public.orders", "_D$1.S_2.T$", "DEMO_DB.PUBLIC.TABLE"])
+def test_a_plain_table_name_renders_uppercased(table: str) -> None:
+    manifest = copy.deepcopy(SNOWFLAKE_MANIFEST)
+    manifest["data_reads"][0]["tables"] = [table]
+    agent = json.loads(
+        render(manifest, digest(manifest), SNOWFLAKE_RESOLVED)["ui/config/agent.json"]
+    )
+    assert agent["tables"] == [table.upper()]
+
+
+@pytest.mark.parametrize(
+    ("sql", "reason"),
+    [
+        (
+            "select c.doc:field from DEMO_DB.PUBLIC.CUSTOMERS c",
+            ":field is not a declared parameter",
+        ),
+        (
+            "select c.id from DEMO_DB.PUBLIC.CUSTOMERS c where c.region = :region$x",
+            ":region$x is not a declared parameter",
+        ),
+        ("delete from DEMO_DB.PUBLIC.CUSTOMERS", "must start with SELECT or WITH"),
+        ("select 1; select 2", "exactly one statement"),
+        ("select c.id from DEMO_DB.PUBLIC.CUSTOMERS c -- x", "comments"),
+        ("select c.id from DEMO_DB.PUBLIC.CUSTOMERS c where c.region = ?", "positional ?"),
+        ('select c."id" from DEMO_DB.PUBLIC.CUSTOMERS c', '"quoted" identifier'),
+        ("select 'x from DEMO_DB.PUBLIC.CUSTOMERS c", "is not closed"),
+    ],
+)
+def test_tool_sql_the_app_may_not_run_is_refused(sql: str, reason: str) -> None:
+    """A tool published before the statement rules, or with a `:name` that SETH (which binds
+    `%(name)s`) reads as SQL text."""
+    resolved = copy.deepcopy(SNOWFLAKE_RESOLVED)
+    resolved["tools"][0]["sql"] = sql
+    detail = _refused(SNOWFLAKE_MANIFEST, resolved)
+    assert "invoiced_by_region" in detail and reason in detail
 
 
 def _environment() -> dict[str, str]:
