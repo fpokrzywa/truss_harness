@@ -32,6 +32,7 @@ PICKS_COST = "[[assist-router-k1]]"  # the router answers `cost`
 PICKS_NULL = "[[assist-router-k2]]"  # the router answers null
 PICKS_DEPLOYMENT = "[[assist-router-k3]]"  # `deployment`: outside the candidates cost/evaluation
 PICKS_INVALID = "[[assist-router-k4]]"  # the router answers text that is not JSON
+PICKS_EVALUATION = "[[assist-router-k5]]"  # the router answers `evaluation`
 SPECIALIST_ANSWER = "Here is what the project's records show."
 
 ROUTER_SCRIPT: list[dict[str, str]] = [
@@ -39,6 +40,7 @@ ROUTER_SCRIPT: list[dict[str, str]] = [
     {"match": PICKS_NULL, "reply": '{"specialist": null, "reason": "no specialist fits"}'},
     {"match": PICKS_DEPLOYMENT, "reply": '{"specialist": "deployment", "reason": "a release"}'},
     {"match": PICKS_INVALID, "reply": "I think the cost specialist fits best."},
+    {"match": PICKS_EVALUATION, "reply": '{"specialist": "evaluation", "reason": "a test plan"}'},
 ]
 SPECIALIST_SCRIPT: list[dict[str, str]] = [{"match": "", "reply": SPECIALIST_ANSWER}]
 PROJECT = "/workspaces/main/projects/sample"
