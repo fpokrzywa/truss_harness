@@ -2,6 +2,8 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  APP_PREVIEW,
+  APP_RELEASE,
   EVALUATION,
   list,
   ORG,
@@ -108,6 +110,27 @@ describe('ReleaseDetailView', () => {
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('Could not request the evaluation');
     expect(alert).toHaveTextContent('The release is withdrawn.');
+  });
+
+  it('shows no app preview and asks for none on a /1 release', async () => {
+    const fetchMock = stubReleases();
+    renderWithClient(<ReleaseDetailView id="r-1" />);
+    await screen.findByRole('table', { name: 'Evaluations' });
+    expect(screen.queryByRole('region', { name: 'App preview' })).not.toBeInTheDocument();
+    expect(fetchMock.calls.some((c) => c.key.endsWith('/app-preview'))).toBe(false);
+  });
+
+  it('shows the app preview of a /2 release', async () => {
+    const R2 = `${ORG}/releases/r-2`;
+    stubReleases({
+      [`GET ${R2}`]: () => jsonResponse(APP_RELEASE),
+      [`GET ${R2}/evaluations`]: () => list([]),
+      [`GET ${R2}/app-preview`]: () => jsonResponse(APP_PREVIEW),
+    });
+    renderWithClient(<ReleaseDetailView id="r-2" />);
+    const preview = await screen.findByRole('region', { name: 'App preview' });
+    expect(await within(preview).findByText('app/app.py')).toBeInTheDocument();
+    expect(within(preview).getByRole('button', { name: 'Orders by region' })).toBeInTheDocument();
   });
 
   it('shows the no-access message on a 404', async () => {

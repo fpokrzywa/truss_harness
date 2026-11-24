@@ -4,10 +4,20 @@ import { ChatScreen } from './ChatScreen';
 import type { Screen } from './screens';
 import { TableScreen } from './TableScreen';
 
-/** Draws a generated app's screens with one navigation entry per screen; opens the first. */
-export function ScreenRenderer({ screens, api }: { screens: Screen[]; api: AppApi }) {
+/** Draws a generated app's screens with one navigation entry per screen; opens the first.
+ * `embedded` (a page that has its own `main`, as SETH's preview) wraps the screen in a `div`. */
+export function ScreenRenderer({
+  screens,
+  api,
+  embedded = false,
+}: {
+  screens: Screen[];
+  api: AppApi;
+  embedded?: boolean;
+}) {
   const [active, setActive] = useState(0);
   const screen = screens[active];
+  const Content = embedded ? 'div' : 'main';
 
   return (
     <div className="app">
@@ -23,10 +33,10 @@ export function ScreenRenderer({ screens, api }: { screens: Screen[]; api: AppAp
           </button>
         ))}
       </nav>
-      <main>
+      <Content>
         {screen?.kind === 'chat' && <ChatScreen key={active} screen={screen} api={api} />}
         {screen?.kind === 'table' && <TableScreen key={active} screen={screen} api={api} />}
-      </main>
+      </Content>
     </div>
   );
 }
