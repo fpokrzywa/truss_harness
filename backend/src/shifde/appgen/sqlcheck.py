@@ -1,10 +1,10 @@
 """The diagnostics of a draft (SP5 design 5.4): stored with every revision, never raised.
 
-Each tool's SQL goes through `core.sqlrules.check` against the request's tables and the tool's
-declared parameters (`tools.<i>.sql`). The other rules: a table screen names an existing tool
-(`screen_tool_unknown`) and only its parameters (`screen_input_unknown`); tool names, screen
-titles and case ids are unique (`duplicate_name`); a text assertion with an empty value is a
-warning (`case_trivial`). Everything else is an error.
+Each tool's SQL goes through `core.sqlrules.check`, in the dialect of the request's connection,
+against the request's tables and the tool's declared parameters (`tools.<i>.sql`). The other
+rules: a table screen names an existing tool (`screen_tool_unknown`) and only its parameters
+(`screen_input_unknown`); tool names, screen titles and case ids are unique (`duplicate_name`); a
+text assertion with an empty value is a warning (`case_trivial`). Everything else is an error.
 """
 
 from __future__ import annotations
@@ -34,14 +34,17 @@ def _duplicates(field: str, attr: str, names: Iterable[str], what: str) -> list[
     return out
 
 
-def validate(draft: Draft, tables: Sequence[str]) -> list[Diagnostic]:
-    """Every diagnostic of `draft` over the request's `tables`."""
+def validate(
+    draft: Draft, tables: Sequence[str], *, dialect: sqlrules.Dialect = "databricks"
+) -> list[Diagnostic]:
+    """Every diagnostic of `draft` over the request's `tables`, its SQL read in `dialect` (the
+    request's connection's)."""
     out: list[Diagnostic] = []
     allowed = [t.lower() for t in tables]
     tools = {t.name: t for t in draft.tools}
     for i, tool in enumerate(draft.tools):
         declared = [p.name for p in tool.parameters]
-        for issue in sqlrules.check(tool.sql, allowed, declared):
+        for issue in sqlrules.check(tool.sql, allowed, declared, dialect=dialect):
             out.append(_error(f"tools.{i}.sql", issue.code, issue.message))
     for i, screen in enumerate(draft.screens):
         if screen.kind != "table":
