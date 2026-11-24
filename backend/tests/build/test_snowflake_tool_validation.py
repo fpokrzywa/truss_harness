@@ -139,6 +139,7 @@ def test_a_read_sql_tool_on_an_active_snowflake_read_connection_publishes(
     ("sql", "code"),
     [
         ("select * from t where a = ?", "sql_positional_parameter"),
+        ("select :1", "sql_positional_bind"),
         ('select "Demo" from DEMO_DB.PUBLIC.X', "sql_quoted_identifier_unsupported"),
         ("select `a` from DEMO_DB.PUBLIC.X", "sql_syntax"),
         ("select 1 from DEMO_DB.PUBLIC.X // note", "sql_comment"),
@@ -172,6 +173,9 @@ def test_the_snowflake_statement_rules_run_at_publish(
     [
         "select comment from DEMO_DB.PUBLIC.T where id = %(customer_id)s",
         'select "ID" from "DEMO_DB"."PUBLIC"."ORDERS" where note <> $$a delete$$',
+        "select ':1'",
+        "select x::int from DEMO_DB.PUBLIC.T",
+        "select :id from DEMO_DB.PUBLIC.T",
     ],
 )
 def test_snowflake_only_text_publishes_on_snowflake(
@@ -202,6 +206,10 @@ def test_the_dialect_follows_the_connections_adapter_key(
         assert _errors(env, _sql_tool(conns.snowflake, dollars)) == []
         assert ("binding.sql_template", "sql_write_statement") in _errors(
             env, _sql_tool(conns.databricks, dollars)
+        )
+        bind = "select :1 from main.default.orders"
+        assert ("binding.sql_template", "sql_positional_bind") not in _errors(
+            env, _sql_tool(conns.databricks, bind)
         )
         s.rollback()
 

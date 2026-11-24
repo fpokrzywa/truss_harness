@@ -3,25 +3,45 @@
 checks refuse what a generated app cannot run: an entrypoint that is not an agent, a table screen
 of an unpinned tool or of an input that is not the tool's parameter, a model count other than
 one, and a tool that is not `connection.sql` over a Databricks connection. Each refused version
-without screens seals under `/1` exactly as before."""
+without screens seals under `/1` exactly as before. A table screen of a pinned tool the sealer
+cannot see (private, or in a project the sealer cannot read) gets the answer of an unpinned key,
+and another client learns nothing of the tools (issue #316)."""
 
 from __future__ import annotations
 
+import json
 from typing import Any  # Any: JSON bodies
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
 
 from shifde.appgen import render
 from shifde.packaging import service as packaging
 from shifde.packaging.canonical import digest
 from tests._support.fullapp import World
-from tests._support.p3util import fake_model_stack
-from tests._support.p4util import agent_spec, art, builtin_tool_spec, publish
-from tests._support.p5util import Hdr
-from tests.appgen.helpers import databricks, wire
-from tests.packaging.helpers import Stack, bindings, new_version, seal, version_body
-from tests.packaging.test_releases import _model_node, _pipeline, _setup, _sql_tool, _unsupported
+from tests._support.p3util import ADMIN_B, B, fake_model_stack
+from tests._support.p4util import agent_spec, art, builtin_tool_spec, make_user, publish
+from tests._support.p5util import Hdr, user_session
+from tests.appgen.helpers import add_project, databricks, wire
+from tests.packaging.helpers import (
+    Stack,
+    bindings,
+    new_version,
+    seal,
+    solutions,
+    version_body,
+)
+from tests.packaging.test_releases import (
+    DEVELOPER,
+    _audits,
+    _model_node,
+    _pipeline,
+    _project_developer,
+    _setup,
+    _sql_tool,
+    _unsupported,
+)
 
 CHAT = {"kind": "chat", "title": "Ask", "placeholder": ""}
 APP_TOOLS = "a generated app's tools are SQL tools over a Databricks connection"
@@ -35,8 +55,17 @@ def _with(body: dict[str, Any], screens: list[dict[str, Any]]) -> dict[str, Any]
     return {**body, "screens": screens}
 
 
-def _dbx_tool(h: Hdr, s: Stack, connection: str) -> str:
-    """A published `connection.sql` tool keyed `orders` over the Databricks connection."""
+def _dbx_tool(
+    h: Hdr,
+    s: Stack,
+    connection: str,
+    key: str = "orders",
+    *,
+    scope: dict[str, str] | None = None,
+    visibility: str = "scope",
+) -> str:
+    """A published `connection.sql` tool keyed `key` (in the stack's project unless `scope`)
+    over the Databricks connection."""
     spec = {
         "executor": "connection.sql",
         "binding": {
@@ -55,7 +84,8 @@ def _dbx_tool(h: Hdr, s: Stack, connection: str) -> str:
         "timeout_s": 10,
         "audit_level": "metadata",
     }
-    tool = art(h.client, h, "tools", "orders", spec, {"type": "project", "id": s.project_id})
+    place = scope or {"type": "project", "id": s.project_id}
+    tool = art(h.client, h, "tools", key, spec, place, visibility=visibility)
     return str(publish(h.client, h, "tools", tool["id"])["id"])
 
 
@@ -185,3 +215,106 @@ def test_a_generated_apps_tools_are_sql_over_databricks(
     refused, plain = _both(h, sid, body, [CHAT], bindings({s.model: s.provider}))
     assert refused == {f"tools.{builtin_v1}": "not on the read-only list"}
     assert _unsupported(plain) == refused  # refused by `/1` as before
+
+
+# ------------------------------------------------------------------ hidden tools (issue #316)
+SECRET_TOOL = "secret_orders"
+UNPINNED = "the version pins no tool {!r}"
+PROBES = ("customer_id", "not a parameter")
+
+
+def _screen_versions(h: Hdr, s: Stack, sid: str, tool: str) -> dict[str, str]:
+    """`/2` versions of one agent pinning `tool` (keyed `SECRET_TOOL`), by their second screen:
+    `real` (the tool's key and parameter), `wrong` (an input the tool lacks) and `unpinned` (a key
+    nothing pins)."""
+    agent = _agent(h, s, "app", [tool])
+    body = version_body(agent, dataset=s.dataset)
+    screens = {
+        "real": _table(SECRET_TOOL, "customer_id"),
+        "wrong": _table(SECRET_TOOL, "region"),
+        "unpinned": _table("nope", "customer_id"),
+    }
+    versions = {
+        name: new_version(h.client, h, sid, _with(body, [CHAT, screen]))["id"]
+        for name, screen in screens.items()
+    }
+    return versions
+
+
+def _hidden_answers(sealer: Hdr, s: Stack, sid: str, versions: dict[str, str]) -> list[str]:
+    """The `screens.1` reasons a sealer who cannot see the tool gets for `real` and `wrong`,
+    which must read like the `unpinned` one and carry nothing of the tool's parameters (bound
+    without the tool's connection: only the hidden tool names it)."""
+    body = bindings({s.model: s.provider})
+    unpinned = _unsupported(seal(sealer.client, sealer, sid, versions["unpinned"], body))
+    assert unpinned["screens.1"] == UNPINNED.format("nope")
+    reasons = []
+    for name in ("real", "wrong"):
+        r = seal(sealer.client, sealer, sid, versions[name], body)
+        refused = _unsupported(r)
+        assert "screens.1" in refused, r.text
+        assert all(probe not in r.text for probe in PROBES), r.text
+        reasons.append(refused["screens.1"])
+    return reasons
+
+
+def test_a_screen_of_a_tool_the_sealer_cannot_see_reads_like_an_unpinned_key(
+    client: TestClient, world: World, owner_session: Session
+) -> None:
+    wire(client)
+    h, s, sid = _setup(client, world)
+    lake = databricks(h.client, h)
+    tool = _dbx_tool(h, s, lake, SECRET_TOOL, visibility="private")
+    versions = _screen_versions(h, s, sid, tool)
+    make_user(client, owner_session, h, DEVELOPER, "developer", world.passwords)
+    dev = user_session(client, world.passwords, DEVELOPER)
+    refused_before = len(_audits(owner_session, "packaging.release.refused"))
+
+    assert _hidden_answers(dev, s, sid, versions) == [UNPINNED.format(SECRET_TOOL)] * 2
+    refusals = _audits(owner_session, "packaging.release.refused")[refused_before:]
+    assert len(refusals) == 3
+    assert all(probe not in json.dumps(details) for _, _, details in refusals for probe in PROBES)
+
+    # the administrator sees the tool: the normal answers
+    admin = user_session(client, world.passwords, "admin@demo-a.local")
+    body = bindings({s.model: s.provider}, {lake: lake})
+    sealed = seal(admin.client, admin, sid, versions["real"], body)
+    assert sealed.status_code == 201, sealed.text
+    wrong = _unsupported(seal(admin.client, admin, sid, versions["wrong"], body))
+    assert wrong == {"screens.1": f"'region' is not a parameter of tool {SECRET_TOOL!r}"}
+
+
+def test_a_screen_of_another_projects_tool_reads_like_an_unpinned_key(
+    client: TestClient, world: World, owner_session: Session
+) -> None:
+    wire(client)
+    h, s, sid = _setup(client, world)
+    lake = databricks(h.client, h)
+    other = add_project(h.client, h, "elsewhere")
+    tool = _dbx_tool(h, s, lake, SECRET_TOOL, scope={"type": "project", "id": other})
+    versions = _screen_versions(h, s, sid, tool)
+    member = _project_developer(client, world, owner_session, s.project_id)
+    assert _hidden_answers(member, s, sid, versions) == [UNPINNED.format(SECRET_TOOL)] * 2
+
+
+def test_another_client_learns_nothing_of_a_generated_apps_tools(
+    client: TestClient, world: World
+) -> None:
+    wire(client)
+    h, s, sid = _setup(client, world)
+    lake = databricks(h.client, h)
+    tool = _dbx_tool(h, s, lake, SECRET_TOOL)
+    versions = _screen_versions(h, s, sid, tool)
+    body = bindings({s.model: s.provider}, {lake: lake})
+    sealed = seal(h.client, h, sid, versions["real"], body)
+    assert sealed.status_code == 201, sealed.text
+    other = user_session(client, world.passwords, ADMIN_B)
+    answers = [
+        seal(other.client, other, sid, versions["real"], body, org=B),
+        seal(other.client, other, sid, versions["unpinned"], body, org=B),
+        other.client.get(f"{B}/releases/{sealed.json()['id']}", headers=other),
+        other.client.get(f"{solutions(B)}/{sid}/versions/{versions['real']}", headers=other),
+    ]
+    for r in answers:
+        assert r.status_code == 404, r.text
+        assert SECRET_TOOL not in r.text and "customer_id" not in r.text

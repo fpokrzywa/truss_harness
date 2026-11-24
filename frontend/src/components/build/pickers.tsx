@@ -6,6 +6,7 @@ import type { ConnectionType } from '@/lib/api/integrate-types';
 import { latestRef, parseRef } from '@/lib/agent-spec';
 import { useArtifacts, useVersions } from '@/lib/build-hooks';
 import { useConnections, useEffectiveModels } from '@/lib/integrate-hooks';
+import { ErrorMessage } from '../ErrorMessage';
 import { SelectField } from '../admin/ui';
 
 /**
@@ -123,9 +124,14 @@ export function VersionRefList({
   );
 }
 
-/** Effective (allowed, usable) models for the organization. */
+/**
+ * Effective (allowed, usable) models for the organization, or for a workspace and project when given.
+ * Disabled, with a note, while loading, after a failed request and when no model is available.
+ */
 export function ModelSelect({
   org,
+  workspace,
+  project,
   label,
   value,
   onChange,
@@ -133,27 +139,43 @@ export function ModelSelect({
   disabled,
 }: {
   org: string;
+  workspace?: string;
+  project?: string;
   label: string;
   value: string;
   onChange: (id: string) => void;
   emptyLabel?: string;
   disabled?: boolean;
 }) {
-  const models = useEffectiveModels(org);
+  const models = useEffectiveModels(org, workspace, project);
   const items = models.data?.items ?? [];
   const known = items.some((m) => m.id === value);
+  const none = models.isSuccess && items.length === 0;
   return (
-    <SelectField
-      label={label}
-      value={value}
-      disabled={disabled}
-      onChange={onChange}
-      options={[
-        { value: '', label: emptyLabel },
-        ...(value && !known ? [{ value, label: value }] : []),
-        ...items.map((m) => ({ value: m.id, label: `${m.display_name} (${m.model_key})` })),
-      ]}
-    />
+    <div className="space-y-1">
+      <SelectField
+        label={label}
+        value={value}
+        disabled={disabled || models.isPending || models.isError || none}
+        onChange={onChange}
+        options={[
+          { value: '', label: emptyLabel },
+          ...(value && !known ? [{ value, label: value }] : []),
+          ...items.map((m) => ({ value: m.id, label: `${m.display_name} (${m.model_key})` })),
+        ]}
+      />
+      {models.isPending && (
+        <p role="status" className="text-sm text-slate-600">
+          Loading models...
+        </p>
+      )}
+      {models.isError && <ErrorMessage error={models.error} title="Could not load models" />}
+      {none && (
+        <p className="text-sm text-slate-700">
+          No models are available here. An administrator can allow models on the Models screen.
+        </p>
+      )}
+    </div>
   );
 }
 

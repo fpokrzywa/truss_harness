@@ -124,7 +124,7 @@ All tables are client-owned. Each gets forced RLS, `tenant_isolation` on `tenant
 | `status` | CHECK in the state table below |
 | `status_reason` | text, a code from 5.6, NULL when none |
 | `job_id` | uuid, the latest `appgen.draft` job; no FK (runtime reaps jobs) |
-| `accept_progress` | jsonb `{prompt_version_id?, tool_version_ids?: {name: id}, agent_version_id?, dataset_id?, solution_id?, solution_version_id?}` |
+| `accept_progress` | jsonb `{prompt_artifact_id?, prompt_version_id?, tool_artifact_ids?: {name: id}, tool_version_ids?: {name: id}, agent_artifact_id?, agent_version_id?, dataset_id?, solution_id?, solution_version_id?, claim?: {token, until}}`; `claim` (5.5) is never returned by the API |
 | `accepted_revision_no` | int, NULL until accepting |
 | `solution_version_id` | composite FK `solution_versions` (RESTRICT), set when `accepted` |
 | `requested_by`, `accepted_by` | FK to users, as in `delivery_plans` |
@@ -292,7 +292,9 @@ Validation produces diagnostics and does not throw. It is stored with every revi
 **Refusals:**
 - 409 `already_accepted` (status `accepted`);
 - 409 `request_not_acceptable` (status not `drafted`, or `accepting` with another `revision_no`);
-- 422 `draft_invalid` (the revision has an `error` diagnostic).
+- 409 `accept_in_progress` (another accept call of the request holds the claim; nothing is written);
+- 422 `draft_invalid` (the revision has an `error` diagnostic, or a draft name is not a usable artifact key or is held by an artifact this request did not mint);
+- 422 `model_unavailable` / `model_not_allowed` (the runtime model, named so in `detail`).
 
 **Transaction rule (R15).** The `build`, `evaluation` and `packaging` services each commit their own transaction (`build/service.py` and `evaluation/service.py` call `session.commit()`), so accept cannot be one transaction. It is a resumable sequence:
 
@@ -316,7 +318,11 @@ Validation produces diagnostics and does not throw. It is stored with every revi
       - `screens` from the draft.
 3. Set `accepted` and `solution_version_id`.
 
-A failed step leaves the request `accepting`, with `status_reason` = the step's error code, and the objects already created stay (they are ordinary drafts or published versions in the project). Repeating the accept with the same `revision_no` resumes from there.
+A failed step leaves the request `accepting`, with `status_reason` = the step's error code, and the objects already created stay (they are ordinary drafts or published versions in the project). It writes `appgen.request.accept_failed` with details exactly `{revision_no, step, status_reason}`, `step` one of `prompt`, `tools`, `agent`, `dataset`, `solution`, `solution_version` or `finish` (no draft content). Repeating the accept with the same `revision_no` resumes from there.
+
+**Claim (issue #316).** One accept call at a time runs the steps. It holds `accept_progress.claim = {token, until}`, a lease of `ACCEPT_CLAIM_SECONDS` (120) in database time, taken by a conditional UPDATE that succeeds only when no claim is there or its `until` has passed: on `drafted` in the UPDATE of step 1, on `accepting` before the key check. Every recorded step renews it; `accepted` and a failed step's `status_reason` remove it. Each write names the token, so a call whose lease another call took records nothing, sets no `status_reason` and writes no audit event. A resume that cannot take the claim gets 409 `accept_in_progress`, with nothing written.
+
+**Pre-minted ids and adoption.** Steps 2.1 to 2.3 mint the artifact id and record it under `prompt_artifact_id`, `tool_artifact_ids.<name>` or `agent_artifact_id` before the create, which uses that id. A resume whose recorded id has an artifact adopts it (it must be of that kind, in the request's workspace and project, with the draft's key, else `key_taken`); one with no artifact creates it with that id. The key check counts a key as free when no artifact holds it or the holder has the recorded id; any other holder is `key_taken`. The dataset and the solution version have no key: a crash between their commit and their record can still leave an orphan.
 
 ### 5.6 Error codes and failure reasons
 
@@ -326,7 +332,7 @@ A failed step leaves the request `accepting`, with `status_reason` = the step's 
 | create | `connection_not_databricks`, `connection_not_read_only`, `connection_not_active`, `connection_not_discovered`, `table_not_discovered` | 422 |
 | any route, other client / other project / unknown | `app request not found` | 404 |
 | drafts | `stale_revision`, `request_not_editable` | 409 |
-| accept | `already_accepted`, `request_not_acceptable` | 409 |
+| accept | `already_accepted`, `request_not_acceptable`, `accept_in_progress` | 409 |
 | accept | `draft_invalid` | 422 |
 | retry | `request_not_failed` | 409 |
 | discard | `request_not_discardable` | 409 |
@@ -514,7 +520,7 @@ Changed routes:
 - SP3's solution-version create accepts `screens`;
 - SP2's target create and patch accept `bindings.serving_endpoint`.
 
-Audit events: `appgen.request.created|drafting|drafted|failed|retried|discarded`, `appgen.draft.revised`, `appgen.request.accepting|accepted`. Refresh `backend/openapi.json` after these changes.
+Audit events: `appgen.request.created|drafting|drafted|failed|retried|discarded`, `appgen.draft.revised`, `appgen.request.accepting|accepted|accept_failed`. Refresh `backend/openapi.json` after these changes.
 
 ## 8. Screens (R27)
 
