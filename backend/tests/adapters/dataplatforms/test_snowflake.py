@@ -474,6 +474,10 @@ REFUSED_SQL = [
     "WITH a AS (SELECT 1) DELETE FROM t",
     "with a as (select 1) Insert into t select * from a",
     "With a As (Select 1) dElEtE From t",
+    # a positional `:n` bind reference in the code (#319)
+    "SELECT :1",
+    "SELECT :12",
+    "SELECT * FROM t WHERE id = :1",
 ]
 ACCEPTED_SQL = [
     "SELECT $$hello$$",
@@ -488,6 +492,11 @@ ACCEPTED_SQL = [
     "SELECT 'insert' AS w -- delete",
     'SELECT "update" FROM t // drop',
     "SELECT updated_at, deleted FROM t",
+    "SELECT ':1'",
+    "SELECT $$:1$$",
+    "SELECT 1 -- :1",
+    "SELECT x::int FROM t",
+    "SELECT * FROM t WHERE id = :id",
 ]
 
 
@@ -503,6 +512,12 @@ def test_refused_statements_make_no_request(sf: FakeSnowflakeAccount, sql: str) 
 @pytest.mark.parametrize("sql", ACCEPTED_SQL)
 def test_read_statements_pass_the_snowflake_check(sql: str) -> None:
     sqlapi.check_read_only(sql, dialect="snowflake")
+
+
+def test_a_positional_bind_reference_gets_its_own_message() -> None:
+    with pytest.raises(AdapterFailure) as raised:
+        sqlapi.check_read_only("SELECT :1", dialect="snowflake")
+    assert raised.value.message == sqlapi._POSITIONAL_BIND
 
 
 def test_an_accepted_dollar_quoted_select_reaches_the_account(sf: FakeSnowflakeAccount) -> None:
