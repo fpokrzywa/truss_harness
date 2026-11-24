@@ -294,7 +294,7 @@ forbidden_modules = [
   "shifde.connections.repository", "shifde.models_admin.repository", "shifde.build.repository",
   "shifde.ontology.repository", "shifde.runtime.repository", "shifde.governance.repository",
   "shifde.delivery.repository", "shifde.packaging.repository", "shifde.evaluation.repository",
-  "shifde.board.repository",
+  "shifde.board.repository", "shifde.assist.repository",
 ]
 allow_indirect_imports = true
 
