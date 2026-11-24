@@ -51,6 +51,12 @@ from tests.appgen.helpers import (
 from tests.tenancy.conftest import app_session
 
 _VARYING = {"instance", "request_id"}
+ACCEPT = {
+    "revision_no": 1,
+    "solution_name": "Sales app",
+    "model_id": "01900000-0000-7000-8000-0000000000aa",
+    "thresholds": {"min_accuracy": "0.9", "max_p95_latency_ms": 1000, "max_total_cost_usd": "1"},
+}
 P2 = "/workspaces/main/projects/other"
 NO_PROJECT = "/workspaces/main/projects/no-such-project"
 MEMBER = "p1-only@demo-a.local"
@@ -148,6 +154,7 @@ ROUTE_TESTS = {
     ("POST", REQUEST + "/drafts"): "test_a_cannot_reach_bs_request",
     ("POST", REQUEST + "/discard"): "test_a_cannot_reach_bs_request",
     ("POST", REQUEST + "/retry"): "test_a_cannot_reach_bs_request",
+    ("POST", REQUEST + "/accept"): "test_a_cannot_reach_bs_request",
 }
 
 
@@ -168,6 +175,7 @@ def _request_calls(request_id: str, org: str) -> list[tuple[str, str, Any]]:  # 
         ("POST", request_url(request_id, org, "/drafts"), edit),
         ("POST", request_url(request_id, org, "/discard"), None),
         ("POST", request_url(request_id, org, "/retry"), None),
+        ("POST", request_url(request_id, org, "/accept"), ACCEPT),
     ]
 
 

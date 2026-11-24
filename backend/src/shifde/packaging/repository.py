@@ -83,6 +83,20 @@ def name_taken(session: Session, project_id: UUID, name: str, *, tenant_id: UUID
     )
 
 
+def active_solution_id(
+    session: Session, project_id: UUID, name: str, *, tenant_id: UUID
+) -> UUID | None:
+    """The id of the project's active solution named `name`, if any."""
+    found = session.execute(
+        text(
+            "SELECT id FROM shifde.solutions WHERE tenant_id = :t AND project_id = :p "
+            "AND name = :n AND status = 'active'"
+        ),
+        {"t": tenant_id, "p": project_id, "n": name},
+    ).scalar_one_or_none()
+    return UUID(str(found)) if found is not None else None
+
+
 def list_solutions(
     session: Session,
     *,

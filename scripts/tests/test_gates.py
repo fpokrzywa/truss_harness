@@ -36,6 +36,30 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(pytest_gate.argv[-3:], ["-n", "4", "tests/core"][-3:])
         self.assertNotIn("pnpm build", [g.name for g in plan])
 
+    def test_appgen_web_gates_follow_pnpm_build(self) -> None:
+        plan = gates.plan(tests=[], workers="8", frontend=True)
+        names = [g.name for g in plan]
+        start = names.index("pnpm build") + 1
+        self.assertEqual(
+            names[start : start + 5],
+            [
+                "pnpm --filter @shifde/appgen-web lint",
+                "pnpm --filter @shifde/appgen-web typecheck",
+                "pnpm --filter @shifde/appgen-web test",
+                "pnpm --filter @shifde/appgen-web build",
+                "appgen_web.py --check",
+            ],
+        )
+        for gate in plan[start : start + 4]:
+            self.assertEqual(gate.cwd, "frontend")
+            self.assertEqual(gate.argv[:3], ["pnpm", "--filter", "@shifde/appgen-web"])
+        check = plan[start + 4]
+        self.assertEqual((check.argv, check.cwd), (["python", "scripts/appgen_web.py", "--check"], ""))
+
+    def test_no_appgen_web_gates_without_frontend(self) -> None:
+        names = [g.name for g in gates.plan(tests=[], workers="8", frontend=False)]
+        self.assertFalse([n for n in names if "appgen" in n])
+
     def test_backend_gates_use_copy_link_mode(self) -> None:
         for gate in gates.plan(tests=[], workers="8", frontend=False):
             if gate.cwd == "backend":

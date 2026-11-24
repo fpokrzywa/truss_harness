@@ -59,9 +59,11 @@ def test_a_head_named_in_depends_on_is_not_a_version_head() -> None:
     head. packaging_0003 follows packaging_0002 with no depends_on (issue #158), so it is the
     packaging version head (packaging_0002 stays a non-head). appgen_0001 (issue #255) depends on
     packaging_0003, runtime_0007, tenancy_0007 and identity_0007, so none of the four is a version
-    head any more and appgen_0001 is the appgen head."""
+    head any more and appgen_0001 is the appgen head. mcp_0001 depends on tenancy_0007 and
+    identity_0007 (issue #287) and is the mcp head."""
     heads = code_heads()
     assert "appgen_0001" in heads
+    assert "mcp_0001" in heads
     assert "identity_0007" not in heads
     assert "identity_0006" not in heads
     assert "delivery_0006" in heads

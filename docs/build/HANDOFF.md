@@ -1,27 +1,31 @@
-# Handoff — 2026-11-23 ~14:55 EST, charter 7 factory run (lead session 58242b09)
+# Handoff — 2026-11-23 ~17:10 EST, charter 7 factory run (lead session a76bd9e5)
 
 Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` (sub-projects table), then this file.
 
-**State:** main = origin/main after this commit. Cluster on 55450 running. Lead context near 200k; no agent running at handoff.
+**State:** main = origin/main after this commit. Cluster on 55450 running. Lead context ~190k at handoff. No agent running.
 
 ## Finished this session
-- Merged 146 SP6-2 follow-up (#300, PR #309, 13/13) and 133 SP5-2 appgen skeleton (#255, PR #298, 13/13 on r3).
-- 140 SP8-8 Docker: rounds 4-6 (YAML `$` escapes, alias cycles, non-plain YAML types, Docker Engine 28.0 floor, label allow-lists, health recheck). Lead isolation review 2 BLOCKED -> feedback-2 -> review 3 APPROVED. Records `docs/build/reviews/140-isolation-review-{2,3}.md`.
-- 143 #285 round 3 reviews PASS, approver ESCALATE; isolation APPROVED (`reviews/143-isolation-review-1.md`). Follow-up #312 filed (factory label; depends on #285 merged).
-- 145 SP6-3 round 2 (claim identity from #300, locator 422 = branch B-3947) reviews PASS, approver ESCALATE; isolation APPROVED (`reviews/145-isolation-review-1.md`).
-- Decisions B-3948 (Docker 28.0), B-3949 (143 over-refusals, #312), B-3950 (gate flakes under parallel load). **B-3947 is taken on 145's branch. Next free lead id: B-3951.**
+- Merged 139 SP8-6 (#291, PR #302, 13/13 at e2410d5), 141 SP6-1 (#268, PR #307, 13/13 at 0d48f8f) and 137 SP8-2 shifde-mcp (#287, PR #310, 13/13 at c742c99; sync classified `/mcp/settings` routes as CLIENT and split the catalog count into SETH base (92, 8, 339) plus exact mcp (3, 5)). File 137 follow-ups: limiter order, docstring, removed-member key test.
+- Added the appgen-web lines to protected `factory/checks.sh` (B-3951, commit c35f37f), then started #257.
+- New jobs: 148 (#257 SP5-4 appgen-web), 149 (#277 SP7-1 internal tools), 150 (#318 home page redirect, owner request via supervisor ruling S-038 — reply to the supervisor session when it merges).
+- Follow-ups filed (label factory): #315 (deadlock on secret `last_used_at` under concurrent evaluation case runs), #316 (SP5-3 accept retry robustness / screens visibility / failed-step audit; depends on #256), #319 (Snowflake `:<digit>` refusal; depends on #268).
+- **Next free lead decision id: B-3952.**
 
-## Exact next step: merge the six needs-human jobs, one at a time
-Each is lead-isolation APPROVED and reviews PASS. For each: sync branch with origin/main in its worktree (DECISIONS: keep both, main first; alembic-heads lists in `tests/identity/test_schema.py`: include every head, never drop an assertion), push, `python scripts/gates.py --ref <sha> --name <id>-merge` (serial! nothing else heavy running — parallel load caused 2 flakes, B-3950), then `gh pr merge <pr> --merge --match-head-commit <sha>`. A general-purpose sonnet agent did sync+gates well this session (prompt: sync, run touched tests, push, gates.py, report gate lines).
-Order (suggested): 139 (PR #302) -> 141 (PR #307; file follow-up: refuse `:<digit>` in the Snowflake reading) -> 137 (PR #310; now that 133 merged, its schema test must expect both `appgen_0001` and `mcp_0001` heads — fix in the sync; file follow-ups limiter order, docstring, removed-member key test) -> 145 (PR #311; add notes to B-3934/B-3936 that B-3947 supersedes them) -> 140 (PR #303) -> 143 (PR #308).
-After each merge run `PYTHONUTF8=1 factory/bin/job queue` (it marks the job merged).
+## Exact next step: gate and merge, strictly one gate run at a time
+All branches below were synced with origin/main at ~17:05 (main has since gained PR #310, so sync again first) and pushed, clean worktrees. For each, in this order: if `git rev-list --count origin/factory/<branch>..origin/main` > 0, sync again (merge origin/main, keep both, main first; alembic-heads lists include every head); then `python scripts/gates.py --ref <full sha> --name <id>-merge > .worktrees/_gate-logs/<id>-merge.out 2>&1`, read the **final** `gates: N/M passed` line (the first `gates: ref ...` line is NOT the result — that trap caused an overlapping run this session), then `gh pr merge <pr> --merge --match-head-commit <sha>`, then `PYTHONUTF8=1 factory/bin/job queue`.
+1. **147** SP5-3 appgen accept (#256, PR #314), head 64f0c82, needs-human only because `job merge` hit a conflict (now resolved and pushed). Approver APPROVE, reviews PASS. Run 13 gates, then merge.
+2. **148** SP5-4 appgen-web (#257, PR #313), head 2154caa, needs-human (approver escalated for the `scripts/gates.py` change; lead reviewed: additive only, lockfile drop of optional `@babel/core` peer accepted). gates.py on this branch has 18 gates; all must pass. Then merge.
+3. **150** home page (#318, PR #320): stage approve, APPROVE. Run `PYTHONUTF8=1 factory/bin/job merge 150-home-page-send-people` (it gates and merges). Tell the supervisor session the result.
+4. **149** SP7-1 internal tools (#277, PR #317): stage approve, APPROVE. `job merge 149-sp7-1-runtime-internal`.
+5. Then the remaining needs-human: 145 (PR #311; add notes to B-3934/B-3936 that B-3947 supersedes them), 140 (PR #303), 143 (PR #308) — sync, 13 gates, merge, as before.
+Use a general-purpose sonnet agent per merge (sync, touched tests, push, gates.py, report gate lines); never two gate runs at once (no `factory/bin/gate` during a `gates.py` run).
 
-## Open jobs
-- 147-sp5-3-appgen-accept (#256): intake ACCEPT (risk high, security), routed, stage **spec**: spawn `spec-writer` with the job header.
-- #257 SP5-4 appgen-web: lead must first add appgen-web lines to protected `factory/checks.sh`, then `job create 257`.
-- #258 depends on #256 and #257; #259 on #258; #260 on #256+#257; #261 on #259+#260; #262 on #261. SP6-4 #271..#275 wait on #262. #312 waits on #285 (job 143). Other holds per dependency rules in the previous handoff (SP7: #277 after #255 — now startable; #278 after #277. SP8: #286 after #270+#271; #288 after #287+#279-#281; #290/#292/#294 per body).
+## Open jobs (stage)
+140 needs-human · 143 needs-human · 145 needs-human · 147 needs-human · 148 needs-human · 149 approve · 150 approve.
+Startable after merges: #258 (needs #256+#257), #260 (needs #256+#257), #278 (needs #277), #316 (needs #256), #319 (#268 merged — startable), #315 (startable), #312 (needs #285). Others per dependency rules in the issues and previous handoffs. `job queue` does not know dependencies; check "Depends on" in the issue body before `job create`.
 
 ## Traps learned
-- `gates.py` writes no `.summary` file any more; read the `gates: N/13 passed` stdout line (redirect stdout to a file).
-- Do not run `factory/bin/gate` while a `gates.py` full suite runs (flakes in timing tests).
-- Earlier traps hold (PYTHONUTF8=1, UV_LINK_MODE=copy, unset VIRTUAL_ENV, job commands block during `job merge`, builders may stall after pushing, isolation reviewers do not write files).
+- Short job ids resolve to issue numbers (`route 148` hit issue #148). Always pass the full job id.
+- Reviewers sometimes don't write their file (reviewer-ui did not); the lead writes it verbatim from the report, marked as such.
+- `agent-browser` is not installed: UX/UI reviews are diff-and-test only.
+- Earlier traps hold (PYTHONUTF8=1, UV_LINK_MODE=copy, unset VIRTUAL_ENV, `gates.py` writes no `.summary`, builders may stall after reporting READY — check build.md first line).

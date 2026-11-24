@@ -6,12 +6,13 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 
 from shifde.adapters.deps import RuntimeDep
 from shifde.appgen import schemas as s
 from shifde.appgen.service import AppGenService
 from shifde.core.pagination import DEFAULT_LIMIT, Page
+from shifde.evaluation.service import EvaluationService
 from shifde.tenancy.dependencies import CursorQuery, LimitQuery, ScopeDep
 
 router = APIRouter(prefix="/api/v1")
@@ -19,8 +20,9 @@ REQUESTS = "/orgs/{org}/workspaces/{ws}/projects/{proj}/app-requests"
 REQUEST = "/orgs/{org}/app-requests/{request_id}"
 
 
-def _service(scope: ScopeDep, runtime: RuntimeDep) -> AppGenService:
-    return AppGenService(scope, runtime)
+def _service(scope: ScopeDep, runtime: RuntimeDep, request: Request) -> AppGenService:
+    evaluations = EvaluationService(scope, runtime, request.app.state.governance)
+    return AppGenService(scope, runtime, evaluations)
 
 
 Service = Annotated[AppGenService, Depends(_service)]
@@ -63,3 +65,8 @@ def discard_app_request(svc: Service, request_id: UUID) -> s.AppRequestOut:
 @router.post(REQUEST + "/retry", status_code=202, tags=["appgen"])
 def retry_app_request(svc: Service, request_id: UUID) -> s.AppRequestOut:
     return svc.retry(request_id)
+
+
+@router.post(REQUEST + "/accept", tags=["appgen"])
+def accept_app_request(svc: Service, request_id: UUID, body: s.AcceptIn) -> s.AppRequestOut:
+    return svc.accept(request_id, body)
