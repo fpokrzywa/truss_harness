@@ -1,25 +1,25 @@
-# Handoff — 2026-11-24 ~13:50 EST, charter 7 factory run (lead session 93ea764f), context limit
+# Handoff — 2026-11-24 15:15 EST, charter 7 factory run (lead session b10341d0), written early as a safety record
 
-Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` (newest progress entry and sub-projects table), then this file.
+Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` (newest progress entry and sub-projects table), then this file. The previous lead (847b16bd) exited at 15:05 without a handoff record; its gate run of 173 died with it (no result).
 
-**State:** cluster running; no agent or gate running at handoff. `PAUSE` is cleared.
+## Rulings (supervising session)
+- 173: S-040, conditional: merge `155d4c30` only after `gates.py --name 173-merge` passes **every gate in full** on that commit. If a worker C1 or job-kind test fails there, do not merge as "intermittent": keep the FAILED lines for a ruling.
+- 175 (PR #357, `a86fa42a`) and 176 (PR #356, `489bf9af`): **NOT ruled, hold both** (S-041 and the next number, queued in `new_session_handoff.md` for the next supervising session). 176: the red CI (C1 [cancel]/[deadline], `test_jobkinds`) counts against approval until #361 finds the cause or shows that the diff cannot reach it.
+- Next supervisor ruling S-041 (theirs). **Next free lead decision id: B-4030** (178: B-4025..B-4029; 172: B-3998..B-4002).
 
-## Finished this session
-- Job 170 (#280 SP7-4, PR #350) merged `889377a` (B-4008, S-039).
-- Filed #351 (assist delete guard, dismiss-race audit, review advisories; job 176) and #352 (rest of #147: API key creators, approvals trigger; depends on #286 because it adds `delivery_0009`). #147 closed.
-- **Next free lead decision id: B-4009, then B-4025.** Given out: 176 B-4010..B-4014, 174 B-4015..B-4019, 175 B-4020..B-4024 (172: B-3998..B-4002; 173: B-4003..B-4007). Next supervisor ruling is S-040 (theirs).
+## Open jobs
+- 172 (#272 SP6-5, PR #353): build round 3 on `feedback-1.md` (B-4009), builder started 15:11. Round 2: isolation review 2 APPROVED, CI red on a guard test (the Snowpark dev pin). Round 3 changes need gate, code and security reviews and an isolation look at the new diff.
+- 173 (#286 SP8-1, PR #354): needs-human, gates running since 15:09 on `155d4c30` (`/tmp/gates173.out`, logs `.worktrees/_gate-logs/173-merge/`).
+- 174 (#283 SP7-7, PR #355, `0d2e6c36`): round 2 gate, code, ux, ui PASS; at approve (approver started 15:11); CI backend red on C1 only (#361).
+- 175 (#288), 176 (#351): needs-human, held (above).
+- 177 (#359): intake ACCEPT, at intake; hold until 175 merges (its spec needs a test file of 175's branch), then route + `job advance ... spec`.
+- 178 (#361): the intermittent approved-write tests; at intake. The cause is not known.
+
+## Dependencies (job queue does not know them)
+#273 needs #272; #274/#275 after #273; #284 needs #283; #290, #292, #294, #352 need #286; #358 needs #272; #360 needs #288; #295, #296 last. Hold those `new` lines until their dependency merges. When SP6, SP7 and SP8 finish, run each done-when demo and record it in STATUS.md. After 173 merges, the supervising session re-runs the hosted DB setup.
 
 ## Exact next step
-1. `PYTHONUTF8=1 factory/bin/job queue`.
-2. **172 (build round 2, start):** new builder `builder-172-sp6-5-appgen-render`, port 6820: address `round-1/` reviews (code CHANGES, security CHANGES) AND `docs/build/reviews/172-isolation-review-1.md` (BLOCKED; fix findings 1-3), push, update build.md. Then gate, reviewers, and isolation review 2.
-3. **173 (approve, round 1):** gate, code and security PASS, but isolation review 1 BLOCKED (`docs/build/reviews/173-isolation-review-1.md`, finding 1). Spawn `approver` with the header, `PR: #354. Final round: 1.` and the path of that review (it must ESCALATE); `job advance ... needs-human`; `job feedback` with finding 1 and its tests and note 3; new builder (port 6830) for round 2; then gate, reviewers, isolation review 2, sync with main, full gate, hand merge (two new migrations, so it is human-gated).
-4. **174 (#283, port 6840) and 175 (#288, port 6850): build round 1, start** builders with their decision-id ranges. 175's spec changes one existing 422 case in `tests/mcp_access/test_settings.py` (spec-listed) and carries the spend cap in the `assist.route` payload.
-5. **176 (#351): build round 1, start** a builder (port 6860, ids B-4010..B-4014). Its cross-client test change keeps every assertion (only the cutoff and the `_seed` row ages change, spec 9c, accepted by the lead).
-6. Dependencies (job queue does not know them): #273 needs #272; #274/#275 after #273; #284 needs #283; #290, #292, #294, #352 need #286; #295, #296 last. Hold those `new` lines until their dependency merges.
-7. When SP6, SP7 and SP8 finish, run each sub-project's done-when demo and record it in STATUS.md.
-
-## Open jobs (stage)
-172 build r2 (start), 173 approve r1 (isolation BLOCKED), 174 build r1 (start), 175 build r1 (start), 176 build r1 (start).
+`PYTHONUTF8=1 factory/bin/job queue`, then the jobs above from their stage.
 
 ## Traps learned
 - **Wait for the builder's completion notification before `factory/bin/gate`:** the builder's SubagentStop hook (`gate --hook`) runs checks.sh in the same worktree for ~10 minutes after its READY message; a gate started meanwhile runs twice in one worktree. The hook can also make the agent end as "stalled 600s"; when build.md says READY and the tree is clean and pushed, gate anyway.
@@ -33,3 +33,5 @@ Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` (n
 - `uv run alembic heads` does not work from `backend/` (no alembic.ini); the migrations have per-module heads by design.
 - Never two full gate runs at once; tell merge agents to run `gates.py` once with a 2-hour background limit and to wait until no gates.py runs (PowerShell `Get-CimInstance Win32_Process`).
 - Earlier traps hold: PYTHONUTF8=1, UV_LINK_MODE=copy, unset VIRTUAL_ENV, full job ids only, `factory/bin/job` run directly (never `bash factory/bin/job`), worktree scripts via `uv run --frozen --project backend python ...`, DECISIONS id ranges per builder, isolation-reviewer is read-only (the lead saves its review), approver escalates any new migration by design, `job merge` can be rerun after a transient GitHub error.
+- A lead must run a long gate as its own background Bash task: when an agent that started a gate in the background returns and the lead ends its turn, the `-p` process can exit and kill the run.
+- The startup reads (whole STATUS.md, transcripts) cost 80k tokens: read STATUS.md progress lines with `cut`, and use `python scripts/context_size.py` early.
