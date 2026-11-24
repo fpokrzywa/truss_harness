@@ -1,5 +1,7 @@
 /** Solutions, solution versions and releases (backend `shifde.packaging.schemas`). */
 
+import type { Screen } from './appgen-types';
+
 export const TARGET_KIND = 'databricks.app/v1';
 
 export type SolutionStatus = 'active' | 'archived';
@@ -61,7 +63,8 @@ export interface SolutionVersionOut {
   solution_id: string;
   version_no: number;
   entrypoint: EntrypointOut;
-  spec: Record<string, unknown>;
+  /** `screens` is set on a generated app's version (SP5). */
+  spec: Record<string, unknown> & { screens?: Screen[] };
   spec_hash: string;
   pins: SolutionPinOut[];
   created_by: string;
@@ -94,6 +97,9 @@ export interface Diagnostic {
 }
 
 export type ReleaseStatus = 'sealed' | 'withdrawn';
+
+/** `manifest.compiler_version` of an app release (`packaging.service.COMPILER_VERSION_APP`). */
+export const COMPILER_VERSION_APP = 'shifde.packaging/2';
 
 export interface ReleaseOut {
   id: string;

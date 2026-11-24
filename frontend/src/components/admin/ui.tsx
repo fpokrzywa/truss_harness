@@ -79,6 +79,8 @@ interface FieldProps {
   autoComplete?: string;
   min?: number;
   max?: number;
+  /** `number` inputs: the allowed increment (`'any'` for decimals). */
+  step?: number | 'any';
   maxLength?: number;
   monospace?: boolean;
   disabled?: boolean;
@@ -99,6 +101,7 @@ export function TextField({
   autoComplete,
   min,
   max,
+  step,
   maxLength,
   monospace,
   disabled,
@@ -133,6 +136,7 @@ export function TextField({
           type={type}
           min={min}
           max={max}
+          step={step}
           autoComplete={autoComplete}
           onChange={(e) => onChange(e.target.value)}
         />

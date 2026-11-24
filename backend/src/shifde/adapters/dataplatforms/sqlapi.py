@@ -42,6 +42,7 @@ _ONE_STATEMENT = "exactly one statement is allowed"
 _UNTERMINATED = "the statement has an unterminated quote or comment"
 _NESTED = "nested block comments are not allowed"
 _AMBIGUOUS_DOLLARS = "a $$ directly after a name is not allowed"
+_POSITIONAL_BIND = "positional :n bind references are not allowed; use named parameters"
 
 Dialect = Literal["databricks", "snowflake"]
 # Snowflake dialect: a word is a maximal run of letters, digits, `_` and `$`
@@ -52,6 +53,8 @@ _DATABRICKS_WORD = re.compile(r"[A-Za-z0-9_]+")
 _SNOWFLAKE_REFUSED_WORDS = frozenset({"procedure", "call"})
 # Snowflake system functions (`SYSTEM$CANCEL_ALL_QUERIES`) can act on the account (#285)
 _SNOWFLAKE_REFUSED_PREFIX = "system$"
+# Snowflake reads `:1` as a positional bind reference; the runtime binds only `?` in order (#319)
+_SNOWFLAKE_POSITIONAL_BIND = re.compile(r":[0-9]")
 _QUOTES = ("'", '"', "`")
 # Snowflake has no backtick quoting and no raw literals; only `'` takes backslash escapes,
 # `"` takes only the doubled `""` (B-3212)
@@ -151,8 +154,9 @@ def check_read_only(sql: str, *, dialect: Dialect = "databricks") -> None:
     and whose code holds no word of `WRITE_KEYWORDS` (the set publish refuses, shared through
     `core/sqlrules.py`); comments are stripped first, quoted text is never read as code. The
     Snowflake dialect also refuses a `procedure` or `call` word anywhere in the code (anonymous
-    procedures), and a word or a whole `"..."` identifier starting with `SYSTEM$` (system
-    functions, #285); `'...'`, `$$...$$` and comments stay unread."""
+    procedures), a word or a whole `"..."` identifier starting with `SYSTEM$` (system
+    functions, #285) and a `:` directly followed by a digit (a positional bind reference, #319);
+    `'...'`, `$$...$$` and comments stay unread."""
     code, semicolons, bare, identifiers = _code_of(sql, dialect)
     stripped = code.rstrip()
     if semicolons:
@@ -172,6 +176,8 @@ def check_read_only(sql: str, *, dialect: Dialect = "databricks") -> None:
         name.lower().startswith(_SNOWFLAKE_REFUSED_PREFIX) for name in words + identifiers
     ):
         raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
+    if dialect == "snowflake" and _SNOWFLAKE_POSITIONAL_BIND.search(bare):
+        raise AdapterFailure(ErrorClass.CAPABILITY, _POSITIONAL_BIND)
 
 
 def classify_status(status: int, *, subject: str = "the platform") -> AdapterFailure | None:

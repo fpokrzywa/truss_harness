@@ -4,6 +4,7 @@ import {
   connectionsHref,
   datasetsHref,
   deliverHref,
+  generateHref,
   governHref,
   integrateHref,
   landingHref,
@@ -11,6 +12,7 @@ import {
   projHref,
   projectsHref,
   securityHref,
+  settingsHref,
   solutionsHref,
   workspacesHref,
   wsHref,
@@ -132,6 +134,14 @@ export const NAV_ITEMS: readonly NavItem[] = [
     href: (s) => (s.org && s.ws ? projectsHref(s.org, s.ws) : null),
   },
   {
+    id: 'settings-mcp',
+    feature: 'tenancy',
+    label: 'MCP Access',
+    group: 'Administer',
+    href: (s) => (s.org ? settingsHref(s.org, 'mcp') : null),
+    requiresAny: ['mcp:settings:read'],
+  },
+  {
     id: 'organizations',
     feature: 'tenancy',
     label: 'Organizations',
@@ -224,6 +234,10 @@ export const NAV_ITEMS: readonly NavItem[] = [
   {
     ...deliver('solutions', 'Solutions', ['packaging:solution:read']),
     href: (s) => (s.org ? solutionsHref(s.org) : null),
+  },
+  {
+    ...deliver('generate', 'Generate solution', ['appgen:request:read']),
+    href: (s) => (s.org ? generateHref(s.org) : null),
   },
   {
     ...deliver('evaluation-datasets', 'Evaluation datasets', ['evaluation:dataset:read']),

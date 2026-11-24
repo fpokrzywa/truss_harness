@@ -8,9 +8,11 @@ from shifde.adapters.dataplatforms.snowflake import host_of
 from shifde.adapters.native.addresses import (
     AddressRefused,
     SnowflakeAddressRefused,
+    address_key,
     normalize_address,
     normalize_databricks_address,
     normalize_snowflake_address,
+    snowflake_claim_identity,
 )
 
 MESSAGE = "the address is not a Snowflake account URL (https://<account>.snowflakecomputing.com)"
@@ -116,3 +118,57 @@ def test_the_databricks_message_is_unchanged() -> None:
     assert str(refused.value) == (
         "the address is not an allowed Databricks workspace URL (https://<host>)"
     )
+
+
+# ------------------------------------------------------------------ claim identity
+ORG_ACCOUNT = "https://myorg-acct1.snowflakecomputing.com"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://myorg-acct1.snowflakecomputing.com",
+        "https://myorg-acct1.privatelink.snowflakecomputing.com",
+        "https://MYORG-ACCT1.SNOWFLAKECOMPUTING.COM",
+        "https://myorg_acct1.snowflakecomputing.com",
+        "https://myorg-acct1.snowflakecomputing.com:443",
+        "https://myorg-acct1.snowflakecomputing.com/",
+        "https://MyOrg_Acct1.snowflakecomputing.com:443/",
+    ],
+)
+def test_every_org_account_form_gives_one_claim_identity(url: str) -> None:
+    assert snowflake_claim_identity(url) == ORG_ACCOUNT
+    assert address_key(snowflake_claim_identity(url)) == address_key(ORG_ACCOUNT)
+
+
+def test_two_organizations_get_one_claim_key_for_one_account() -> None:
+    org_a = address_key(snowflake_claim_identity("https://myorg-acct1.snowflakecomputing.com"))
+    org_b = address_key(
+        snowflake_claim_identity("https://MYORG_ACCT1.privatelink.snowflakecomputing.com:443/")
+    )
+    assert org_a == org_b  # the unique claim on the key refuses organization B
+
+
+@pytest.mark.parametrize(
+    "account",
+    ["xy12345", "xy12345.us-east-2.aws", "xy12345.us-east-2.privatelink", "myorg-acct1.us-east-1"],
+)
+def test_locator_forms_are_refused_for_claims(account: str) -> None:
+    url = f"https://{account}.snowflakecomputing.com"
+    normalize_snowflake_address(url)  # still a valid egress host
+    with pytest.raises(SnowflakeAddressRefused) as refused:
+        snowflake_claim_identity(url)
+    assert str(refused.value) == MESSAGE
+
+
+@pytest.mark.parametrize("name", sorted(REFUSED))
+def test_the_claim_identity_refuses_what_the_normalizer_refuses(name: str) -> None:
+    with pytest.raises(SnowflakeAddressRefused) as refused:
+        snowflake_claim_identity(REFUSED[name])
+    assert str(refused.value) == MESSAGE
+
+
+def test_the_egress_host_keeps_privatelink() -> None:
+    url = "https://myorg-acct1.privatelink.snowflakecomputing.com"
+    assert normalize_snowflake_address(url) == url
+    assert snowflake_claim_identity(url) == ORG_ACCOUNT

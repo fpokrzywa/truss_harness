@@ -355,6 +355,10 @@ def test_the_default_dialect_does_not_read_dollar_quotes() -> None:
     assert raised.value.error_class is ErrorClass.CAPABILITY
 
 
+def test_the_default_dialect_does_not_refuse_a_colon_digit() -> None:
+    sqlapi.check_read_only("SELECT :1")
+
+
 def test_accepted_statements_reach_the_warehouse(fake: FakeDatabricksWorkspace) -> None:
     assert _invoke(fake, {"sql": "SELECT ';'"}).result["row_count"] == 0
     assert _invoke(fake, {"sql": "SELECT 1;"}).result["rows"] == [["1"]]

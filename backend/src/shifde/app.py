@@ -10,16 +10,18 @@ carry_forward assigns to the app, no uvicorn `ProxyHeadersMiddleware` (the clien
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 import httpx
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.routing import Route
 
 from shifde import __version__
 from shifde.adapters.registry import AdapterRegistry
 from shifde.adapters.runtime import IntegrationRuntime
 from shifde.admin import api as admin_api
+from shifde.appgen import api as appgen_api
 from shifde.board import api as board_api
 from shifde.build import api as build_api
 from shifde.connections import api as connections_api
@@ -41,6 +43,8 @@ from shifde.identity.dependencies import require_auth
 from shifde.identity.oidc import OidcClient
 from shifde.identity.passwords import PasswordService
 from shifde.installation import api as installation_api
+from shifde.mcp_access import api as mcp_api
+from shifde.mcp_access.server import McpEndpoint
 from shifde.models_admin import api as models_api
 from shifde.observability import api as health_api
 from shifde.observability import tracing
@@ -72,9 +76,14 @@ def create_app(
         statement_timeout_ms=settings.db_statement_timeout_ms,
     )
 
+    mcp: McpEndpoint | None = None
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        yield
+        async with AsyncExitStack() as stack:
+            if mcp is not None:  # the MCP session manager's task group (SP8 design 10 item 1)
+                await stack.enter_async_context(mcp.run())
+            yield
         db.dispose()
 
     app = FastAPI(
@@ -171,8 +180,15 @@ def create_app(
     features.register("governance")
     app.include_router(packaging_api.router, dependencies=guard)
     app.include_router(evaluation_api.router, dependencies=guard)
+    app.include_router(appgen_api.router, dependencies=guard)
     app.include_router(delivery_api.router, dependencies=guard)
+    app.include_router(mcp_api.router, dependencies=guard)
     app.include_router(board_api.router, dependencies=guard)
     # the executor gateway authenticates `shx_` executor tokens itself: no user session (B-2664)
     app.include_router(delivery_gateway_api.router)
+    if settings.mcp_enabled:
+        # MCP over stateless streamable HTTP, bearer `shf_` keys only (`McpEndpoint`); not mounted
+        # (404) unless SHIFDE_MCP_ENABLED, and never in OpenAPI
+        mcp = McpEndpoint(app.state)
+        app.router.routes.append(Route("/mcp", endpoint=mcp.app))
     return app

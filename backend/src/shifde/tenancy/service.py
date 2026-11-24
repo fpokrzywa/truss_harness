@@ -623,6 +623,32 @@ def list_projects(
     )
 
 
+def list_readable_projects(
+    scope: TenantScope, *, limit: int, cursor: str | None
+) -> Page[ProjectOut]:
+    """The active projects of every workspace the caller holds `project:read` on (the key's
+    resource scope applies); no `workspace:read` is needed (the MCP `list_projects` tool)."""
+    f = scope.pdp.visible_scopes("project:read")
+    if not f.tenant_wide and not f.workspace_ids and not f.project_ids:
+        return Page[ProjectOut](items=[], next_cursor=None)
+    rows = repository.list_projects(
+        scope.session,
+        tenant_id=scope.tenant_id,
+        workspace_id=None,
+        visible_workspace_ids=None if f.tenant_wide else f.workspace_ids,
+        visible_project_ids=f.project_ids,
+        include_archived=False,
+        after=decode_cursor(cursor),
+        limit=limit + 1,
+    )
+    page, more = paginate(rows, limit)
+    slugs, _ = scope_slug_map(scope, [p.workspace_id for p in page], [])
+    return Page[ProjectOut](
+        items=[_project_out(p, slugs.get(p.workspace_id, "")) for p in page],
+        next_cursor=encode_cursor(page[-1].id) if more and page else None,
+    )
+
+
 def get_project(scope: TenantScope, ws_slug: str, slug: str) -> ProjectOut:
     ws, project = _readable_project(scope, ws_slug, slug)
     return _project_out(project, ws.slug)

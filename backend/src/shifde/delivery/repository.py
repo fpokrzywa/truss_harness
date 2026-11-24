@@ -77,6 +77,24 @@ def claim_in_use(session: Session, claim_id: UUID, *, tenant_id: UUID) -> bool:
     )
 
 
+def snowflake_binding_in_use(
+    session: Session, claim_id: UUID, package: str, application: str, *, tenant_id: UUID
+) -> bool:
+    """An active target on the claim binds `package` or `application` (Snowflake identifiers
+    are case-insensitive)."""
+    return bool(
+        session.execute(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM shifde.delivery_targets WHERE tenant_id = :t "
+                "AND claim_id = :c AND status = 'active' AND platform_kind = 'snowflake' "
+                "AND (upper(bindings->>'package') = upper(:p) "
+                "OR upper(bindings->>'application') = upper(:a)))"
+            ),
+            {"c": claim_id, "t": tenant_id, "p": package, "a": application},
+        ).scalar_one()
+    )
+
+
 def delete_claim(session: Session, claim_id: UUID, *, tenant_id: UUID) -> None:
     session.execute(
         text("DELETE FROM shifde.delivery_platform_claims WHERE id = :c AND tenant_id = :t"),

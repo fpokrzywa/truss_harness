@@ -29,16 +29,18 @@ class SlidingWindowLimiter:
         self._hits: dict[str, deque[float]] = {}
         self._lock = threading.Lock()
 
-    def check(self, key: str) -> None:
-        """Record a hit; raise RateLimited if `key` exceeded the limit (<= 0 disables)."""
-        if self._limit <= 0:
+    def check(self, key: str, limit: int | None = None) -> None:
+        """Record a hit; raise RateLimited if `key` exceeded the limit (<= 0 disables). `limit`
+        overrides the instance limit for this call (a per-key rate read at call time)."""
+        effective = self._limit if limit is None else limit
+        if effective <= 0:
             return
         now = self._clock()
         with self._lock:
             hits = self._hits.setdefault(key, deque())
             while hits and now - hits[0] >= self._window:
                 hits.popleft()
-            if len(hits) >= self._limit:
+            if len(hits) >= effective:
                 raise RateLimited(self._message)
             hits.append(now)
             if len(self._hits) > 10_000:  # bound memory: drop idle keys

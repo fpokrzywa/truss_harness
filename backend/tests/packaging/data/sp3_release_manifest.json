@@ -1,0 +1,52 @@
+{
+  "note": "Sealed through the routes by test_sp3_manifest's setup on origin/main fe39f3f (SP3 compiler, before SP5-3).",
+  "digest": "df6bfebf14967ec8e331b132585e51c0d436789770b85fde4e0cc9f3270987e3",
+  "manifest": {
+    "pins": [
+      {
+        "role": "prompt",
+        "spec_hash": "b7a1d8a56fff0eaf821a71f64ee818ab6acfdddde23ee15e3ed1a3d485be3aa5",
+        "version_id": "01a20a00-806c-7001-a32f-7095add1d1a7"
+      }
+    ],
+    "bindings": {
+      "model_bindings": {
+        "01a20a00-7fa5-7000-b42c-0007ee7c8465": {
+          "model": "served-chat",
+          "provider_id": "01a20a00-7f79-7000-ba23-e8df0152075d"
+        }
+      },
+      "connection_bindings": {
+        "01a20a00-8627-7000-9b01-d7adf0ee30ae": "01a20a00-8627-7000-9b01-d7adf0ee30ae"
+      }
+    },
+    "data_reads": [
+      {
+        "tables": [
+          "main.sales.orders"
+        ],
+        "connection_id": "01a20a00-8627-7000-9b01-d7adf0ee30ae"
+      }
+    ],
+    "entrypoint": {
+      "kind": "agent",
+      "spec_hash": "57ec99d708ab57c462a315d11d1a98045c268f20fd3da3f7abb1977cb504f923",
+      "version_id": "01a20a00-813c-7001-93a3-758c5bdb4575"
+    },
+    "evaluation": {
+      "dataset_id": "01a20a00-85ea-7000-b78b-a75c51bb4f1d",
+      "thresholds": {
+        "min_accuracy": "0.9",
+        "max_p95_latency_ms": 2000,
+        "max_total_cost_usd": "1.5"
+      },
+      "dataset_digest": "ffbe5c4978181d946a8c6b3d5fb5005d6f5979160aa59ae4002fd36736205d5c"
+    },
+    "version_no": 1,
+    "solution_id": "01a20a00-865f-7000-9f23-73076cecc989",
+    "target_kind": "databricks.app/v1",
+    "schema_version": 1,
+    "compiler_version": "shifde.packaging/1",
+    "solution_version_id": "01a20a00-869a-7000-b6ed-61bf131b3317"
+  }
+}

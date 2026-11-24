@@ -53,22 +53,30 @@ def test_a_head_named_in_depends_on_is_not_a_version_head() -> None:
     neither is a version head any more and evaluation_0001 is the evaluation head.
     delivery_0006 follows delivery_0005 and depends on evaluation_0001 (issue #81), so the
     delivery head is delivery_0006 and evaluation_0001 is not a version head any more.
+    delivery_0007 follows delivery_0006 with no depends_on (issue #270), so delivery_0007 is the
+    delivery head and delivery_0006 is not a version head any more.
     identity_0007 follows identity_0006 with no depends_on (issue #83), so it is a new version
     head; identity_0006 stays a non-head (delivery_0001 depends on it, and identity_0007 follows
     it). tenancy_0007 follows tenancy_0006 with no depends_on (issue #39), so it is a version
     head. packaging_0003 follows packaging_0002 with no depends_on (issue #158), so it is the
-    packaging version head (packaging_0002 stays a non-head)."""
+    packaging version head (packaging_0002 stays a non-head). appgen_0001 (issue #255) depends on
+    packaging_0003, runtime_0007, tenancy_0007 and identity_0007, so none of the four is a version
+    head any more and appgen_0001 is the appgen head. mcp_0001 depends on tenancy_0007 and
+    identity_0007 (issue #287) and is the mcp head."""
     heads = code_heads()
-    assert "identity_0007" in heads
+    assert "appgen_0001" in heads
+    assert "mcp_0001" in heads
+    assert "identity_0007" not in heads
     assert "identity_0006" not in heads
-    assert "delivery_0006" in heads
+    assert "delivery_0007" in heads
+    assert "delivery_0006" not in heads
     assert "evaluation_0001" not in heads
     assert "delivery_0005" not in heads
     assert "delivery_0004" not in heads
     assert "delivery_0003" not in heads
     assert "delivery_0002" not in heads
     assert "delivery_0001" not in heads
-    assert "runtime_0007" in heads
+    assert "runtime_0007" not in heads
     assert "runtime_0006" not in heads
     assert "runtime_0005" not in heads
     assert "runtime_0004" not in heads
@@ -76,12 +84,12 @@ def test_a_head_named_in_depends_on_is_not_a_version_head() -> None:
     assert "runtime_0003" not in heads
     assert "runtime_0002" not in heads
     assert "runtime_0001" not in heads
-    assert "packaging_0003" in heads
+    assert "packaging_0003" not in heads
     assert "packaging_0002" not in heads
     assert "packaging_0001" not in heads
     assert "build_0002" not in heads
     assert "models_admin_0003" not in heads
-    assert "tenancy_0007" in heads
+    assert "tenancy_0007" not in heads
     assert "tenancy_0006" not in heads
     assert "tenancy_0005" not in heads
     assert "tenancy_0004" not in heads
