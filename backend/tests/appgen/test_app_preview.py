@@ -2,7 +2,9 @@
 
 A `/2` release answers its rendered files' paths, sizes and SHA-256 digests (never their
 content), its screens and its tools; a `/1` release is 409 `release_has_no_app`, a tampered pin
-409 `release_source_changed`. Client B's administrator and a member bound only at another project
+409 `release_source_changed`, and a release pinning a version the caller cannot see (a private tool
+of another person, or no `tool:read`) 409 `release_pins_hidden` without any of its content. Client
+B's administrator and a member bound only at another project
 get the 404 a random id gets.
 """
 
@@ -32,6 +34,7 @@ from tests.delivery.releases import make_release
 KEYS = {"release_id", "release_digest", "generator_version", "files", "screens", "tools"}
 _VARYING = {"instance", "request_id"}
 MEMBER = "p1-preview@demo-a.local"
+READER = "release-reader@demo-a.local"
 
 
 def _scope(owner: Session, slug: str = "demo-a") -> tuple[UUID, UUID]:
@@ -119,6 +122,54 @@ def test_a_changed_pin_is_release_source_changed(
     r = _preview(user_session(client, world.passwords, ADMIN), rel.id)
     assert r.status_code == 409, r.text
     assert r.json()["code"] == "release_source_changed"
+
+
+def _refused_hidden(r: httpx.Response, rel: AppRelease) -> None:
+    """409 `release_pins_hidden`, naming nothing of the pinned tools."""
+    assert r.status_code == 409, r.text
+    assert r.json()["code"] == "release_pins_hidden"
+    for tool in SAMPLE_DRAFT["tools"]:
+        for value in (tool["name"], tool["description"], tool["sql"]):
+            assert value not in r.text
+    assert str(rel.release.digest) not in r.text
+
+
+def test_a_private_tool_of_another_person_hides_the_preview(
+    client: TestClient, world: World, owner_db: Database, owner_session: Session
+) -> None:
+    rel = _app_release(owner_db, owner_session)
+    tool_version = next(iter(rel.tools.values()))[0]
+    owner_session.execute(
+        text(
+            "UPDATE shifde.artifacts SET visibility = 'private' WHERE id = "
+            "(SELECT artifact_id FROM shifde.artifact_versions WHERE id = :v)"
+        ),
+        {"v": tool_version},
+    )
+    owner_session.commit()
+    admin = user_session(client, world.passwords, ADMIN)
+    _refused_hidden(_preview(admin, rel.id), rel)
+
+
+def test_a_release_reader_without_tool_read_gets_no_preview(
+    client: TestClient, world: World, owner_db: Database, owner_session: Session
+) -> None:
+    rel = _app_release(owner_db, owner_session)
+    admin = user_session(client, world.passwords, ADMIN)
+    c = admin.client
+    workspace = c.get(f"{A}/workspaces/main", headers=admin).json()["id"]
+    permissions = ["workspace:read", "project:read", "packaging:solution:read"]
+    role = post(c, f"{A}/roles", admin,
+                {"key": "release-reader", "name": "Release reader", "permissions": permissions})  # fmt: skip
+    uid = new_user(c, admin, "demo-a", READER, "a-long-password-1")
+    world.passwords[READER] = "a-long-password-1"
+    admin = user_session(client, world.passwords, ADMIN)
+    binding = {"subject_type": "user", "subject_id": uid, "role_id": role["id"],
+               "scope": {"type": "workspace", "id": workspace}}  # fmt: skip
+    post(admin.client, f"{A}/role-bindings", admin, binding)
+    reader = user_session(client, world.passwords, READER)
+    # the release is readable (not the 404 of an unreadable one), its pinned versions are not
+    _refused_hidden(_preview(reader, rel.id), rel)
 
 
 def test_b_cannot_preview_as_release(

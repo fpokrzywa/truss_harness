@@ -133,6 +133,10 @@ class ReleaseHasNoApp(AppError):
     status, code, title = 409, "release_has_no_app", "Conflict"
 
 
+class ReleasePinsHidden(AppError):
+    status, code, title = 409, "release_pins_hidden", "Conflict"
+
+
 class ConnectionNotDatabricks(AppError):
     status, code, title = 422, "connection_not_databricks", "Unprocessable Entity"
 
@@ -477,11 +481,19 @@ class AppGenService:
 
     def preview(self, release_id: UUID) -> s.AppPreviewOut:
         """The app a `/2` release renders to (design section 7): file metadata, screens and tools,
-        gathered and rendered as plan time does under the caller's scope; nothing is written."""
+        gathered and rendered as plan time does under the caller's scope, only when the caller sees
+        every version the release pins; nothing is written."""
         release = scoped_release(self.sc, release_id)
         manifest = release["manifest"]
         if manifest.get("compiler_version") != COMPILER_VERSION_APP:
             raise ReleaseHasNoApp("the release has no generated app")
+        # the caller must see every pinned version (as `GET /releases/{id}` shows it): the app's
+        # tools, instructions and file digests would reveal a hidden one, so nothing is answered
+        for item in [manifest.get("entrypoint") or {}, *(manifest.get("pins") or [])]:
+            version_id = _version_uuid(item.get("version_id"))
+            access = self.artifacts.version_access(version_id) if version_id else None
+            if access is not None and not access.visible:
+                raise ReleasePinsHidden("the release pins a version you cannot see")
         resolved = resolved_for_release(self.sc, self.runtime, manifest)
         files = render(manifest, release["digest"], resolved)
         return s.AppPreviewOut(
