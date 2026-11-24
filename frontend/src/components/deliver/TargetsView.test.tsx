@@ -56,6 +56,31 @@ describe('TargetsView list', () => {
     expect(screen.queryByText('Validated')).not.toBeInTheDocument();
   });
 
+  it('shows the serving endpoint in its column, and - when the target has none', async () => {
+    stubDelivery({
+      [`GET ${D}/targets`]: () =>
+        list([
+          {
+            ...TARGET,
+            bindings: { warehouse_id: 'wh-0042', serving_endpoint: 'llama-serving' },
+          },
+          { ...TARGET, id: 't-2', name: 'Analytics dev' },
+        ]),
+    });
+    renderWithClient(<TargetsView />);
+    const table = await screen.findByRole('table', { name: 'Deployment targets' });
+    expect(
+      within(table).getByRole('columnheader', { name: 'Serving endpoint' }),
+    ).toBeInTheDocument();
+    const withEndpoint = within(table).getByRole('cell', { name: 'Analytics prod' }).closest('tr')!;
+    expect(within(withEndpoint).getByRole('cell', { name: 'llama-serving' })).toBeInTheDocument();
+    const without = within(table).getByRole('cell', { name: 'Analytics dev' }).closest('tr')!;
+    const cells = within(without).getAllByRole('cell');
+    const headers = within(table).getAllByRole('columnheader');
+    const column = headers.findIndex((h) => h.textContent === 'Serving endpoint');
+    expect(cells[column]).toHaveTextContent(/^-$/);
+  });
+
   it('shows an empty state', async () => {
     stubDelivery({ [`GET ${D}/targets`]: () => list([]) });
     renderWithClient(<TargetsView />);
@@ -101,6 +126,67 @@ describe('TargetsView register', () => {
       expect(fetchMock.calls.filter((c) => c.key === `GET ${D}/targets`).length).toBe(2),
     );
   });
+
+  it('omits serving_endpoint from the bindings when the field is left empty', async () => {
+    const fetchMock = stubDelivery({
+      ...WORKSPACES,
+      [`POST ${D}/targets`]: () => jsonResponse(TARGET, { status: 201 }),
+    });
+    renderWithClient(<TargetsView />);
+    const dialog = await fillRegister();
+    expect(within(dialog).getByLabelText('Serving endpoint (optional)')).toHaveValue('');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Register target' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    const body = bodyOf(fetchMock, `POST ${D}/targets`) as { bindings: Record<string, unknown> };
+    expect(body.bindings).toEqual({ warehouse_id: 'wh-0042' });
+    expect('serving_endpoint' in body.bindings).toBe(false);
+  });
+
+  it('posts a trimmed serving endpoint, closes the dialog and shows it in the refreshed list', async () => {
+    const saved = {
+      ...TARGET,
+      bindings: { warehouse_id: 'wh-0042', serving_endpoint: 'llama_serving-01' },
+    };
+    let registered = false;
+    const fetchMock = stubDelivery({
+      ...WORKSPACES,
+      [`GET ${D}/targets`]: () => list(registered ? [saved] : []),
+      [`POST ${D}/targets`]: () => {
+        registered = true;
+        return jsonResponse(saved, { status: 201 });
+      },
+    });
+    renderWithClient(<TargetsView />);
+    const dialog = await fillRegister();
+    await userEvent.type(
+      within(dialog).getByLabelText('Serving endpoint (optional)'),
+      '  llama_serving-01  ',
+    );
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Register target' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect((bodyOf(fetchMock, `POST ${D}/targets`) as { bindings: unknown }).bindings).toEqual({
+      warehouse_id: 'wh-0042',
+      serving_endpoint: 'llama_serving-01',
+    });
+    const table = await screen.findByRole('table', { name: 'Deployment targets' });
+    const row = within(table).getByRole('cell', { name: 'Analytics prod' }).closest('tr')!;
+    expect(within(row).getByRole('cell', { name: 'llama_serving-01' })).toBeInTheDocument();
+  });
+
+  it.each(['bad.name', 'has space'])(
+    'refuses the serving endpoint %j before calling the API',
+    async (value) => {
+      const fetchMock = stubDelivery(WORKSPACES);
+      renderWithClient(<TargetsView />);
+      const dialog = await fillRegister();
+      await userEvent.type(within(dialog).getByLabelText('Serving endpoint (optional)'), value);
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Register target' }));
+      expect(
+        await within(dialog).findByText('Use 1-63 letters, digits, underscores or hyphens.'),
+      ).toBeInTheDocument();
+      expect(fetchMock.calls.some((c) => c.key.startsWith('POST'))).toBe(false);
+    },
+  );
 
   it('shows the 409 platform_already_registered detail verbatim inside the dialog', async () => {
     stubDelivery({
