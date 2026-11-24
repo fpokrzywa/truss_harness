@@ -35,9 +35,14 @@ INVALID = "[[appgen-invalid]]"
 PROJECT = "/workspaces/main/projects/sample"
 
 
-def wire(client: TestClient) -> FakeDatabricksWorkspace:
-    """Route the app's data-platform calls to a fresh sample-data workspace."""
-    fake = FakeDatabricksWorkspace(host=HOST, warehouse_id="wh-0001", sample_data=True)
+def wire(
+    client: TestClient, serving: dict[str, list[dict[str, str]]] | None = None
+) -> FakeDatabricksWorkspace:
+    """Route the app's data-platform calls to a fresh sample-data workspace (answering the
+    `serving` endpoints' scripts, if given)."""
+    fake = FakeDatabricksWorkspace(
+        host=HOST, warehouse_id="wh-0001", sample_data=True, serving=serving or {}
+    )
     app: Any = client.app  # Any: the FastAPI app behind the test client
     app.state.integration = dataclasses.replace(
         app.state.integration, resolver=lambda host: ["127.0.0.1"], inner=fake.transport()
