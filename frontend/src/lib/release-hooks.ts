@@ -7,7 +7,13 @@ import { endpoints } from './api/endpoints';
 import { POLL_MS } from './operate-hooks';
 
 export type ReleaseKind =
-  'solutions' | 'versions' | 'releases' | 'evaluations' | 'datasets' | 'evaluation-runs';
+  | 'solutions'
+  | 'versions'
+  | 'releases'
+  | 'evaluations'
+  | 'datasets'
+  | 'evaluation-runs'
+  | 'app-preview';
 
 const key = (org: string, kind: ReleaseKind, ...rest: unknown[]) =>
   ['releases', org, kind, ...rest] as const;
@@ -60,6 +66,15 @@ export const useRelease = (org: string, id: string) =>
   useQuery({
     queryKey: key(org, 'releases', 'item', id),
     queryFn: () => endpoints.getRelease(org, id),
+  });
+
+/** The generated app of a `/2` release; no polling or retry, so a 409 shows at once. */
+export const useAppPreview = (org: string, releaseId: string, enabled: boolean) =>
+  useQuery({
+    queryKey: key(org, 'app-preview', releaseId),
+    queryFn: () => endpoints.getAppPreview(org, releaseId),
+    enabled,
+    retry: false,
   });
 
 /** The release's evaluation runs, polled while any of them is queued or running. */

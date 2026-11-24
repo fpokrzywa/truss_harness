@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useState, type FormEvent } from 'react';
 import { endpoints } from '@/lib/api/endpoints';
-import type { ReleaseOut } from '@/lib/api/packaging-types';
+import { COMPILER_VERSION_APP, type ReleaseOut } from '@/lib/api/packaging-types';
 import { useCan } from '@/lib/hooks';
 import { useRefreshReleases, useRelease, useReleaseEvaluations } from '@/lib/release-hooks';
 import { evaluationsHref, solutionHref } from '@/lib/scope';
@@ -20,6 +20,7 @@ import {
 } from '../admin/ui';
 import { StatusBadge } from '../integrate/Maturity';
 import { useOrgParam } from '../security/useOrg';
+import { AppPreview } from './AppPreview';
 import { CompatibilityTable } from './CompatibilityTable';
 
 type Json = Record<string, unknown>;
@@ -125,6 +126,9 @@ function ReleaseBody({ org, release }: { org: string; release: ReleaseOut }) {
           <CompatibilityTable title="Compatibility" diagnostics={release.compatibility} />
         )}
       </section>
+      {release.manifest.compiler_version === COMPILER_VERSION_APP && (
+        <AppPreview org={org} releaseId={release.id} />
+      )}
       <Evaluations org={org} releaseId={release.id} />
       {withdrawing && (
         <WithdrawDialog org={org} releaseId={release.id} onClose={() => setWithdrawing(false)} />

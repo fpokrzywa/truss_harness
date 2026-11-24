@@ -70,3 +70,8 @@ def retry_app_request(svc: Service, request_id: UUID) -> s.AppRequestOut:
 @router.post(REQUEST + "/accept", tags=["appgen"])
 def accept_app_request(svc: Service, request_id: UUID, body: s.AcceptIn) -> s.AppRequestOut:
     return svc.accept(request_id, body)
+
+
+@router.get("/orgs/{org}/releases/{release_id}/app-preview", tags=["appgen"])
+def get_app_preview(svc: Service, release_id: UUID) -> s.AppPreviewOut:
+    return svc.preview(release_id)

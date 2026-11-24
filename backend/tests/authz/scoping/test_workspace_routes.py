@@ -78,6 +78,7 @@ DATASETS = "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/evaluation-datase
 EVALUATIONS = "/api/v1/orgs/{org}/releases/{release_id}/evaluations"
 APP_REQUESTS = "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/app-requests"
 APP_REQUEST = "/api/v1/orgs/{org}/app-requests/{request_id}"
+APP_PREVIEW = "/api/v1/orgs/{org}/releases/{release_id}/app-preview"
 ASSIST = "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/assist"
 
 ROUTES: dict[Op, tuple[str, str]] = {
@@ -583,6 +584,7 @@ ROUTES: dict[Op, tuple[str, str]] = {
     ("POST", APP_REQUEST + "/discard"): (SCOPED, "appgen"),
     ("POST", APP_REQUEST + "/retry"): (SCOPED, "appgen"),
     ("POST", APP_REQUEST + "/accept"): (SCOPED, "appgen"),
+    ("GET", APP_PREVIEW): (SCOPED, "appgen"),
     # ------------------------------------------------------------------ mcp
     ("GET", "/api/v1/orgs/{org}/mcp/settings"): (CLIENT, "mcp:settings:read at the organization"),
     ("PUT", "/api/v1/orgs/{org}/mcp/settings"): (CLIENT, "mcp:settings:write at the organization"),
@@ -1638,6 +1640,12 @@ _register(
             state=w.snap(*APPGEN),
             also=(409,),
         ),
+        ("GET", APP_PREVIEW): lambda w: _case(
+            READ,
+            "GET",
+            lambda n: f"/releases/{w('release', n)}/app-preview",
+            also=(409,),  # each side's release is a `/1` release: release_has_no_app
+        ),
     },
 )
 
@@ -2467,6 +2475,7 @@ def test_evaluation_datasets_and_runs(
 
 def test_app_requests(client: TestClient, world: World, owner_session: Session) -> None:
     w = _world(client, owner_session, world.passwords)
+    _solutions_world(w)  # each side's release, for the app preview
     wire(w.admin.client)
     w.set("draft_model", 0, drafting_model(w.admin.client, w.admin))
     for n in (1, 2):
