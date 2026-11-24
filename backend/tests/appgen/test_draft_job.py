@@ -1,7 +1,8 @@
 """SP5-2 (design 5.2, 5.6 and 9.3): the `appgen.draft` job.
 
 `[[appgen-sample]]` drafts revision 1 equal to `SAMPLE_DRAFT` with a settled budget hold and a
-`model_call` usage row; `[[appgen-invalid]]` ends `failed`/`invalid_model_output`. The SHI
+`model_call` usage row; on a Snowflake connection (SP6-4) `[[appgen-sample-snowflake]]` drafts
+revision 1 equal to `SNOWFLAKE_SAMPLE_DRAFT` with no diagnostic; `[[appgen-invalid]]` ends `failed`/`invalid_model_output`. The SHI
 provider switched off refuses the create as `models_admin` refuses an unknown model, with no job.
 An exhausted budget ends `failed` with the budget code and no provider call. A worker that dies
 after committing `drafting` leaves the request `drafting`: the job run again records
@@ -32,13 +33,15 @@ from shifde.core.settings import Settings
 from shifde.ledger import reservations
 from shifde.models_admin.repository import SHI_PROVIDER_ID
 from shifde.runtime.worker import Worker
-from tests._support.appgen_fixtures import SAMPLE_DRAFT
+from tests._support.appgen_fixtures import SAMPLE_DRAFT, SNOWFLAKE_SAMPLE_DRAFT
 from tests._support.fullapp import World
 from tests._support.p2util import tenant_id
 from tests._support.p3util import ADMIN, A
 from tests._support.p5util import Hdr, limited_user, user_session
 from tests.appgen.helpers import (
     INVALID,
+    SF_SAMPLE,
+    SF_TABLES,
     Calls,
     body,
     created,
@@ -50,7 +53,9 @@ from tests.appgen.helpers import (
     job_of,
     record_calls,
     run_job,
+    snowflake,
     wire,
+    wire_snowflake,
 )
 from tests.conftest import CLEAN_TABLES
 from tests.ledger.util import add_budget
@@ -130,6 +135,22 @@ def test_a_sample_brief_drafts_revision_1_with_a_settled_hold(
         "appgen.request.drafting",
         "appgen.request.drafted",
     ]
+
+
+def test_a_snowflake_sample_brief_drafts_revision_1_with_no_diagnostic(
+    admin: Hdr, owner_session: Session, calls: Calls
+) -> None:
+    c = admin.client
+    wire_snowflake(c)
+    cid, model = snowflake(c, admin), drafting_model(c, admin)
+    out = drafted(
+        c, admin, owner_session, body(cid, model, f"Sales app {SF_SAMPLE}", tables=SF_TABLES)
+    )
+    [revision] = out["revisions"]
+    assert revision["revision_no"] == 1 and revision["source"] == "model"
+    assert revision["draft"] == SNOWFLAKE_SAMPLE_DRAFT and revision["validation"] == []
+    assert len(calls.messages) == 1
+    assert [j[1] for j in draft_jobs(owner_session)] == ["done"]
 
 
 def test_an_invalid_reply_fails_the_request(

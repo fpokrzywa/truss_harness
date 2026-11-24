@@ -12,23 +12,29 @@ must be in the solution's scope (organization-wide, or the solution's workspace 
 project); a pin of an artifact the caller cannot see is shown without its version id and hash, and
 a data-read connection the caller cannot read without its id (isolation review 065, finding 1).
 
-Sealing a version runs the `databricks.app/v1` compatibility check over its pinned tools, models,
-connections and evaluation contract; a compatible version becomes a release whose `digest` is the
-sha256 of its canonical manifest (sealing it again with the same bindings returns that release),
-an incompatible one is refused with the whole report (`release_incompatible`). A release's scope
-is its solution's; it is reached under the organization (`/orgs/{org}/releases/{id}`) and gets
-the answer an unknown id gets when the caller cannot read its solution.
+Sealing a version runs its solution's target kind's compatibility check (`databricks.app/v1` or
+`snowflake.native-app/v1`) over its pinned tools, models, connections and evaluation contract; a
+compatible version becomes a release whose `digest` is the sha256 of its canonical manifest
+(sealing it again with the same bindings returns that release), an incompatible one is refused with
+the whole report (`release_incompatible`). A release's scope is its solution's; it is reached under
+the organization (`/orgs/{org}/releases/{id}`) and gets the answer an unknown id gets when the
+caller cannot read its solution.
 
 The compiler is chosen from the version's `spec.screens` (SP5 design 6.2). A version without
 screens is compiled by `shifde.packaging/1`, its manifest exactly the SP3 one. A version with
 screens is a generated app, compiled by `shifde.packaging/2`: its manifest adds `screens` and
-`app.generator_version`, and its report has four stricter mandatory checks: the `entrypoint` is
-an agent, each `screens.<i>` is a chat screen or a table screen of a pinned tool (by artifact
-key) whose inputs are that tool's parameters, `models` counts exactly one model pin (a route
-counts), and each `tools.<pin>` is a `connection.sql` tool on a Databricks connection the sealer
-can read. The screens check sees only the pinned tools the sealer can see: a screen naming the key
-of a hidden tool gets the answer a screen naming a tool that is not pinned gets, so neither the
-key nor the parameters of a hidden tool can be probed (issue #316).
+`app.generator_version`, and its report has four stricter mandatory checks: the `entrypoint` is an
+agent, each `screens.<i>` is a chat screen or a table screen of a pinned tool (by artifact key)
+whose inputs are that tool's parameters, `models` counts exactly one model pin (a route counts),
+and each `tools.<pin>` is a `connection.sql` tool on a connection of the solution's platform the
+sealer can read: Databricks for `databricks.app/v1`, Snowflake for `snowflake.native-app/v1`
+(`schemas.TARGET_ADAPTERS`), as each bound connection must be too. A Snowflake solution is only
+ever a generated app (Call S6-H): its versions always get the `/2` rules, a version without screens
+is refused (`release_incompatible`) with a failing `screens` diagnostic, and its manifest's
+`app.generator_version` is `shifde.appgen.snowflake/1.0` (`APP_GENERATOR_VERSIONS`). The screens
+check sees only the pinned tools the sealer can see: a screen naming the key of a hidden tool gets
+the answer a screen naming a tool that is not pinned gets, so neither the key nor the parameters of
+a hidden tool can be probed (issue #316).
 
 A model or connection is hidden from the caller when only versions the caller cannot see name it
 (a version's own data reads always count as seen), and a connection also when the caller cannot
@@ -92,8 +98,12 @@ UNKNOWN_BINDING = "the binding names no pin of this solution version"
 COMPILER_VERSION = "shifde.packaging/1"
 COMPILER_VERSION_APP = "shifde.packaging/2"
 APP_GENERATOR_VERSION = "shifde.appgen/1.0"  # equal to `appgen.render.GENERATOR_VERSION` (tested)
+# a `/2` manifest's `app.generator_version`, by target kind (SP6 design section 4)
+APP_GENERATOR_VERSIONS = {
+    s.TARGET_KIND: APP_GENERATOR_VERSION,
+    s.SNOWFLAKE_TARGET_KIND: "shifde.appgen.snowflake/1.0",
+}
 SCREEN_KINDS = frozenset({"chat", "table"})
-DATABRICKS = "databricks"
 READ_ONLY_TOOL_EXECUTORS = frozenset({"connection.sql"})
 READ_ONLY_SIDE_EFFECTS = frozenset({"none", "read"})
 OUTSIDE_EXECUTORS = frozenset({"rest.http", "mcp.tool"})
@@ -111,12 +121,20 @@ NOT_DATABRICKS = (
     "the bound connection is not a Databricks connection of this organization in the solution's "
     "scope"
 )
+NOT_SNOWFLAKE = (
+    "the bound connection is not a Snowflake connection of this organization in the solution's "
+    "scope"
+)
+NOT_PLATFORM = {s.TARGET_KIND: NOT_DATABRICKS, s.SNOWFLAKE_TARGET_KIND: NOT_SNOWFLAKE}
 NO_EVALUATION = "a release needs an evaluation dataset"
 DATASET_REFUSED = "the evaluation dataset is not a dataset of this project you can read"
 DATASET_READ = "evaluation:dataset:read"
 ONE_AGENT = "a generated app runs one agent"
 ONE_MODEL = "a generated app uses exactly one model"
 APP_TOOLS = "a generated app's tools are SQL tools over a Databricks connection"
+APP_TOOLS_SNOWFLAKE = "a generated app's tools are SQL tools over a Snowflake connection"
+APP_TOOLS_BY_KIND = {s.TARGET_KIND: APP_TOOLS, s.SNOWFLAKE_TARGET_KIND: APP_TOOLS_SNOWFLAKE}
+NEEDS_SCREENS = "a Snowflake Native App needs screens"
 HIDDEN_TOOL = "tools.hidden"
 HIDDEN_MODEL = "models.hidden"
 HIDDEN_CONNECTION = "connections.hidden"
@@ -777,26 +795,29 @@ class SolutionService:
     def _connection_reason(self, solution: Mapping[str, Any], bound: UUID | None) -> str | None:
         if bound is None:
             return NO_CONNECTION_BINDING
+        kind = solution["target_kind"]
         placement = self.conns.placement(bound)
         if (
             placement is None
-            or placement.adapter_key != DATABRICKS
+            or placement.adapter_key != s.TARGET_ADAPTERS[kind]
             or not in_scope(solution, placement.workspace_id, placement.project_id)
         ):
-            return NOT_DATABRICKS
+            return NOT_PLATFORM[kind]
         return None
 
-    def _app_tool_reason(self, spec: Mapping[str, Any]) -> str | None:
-        """None for a `connection.sql` tool on a Databricks connection the caller can read."""
+    def _app_tool_reason(self, solution: Mapping[str, Any], spec: Mapping[str, Any]) -> str | None:
+        """None for a `connection.sql` tool on a connection of the solution's platform (Databricks
+        or Snowflake, by its target kind) the caller can read."""
+        kind = solution["target_kind"]
         binding = spec.get("binding")
         connection_id = _uuid(binding.get("connection_id")) if isinstance(binding, dict) else None
         placement = self.conns.placement(connection_id) if connection_id is not None else None
         if (
             spec.get("executor") != "connection.sql"
             or placement is None
-            or placement.adapter_key != DATABRICKS
+            or placement.adapter_key != s.TARGET_ADAPTERS[kind]
         ):
-            return APP_TOOLS
+            return APP_TOOLS_BY_KIND[kind]
         return None
 
     @staticmethod
@@ -829,26 +850,29 @@ class SolutionService:
     ) -> Report:
         """One diagnostic per feature: entrypoint, tools, models, connections (each group by pin
         name), evaluation; a version with screens (`/2`) also gets `models` and one `screens.<i>`
-        per screen, and stricter entrypoint and tool rules. Every one is mandatory (no accepted
-        deviations, B-2699)."""
+        per screen, and stricter entrypoint and tool rules. A Snowflake solution's version always
+        gets the `/2` rules, and without screens a failing `screens` (S6-H). Every one is
+        mandatory (no accepted deviations, B-2699)."""
         screens = version["spec"].get("screens") or []
+        snowflake = solution["target_kind"] == s.SNOWFLAKE_TARGET_KIND
+        app = bool(screens) or snowflake
         published = (
             entry.state == "published"
             and entry.kind == ENTRYPOINT_KINDS[version["entrypoint_kind"]]
         )
         entrypoint = None if published else ENTRYPOINT_GONE
-        if screens and entrypoint is None and version["entrypoint_kind"] != "agent":
+        if app and entrypoint is None and version["entrypoint_kind"] != "agent":
             entrypoint = ONE_AGENT
         report = [_diagnostic("entrypoint", entrypoint)]
         report += [
             _diagnostic(
                 f"tools.{name}",
                 _tool_reason(found.tool_specs[name])
-                or (self._app_tool_reason(found.tool_specs[name]) if screens else None),
+                or (self._app_tool_reason(solution, found.tool_specs[name]) if app else None),
             )
             for name in sorted(found.tools)
         ]
-        if screens:
+        if app:
             report.append(_diagnostic("models", None if len(found.models) == 1 else ONE_MODEL))
         report += [
             _diagnostic(
@@ -876,6 +900,8 @@ class SolutionService:
                 _diagnostic(f"screens.{i}", self._screen_reason(screen, tools))
                 for i, screen in enumerate(screens)
             ]
+        elif snowflake:
+            report.append(_diagnostic("screens", NEEDS_SCREENS))
         report.append(_diagnostic("evaluation", self._evaluation_reason(solution, version)))
         return report
 
@@ -950,7 +976,7 @@ class SolutionService:
         screens = version["spec"].get("screens") or []
         if screens:
             manifest["screens"] = screens
-            manifest["app"] = {"generator_version": APP_GENERATOR_VERSION}
+            manifest["app"] = {"generator_version": APP_GENERATOR_VERSIONS[solution["target_kind"]]}
             manifest["compiler_version"] = COMPILER_VERSION_APP
         return manifest
 

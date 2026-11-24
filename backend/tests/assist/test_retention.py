@@ -138,7 +138,7 @@ def _purge(app_db: Database, dry_run: bool) -> dict[str, Any]:
 
 
 def _delete(app_db: Database, dry_run: bool) -> dict[str, Any]:
-    return _by_slug(list(maintenance.delete(app_db, older_than_days=30, now=utcnow(),
+    return _by_slug(list(maintenance.delete(app_db, older_than_days=30,
                                             dry_run=dry_run, actor_label="test")))  # fmt: skip
 
 

@@ -3,8 +3,8 @@
 Every route of `appgen.api.router` has a test here (`ROUTE_TESTS`, matched against the router),
 run both ways (A against B, then B against A). A's administrator asking for B's request on any
 request route gets exactly the answer a random id gets (404, same body) and changes nothing of
-B's; B's rows are absent from A's list, B's connection in A's create is an unknown connection,
-and B's slug in the path is an unknown organization. A member bound only at project P1 gets the
+B's; B's rows are absent from A's list, B's connection in A's create is an unknown connection (B's
+Snowflake connection too, SP6-4), and B's slug in the path is an unknown organization. A member bound only at project P1 gets the
 same 404 on every route for P2's request (an edit without waiting on another writer's lock of
 it), and P2's list and create answer as a project that does not exist. Under row-level security, `shifde_app` in A's
 context reads none of B's requests or drafts and an UPDATE naming B's request touches nothing;
@@ -37,6 +37,8 @@ from tests._support.p5util import Hdr, user_session
 from tests.appgen.helpers import (
     INVALID,
     PROJECT,
+    SF_SAMPLE,
+    SF_TABLES,
     add_project,
     body,
     create,
@@ -46,7 +48,9 @@ from tests.appgen.helpers import (
     request_url,
     requests_url,
     run_job,
+    snowflake,
     wire,
+    wire_snowflake,
 )
 from tests.delivery.app_releases import add_provider, make_app_release
 from tests.tenancy.conftest import app_session
@@ -267,6 +271,32 @@ def test_a_cannot_preview_bs_release(
 
     _same(preview(releases[them.org]), preview(uuid7()))
     assert preview(releases[me.org]).status_code == 200
+
+
+@DIRECTIONS
+def test_a_cannot_name_bs_snowflake_connection(
+    client: TestClient, world: World, owner_session: Session, direction: str
+) -> None:
+    wire_snowflake(client)
+    sides = {
+        A: user_session(client, world.passwords, ADMIN),
+        B: user_session(client, world.passwords, ADMIN_B),
+    }
+    me, them = (A, B) if direction == "a->b" else (B, A)
+    h = sides[me]
+    theirs = snowflake(sides[them].client, sides[them], "their-warehouse", them)
+    mine = snowflake(h.client, h, "my-warehouse", me)
+    model = drafting_model(h.client, h, me)
+    slug = "demo-a" if them == A else "demo-b"
+    before = _state(owner_session, slug)
+    brief = f"Sales app {SF_SAMPLE}"
+    _same(
+        create(h.client, h, body(theirs, model, brief, tables=SF_TABLES), me),
+        create(h.client, h, body(str(uuid7()), model, brief, tables=SF_TABLES), me),
+    )
+    assert _state(owner_session, slug) == before
+    # the caller's own Snowflake connection is accepted
+    assert create(h.client, h, body(mine, model, brief, tables=SF_TABLES), me).status_code == 202
 
 
 # ------------------------------------------------------------------ project P1 against P2

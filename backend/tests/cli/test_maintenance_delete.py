@@ -13,7 +13,15 @@ left; invalid `--older-than` values and a privileged role are refused.
 
 Guards: as `shifde_app` in the client's own context and as the schema owner, a delete without a
 cutoff, of a run that is not terminal or ended after the cutoff, of a pending approval, a queued
-job or a held reservation is refused with 42501, and so is a row with a NULL run_id.
+job or a held reservation is refused with 42501, and so is a row with a NULL run_id. Since
+`runtime_0008` (issue #174, B-3987) the guard also refuses a client on legal hold (any data class)
+and a cutoff later than now() minus the run retention floor, which is pinned equal to the floor the
+command applies; the downgrade restores the runtime_0006 body exactly. Since `runtime_0009` (issue
+#347, B-3993) it also refuses a cutoff later than now() minus the client's effective run retention
+(its stored `retain_days` of either run class, or the 90-day default, pinned equal to the rule of
+`effective_days`); the downgrade restores the runtime_0008 body exactly. The command takes its
+cutoff from the database clock (B-3994). A case run of an evaluation that has not ended pins its
+family.
 
 Isolation: with A deleted and B on legal hold (or with a longer stored `retain_days`), every row of
 B in the nine tables, `usage_events` and `audit_events` is byte-for-byte unchanged apart from B's
@@ -25,6 +33,7 @@ Data is seeded and read as the schema owner; the command itself connects as `shi
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import timedelta
@@ -32,23 +41,30 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from sqlalchemy import text
+from alembic import command
+from alembic.script import ScriptDirectory
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import NullPool
 from typer.testing import CliRunner
 
 from shifde.audit import service as audit
 from shifde.cli import main as cli_main
-from shifde.cli.maintenance import DELETE_TABLES
+from shifde.cli.maintenance import DELETE_TABLES, RUN_CLASSES, _delete_pass
 from shifde.core.clock import utcnow
 from shifde.core.context import RequestContext
 from shifde.core.db import Database, set_tenant
 from shifde.core.ids import uuid7
+from shifde.core.migrations import alembic_config
 from shifde.core.settings import Settings
+from shifde.governance.validation import RETENTION_DEFAULTS, RETENTION_FLOORS
 from shifde.runtime import repository as repo
 from tests._support.runs import add_run
 from tests._support.tenants import add_tenant
 from tests.build.env_support import add_published
+from tests.conftest import DB_PREFIX, _create_database, _drop_database, _with_db
 from tests.delivery.releases import make_release
 from tests.runtime.conftest import insert
 
@@ -342,10 +358,16 @@ def test_a_pinned_child_keeps_its_whole_family(
 
 
 def _evaluation(
-    owner_db: Database, tenant: UUID, run: UUID, *, withdrawn: bool, plan: bool
+    owner_db: Database,
+    tenant: UUID,
+    run: UUID,
+    *,
+    withdrawn: bool,
+    plan: bool,
+    status: str = "passed",
 ) -> None:
-    """A passed evaluation run whose case run is `run`, of a release in the run's workspace
-    (withdrawn if asked), named by a delivery plan if `plan`."""
+    """An evaluation run (`status`, passed unless given) whose case run is `run`, of a release in
+    the run's workspace (withdrawn if asked), named by a delivery plan if `plan`."""
     with owner_db.session() as o:
         ws = o.execute(text("SELECT workspace_id FROM shifde.runs WHERE id = :r"), {"r": run})
         workspace = ws.scalar_one()
@@ -357,10 +379,10 @@ def _evaluation(
             text(
                 "INSERT INTO shifde.evaluation_runs (tenant_id, id, release_id, release_digest, "
                 "dataset_id, dataset_digest, thresholds, case_runs, status, requested_by) VALUES "
-                "(:t, :i, :r, :rd, :d, :dd, '{}'::jsonb, CAST(:cr AS jsonb), 'passed', :t)"
+                "(:t, :i, :r, :rd, :d, :dd, '{}'::jsonb, CAST(:cr AS jsonb), :s, :t)"
             ),
             {"t": tenant, "i": evaluation, "r": rel.id, "rd": rel.digest, "d": rel.dataset_id,
-             "dd": rel.dataset_digest,
+             "dd": rel.dataset_digest, "s": status,
              "cr": f'[{{"case_id": "c1", "run_id": "{run}"}}]'},
         )  # fmt: skip
         if plan:
@@ -400,6 +422,41 @@ def test_a_case_run_of_a_passed_evaluation_a_plan_uses_keeps_its_family(
     else:
         assert line.startswith(f"{c.slug}: {_counts(2, 0, 2)}")
         assert _present(owner_db, root) == _present(owner_db, case) == GONE
+
+
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_a_case_run_of_an_evaluation_that_has_not_ended_keeps_its_family(
+    cli: CliRunner, owner_db: Database, status: str
+) -> None:
+    """Issue #174, item 4 (B-3987): an evaluation stuck in `running` (or still `queued`) pins
+    its case runs whatever its release and plans, so it can still be scored; an unrelated old
+    family of the same client is deleted (not vacuous)."""
+    c = _client(owner_db)
+    root = _run(owner_db, c.tenant, ended_days_ago=OLD)
+    case = _run(owner_db, c.tenant, ended_days_ago=OLD, root=root)
+    other = _run(owner_db, c.tenant, ended_days_ago=OLD)
+    _evaluation(owner_db, c.tenant, case, withdrawn=True, plan=False, status=status)
+    result = _delete(cli, "--older-than", "30")
+    assert result.exit_code == 0, result.output
+    assert _line(result.output, c.slug).startswith(f"{c.slug}: {_counts(1, 2, 1)}")
+    assert _present(owner_db, root) == _present(owner_db, case) == FULL
+    assert _present(owner_db, other) == GONE
+
+
+def test_a_delete_at_the_retention_floor_still_works(cli: CliRunner, owner_db: Database) -> None:
+    """Issue #174 (B-3987): with `--older-than` and both run classes' stored `retain_days` at the
+    floor, the command's cutoff is exactly the floor the guard enforces, and the old family goes."""
+    floor = max(RETENTION_FLOORS[c] for c in RUN_CLASSES)
+    c = _client(owner_db)
+    for data_class in RUN_CLASSES:
+        _retention(owner_db, c.tenant, data_class, floor, False)
+    run = _run(owner_db, c.tenant, ended_days_ago=floor + 1)
+    result = _delete(cli, "--older-than", str(floor))
+    assert result.exit_code == 0, result.output
+    assert _line(result.output, c.slug).startswith(f"{c.slug}: {_counts(1, 0, 1)}")
+    assert _present(owner_db, run) == GONE
+    (event,) = _events(owner_db, c.tenant)
+    assert event.details["effective_days"] == floor
 
 
 # ------------------------------------------------------------------ guards (13 g)
@@ -445,9 +502,11 @@ def test_guard_refuses_a_run_that_is_not_terminal(
     s, c = guard_session
     run = _run(owner_db, c.tenant, ended_days_ago=None)
     set_tenant(s, c.tenant)
-    _refused(s, "DELETE FROM shifde.run_events WHERE run_id = :r", 0, r=run)
+    # a cutoff past the floor and the client's retention, so the run's status is what refuses
+    # (B-3987, B-3993)
+    _refused(s, "DELETE FROM shifde.run_events WHERE run_id = :r", 100, r=run)
     set_tenant(s, c.tenant)
-    _refused(s, "DELETE FROM shifde.runs WHERE id = :r", 0, r=run)
+    _refused(s, "DELETE FROM shifde.runs WHERE id = :r", 100, r=run)
     assert _present(owner_db, run) == FULL
 
 
@@ -457,7 +516,7 @@ def test_guard_refuses_a_run_that_ended_after_the_cutoff(
     s, c = guard_session
     run = _run(owner_db, c.tenant, ended_days_ago=RECENT)
     set_tenant(s, c.tenant)
-    _refused(s, "DELETE FROM shifde.run_artifacts WHERE run_id = :r", 30, r=run)
+    _refused(s, "DELETE FROM shifde.run_artifacts WHERE run_id = :r", 100, r=run)
     assert _present(owner_db, run) == FULL
 
 
@@ -472,7 +531,9 @@ def test_guard_refuses_a_pending_approval_a_queued_job_and_a_held_reservation(
     s, c = guard_session
     run = _run(owner_db, c.tenant, ended_days_ago=OLD, pins=pin)
     set_tenant(s, c.tenant)
-    _refused(s, f"DELETE FROM shifde.{table} WHERE run_id = :r", 0, r=run)
+    # a cutoff past the floor and the client's retention, so the pin is what refuses (B-3987,
+    # B-3993)
+    _refused(s, f"DELETE FROM shifde.{table} WHERE run_id = :r", 100, r=run)
     assert _present(owner_db, run) == FULL
 
 
@@ -484,7 +545,7 @@ def test_guard_admits_a_decided_approval_of_an_old_run_with_a_cutoff(
     run = _run(owner_db, c.tenant, ended_days_ago=OLD)
     s.rollback()
     set_tenant(s, c.tenant)
-    s.execute(text(CUTOFF), {"c": (utcnow() - timedelta(days=30)).isoformat()})
+    s.execute(text(CUTOFF), {"c": (utcnow() - timedelta(days=100)).isoformat()})
     deleted = s.execute(text("DELETE FROM shifde.approvals WHERE run_id = :r"), {"r": run})
     assert deleted.rowcount == 1  # type: ignore[attr-defined]
     s.rollback()
@@ -508,9 +569,9 @@ def test_guard_refuses_a_row_with_a_null_run_id(
                compiled_query_hashes=[], duration_ms=1, outcome="success")  # fmt: skip
         o.commit()
     set_tenant(s, c.tenant)
-    _refused(s, "DELETE FROM shifde.jobs WHERE id = :i", 30, i=job)
+    _refused(s, "DELETE FROM shifde.jobs WHERE id = :i", 100, i=job)
     set_tenant(s, c.tenant)
-    _refused(s, "DELETE FROM shifde.ontology_query_lineage WHERE id = :i", 30, i=lineage)
+    _refused(s, "DELETE FROM shifde.ontology_query_lineage WHERE id = :i", 100, i=lineage)
     set_tenant(s, c.tenant)
     with owner_db.session() as o:
         for table, row in (("jobs", job), ("ontology_query_lineage", lineage)):
@@ -518,6 +579,255 @@ def test_guard_refuses_a_row_with_a_null_run_id(
                 text(f"SELECT count(*) FROM shifde.{table} WHERE id = :i"), {"i": row}
             )
             assert found.scalar_one() == 1, table
+
+
+# ------------------------------------------------------------------ legal hold and floor (#174)
+def _migration(revision: str) -> Any:  # Any: the migration module
+    script = ScriptDirectory.from_config(alembic_config("postgresql+psycopg://unused/x"))
+    found = script.get_revision(revision)
+    assert found is not None, revision
+    return found.module
+
+
+def test_the_guard_floor_is_the_floor_the_command_applies() -> None:
+    """runtime_0008 mirrors the floor in SQL; it must equal what `effective_days` enforces."""
+    assert max(RETENTION_FLOORS[c] for c in RUN_CLASSES) == _migration("runtime_0008").FLOOR_DAYS
+
+
+def test_the_downgrade_body_is_runtime_0006s_guard() -> None:
+    assert _migration("runtime_0008").PREVIOUS_GUARD == _migration("runtime_0006").GUARD
+
+
+def test_the_runtime_0009_floor_and_defaults_are_the_ones_the_command_applies() -> None:
+    """runtime_0009 mirrors `effective_days` in SQL; its literals must equal the command's."""
+    module = _migration("runtime_0009")
+    assert max(RETENTION_FLOORS[c] for c in RUN_CLASSES) == module.FLOOR_DAYS
+    assert {c: RETENTION_DEFAULTS[c] for c in RUN_CLASSES} == module.RUN_DEFAULT_DAYS
+
+
+def test_the_runtime_0009_downgrade_body_is_runtime_0008s_guard() -> None:
+    assert _migration("runtime_0009").PREVIOUS_GUARD == _migration("runtime_0008").GUARD
+
+
+@pytest.mark.parametrize("data_class", ["run_artifacts", "usage_events"])
+def test_guard_refuses_every_table_of_a_client_on_legal_hold(
+    guard_session: tuple[Session, Client], owner_db: Database, data_class: str
+) -> None:
+    """A hold on any data class (the command's rule) refuses each of the nine deletes, with a
+    valid cutoff and an old, ended, unpinned run; without the hold the same delete succeeds
+    (`test_guard_admits_a_client_whose_hold_was_lifted`)."""
+    s, c = guard_session
+    _retention(owner_db, c.tenant, data_class, 400, True)
+    run = _run(owner_db, c.tenant, ended_days_ago=OLD)
+    s.rollback()
+    for table in RUN_TABLES:
+        column = "id" if table == "runs" else "run_id"
+        set_tenant(s, c.tenant)
+        s.execute(text(CUTOFF), {"c": (utcnow() - timedelta(days=100)).isoformat()})
+        with pytest.raises(DBAPIError) as caught:
+            s.execute(text(f"DELETE FROM shifde.{table} WHERE {column} = :r"), {"r": run})
+        assert getattr(caught.value.orig, "sqlstate", None) == "42501", caught.value
+        assert "legal hold" in str(caught.value.orig)
+        s.rollback()
+    assert _present(owner_db, run) == FULL
+
+
+def test_guard_admits_a_client_whose_hold_was_lifted(
+    guard_session: tuple[Session, Client], owner_db: Database
+) -> None:
+    """A stored retention row without a hold does not refuse (the hold, not the row, is checked)."""
+    s, c = guard_session
+    _retention(owner_db, c.tenant, "run_artifacts", 90, False)
+    run = _run(owner_db, c.tenant, ended_days_ago=OLD)
+    s.rollback()
+    set_tenant(s, c.tenant)
+    s.execute(text(CUTOFF), {"c": (utcnow() - timedelta(days=100)).isoformat()})
+    deleted = s.execute(text("DELETE FROM shifde.approvals WHERE run_id = :r"), {"r": run})
+    assert deleted.rowcount == 1  # type: ignore[attr-defined]
+    s.rollback()
+
+
+def test_guard_refuses_a_cutoff_later_than_the_floor(
+    guard_session: tuple[Session, Client], owner_db: Database
+) -> None:
+    """A cutoff a minute inside the floor (or in the future) is refused on every table, though the
+    run ended long before it; a minute outside the floor the same delete succeeds."""
+    floor = timedelta(days=max(RETENTION_FLOORS[c] for c in RUN_CLASSES))
+    s, c = guard_session
+    # the client's retention at the floor, so the floor is the bound the control tests (B-3993)
+    for data_class in RUN_CLASSES:
+        _retention(owner_db, c.tenant, data_class, floor.days, False)
+    run = _run(owner_db, c.tenant, ended_days_ago=OLD)
+    s.rollback()
+    for cutoff in (utcnow() - floor + timedelta(minutes=1), utcnow() + timedelta(days=365)):
+        for table in RUN_TABLES:
+            column = "id" if table == "runs" else "run_id"
+            set_tenant(s, c.tenant)
+            s.execute(text(CUTOFF), {"c": cutoff.isoformat()})
+            with pytest.raises(DBAPIError) as caught:
+                s.execute(text(f"DELETE FROM shifde.{table} WHERE {column} = :r"), {"r": run})
+            assert getattr(caught.value.orig, "sqlstate", None) == "42501", caught.value
+            assert "retention floor" in str(caught.value.orig)
+            s.rollback()
+    assert _present(owner_db, run) == FULL
+    set_tenant(s, c.tenant)
+    s.execute(text(CUTOFF), {"c": (utcnow() - floor - timedelta(minutes=1)).isoformat()})
+    deleted = s.execute(text("DELETE FROM shifde.approvals WHERE run_id = :r"), {"r": run})
+    assert deleted.rowcount == 1  # type: ignore[attr-defined]
+    s.rollback()
+
+
+# ------------------------------------------------------------------ client's retention (#347)
+def _cutoff_refused(s: Session, tenant: UUID, sql: str, cutoff_days: int, run: UUID) -> None:
+    """`sql` with a cutoff `cutoff_days` ago fails with 42501 for the client's retention."""
+    set_tenant(s, tenant)
+    s.execute(text(CUTOFF), {"c": (utcnow() - timedelta(days=cutoff_days)).isoformat()})
+    with pytest.raises(DBAPIError) as caught:
+        s.execute(text(sql), {"r": run})
+    assert getattr(caught.value.orig, "sqlstate", None) == "42501", caught.value
+    assert "client's retention" in str(caught.value.orig)
+    s.rollback()
+
+
+def _approval_deleted(s: Session, tenant: UUID, cutoff_days: int, run: UUID) -> int:
+    """Rows a delete of the run's approval with a cutoff `cutoff_days` ago removes (rolled back)."""
+    set_tenant(s, tenant)
+    s.execute(text(CUTOFF), {"c": (utcnow() - timedelta(days=cutoff_days)).isoformat()})
+    deleted = s.execute(text("DELETE FROM shifde.approvals WHERE run_id = :r"), {"r": run})
+    n = int(deleted.rowcount)  # type: ignore[attr-defined]
+    s.rollback()
+    return n
+
+
+@pytest.mark.parametrize("data_class", RUN_CLASSES)
+def test_guard_refuses_a_cutoff_inside_the_clients_stored_retention(
+    guard_session: tuple[Session, Client], owner_db: Database, data_class: str
+) -> None:
+    """Issue #347 (B-3993): a stored `retain_days = 400` of either run class refuses a cutoff 200
+    days ago on each of the nine tables, though the run ended 500 days ago; 401 days ago the same
+    delete of the decided approval succeeds."""
+    s, c = guard_session
+    _retention(owner_db, c.tenant, data_class, 400, False)
+    run = _run(owner_db, c.tenant, ended_days_ago=500)
+    s.rollback()
+    for table in RUN_TABLES:
+        column = "id" if table == "runs" else "run_id"
+        _cutoff_refused(s, c.tenant, f"DELETE FROM shifde.{table} WHERE {column} = :r", 200, run)
+    assert _present(owner_db, run) == FULL
+    assert _approval_deleted(s, c.tenant, 401, run) == 1
+
+
+def test_guard_applies_the_default_retention_without_a_stored_row(
+    guard_session: tuple[Session, Client], owner_db: Database
+) -> None:
+    """Issue #347: with no stored row the 90-day default applies: 89 days is refused, 91 is not."""
+    s, c = guard_session
+    run = _run(owner_db, c.tenant, ended_days_ago=OLD)
+    s.rollback()
+    _cutoff_refused(s, c.tenant, "DELETE FROM shifde.approvals WHERE run_id = :r", 89, run)
+    assert _present(owner_db, run) == FULL
+    assert _approval_deleted(s, c.tenant, 91, run) == 1
+
+
+def test_guard_a_shorter_stored_class_does_not_shorten_retention(
+    guard_session: tuple[Session, Client], owner_db: Database
+) -> None:
+    """Issue #347: as in `effective_days`, `run_artifacts = 30` with no `run_steps_content` row
+    keeps that class's 90-day default, so a cutoff 60 days ago is refused."""
+    s, c = guard_session
+    _retention(owner_db, c.tenant, "run_artifacts", 30, False)
+    run = _run(owner_db, c.tenant, ended_days_ago=OLD)
+    s.rollback()
+    _cutoff_refused(s, c.tenant, "DELETE FROM shifde.approvals WHERE run_id = :r", 60, run)
+    assert _present(owner_db, run) == FULL
+
+
+def test_the_command_takes_its_cutoff_from_the_database_clock(
+    app_db: Database, owner_db: Database
+) -> None:
+    """B-3994: the cutoff is the client transaction's `now()` minus the effective days, the clock
+    the guard compares it with, not the host's."""
+    c = _client(owner_db)
+    _retention(owner_db, c.tenant, "run_artifacts", 120, False)
+    with app_db.session() as s:
+        set_tenant(s, c.tenant)
+        result = _delete_pass(
+            s, c.tenant, c.slug, older_than_days=30, dry_run=True, actor_label="test"
+        )
+        db_now = s.execute(text("SELECT now()")).scalar_one()
+        s.rollback()
+    assert result.effective_days == 120
+    assert result.cutoff == db_now - timedelta(days=120)
+
+
+_GUARD_STATE = (
+    "SELECT p.prosrc, p.proconfig, p.prosecdef, "
+    "has_function_privilege('public', p.oid, 'EXECUTE'), pg_get_userbyid(p.proowner), "
+    "(SELECT count(*) FROM pg_trigger t WHERE t.tgfoid = p.oid) "
+    "FROM pg_proc p WHERE p.oid = 'shifde.retention_delete_guard()'::regprocedure"
+)
+
+
+def _body(create: str) -> str:
+    return create.split("$$", 2)[1]
+
+
+def test_the_downgrade_restores_the_runtime_0006_guard(
+    run_id: str, admin_url: str, owner_url: str, app_url: str
+) -> None:
+    """On a scratch copy: runtime_0009 down gives runtime_0008's body and runtime_0008 down gives
+    runtime_0006's, each with the same owner, settings, invoker rights, no PUBLIC execute and the
+    nine triggers; up again restores runtime_0009's."""
+    name = f"{DB_PREFIX}{run_id}_rtguard"
+    owner = make_url(owner_url).username or "shifde_owner"
+    app_role = make_url(app_url).username or "shifde_app"
+    admin = create_engine(admin_url, isolation_level="AUTOCOMMIT", poolclass=NullPool)
+    try:
+        with admin.connect() as c:
+            if c.execute(text("SELECT 1 FROM pg_database WHERE datname = :n"), {"n": name}).first():
+                _drop_database(c, name)
+            _create_database(c, name, owner, app_role, f"{DB_PREFIX}{run_id}_tmpl")
+        url = _with_db(owner_url, name)
+        cfg = alembic_config(url)
+        engine = create_engine(url, poolclass=NullPool)
+        try:
+            with engine.connect() as c:
+                upgraded = c.execute(text(_GUARD_STATE)).one()
+            assert upgraded[0] == _body(_migration("runtime_0009").GUARD)
+            command.downgrade(cfg, "runtime_0008")
+            with engine.connect() as c:
+                previous = c.execute(text(_GUARD_STATE)).one()
+                versions = set(
+                    c.execute(text("SELECT version_num FROM shifde.alembic_version")).scalars()
+                )
+            assert "runtime_0009" not in versions
+            assert previous[0] == _body(_migration("runtime_0008").GUARD)
+            assert previous[1:] == upgraded[1:]
+            command.downgrade(cfg, "runtime_0007")
+            with engine.connect() as c:
+                downgraded = c.execute(text(_GUARD_STATE)).one()
+                versions = set(
+                    c.execute(text("SELECT version_num FROM shifde.alembic_version")).scalars()
+                )
+            assert "runtime_0008" not in versions
+            assert downgraded[0] == _body(_migration("runtime_0006").GUARD)
+            assert downgraded[1:] == upgraded[1:]
+            assert tuple(downgraded[1:]) == (
+                ["search_path=pg_catalog, pg_temp"],
+                False,
+                False,
+                owner,
+                len(RUN_TABLES),
+            )
+            command.upgrade(cfg, "heads")
+            with engine.connect() as c:
+                assert c.execute(text(_GUARD_STATE)).one() == upgraded
+        finally:
+            engine.dispose()
+    finally:
+        with contextlib.suppress(Exception), admin.connect() as c:
+            _drop_database(c, name)
+        admin.dispose()
 
 
 # ------------------------------------------------------------------ isolation (13 h)
@@ -573,7 +883,7 @@ def test_the_app_role_in_a_context_deletes_none_of_b_with_a_valid_cutoff(
     b_before = _tenant_rows(owner_db, b.tenant)
     with app_db.session() as s:
         set_tenant(s, a.tenant)
-        s.execute(text(CUTOFF), {"c": (utcnow() - timedelta(days=30)).isoformat()})
+        s.execute(text(CUTOFF), {"c": (utcnow() - timedelta(days=100)).isoformat()})
         for table in RUN_TABLES:
             column = "id" if table == "runs" else "run_id"
             deleted = s.execute(
@@ -584,7 +894,7 @@ def test_the_app_role_in_a_context_deletes_none_of_b_with_a_valid_cutoff(
         assert _tenant_rows(owner_db, b.tenant) == b_before
         assert _present(owner_db, b_run) == FULL
         set_tenant(s, a.tenant)
-        s.execute(text(CUTOFF), {"c": (utcnow() - timedelta(days=30)).isoformat()})
+        s.execute(text(CUTOFF), {"c": (utcnow() - timedelta(days=100)).isoformat()})
         for table in RUN_TABLES:
             column = "id" if table == "runs" else "run_id"
             deleted = s.execute(

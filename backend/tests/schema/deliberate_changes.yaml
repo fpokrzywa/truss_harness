@@ -678,7 +678,7 @@
 
 - table: run_artifacts
   path: [triggers, trg_run_artifacts_append_only]
-  reason: "Findings Item 14 (REQ F-12, B-2514): with capture off an ended run's content is replaced by the placeholder {\"scrubbed\": true}. The trigger now calls shifde.run_artifacts_guard(), which still refuses every DELETE and every UPDATE except content set to the placeholder with every other column unchanged, on an artifact whose run is terminal (SETH: shifde.reject_mutation(), append-only for every role)."
+  reason: "Findings Item 14 (REQ F-12, B-2514): with capture off an ended run's content is replaced by the placeholder {\"scrubbed\": true}. The trigger now calls shifde.run_artifacts_guard(), which refuses every UPDATE except content set to the placeholder with every other column unchanged, on an artifact whose run is terminal. Since runtime_0006 (issue #126, B-2783) the trigger is BEFORE UPDATE only: a DELETE is no longer refused here but by trg_run_artifacts_retention_delete, which admits only the rows of a run that ended before the retention cutoff (and, since runtime_0008, not of a client on legal hold nor with a cutoff inside the retention floor; since runtime_0009, nor inside the client's run retention) (SETH: shifde.reject_mutation(), BEFORE UPDATE OR DELETE, append-only for every role)."
   migration: runtime_0002
 
 - table: run_artifacts
@@ -804,7 +804,7 @@
   migration: runtime_0006
 - table: run_artifacts
   path: [triggers, trg_run_artifacts_retention_delete]
-  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it (SETH: no such trigger)."
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it (SETH: no such trigger). Since runtime_0008 (issue #174, B-3987) the same guard also raises 42501 while the row's client has a legal hold on any data class in retention_policies and when the cutoff is later than now() minus the run retention floor (1 day, RETENTION_FLOORS). Since runtime_0009 (issue #347, B-3993) the guard also raises 42501 when the cutoff is later than now() minus the client's effective run retention: the largest of the run retention floor and the client's stored retain_days of run_artifacts and run_steps_content in retention_policies, each 90 days (RETENTION_DEFAULTS) when not stored."
   migration: runtime_0006
 - table: run_events
   path: [privileges, table]
@@ -812,7 +812,7 @@
   migration: runtime_0006
 - table: run_events
   path: [triggers, trg_run_events_retention_delete]
-  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it (SETH: no such trigger)."
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it (SETH: no such trigger). Since runtime_0008 (issue #174, B-3987) the same guard also raises 42501 while the row's client has a legal hold on any data class in retention_policies and when the cutoff is later than now() minus the run retention floor (1 day, RETENTION_FLOORS). Since runtime_0009 (issue #347, B-3993) the guard also raises 42501 when the cutoff is later than now() minus the client's effective run retention: the largest of the run retention floor and the client's stored retain_days of run_artifacts and run_steps_content in retention_policies, each 90 days (RETENTION_DEFAULTS) when not stored."
   migration: runtime_0006
 - table: approvals
   path: [privileges, table]
@@ -820,7 +820,7 @@
   migration: runtime_0006
 - table: approvals
   path: [triggers, trg_approvals_retention_delete]
-  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it, and the approval is not pending (SETH: no such trigger)."
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it, and the approval is not pending (SETH: no such trigger). Since runtime_0008 (issue #174, B-3987) the same guard also raises 42501 while the row's client has a legal hold on any data class in retention_policies and when the cutoff is later than now() minus the run retention floor (1 day, RETENTION_FLOORS). Since runtime_0009 (issue #347, B-3993) the guard also raises 42501 when the cutoff is later than now() minus the client's effective run retention: the largest of the run retention floor and the client's stored retain_days of run_artifacts and run_steps_content in retention_policies, each 90 days (RETENTION_DEFAULTS) when not stored."
   migration: runtime_0006
 - table: run_steps
   path: [privileges, table]
@@ -828,7 +828,7 @@
   migration: runtime_0006
 - table: run_steps
   path: [triggers, trg_run_steps_retention_delete]
-  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it (SETH: no such trigger)."
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it (SETH: no such trigger). Since runtime_0008 (issue #174, B-3987) the same guard also raises 42501 while the row's client has a legal hold on any data class in retention_policies and when the cutoff is later than now() minus the run retention floor (1 day, RETENTION_FLOORS). Since runtime_0009 (issue #347, B-3993) the guard also raises 42501 when the cutoff is later than now() minus the client's effective run retention: the largest of the run retention floor and the client's stored retain_days of run_artifacts and run_steps_content in retention_policies, each 90 days (RETENTION_DEFAULTS) when not stored."
   migration: runtime_0006
 - table: tool_invocations
   path: [privileges, table]
@@ -836,7 +836,7 @@
   migration: runtime_0006
 - table: tool_invocations
   path: [triggers, trg_tool_invocations_retention_delete]
-  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it (SETH: no such trigger)."
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it (SETH: no such trigger). Since runtime_0008 (issue #174, B-3987) the same guard also raises 42501 while the row's client has a legal hold on any data class in retention_policies and when the cutoff is later than now() minus the run retention floor (1 day, RETENTION_FLOORS). Since runtime_0009 (issue #347, B-3993) the guard also raises 42501 when the cutoff is later than now() minus the client's effective run retention: the largest of the run retention floor and the client's stored retain_days of run_artifacts and run_steps_content in retention_policies, each 90 days (RETENTION_DEFAULTS) when not stored."
   migration: runtime_0006
 - table: jobs
   path: [privileges, table]
@@ -844,7 +844,7 @@
   migration: runtime_0006
 - table: jobs
   path: [triggers, trg_jobs_retention_delete]
-  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it, and the job is done or dead (SETH: no such trigger)."
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it, and the job is done or dead (SETH: no such trigger). Since runtime_0008 (issue #174, B-3987) the same guard also raises 42501 while the row's client has a legal hold on any data class in retention_policies and when the cutoff is later than now() minus the run retention floor (1 day, RETENTION_FLOORS). Since runtime_0009 (issue #347, B-3993) the guard also raises 42501 when the cutoff is later than now() minus the client's effective run retention: the largest of the run retention floor and the client's stored retain_days of run_artifacts and run_steps_content in retention_policies, each 90 days (RETENTION_DEFAULTS) when not stored."
   migration: runtime_0006
 - table: jobs
   path: [privileges, columns, payload]
@@ -860,7 +860,7 @@
   migration: runtime_0006
 - table: ontology_query_lineage
   path: [triggers, trg_ontology_lineage_retention_delete]
-  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it (SETH: no such trigger)."
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it (SETH: no such trigger). Since runtime_0008 (issue #174, B-3987) the same guard also raises 42501 while the row's client has a legal hold on any data class in retention_policies and when the cutoff is later than now() minus the run retention floor (1 day, RETENTION_FLOORS). Since runtime_0009 (issue #347, B-3993) the guard also raises 42501 when the cutoff is later than now() minus the client's effective run retention: the largest of the run retention floor and the client's stored retain_days of run_artifacts and run_steps_content in retention_policies, each 90 days (RETENTION_DEFAULTS) when not stored."
   migration: runtime_0006
 - table: budget_reservations
   path: [privileges, table]
@@ -868,7 +868,7 @@
   migration: runtime_0006
 - table: budget_reservations
   path: [triggers, trg_budget_reservations_retention_delete]
-  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it, and the reservation is not held (SETH: no such trigger)."
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run ((OLD.tenant_id, OLD.run_id); a NULL run_id is refused) is terminal with finished_at before it, and the reservation is not held (SETH: no such trigger). Since runtime_0008 (issue #174, B-3987) the same guard also raises 42501 while the row's client has a legal hold on any data class in retention_policies and when the cutoff is later than now() minus the run retention floor (1 day, RETENTION_FLOORS). Since runtime_0009 (issue #347, B-3993) the guard also raises 42501 when the cutoff is later than now() minus the client's effective run retention: the largest of the run retention floor and the client's stored retain_days of run_artifacts and run_steps_content in retention_policies, each 90 days (RETENTION_DEFAULTS) when not stored."
   migration: runtime_0006
 - table: runs
   path: [privileges, table]
@@ -876,7 +876,7 @@
   migration: runtime_0006
 - table: runs
   path: [triggers, trg_runs_retention_delete]
-  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run (the row itself) is terminal with finished_at before it (SETH: no such trigger)."
+  reason: "Issue #126 (SP4-8, REQ F-11, B-2783): BEFORE DELETE for every role, shifde.retention_delete_guard() (invoker rights, fixed search_path, EXECUTE revoked from PUBLIC) raises 42501 unless the transaction-local setting shifde.retention_delete_cutoff is set and a timestamptz and the row's run (the row itself) is terminal with finished_at before it (SETH: no such trigger). Since runtime_0008 (issue #174, B-3987) the same guard also raises 42501 while the row's client has a legal hold on any data class in retention_policies and when the cutoff is later than now() minus the run retention floor (1 day, RETENTION_FLOORS). Since runtime_0009 (issue #347, B-3993) the guard also raises 42501 when the cutoff is later than now() minus the client's effective run retention: the largest of the run retention floor and the client's stored retain_days of run_artifacts and run_steps_content in retention_policies, each 90 days (RETENTION_DEFAULTS) when not stored."
   migration: runtime_0006
 - table: run_events
   path: [triggers, trg_run_events_append_only]

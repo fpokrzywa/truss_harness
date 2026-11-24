@@ -5,7 +5,12 @@ of an unpinned tool or of an input that is not the tool's parameter, a model cou
 one, and a tool that is not `connection.sql` over a Databricks connection. Each refused version
 without screens seals under `/1` exactly as before. A table screen of a pinned tool the sealer
 cannot see (private, or in a project the sealer cannot read) gets the answer of an unpinned key,
-and another client learns nothing of the tools (issue #316)."""
+and another client learns nothing of the tools (issue #316).
+
+SP6-4: a `snowflake.native-app/v1` solution's version with screens and Snowflake `connection.sql`
+tools seals under `/2` with `app.generator_version` `shifde.appgen.snowflake/1.0`; without
+screens it is refused `release_incompatible` with a failing `screens` diagnostic (S6-H, never a
+`/1` release); a tool or bound connection of the other platform is refused for either kind."""
 
 from __future__ import annotations
 
@@ -14,6 +19,7 @@ from typing import Any  # Any: JSON bodies
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from shifde.appgen import render
@@ -23,12 +29,13 @@ from tests._support.fullapp import World
 from tests._support.p3util import ADMIN_B, B, fake_model_stack
 from tests._support.p4util import agent_spec, art, builtin_tool_spec, make_user, publish
 from tests._support.p5util import Hdr, user_session
-from tests.appgen.helpers import add_project, databricks, wire
+from tests.appgen.helpers import add_project, databricks, snowflake, wire, wire_snowflake
 from tests.packaging.helpers import (
     Stack,
     bindings,
     new_version,
     seal,
+    solution,
     solutions,
     version_body,
 )
@@ -45,6 +52,16 @@ from tests.packaging.test_releases import (
 
 CHAT = {"kind": "chat", "title": "Ask", "placeholder": ""}
 APP_TOOLS = "a generated app's tools are SQL tools over a Databricks connection"
+SF_APP_TOOLS = "a generated app's tools are SQL tools over a Snowflake connection"
+NOT_DATABRICKS = (
+    "the bound connection is not a Databricks connection of this organization in the solution's "
+    "scope"
+)
+NOT_SNOWFLAKE = (
+    "the bound connection is not a Snowflake connection of this organization in the solution's "
+    "scope"
+)
+SNOWFLAKE_KIND = "snowflake.native-app/v1"
 
 
 def _table(tool: str, *inputs: str, title: str = "Orders") -> dict[str, Any]:
@@ -86,6 +103,31 @@ def _dbx_tool(
     }
     place = scope or {"type": "project", "id": s.project_id}
     tool = art(h.client, h, "tools", key, spec, place, visibility=visibility)
+    return str(publish(h.client, h, "tools", tool["id"])["id"])
+
+
+def _sf_tool(h: Hdr, s: Stack, connection: str, key: str = "orders") -> str:
+    """A published `connection.sql` tool keyed `key` (in the stack's project) over the Snowflake
+    connection."""
+    spec = {
+        "executor": "connection.sql",
+        "binding": {
+            "connection_id": connection,
+            "sql_template": "select o.id from DEMO_DB.PUBLIC.ORDERS o "
+            "where o.customer_id = %(customer_id)s",
+            "max_rows": 10,
+        },
+        "input_schema": {
+            "type": "object",
+            "properties": {"customer_id": {"type": "integer"}},
+            "required": ["customer_id"],
+        },
+        "output_schema": {"type": "object"},
+        "side_effect_class": "read",
+        "timeout_s": 10,
+        "audit_level": "metadata",
+    }
+    tool = art(h.client, h, "tools", key, spec, {"type": "project", "id": s.project_id})
     return str(publish(h.client, h, "tools", tool["id"])["id"])
 
 
@@ -318,3 +360,88 @@ def test_another_client_learns_nothing_of_a_generated_apps_tools(
     for r in answers:
         assert r.status_code == 404, r.text
         assert SECRET_TOOL not in r.text and "customer_id" not in r.text
+
+
+# ------------------------------------------------------------------ Snowflake (SP6-4)
+def test_a_snowflake_version_with_screens_seals_under_compiler_2(
+    client: TestClient, world: World
+) -> None:
+    wire_snowflake(client)
+    h, s, _ = _setup(client, world)
+    sid = solution(h.client, h, "Warehouse app", target_kind=SNOWFLAKE_KIND)["id"]
+    sf = snowflake(h.client, h)
+    agent = _agent(h, s, "app", [_sf_tool(h, s, sf)])
+    screens = [CHAT, _table("orders", "customer_id")]
+    version = new_version(h.client, h, sid, _with(version_body(agent, dataset=s.dataset), screens))
+    r = seal(h.client, h, sid, version["id"], bindings({s.model: s.provider}, {sf: sf}))
+    assert r.status_code == 201, r.text
+    release = r.json()
+    manifest = release["manifest"]
+    assert manifest["target_kind"] == SNOWFLAKE_KIND
+    assert manifest["compiler_version"] == "shifde.packaging/2"
+    assert manifest["app"] == {"generator_version": "shifde.appgen.snowflake/1.0"}
+    assert manifest["screens"] == screens
+    assert release["digest"] == digest(manifest)
+    paths = [d["path"] for d in release["compatibility"]]
+    assert {"models", "screens.0", "screens.1"} <= set(paths) and "screens" not in paths
+    assert all(d["status"] == "supported" for d in release["compatibility"])
+
+
+def test_a_snowflake_version_without_screens_is_refused(
+    client: TestClient, world: World, owner_session: Session
+) -> None:
+    wire_snowflake(client)
+    h, s, _ = _setup(client, world)
+    sid = solution(h.client, h, "Warehouse app", target_kind=SNOWFLAKE_KIND)["id"]
+    sf = snowflake(h.client, h)
+    agent = _agent(h, s, "app", [_sf_tool(h, s, sf)])
+    version = new_version(h.client, h, sid, version_body(agent, dataset=s.dataset))
+    r = seal(h.client, h, sid, version["id"], bindings({s.model: s.provider}, {sf: sf}))
+    assert _unsupported(r) == {"screens": "a Snowflake Native App needs screens"}
+    # the `/2` rules apply without screens too: the model count is checked
+    assert "models" in [e["path"] for e in r.json()["errors"]]
+    assert _audits(owner_session, "packaging.release.refused")
+    releases = owner_session.execute(
+        text("SELECT count(*) FROM shifde.releases WHERE solution_version_id = :v"),
+        {"v": version["id"]},
+    ).scalar()
+    owner_session.rollback()
+    assert releases == 0
+
+
+def test_a_tool_or_binding_of_the_other_platform_is_refused_for_either_kind(
+    client: TestClient, world: World
+) -> None:
+    wire_snowflake(client)
+    h, s, dbx_sid = _setup(client, world)
+    sf_sid = solution(h.client, h, "Warehouse app", target_kind=SNOWFLAKE_KIND)["id"]
+    sf, lake = snowflake(h.client, h), databricks(h.client, h)
+    sf_tool, dbx_tool = _sf_tool(h, s, sf, "sf_orders"), _dbx_tool(h, s, lake, "dbx_orders")
+    screens = [CHAT]
+
+    on_databricks = _agent(h, s, "on-databricks", [dbx_tool])
+    version = new_version(
+        h.client, h, sf_sid, _with(version_body(on_databricks, dataset=s.dataset), screens)
+    )
+    refused = _unsupported(
+        seal(h.client, h, sf_sid, version["id"], bindings({s.model: s.provider}, {lake: lake}))
+    )
+    assert refused == {f"tools.{dbx_tool}": SF_APP_TOOLS, f"connections.{lake}": NOT_SNOWFLAKE}
+
+    on_snowflake = _agent(h, s, "on-snowflake", [sf_tool])
+    version = new_version(
+        h.client, h, dbx_sid, _with(version_body(on_snowflake, dataset=s.dataset), screens)
+    )
+    refused = _unsupported(
+        seal(h.client, h, dbx_sid, version["id"], bindings({s.model: s.provider}, {sf: sf}))
+    )
+    assert refused == {f"tools.{sf_tool}": APP_TOOLS, f"connections.{sf}": NOT_DATABRICKS}
+
+    # a Snowflake tool on a Snowflake solution, bound to the Databricks connection: the binding
+    version = new_version(
+        h.client, h, sf_sid, _with(version_body(on_snowflake, dataset=s.dataset), screens)
+    )
+    refused = _unsupported(
+        seal(h.client, h, sf_sid, version["id"], bindings({s.model: s.provider}, {sf: lake}))
+    )
+    assert refused == {f"connections.{sf}": NOT_SNOWFLAKE}

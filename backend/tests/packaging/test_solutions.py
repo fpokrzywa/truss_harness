@@ -2,7 +2,8 @@
 7, 11 and 12): the routes as a tenant administrator, a developer and a viewer of demo-a, the
 database guard (immutable versions, a published entrypoint of the row's kind), the `ON DELETE
 RESTRICT` entrypoint key, `spec_hash` and decimal normalization, `resolve_pins` and
-`packaging.canonical`."""
+`packaging.canonical`. A `snowflake.native-app/v1` solution is created like a Databricks one
+(SP6-4), and any other target kind is 422."""
 
 from __future__ import annotations
 
@@ -148,6 +149,21 @@ def test_developer_lifecycle(client: TestClient, world: World, owner_session: Se
     s = stack(admin.client, admin)
     make_user(client, owner_session, admin, DEVELOPER, "developer", world.passwords)
     _lifecycle(user_session(client, world.passwords, DEVELOPER), s)
+
+
+def test_a_snowflake_solution_is_created_and_an_unknown_kind_is_422(
+    client: TestClient, world: World
+) -> None:
+    h = user_session(client, world.passwords, ADMIN)
+    made = solution(h.client, h, "Warehouse app", target_kind="snowflake.native-app/v1")
+    assert made["target_kind"] == "snowflake.native-app/v1" and made["status"] == "active"
+    got = h.client.get(f"{solutions()}/{made['id']}", headers=h)
+    assert got.status_code == 200 and got.json()["target_kind"] == "snowflake.native-app/v1"
+    for kind in ("snowflake.app/v1", "databricks.native-app/v1", ""):
+        r = h.client.post(solutions(), headers=h, json={"name": "Other", "target_kind": kind})
+        assert r.status_code == 422, (kind, r.text)
+    listed = h.client.get(solutions(), headers=h).json()["items"]
+    assert [s["name"] for s in listed] == ["Warehouse app"]
 
 
 def test_viewer_is_refused_on_every_route(client: TestClient, world: World) -> None:

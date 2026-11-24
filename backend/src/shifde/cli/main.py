@@ -437,7 +437,6 @@ def maintenance_delete(
         for client in delete(
             database,
             older_than_days=older_than,
-            now=utcnow(),
             dry_run=dry_run,
             actor_label=f"shifde-admin:{getpass.getuser()}",
         ):
