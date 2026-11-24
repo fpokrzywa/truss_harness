@@ -2,6 +2,10 @@
 
 The CLI is the only write path and every write is attempted once: a failed or timed-out write
 propagates, and the journal turns any uncertain outcome into `NeedsAttention`.
+
+A generated app (SP5 6.6) deploys with the target's `serving_endpoint` binding as its
+`serving-endpoint` resource (`CAN_QUERY`), and verify adds `app-deep-health` when the request names
+the plan's release digest.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from shifde.adapters.native.base import (
     read_archive,
 )
 from shifde.adapters.native.contracts import (
+    EVIDENCE_MAX,
     ApplicationSpec,
     ApplyReceipt,
     ApplyRequest,
@@ -72,6 +77,7 @@ from shifde.adapters.native.planning import (
 )
 
 WAREHOUSE_BINDING = "warehouse_id"
+SERVING_ENDPOINT_BINDING = "serving_endpoint"  # a generated app's model serving endpoint
 # The deploying service principal's workspace user name; bundles deploy under its home folder.
 PRINCIPAL_BINDING = "service_principal"
 _PRINCIPAL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._+-]{0,254}$")
@@ -344,7 +350,11 @@ class DatabricksAdapter:
         if any(plan.details.get(key) != value for key, value in details.items()):
             raise PermissionError("deployment plan details do not match the artifact and target")
         contents = read_archive(ctx.artifacts.read(artifact.archive, ctx.tenant_id))
-        validate_source(contents, spec)
+        serving_endpoint = None
+        if validate_source(contents, spec):
+            serving_endpoint = ctx.target.bindings.get(SERVING_ENDPOINT_BINDING)
+            if not serving_endpoint:
+                raise ValueError("a generated app needs the target's serving_endpoint binding")
         for key in ("bundle-deploy", "bundle-run"):
             if ctx.journal.has_intent(key) and ctx.journal.completed(key) is None:
                 raise NeedsAttention(f"reconcile uncertain step {key} before resubmission")
@@ -388,6 +398,7 @@ class DatabricksAdapter:
                 app_name=name,
                 root_path=details["root_path"],
                 warehouse_id=details["warehouse_id"],
+                serving_endpoint=serving_endpoint,
             )
             (directory / "databricks.yml").write_text(
                 yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
@@ -498,6 +509,8 @@ class DatabricksAdapter:
         ]
         if observed.state != "succeeded":
             checks.append(Check(name="runtime-warehouse", status="skipped"))
+            if request.release_digest is not None:
+                checks.append(Check(name="app-deep-health", status="skipped"))
             return VerificationReport(checks=checks)
         workspace = self._workspace(ctx)
         app = workspace.get_app(request.receipt.operation_handles["app_name"])
@@ -515,4 +528,41 @@ class DatabricksAdapter:
                     evidence="authenticated application health check failed",
                 )
             )
+        if request.release_digest is not None:
+            checks.append(self._deep_health(workspace, app, request.release_digest))
         return VerificationReport(checks=checks)
+
+    @staticmethod
+    def _deep_health(
+        workspace: WorkspaceGateway, app: dict[str, Any] | None, release_digest: str
+    ) -> Check:
+        """SP5 6.6: 200, `status` ok, the plan's release digest and every check passed; the
+        failed checks' `name: reason` are the evidence."""
+        try:
+            if not app or not isinstance(app.get("url"), str):
+                raise ValueError("native app has no health origin")
+            status, body = workspace.deep_health(app["url"])
+        except Exception:
+            return Check(
+                name="app-deep-health", status="failed", evidence="deep health request failed"
+            )
+        items = body.get("checks")
+        failed = [
+            item
+            for item in (items if isinstance(items, list) else [])
+            if not isinstance(item, dict) or item.get("status") != "passed"
+        ]
+        problems = [
+            f"{str(item.get('name'))[:200]}: {str(item.get('reason') or 'failed')[:200]}"
+            if isinstance(item, dict)
+            else "malformed check"
+            for item in failed
+        ]
+        if body.get("release_digest") != release_digest:
+            problems.append("the release digest differs from the plan's")
+        if not isinstance(items, list):
+            problems.append("the answer has no checks")
+        if status == 200 and body.get("status") == "ok" and not problems:
+            return Check(name="app-deep-health", status="passed")
+        evidence = "; ".join(problems) or f"deep health answered {status}"
+        return Check(name="app-deep-health", status="failed", evidence=evidence[:EVIDENCE_MAX])

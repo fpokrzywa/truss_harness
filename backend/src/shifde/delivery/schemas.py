@@ -24,10 +24,12 @@ SNOWFLAKE_IDENTIFIER = r"^[A-Za-z_][A-Za-z0-9_$]{0,254}$"  # `snowflake.source.i
 
 
 class TargetBindings(BaseModel):
-    """A Databricks target's bindings."""
+    """A Databricks target's bindings. `serving_endpoint`: the model serving endpoint a generated
+    app (a `/2` release) queries, by name; a template plan ignores it (SP5 6.6)."""
 
     model_config = Strict
     warehouse_id: str = Field(pattern=r"^[A-Za-z0-9-]{1,64}$")
+    serving_endpoint: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,63}$")
 
 
 class SnowflakeBindings(BaseModel):

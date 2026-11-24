@@ -89,7 +89,7 @@ def test_apply_and_observe_contexts(flow: Flow, tmp_path: Path, owner_db: Databa
         "revision": target["revision"],
         "environment": "dev",
         "host": target["address"],
-        "bindings": target["bindings"],
+        "bindings": {"warehouse_id": target["bindings"]["warehouse_id"]},  # no null binding
     }
     for key in ("id", "artifact_id", "artifact_digest", "steps", "snapshot", "digest"):
         assert body["plan"][key] == second[key], key

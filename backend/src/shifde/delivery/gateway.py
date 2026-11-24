@@ -242,9 +242,10 @@ def artifact(
 def job_context(
     session: Session, executor: AuthenticatedExecutor, job_id: UUID, proof: LeaseProof
 ) -> JobContext:
-    """What the job runs against: its target, its plan (sealed fields once sealed), its
-    deployment (receipt once applied) and the native resources the plan's application owns on the
-    target. Never a credential, the claim or address key, or the artifact bytes."""
+    """What the job runs against: its target, its plan (sealed fields once sealed, its release
+    digest and the release's app generator version, read in the executor's organization only),
+    its deployment (receipt once applied) and the native resources the plan's application owns on
+    the target. Never a credential, the claim or address key, or the artifact bytes."""
     tenant_id = executor.tenant_id
     row = _leased(session, executor, job_id, proof)
     target = (
@@ -264,6 +265,7 @@ def job_context(
         if row["deployment_id"] is not None
         else None
     )
+    generator_version = service.plan_generator_version(session, plan) if plan is not None else None
     owned = (
         repository.list_native_resources(
             session, target["id"], plan["application_key"], tenant_id=tenant_id
@@ -300,6 +302,8 @@ def job_context(
             toolchain_digest=plan["toolchain_digest"],
             digest=plan["digest"],
             expires_at=plan["expires_at"],
+            release_digest=plan["release_digest"],
+            generator_version=generator_version,
         ),
         deployment=None
         if deployment is None

@@ -17,13 +17,14 @@ from fastapi import Depends
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
+from shifde.adapters.runtime import IntegrationRuntime
 from shifde.core.db import Database
 from shifde.core.deps import check_origin, reject_basic_auth
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.delivery import api, gateway, gateway_api
 from shifde.identity.dependencies import require_auth
-from tests.connections.routes import as_user
+from tests.connections.routes import REGISTRY, as_user
 from tests.delivery.releases import release_for_target
 from tests.identity import harness
 from tests.tenancy.conftest import app_session
@@ -32,6 +33,7 @@ from tests.tenancy.conftest import app_session
 @contextmanager
 def delivery_client(settings: Settings, **kwargs: Any) -> Iterator[TestClient]:
     app = harness.make_app(settings)
+    app.state.integration = IntegrationRuntime(settings=settings, registry=REGISTRY)
     guards = [Depends(reject_basic_auth), Depends(check_origin), Depends(require_auth)]
     app.include_router(api.router, dependencies=guards)
     app.include_router(gateway_api.router, dependencies=guards[:2])

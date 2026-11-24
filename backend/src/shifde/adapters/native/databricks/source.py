@@ -1,4 +1,9 @@
-"""Managed bundle source: scaffold, validation and the trusted deployment bundle."""
+"""Managed bundle source: scaffold, validation and the trusted deployment bundle.
+
+A source is either the SDK template (`scaffold_files`) or a generated app (SP5 6.6): the app
+`shifde.appgen.render` produces, recognized by its `app/app.yaml` (`GENERATED_APP_YAML`, pinned to
+`shifde/appgen/templates/app.yaml.txt` by a test, since this package may not import `appgen`).
+"""
 
 from __future__ import annotations
 
@@ -11,6 +16,23 @@ from shifde.adapters.native.contracts import DatabricksApplicationSpec
 
 ADAPTER_VERSION = "0.1.0"
 CLI_VERSION = "1.25.0"
+# `shifde/appgen/templates/app.yaml.txt`: the template's runtime plus the serving endpoint
+GENERATED_APP_YAML = b"""command: ["python", "app.py"]
+env:
+  - name: DATABRICKS_WAREHOUSE_ID
+    valueFrom: sql-warehouse
+  - name: SERVING_ENDPOINT
+    valueFrom: serving-endpoint
+"""
+GENERATED_FILES = (
+    "app/app.py",
+    "app/agent_loop.py",
+    "app/requirements.txt",
+    "app/config/agent.json",
+    "app/config/tools.json",
+    "app/config/screens.json",
+    "app/config/limits.json",
+)
 
 
 def prefix(spec: DatabricksApplicationSpec) -> str:
@@ -43,15 +65,23 @@ def scaffold_files(spec: DatabricksApplicationSpec) -> dict[str, bytes]:
     return {prefix(spec) + key: content for key, content in result.items()}
 
 
-def validate_source(contents: dict[str, bytes], spec: DatabricksApplicationSpec) -> None:
+def validate_source(contents: dict[str, bytes], spec: DatabricksApplicationSpec) -> bool:
+    """Refuses (`ValueError`) anything but the managed template source or a generated app's
+    source; True for a generated app."""
     root = prefix(spec)
     expected = scaffold_files(spec)
-    if not expected.keys() <= contents.keys():
+    generated = contents.get(root + "app/app.yaml") == GENERATED_APP_YAML
+    required = (
+        {root + "databricks.yml", root + "app/app.yaml", *(root + n for n in GENERATED_FILES)}
+        if generated
+        else expected.keys()
+    )
+    if not required <= contents.keys():
         raise ValueError("source is missing required application files")
     # Never forward application-controlled hooks, includes, Python bundle code or targets.
     if yaml.safe_load(contents[root + "databricks.yml"]) != source_bundle(spec):
         raise ValueError("only the managed app-only bundle configuration is supported")
-    if contents[root + "app/app.yaml"] != expected[root + "app/app.yaml"]:
+    if not generated and contents[root + "app/app.yaml"] != expected[root + "app/app.yaml"]:
         raise ValueError("the managed runtime configuration must be preserved")
     for name in contents:
         local = name.removeprefix(root)
@@ -61,11 +91,30 @@ def validate_source(contents: dict[str, bytes], spec: DatabricksApplicationSpec)
             raise ValueError("source outside the managed app directory is forbidden")
         if any(part.startswith(".") for part in local.split("/")):
             raise ValueError("hidden configuration and secret files are forbidden")
+    return generated
 
 
 def deployment_bundle(
-    spec: DatabricksApplicationSpec, *, host: str, app_name: str, root_path: str, warehouse_id: str
+    spec: DatabricksApplicationSpec,
+    *,
+    host: str,
+    app_name: str,
+    root_path: str,
+    warehouse_id: str,
+    serving_endpoint: str | None = None,
 ) -> dict[str, Any]:
+    """The trusted bundle apply deploys; a generated app also gets its serving endpoint
+    (`CAN_QUERY`)."""
+    resources: list[dict[str, Any]] = [
+        {"name": "sql-warehouse", "sql_warehouse": {"id": warehouse_id, "permission": "CAN_USE"}}
+    ]
+    if serving_endpoint is not None:
+        resources.append(
+            {
+                "name": "serving-endpoint",
+                "serving_endpoint": {"name": serving_endpoint, "permission": "CAN_QUERY"},
+            }
+        )
     return {
         "bundle": {"name": app_name, "databricks_cli_version": f"={CLI_VERSION}"},
         "workspace": {"host": host, "root_path": root_path},
@@ -74,12 +123,7 @@ def deployment_bundle(
                 spec.app_resource_key: {
                     "name": app_name,
                     "source_code_path": "./app",
-                    "resources": [
-                        {
-                            "name": "sql-warehouse",
-                            "sql_warehouse": {"id": warehouse_id, "permission": "CAN_USE"},
-                        }
-                    ],
+                    "resources": resources,
                 }
             }
         },
