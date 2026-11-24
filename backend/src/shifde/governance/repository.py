@@ -197,6 +197,34 @@ def list_events(
     )
 
 
+def project_cost_rows(
+    session: Session, tenant_id: UUID, project_id: UUID, since: datetime, vis: Visibility
+) -> list[Row]:
+    """The project's usage since `since` by UTC day, model, root run kind and currency: tokens,
+    calls and the known cost (unmeasured events count, at no cost)."""
+    params: Params = {"t": tenant_id, "p": project_id, "since": since}
+    return list(
+        session.execute(
+            text(
+                # the visibility clause is built in code; values are bound
+                "SELECT (u.occurred_at AT TIME ZONE 'UTC')::date::text AS day, "  # nosec B608
+                "u.model_id::text AS model_id, COALESCE(r.kind, 'none') AS run_kind, u.currency, "
+                "COALESCE(sum(u.input_tokens), 0) AS input_tokens, "
+                "COALESCE(sum(u.output_tokens), 0) AS output_tokens, "
+                "COALESCE(sum(u.call_count), 0) AS calls, "
+                "COALESCE(sum(u.cost_amount) FILTER (WHERE u.cost_kind <> 'unmeasured'), 0) "
+                "AS cost FROM shifde.usage_events u LEFT JOIN shifde.runs r "
+                "ON r.tenant_id = :t AND r.id = u.root_run_id "
+                "WHERE u.tenant_id = :t AND u.project_id = :p AND u.occurred_at >= :since "
+                f"AND {vis.clause(params, 'u.')} GROUP BY 1, 2, 3, 4"
+            ),
+            params,
+        )
+        .mappings()
+        .all()
+    )
+
+
 def run_events(session: Session, tenant_id: UUID, run_id: UUID, vis: Visibility) -> list[Row]:
     params: Params = {"t": tenant_id, "run": run_id}
     return list(

@@ -111,6 +111,35 @@ def run_outcome(session: Session, tenant_id: UUID, run_id: UUID) -> RunOutcome |
     )
 
 
+@dataclass(frozen=True)
+class RunBinding:
+    """Who and what a run is, as stored: its project, initiating principal, agent and
+    idempotency key (assist binds a specialist run to its request with these)."""
+
+    workspace_id: UUID
+    project_id: UUID
+    initiated_by_principal_id: UUID
+    agent_id: UUID | None
+    idempotency_key: str | None
+    status: str
+
+
+def run_binding(session: Session, tenant_id: UUID, run_id: UUID) -> RunBinding | None:
+    """The stored binding of the run `run_id` of `tenant_id` (no permission check: the caller
+    runs inside it); None for an unknown id and another client's alike."""
+    run = repo.get_run(session, tenant_id, run_id)
+    if run is None or run["tenant_id"] != tenant_id:
+        return None
+    return RunBinding(
+        workspace_id=run["workspace_id"],
+        project_id=run["project_id"],
+        initiated_by_principal_id=run["initiated_by_principal_id"],
+        agent_id=run["agent_id"],
+        idempotency_key=run["idempotency_key"],
+        status=run["status"],
+    )
+
+
 class RunService:
     def __init__(
         self, scope: TenantScope, runtime: IntegrationRuntime, hooks: GovernanceHooks
