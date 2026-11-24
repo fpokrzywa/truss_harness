@@ -531,14 +531,18 @@ class ArtifactService:
             next_cursor=encode_cursor(page[-1]["id"]) if more and page else None,
         )
 
-    def create(self, kind: str, body: s.ArtifactCreate) -> s.ArtifactOut:
+    def create(
+        self, kind: str, body: s.ArtifactCreate, *, artifact_id: UUID | None = None
+    ) -> s.ArtifactOut:
+        """Create the artifact and its first draft version; `artifact_id`, when given, is used
+        instead of a new id (an app request's accept mints and records it first)."""
         self._active_tenant()
         single = SINGULAR[kind]
         ref = tenancy.resolve_scope_ref(self.sc, body.scope.type, body.scope.id)
         self.sc.pdp.require(f"{single}:create", ref, hide_unless=f"{single}:read")
         spec = body.spec or {}
         self._check_spec_size(spec)
-        artifact_id, version_id = uuid7(), uuid7()
+        artifact_id, version_id = artifact_id or uuid7(), uuid7()
         try:
             repository.insert_artifact(
                 self.session,

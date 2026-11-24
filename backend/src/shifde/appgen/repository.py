@@ -128,60 +128,145 @@ def change_status(
 
 
 # ------------------------------------------------------------------ accept (design 5.5)
+# `accept_progress.claim`: the token of the accept call that runs the steps and its lease's end
+# (database time); a claim is free when absent or when its `until` has passed
+CLAIM = (
+    "jsonb_build_object('claim', jsonb_build_object('token', CAST(:tok AS text), "
+    "'until', to_jsonb(now() + make_interval(secs => :lease))))"
+)
+CLAIM_FREE = (
+    "(accept_progress -> 'claim' IS NULL "
+    "OR CAST(accept_progress -> 'claim' ->> 'until' AS timestamptz) < now())"
+)
+CLAIM_HELD = "accept_progress -> 'claim' ->> 'token' = CAST(:tok AS text)"
+
+
 def start_accepting(
-    session: Session, request_id: UUID, *, tenant_id: UUID, revision_no: int, accepted_by: UUID
+    session: Session,
+    request_id: UUID,
+    *,
+    tenant_id: UUID,
+    revision_no: int,
+    accepted_by: UUID,
+    token: UUID,
+    lease_seconds: int,
 ) -> bool:
-    """`drafted` -> `accepting` with the accepted revision and the accepter; False when the
-    request was not `drafted`."""
+    """`drafted` -> `accepting` with the accepted revision, the accepter and the claim `token`;
+    False when the request was not `drafted`."""
     changed = session.execute(
         text(
-            "UPDATE shifde.appgen_requests SET status = 'accepting', status_reason = NULL, "
-            "accepted_revision_no = :rev, accepted_by = :by, updated_at = now() "
+            # the claim fragment is a module constant; values are bound
+            "UPDATE shifde.appgen_requests SET status = 'accepting', status_reason = NULL, "  # nosec B608
+            "accepted_revision_no = :rev, accepted_by = :by, "
+            f"accept_progress = accept_progress || {CLAIM}, updated_at = now() "
             "WHERE tenant_id = :t AND id = :id AND status = 'drafted' RETURNING id"
         ),
-        {"t": tenant_id, "id": request_id, "rev": revision_no, "by": accepted_by},
+        {
+            "t": tenant_id,
+            "id": request_id,
+            "rev": revision_no,
+            "by": accepted_by,
+            "tok": str(token),
+            "lease": lease_seconds,
+        },
+    ).first()
+    return changed is not None
+
+
+def claim_accepting(
+    session: Session,
+    request_id: UUID,
+    *,
+    tenant_id: UUID,
+    revision_no: int,
+    token: UUID,
+    lease_seconds: int,
+) -> bool:
+    """Take the claim of an `accepting` request of `revision_no` for `token`; False when another
+    call holds an unexpired claim (or the request is no longer `accepting` that revision)."""
+    changed = session.execute(
+        text(
+            # the claim fragments are module constants; values are bound
+            f"UPDATE shifde.appgen_requests SET accept_progress = accept_progress || {CLAIM}, "  # nosec B608
+            "updated_at = now() WHERE tenant_id = :t AND id = :id AND status = 'accepting' "
+            f"AND accepted_revision_no = :rev AND {CLAIM_FREE} RETURNING id"
+        ),
+        {
+            "t": tenant_id,
+            "id": request_id,
+            "rev": revision_no,
+            "tok": str(token),
+            "lease": lease_seconds,
+        },
     ).first()
     return changed is not None
 
 
 def record_progress(
-    session: Session, request_id: UUID, *, tenant_id: UUID, key: str, value: Any
+    session: Session,
+    request_id: UUID,
+    *,
+    tenant_id: UUID,
+    key: str,
+    value: Any,
+    token: UUID,
+    lease_seconds: int,
 ) -> bool:
-    """Merge `{key: value}` into `accept_progress` while `accepting`; False when it is not."""
+    """Merge `{key: value}` into `accept_progress` and renew the claim while `accepting` and
+    `token` holds the claim; False when it does not."""
     changed = session.execute(
         text(
-            "UPDATE shifde.appgen_requests SET accept_progress = accept_progress || "
-            "jsonb_build_object(CAST(:k AS text), CAST(:v AS jsonb)), updated_at = now() "
-            "WHERE tenant_id = :t AND id = :id AND status = 'accepting' RETURNING id"
+            # the claim fragments are module constants; values are bound
+            "UPDATE shifde.appgen_requests SET accept_progress = accept_progress || "  # nosec B608
+            f"jsonb_build_object(CAST(:k AS text), CAST(:v AS jsonb)) || {CLAIM}, "
+            "updated_at = now() WHERE tenant_id = :t AND id = :id AND status = 'accepting' "
+            f"AND {CLAIM_HELD} RETURNING id"
         ),
-        {"t": tenant_id, "id": request_id, "k": key, "v": json.dumps(value)},
+        {
+            "t": tenant_id,
+            "id": request_id,
+            "k": key,
+            "v": json.dumps(value),
+            "tok": str(token),
+            "lease": lease_seconds,
+        },
     ).first()
     return changed is not None
 
 
-def accept_failed(session: Session, request_id: UUID, *, tenant_id: UUID, reason: str) -> bool:
-    """Record a failed accept step's `reason` while `accepting`; False when it is not."""
+def accept_failed(
+    session: Session, request_id: UUID, *, tenant_id: UUID, reason: str, token: UUID
+) -> bool:
+    """Record a failed accept step's `reason` and release the claim while `accepting` and `token`
+    holds the claim; False when it does not."""
     changed = session.execute(
         text(
-            "UPDATE shifde.appgen_requests SET status_reason = :reason, updated_at = now() "
-            "WHERE tenant_id = :t AND id = :id AND status = 'accepting' RETURNING id"
+            # the claim fragment is a module constant; values are bound
+            "UPDATE shifde.appgen_requests SET status_reason = :reason, "  # nosec B608
+            "accept_progress = accept_progress - 'claim', updated_at = now() "
+            f"WHERE tenant_id = :t AND id = :id AND status = 'accepting' AND {CLAIM_HELD} "
+            "RETURNING id"
         ),
-        {"t": tenant_id, "id": request_id, "reason": reason},
+        {"t": tenant_id, "id": request_id, "reason": reason, "tok": str(token)},
     ).first()
     return changed is not None
 
 
 def finish_accepting(
-    session: Session, request_id: UUID, *, tenant_id: UUID, solution_version_id: UUID
+    session: Session, request_id: UUID, *, tenant_id: UUID, solution_version_id: UUID, token: UUID
 ) -> bool:
-    """`accepting` -> `accepted` with the solution version; False when it was not `accepting`."""
+    """`accepting` -> `accepted` with the solution version, the claim released; False when it was
+    not `accepting` or `token` does not hold the claim."""
     changed = session.execute(
         text(
-            "UPDATE shifde.appgen_requests SET status = 'accepted', status_reason = NULL, "
-            "solution_version_id = :v, updated_at = now() "
-            "WHERE tenant_id = :t AND id = :id AND status = 'accepting' RETURNING id"
+            # the claim fragment is a module constant; values are bound
+            "UPDATE shifde.appgen_requests SET status = 'accepted', status_reason = NULL, "  # nosec B608
+            "solution_version_id = :v, accept_progress = accept_progress - 'claim', "
+            "updated_at = now() "
+            f"WHERE tenant_id = :t AND id = :id AND status = 'accepting' AND {CLAIM_HELD} "
+            "RETURNING id"
         ),
-        {"t": tenant_id, "id": request_id, "v": solution_version_id},
+        {"t": tenant_id, "id": request_id, "v": solution_version_id, "tok": str(token)},
     ).first()
     return changed is not None
 
