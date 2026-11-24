@@ -12,18 +12,39 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationInfo, field_validator
 
 from shifde.adapters.native.contracts import EnvironmentSnapshot, PlanStep
 
 Strict = ConfigDict(extra="forbid")
 Environment = Literal["dev", "test", "prod"]
 CREDENTIAL_REF = r"^[A-Za-z][A-Za-z0-9_.-]{0,127}$"
+PlatformKind = Literal["databricks", "snowflake"]
+SNOWFLAKE_IDENTIFIER = r"^[A-Za-z_][A-Za-z0-9_$]{0,254}$"  # `snowflake.source.identifier`
 
 
 class TargetBindings(BaseModel):
+    """A Databricks target's bindings."""
+
     model_config = Strict
     warehouse_id: str = Field(pattern=r"^[A-Za-z0-9-]{1,64}$")
+
+
+class SnowflakeBindings(BaseModel):
+    """A Snowflake target's bindings: the Native App package, application and warehouse names
+    and the Cortex model (SP6 design 6.4)."""
+
+    model_config = Strict
+    package: str = Field(pattern=SNOWFLAKE_IDENTIFIER)
+    application: str = Field(pattern=SNOWFLAKE_IDENTIFIER)
+    warehouse: str = Field(pattern=SNOWFLAKE_IDENTIFIER)
+    cortex_model: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$")
+
+
+BINDINGS: dict[str, type[TargetBindings | SnowflakeBindings]] = {
+    "databricks": TargetBindings,
+    "snowflake": SnowflakeBindings,
+}
 
 
 class TargetCreate(BaseModel):
@@ -31,11 +52,21 @@ class TargetCreate(BaseModel):
     workspace: str
     project: str | None = None
     name: str = Field(min_length=1, max_length=200)
-    platform_kind: Literal["databricks"] = "databricks"
+    platform_kind: PlatformKind = "databricks"
     address: str = Field(min_length=1, max_length=2048)
     environment: Environment
-    bindings: TargetBindings
+    bindings: TargetBindings | SnowflakeBindings
     credential_ref: str = Field(pattern=CREDENTIAL_REF)
+
+    @field_validator("bindings")
+    @classmethod
+    def _bindings_of_the_platform(
+        cls, value: TargetBindings | SnowflakeBindings, info: ValidationInfo
+    ) -> TargetBindings | SnowflakeBindings:
+        kind = info.data.get("platform_kind")
+        if kind is not None and not isinstance(value, BINDINGS[kind]):
+            raise ValueError(f"bindings are not {kind} target bindings")
+        return value
 
 
 class TargetOut(BaseModel):
@@ -43,10 +74,10 @@ class TargetOut(BaseModel):
     name: str
     workspace: str | None
     project: str | None
-    platform_kind: str
+    platform_kind: PlatformKind
     address: str
     environment: str
-    bindings: TargetBindings
+    bindings: TargetBindings | SnowflakeBindings
     credential_ref: str
     status: str
     revision: int

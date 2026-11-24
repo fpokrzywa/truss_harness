@@ -2,7 +2,9 @@
 section 3, `GET /api/v1/tool-executors`).
 
 Only four executor kinds exist. `builtin.function` runs code that ships with the platform and is
-listed in `BUILTIN_FUNCTIONS` (nothing a tenant or a model can add). The other three reach external
+listed in `BUILTIN_FUNCTIONS` (nothing a tenant or a model can add), or binds a `seth.*` key
+declared in `internal_functions.INTERNAL_FUNCTIONS`, which runs only inside a run (the worker's
+`runtime.internal_tools` registry; refused anywhere else). The other three reach external
 systems exclusively through a P3 connection (`ConnectionService.open_for_use`), so every call passes
 the connection's status gates, `connection:use` / `connection:write`, the EgressGuard and secret
 redaction: there is no second network path.
@@ -21,6 +23,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any  # Any: JSON arguments / results
+
+from shifde.build.internal_functions import INTERNAL_FUNCTIONS
 
 SIDE_EFFECT_CLASSES = ("none", "read", "write_idempotent", "write_non_idempotent", "destructive")
 WRITE_CLASSES = frozenset({"write_idempotent", "write_non_idempotent", "destructive"})
@@ -245,7 +249,12 @@ def binding_schema(executor: str) -> dict[str, Any]:
             "type": "object",
             "required": ["function_key"],
             "additionalProperties": False,
-            "properties": {"function_key": {"type": "string", "enum": sorted(BUILTIN_FUNCTIONS)}},
+            "properties": {
+                "function_key": {
+                    "type": "string",
+                    "enum": sorted(BUILTIN_FUNCTIONS.keys() | INTERNAL_FUNCTIONS.keys()),
+                }
+            },
         }
     if executor == "rest.http":
         return {

@@ -282,6 +282,7 @@ def job_context(
             host=target["address"],
             bindings=target["bindings"],
         ),
+        platform_kind=target["platform_kind"],
         plan=None
         if plan is None
         else ContextPlan(

@@ -55,8 +55,13 @@ RUNNER_THREAD = "shifde-executor-runner"
 EPILOG = f"""environment:
   {API_URL}           the SETH API origin (https outside development and test)
   {TOKEN}             the executor credential (shx_...) issued on the Executors screen
-  {CREDENTIALS_FILE}  JSON: credential_ref -> {{tenant_id, host, token, service_principal}},
-                                    one organization per file
+  {CREDENTIALS_FILE}  JSON: credential_ref -> an entry of the target's platform, one
+                                    organization per file:
+                                    Databricks {{tenant_id, host, token, service_principal}}
+                                    ("platform": "databricks" optional)
+                                    Snowflake {{tenant_id, host, platform: "snowflake", user,
+                                    role, private_key_file}} (unencrypted PKCS#8 PEM; on POSIX
+                                    the file and the key file mode 0600)
   SHIFDE_ENV                        development | test | production (default production)
   {HEALTH_HOST}       the /healthz and /readyz host (default 127.0.0.1)
   {HEALTH_PORT}       their port, 0..65535 (default 0: off)
@@ -89,7 +94,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--fake-platform",
         action="store_true",
-        help="run against the in-memory fake Databricks platform (development and test only)",
+        help=(
+            "run against the in-memory fake Databricks and Snowflake platforms "
+            "(development and test only)"
+        ),
     )
     return parser
 
@@ -137,7 +145,12 @@ def configure(argv: Sequence[str] | None, environ: Mapping[str, str]) -> Config:
         broker = CredentialBroker.from_file(Path(environ[CREDENTIALS_FILE]))
     except CredentialFileRefused as exc:
         parser.error(str(exc))
-    platform: Platform = FakePlatform() if args.fake_platform else RealPlatform()
+    platform: Platform = RealPlatform()
+    if args.fake_platform:
+        fake = FakePlatform()
+        # the Snowflake fake refuses to run unless this is development or test
+        fake.environment = environ.get("SHIFDE_ENV") or "production"
+        platform = fake
     return Config(
         api_url=api_url,
         token=environ[TOKEN],
