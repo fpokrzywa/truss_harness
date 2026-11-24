@@ -1226,6 +1226,140 @@
         "title": "AssertionResult",
         "type": "object"
       },
+      "AssistCatalogOut": {
+        "description": "The code catalog with, per entry, its installs in the projects the caller may read assist\nrequests of. Instructions are never shown.",
+        "properties": {
+          "assist_enabled": {
+            "title": "Assist Enabled",
+            "type": "boolean"
+          },
+          "catalog_version": {
+            "title": "Catalog Version",
+            "type": "string"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/CatalogEntryOut"
+            },
+            "title": "Entries",
+            "type": "array"
+          }
+        },
+        "required": [
+          "catalog_version",
+          "assist_enabled",
+          "entries"
+        ],
+        "title": "AssistCatalogOut",
+        "type": "object"
+      },
+      "AssistSettingsOut": {
+        "description": "The organization's assist settings; a missing row reads as the defaults.\n`current_catalog_version` is the code's catalog version, the only pin install accepts.",
+        "properties": {
+          "assist_enabled": {
+            "title": "Assist Enabled",
+            "type": "boolean"
+          },
+          "catalog_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalog Version"
+          },
+          "current_catalog_version": {
+            "title": "Current Catalog Version",
+            "type": "string"
+          },
+          "model_routing_enabled": {
+            "title": "Model Routing Enabled",
+            "type": "boolean"
+          },
+          "router_model_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Router Model Id"
+          },
+          "specialist_max_cost": {
+            "title": "Specialist Max Cost",
+            "type": "number"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "assist_enabled",
+          "catalog_version",
+          "current_catalog_version",
+          "model_routing_enabled",
+          "router_model_id",
+          "specialist_max_cost",
+          "updated_at"
+        ],
+        "title": "AssistSettingsOut",
+        "type": "object"
+      },
+      "AssistSettingsPut": {
+        "additionalProperties": false,
+        "description": "`PUT .../assist/settings`: the routing fields and the specialist cost cap. The switch and\nthe pin change only through `/assist/enable` and `/assist/disable`.",
+        "properties": {
+          "model_routing_enabled": {
+            "default": false,
+            "title": "Model Routing Enabled",
+            "type": "boolean"
+          },
+          "router_model_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Router Model Id"
+          },
+          "specialist_max_cost": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Specialist Max Cost"
+          }
+        },
+        "required": [
+          "specialist_max_cost"
+        ],
+        "title": "AssistSettingsPut",
+        "type": "object"
+      },
       "AttributesIn": {
         "additionalProperties": false,
         "properties": {
@@ -2778,6 +2912,61 @@
         "title": "CaseResult",
         "type": "object"
       },
+      "CatalogEntryOut": {
+        "properties": {
+          "installs": {
+            "items": {
+              "$ref": "#/components/schemas/InstallStatus"
+            },
+            "title": "Installs",
+            "type": "array"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "proposal_kinds": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Proposal Kinds",
+            "type": "array"
+          },
+          "required_permissions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Required Permissions",
+            "type": "array"
+          },
+          "router_description": {
+            "title": "Router Description",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "tools": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "key",
+          "title",
+          "router_description",
+          "tools",
+          "required_permissions",
+          "proposal_kinds",
+          "installs"
+        ],
+        "title": "CatalogEntryOut",
+        "type": "object"
+      },
       "ChatMessageIn": {
         "additionalProperties": false,
         "properties": {
@@ -3583,7 +3772,7 @@
       },
       "ContextPlan": {
         "additionalProperties": false,
-        "description": "The job's plan as the executor needs it; the sealed fields are `None` before sealing.",
+        "description": "The job's plan as the executor needs it; the sealed fields are `None` before sealing.\n`release_digest` is the plan's release digest and `generator_version` its release's app\ngenerator version (`None` unless the release is a generated app, SP5 6.6).",
         "properties": {
           "adapter_version": {
             "anyOf": [
@@ -3638,10 +3827,33 @@
             ],
             "title": "Expires At"
           },
+          "generator_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generator Version"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "release_digest": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Digest"
           },
           "snapshot": {
             "anyOf": [
@@ -3707,7 +3919,9 @@
           "adapter_version",
           "toolchain_digest",
           "digest",
-          "expires_at"
+          "expires_at",
+          "release_digest",
+          "generator_version"
         ],
         "title": "ContextPlan",
         "type": "object"
@@ -7329,6 +7543,73 @@
           "checks"
         ],
         "title": "IdpTestOut",
+        "type": "object"
+      },
+      "InstallIn": {
+        "additionalProperties": false,
+        "description": "`POST .../assist/install`: the model of every installed agent and the catalog keys (all six,\nin catalog order, when left out).",
+        "properties": {
+          "keys": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 6,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keys"
+          },
+          "model_id": {
+            "format": "uuid",
+            "title": "Model Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model_id"
+        ],
+        "title": "InstallIn",
+        "type": "object"
+      },
+      "InstallStatus": {
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "installing",
+              "enabled",
+              "disabled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "project_id",
+          "status",
+          "available"
+        ],
+        "title": "InstallStatus",
         "type": "object"
       },
       "InstallationAuthOut": {
@@ -15915,6 +16196,114 @@
         "title": "SolutionVersionOut",
         "type": "object"
       },
+      "SpecialistOut": {
+        "description": "One catalog entry installed in a project. `available` is true only while the organization\nhas assist enabled on the current catalog version and the specialist is enabled.",
+        "properties": {
+          "agent_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "agent_version_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Version Id"
+          },
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "catalog_version": {
+            "title": "Catalog Version",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "installed_by": {
+            "format": "uuid",
+            "title": "Installed By",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "installing",
+              "enabled",
+              "disabled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "title",
+          "workspace_id",
+          "project_id",
+          "status",
+          "agent_id",
+          "agent_version_id",
+          "catalog_version",
+          "available",
+          "installed_by",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "SpecialistOut",
+        "type": "object"
+      },
       "StateIn": {
         "additionalProperties": false,
         "properties": {
@@ -16214,8 +16603,20 @@
       },
       "TargetBindings": {
         "additionalProperties": false,
-        "description": "A Databricks target's bindings.",
+        "description": "A Databricks target's bindings. `serving_endpoint`: the model serving endpoint a generated\napp (a `/2` release) queries, by name; a template plan ignores it (SP5 6.6).",
         "properties": {
+          "serving_endpoint": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9_-]{1,63}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Serving Endpoint"
+          },
           "warehouse_id": {
             "pattern": "^[A-Za-z0-9-]{1,64}$",
             "title": "Warehouse Id",
@@ -24923,6 +25324,504 @@
         "summary": "Decide Approval",
         "tags": [
           "operate"
+        ]
+      }
+    },
+    "/api/v1/orgs/{org}/assist/catalog": {
+      "get": {
+        "operationId": "get_assist_catalog_api_v1_orgs__org__assist_catalog_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "org",
+            "required": true,
+            "schema": {
+              "title": "Org",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistCatalogOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "unauthenticated / invalid_credentials"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "forbidden / csrf_failed / auth_disabled"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "not_found (also for resources in other tenants)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "conflict / scope_archived"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "validation_error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "rate_limited"
+          }
+        },
+        "summary": "Get Assist Catalog",
+        "tags": [
+          "assist"
+        ]
+      }
+    },
+    "/api/v1/orgs/{org}/assist/disable": {
+      "post": {
+        "operationId": "disable_assist_api_v1_orgs__org__assist_disable_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "org",
+            "required": true,
+            "schema": {
+              "title": "Org",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistSettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "unauthenticated / invalid_credentials"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "forbidden / csrf_failed / auth_disabled"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "not_found (also for resources in other tenants)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "conflict / scope_archived"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "validation_error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "rate_limited"
+          }
+        },
+        "summary": "Disable Assist",
+        "tags": [
+          "assist"
+        ]
+      }
+    },
+    "/api/v1/orgs/{org}/assist/enable": {
+      "post": {
+        "operationId": "enable_assist_api_v1_orgs__org__assist_enable_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "org",
+            "required": true,
+            "schema": {
+              "title": "Org",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistSettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "unauthenticated / invalid_credentials"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "forbidden / csrf_failed / auth_disabled"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "not_found (also for resources in other tenants)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "conflict / scope_archived"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "validation_error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "rate_limited"
+          }
+        },
+        "summary": "Enable Assist",
+        "tags": [
+          "assist"
+        ]
+      }
+    },
+    "/api/v1/orgs/{org}/assist/settings": {
+      "get": {
+        "operationId": "get_assist_settings_api_v1_orgs__org__assist_settings_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "org",
+            "required": true,
+            "schema": {
+              "title": "Org",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistSettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "unauthenticated / invalid_credentials"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "forbidden / csrf_failed / auth_disabled"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "not_found (also for resources in other tenants)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "conflict / scope_archived"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "validation_error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "rate_limited"
+          }
+        },
+        "summary": "Get Assist Settings",
+        "tags": [
+          "assist"
+        ]
+      },
+      "put": {
+        "operationId": "put_assist_settings_api_v1_orgs__org__assist_settings_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "org",
+            "required": true,
+            "schema": {
+              "title": "Org",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistSettingsPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistSettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "unauthenticated / invalid_credentials"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "forbidden / csrf_failed / auth_disabled"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "not_found (also for resources in other tenants)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "conflict / scope_archived"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "validation_error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "rate_limited"
+          }
+        },
+        "summary": "Put Assist Settings",
+        "tags": [
+          "assist"
         ]
       }
     },
@@ -56669,6 +57568,506 @@
         "summary": "Create App Request",
         "tags": [
           "appgen"
+        ]
+      }
+    },
+    "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/assist/install": {
+      "post": {
+        "operationId": "install_assist_specialists_api_v1_orgs__org__workspaces__ws__projects__proj__assist_install_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ws",
+            "required": true,
+            "schema": {
+              "title": "Ws",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "proj",
+            "required": true,
+            "schema": {
+              "title": "Proj",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "org",
+            "required": true,
+            "schema": {
+              "title": "Org",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstallIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SpecialistOut"
+                  },
+                  "title": "Response Install Assist Specialists Api V1 Orgs  Org  Workspaces  Ws  Projects  Proj  Assist Install Post",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "unauthenticated / invalid_credentials"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "forbidden / csrf_failed / auth_disabled"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "not_found (also for resources in other tenants)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "conflict / scope_archived"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "validation_error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "rate_limited"
+          }
+        },
+        "summary": "Install Assist Specialists",
+        "tags": [
+          "assist"
+        ]
+      }
+    },
+    "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/assist/specialists": {
+      "get": {
+        "operationId": "list_assist_specialists_api_v1_orgs__org__workspaces__ws__projects__proj__assist_specialists_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ws",
+            "required": true,
+            "schema": {
+              "title": "Ws",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "proj",
+            "required": true,
+            "schema": {
+              "title": "Proj",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "org",
+            "required": true,
+            "schema": {
+              "title": "Org",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SpecialistOut"
+                  },
+                  "title": "Response List Assist Specialists Api V1 Orgs  Org  Workspaces  Ws  Projects  Proj  Assist Specialists Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "unauthenticated / invalid_credentials"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "forbidden / csrf_failed / auth_disabled"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "not_found (also for resources in other tenants)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "conflict / scope_archived"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "validation_error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "rate_limited"
+          }
+        },
+        "summary": "List Assist Specialists",
+        "tags": [
+          "assist"
+        ]
+      }
+    },
+    "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/assist/specialists/{key}/disable": {
+      "post": {
+        "operationId": "disable_assist_specialist_api_v1_orgs__org__workspaces__ws__projects__proj__assist_specialists__key__disable_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ws",
+            "required": true,
+            "schema": {
+              "title": "Ws",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "proj",
+            "required": true,
+            "schema": {
+              "title": "Proj",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "title": "Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "org",
+            "required": true,
+            "schema": {
+              "title": "Org",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpecialistOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "unauthenticated / invalid_credentials"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "forbidden / csrf_failed / auth_disabled"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "not_found (also for resources in other tenants)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "conflict / scope_archived"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "validation_error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "rate_limited"
+          }
+        },
+        "summary": "Disable Assist Specialist",
+        "tags": [
+          "assist"
+        ]
+      }
+    },
+    "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/assist/specialists/{key}/enable": {
+      "post": {
+        "operationId": "enable_assist_specialist_api_v1_orgs__org__workspaces__ws__projects__proj__assist_specialists__key__enable_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ws",
+            "required": true,
+            "schema": {
+              "title": "Ws",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "proj",
+            "required": true,
+            "schema": {
+              "title": "Proj",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "title": "Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "org",
+            "required": true,
+            "schema": {
+              "title": "Org",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpecialistOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "unauthenticated / invalid_credentials"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "forbidden / csrf_failed / auth_disabled"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "not_found (also for resources in other tenants)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "conflict / scope_archived"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "validation_error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "rate_limited"
+          }
+        },
+        "summary": "Enable Assist Specialist",
+        "tags": [
+          "assist"
         ]
       }
     },

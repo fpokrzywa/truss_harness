@@ -377,8 +377,12 @@ class ReconcileRequest(Model):
 
 
 class VerifyRequest(Model):
+    """`release_digest`: the plan's release digest when the deployment is a generated app (SP5
+    6.6); the app's deep health must answer it."""
+
     receipt: ApplyReceipt
     spec: ApplicationSpec | None = None
+    release_digest: Digest | None = None
 
 
 class NativeObservation(Model):
@@ -531,7 +535,9 @@ class PlanJobResult(Model):
 
 
 class ContextPlan(Model):
-    """The job's plan as the executor needs it; the sealed fields are `None` before sealing."""
+    """The job's plan as the executor needs it; the sealed fields are `None` before sealing.
+    `release_digest` is the plan's release digest and `generator_version` its release's app
+    generator version (`None` unless the release is a generated app, SP5 6.6)."""
 
     id: UUID
     tenant_id: UUID
@@ -547,6 +553,8 @@ class ContextPlan(Model):
     toolchain_digest: Digest | None
     digest: Digest | None
     expires_at: Timestamp | None
+    release_digest: Digest | None = None
+    generator_version: str | None = None
 
 
 class ContextDeployment(Model):

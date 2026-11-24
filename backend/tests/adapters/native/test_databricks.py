@@ -5,13 +5,19 @@ at the adapter level here with the same intent.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
+from importlib.resources import files
+from pathlib import Path
+from typing import Any  # Any: bundle YAML
 from uuid import uuid4
 
 import pytest
+import yaml
 
 import shifde.adapters.native.planning as planning
 from shifde.adapters.native.base import (
+    DeployContext,
     InMemoryJournal,
     NeedsAttention,
     create_archive,
@@ -19,7 +25,10 @@ from shifde.adapters.native.base import (
 )
 from shifde.adapters.native.contracts import (
     ApplyRequest,
+    BuildArtifact,
+    BuildRequest,
     DatabricksApplicationSpec,
+    DeploymentPlan,
     ObserveRequest,
     PlanRequest,
     ReconcileRequest,
@@ -29,8 +38,16 @@ from shifde.adapters.native.contracts import (
     utcnow,
 )
 from shifde.adapters.native.databricks.adapter import app_name
+from shifde.adapters.native.databricks.source import (
+    GENERATED_APP_YAML,
+    deployment_bundle,
+    scaffold_files,
+    validate_source,
+)
 from shifde.adapters.native.planning import seal_plan
-from tests.adapters.native.conftest import Setup
+from shifde.appgen.render import render
+from tests.adapters.native.conftest import WAREHOUSE, Setup
+from tests.appgen.rendered import ENDPOINT, SAMPLE_DIGEST, SAMPLE_MANIFEST, SAMPLE_RESOLVED
 
 
 def test_scaffold_build_produces_immutable_source_without_credentials(setup: Setup) -> None:
@@ -304,3 +321,180 @@ def test_in_memory_journal_records_intent_before_completion() -> None:
     journal.complete("bundle-deploy", {"native_id": "n"})
     with pytest.raises(ValueError, match="conflicting"):
         journal.complete("bundle-deploy", {"native_id": "other"})
+
+
+# --------------------------------------------------------------------------- generated app (SP5-6)
+SPEC = DatabricksApplicationSpec()
+MANAGED_YML = scaffold_files(SPEC)["databricks.yml"]
+
+
+def _generated_files() -> dict[str, bytes]:
+    """The rendered sample app as the executor hands it to the adapter (no `release.json`)."""
+    rendered = render(SAMPLE_MANIFEST, SAMPLE_DIGEST, SAMPLE_RESOLVED)
+    return {name: data for name, data in rendered.items() if name != "release.json"}
+
+
+def _generated(
+    setup: Setup, endpoint: str | None = ENDPOINT, contents: dict[str, bytes] | None = None
+) -> tuple[Setup, BuildArtifact, DeploymentPlan, DeployContext]:
+    """`setup` on a target bound to `endpoint` (no binding if None), with a planned build of the
+    rendered sample app (or of `contents`)."""
+    target = setup.read.target
+    bindings = {**target.bindings, **({"serving_endpoint": endpoint} if endpoint else {})}
+    read = replace(setup.read, target=target.model_copy(update={"bindings": bindings}))
+    bound = replace(setup, read=read)
+    archive = create_archive(contents or _generated_files())
+    source = bound.build.artifacts.put(bound.build.tenant_id, archive)
+    artifact = bound.adapter.build(
+        BuildRequest(spec=SPEC, source=source, application_id=uuid4()), bound.build
+    )
+    plan = bound.adapter.plan(PlanRequest(artifact=artifact), bound.read)
+    return bound, artifact, plan, bound.deploy_context()
+
+
+def _deployed_bundles(setup: Setup, monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """The `databricks.yml` of every CLI deploy, as the fake receives it."""
+    seen: list[dict[str, Any]] = []
+    execute = setup.platform.execute
+
+    def capture(action: str, directory: Path, **options: Any) -> dict[str, Any]:  # Any: CLI
+        if action == "deploy":
+            seen.append(yaml.safe_load((directory / "databricks.yml").read_text(encoding="utf-8")))
+        return execute(action, directory, **options)
+
+    monkeypatch.setattr(setup.platform, "execute", capture)
+    return seen
+
+
+def test_generated_app_yaml_is_the_appgen_template() -> None:
+    template = files("shifde.appgen").joinpath("templates").joinpath("app.yaml.txt")
+    assert template.read_bytes() == GENERATED_APP_YAML
+
+
+def test_validate_source_accepts_a_rendered_app_and_the_template() -> None:
+    assert validate_source(_generated_files(), SPEC) is True
+    assert validate_source(scaffold_files(SPEC), SPEC) is False
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"app/.env": b"TOKEN=x"},
+        {"app/static/.hidden/x.js": b""},
+        {"extra/tool.py": b"print(1)"},
+        {"app/app.yaml": GENERATED_APP_YAML + b"  - name: EXTRA\n    value: x\n"},
+        {"databricks.yml": MANAGED_YML + b"scripts:\n  steal: echo secret\n"},
+        {"databricks.yml": MANAGED_YML + b"include:\n  - extra/*.yml\n"},
+    ],
+    ids=["hidden-file", "hidden-dir", "outside-app", "app-yaml", "hook", "include"],
+)
+def test_validate_source_refuses_a_changed_generated_source(change: dict[str, bytes]) -> None:
+    with pytest.raises(ValueError):
+        validate_source({**_generated_files(), **change}, SPEC)
+
+
+def test_a_generated_source_needs_every_generated_file() -> None:
+    contents = _generated_files()
+    del contents["app/config/screens.json"]
+    with pytest.raises(ValueError, match="missing"):
+        validate_source(contents, SPEC)
+
+
+def test_deployment_bundle_adds_the_serving_endpoint_only_when_named() -> None:
+    options = {"host": "https://w.example", "app_name": "a", "root_path": "/r", "warehouse_id": "w"}
+    template = deployment_bundle(SPEC, **options)["resources"]["apps"]["app"]["resources"]
+    assert [r["name"] for r in template] == ["sql-warehouse"]
+    generated = deployment_bundle(SPEC, **options, serving_endpoint="ep")
+    assert generated["resources"]["apps"]["app"]["resources"][1:] == [
+        {"name": "serving-endpoint", "serving_endpoint": {"name": "ep", "permission": "CAN_QUERY"}}
+    ]
+
+
+def test_apply_binds_the_serving_endpoint_for_a_generated_source_only(
+    setup: Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = _deployed_bundles(setup, monkeypatch)
+    bound, artifact, plan, deploy = _generated(setup)
+    bound.adapter.apply(ApplyRequest(artifact=artifact, plan=plan), deploy)
+    # the template, on a target that names an endpoint too
+    template, t_artifact, t_plan, t_deploy = _generated(setup, contents=scaffold_files(SPEC))
+    template.adapter.apply(ApplyRequest(artifact=t_artifact, plan=t_plan), t_deploy)
+    warehouse = {
+        "name": "sql-warehouse",
+        "sql_warehouse": {"id": WAREHOUSE, "permission": "CAN_USE"},
+    }
+    endpoint = {
+        "name": "serving-endpoint",
+        "serving_endpoint": {"name": ENDPOINT, "permission": "CAN_QUERY"},
+    }
+    assert [b["resources"]["apps"]["app"]["resources"] for b in seen] == [
+        [warehouse, endpoint],
+        [warehouse],
+    ]
+
+
+def test_a_generated_source_without_the_binding_fails_before_the_cli(setup: Setup) -> None:
+    bound, artifact, plan, deploy = _generated(setup, endpoint=None)
+    with pytest.raises(ValueError, match="serving_endpoint"):
+        bound.adapter.apply(ApplyRequest(artifact=artifact, plan=plan), deploy)
+    assert setup.platform.actions == []
+
+
+def _verify_generated(
+    setup: Setup, release_digest: str | None = SAMPLE_DIGEST
+) -> dict[str, tuple[str, str]]:
+    """name -> (status, evidence) of verify on the deployed sample app."""
+    bound, artifact, plan, deploy = _generated(setup)
+    receipt = bound.adapter.apply(ApplyRequest(artifact=artifact, plan=plan), deploy)
+    report = bound.adapter.verify(
+        VerifyRequest(receipt=receipt, release_digest=release_digest), bound.read
+    )
+    return {c.name: (c.status, c.evidence) for c in report.checks}
+
+
+def test_verify_passes_a_generated_app_with_all_three_checks(setup: Setup) -> None:
+    assert _verify_generated(setup) == {
+        "native-runtime": ("passed", ""),
+        "runtime-warehouse": ("passed", ""),
+        "app-deep-health": ("passed", ""),
+    }
+
+
+def test_verify_without_a_release_digest_is_the_template_report(setup: Setup) -> None:
+    assert set(_verify_generated(setup, None)) == {"native-runtime", "runtime-warehouse"}
+
+
+def test_fault_deep_health_bad_fails_app_deep_health(setup: Setup) -> None:
+    setup.platform.deep_health_bad = True
+    checks = _verify_generated(setup)
+    first = sorted({t.lower() for r in SAMPLE_MANIFEST["data_reads"] for t in r["tables"]})[0]
+    assert checks["app-deep-health"] == (
+        "failed",
+        f"table:{first}: the app cannot read {first}",
+    )
+    assert checks["runtime-warehouse"] == ("passed", "")
+
+
+def test_verify_fails_a_release_digest_other_than_the_plan_s(setup: Setup) -> None:
+    assert _verify_generated(setup, "9" * 64)["app-deep-health"] == (
+        "failed",
+        "the release digest differs from the plan's",
+    )
+
+
+def test_verify_skips_app_deep_health_when_the_runtime_failed(setup: Setup) -> None:
+    setup.platform.crash_app = True
+    checks = _verify_generated(setup)
+    assert checks["native-runtime"][0] == "failed"
+    assert checks["app-deep-health"] == ("skipped", "")
+
+
+def test_a_deployment_without_a_recorded_release_fails_deep_health(setup: Setup) -> None:
+    """The template app answers no deep health (the fake's 404)."""
+    artifact, plan, deploy = setup.prepare()
+    receipt = setup.adapter.apply(ApplyRequest(artifact=artifact, plan=plan), deploy)
+    report = setup.adapter.verify(
+        VerifyRequest(receipt=receipt, release_digest=SAMPLE_DIGEST), setup.read
+    )
+    checks = {c.name: (c.status, c.evidence) for c in report.checks}
+    assert checks["app-deep-health"] == ("failed", "deep health request failed")

@@ -24,6 +24,20 @@ The plan stores the release, its digest and the passing run; the artifact carrie
 and the plan digest the release digest. Approval checks the release again after the plan row
 lock; reject does not.
 
+A `/2` release (compiler `packaging.service.COMPILER_VERSION_APP`, SP5 design 6.6) deploys the
+generated app instead of the SDK template. After the checks above it is refused with 409, in this
+order and before any write: `serving_endpoint_required` (the target has no `serving_endpoint`
+binding), `serving_endpoint_mismatch` (the release's single model binding's `model` is not that
+endpoint) and `model_not_in_target_workspace` (the binding's provider is neither an
+`openai_compatible` provider the requester can read whose `base_url` scheme and host normalize to
+the target's address, nor, in development and test only, a `fake` provider; the `base_url` is
+only compared, never stored). It then gathers `Resolved` under the requester's own scope
+(`appgen.service.resolved_for_release`: 409 `release_source_changed` when a pinned version
+changed or this organization cannot read it), renders the app (`appgen.render.render`: 409
+`generator_version_unsupported`) and stores the archive as an artifact of the requester's
+organization; the plan digest also covers the generator version. Any other release takes the
+template path unchanged.
+
 A plan is scoped by its target's workspace/project; a plan or target the caller cannot read gets
 the answer an unknown id gets. Every plan route first settles the organization's plans (the lost
 job sweep, lost plan jobs, passed expiries, then the deployment settle step) and commits that, so
@@ -39,13 +53,18 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping
 from typing import Any  # Any: plan and target rows
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
 
+from shifde.adapters.native.addresses import AddressRefused, normalize_databricks_address
 from shifde.adapters.native.base import create_archive
 from shifde.adapters.native.contracts import DatabricksApplicationSpec
 from shifde.adapters.native.databricks.source import scaffold_files
+from shifde.adapters.runtime import IntegrationRuntime
+from shifde.appgen.render import render
+from shifde.appgen.service import resolved_for_release
 from shifde.audit import service as audit
 from shifde.authz.service import ResourceRef
 from shifde.core.errors import AppError, NotFound, ValidationFailed
@@ -59,6 +78,7 @@ from shifde.evaluation.service import (
     ReleaseWithdrawn,
     require_passing_evaluation,
 )
+from shifde.models_admin.service import ModelService
 from shifde.packaging.canonical import canonical
 from shifde.packaging.service import READ, release_record, scoped_release
 from shifde.tenancy.scope import TenantScope
@@ -96,6 +116,18 @@ class ReleaseTargetMismatch(AppError):
     status, code, title = 409, "release_target_mismatch", "Conflict"
 
 
+class ServingEndpointRequired(AppError):
+    status, code, title = 409, "serving_endpoint_required", "Conflict"
+
+
+class ServingEndpointMismatch(AppError):
+    status, code, title = 409, "serving_endpoint_mismatch", "Conflict"
+
+
+class ModelNotInTargetWorkspace(AppError):
+    status, code, title = 409, "model_not_in_target_workspace", "Conflict"
+
+
 def check_target_kind(manifest: Mapping[str, Any]) -> None:
     """A release is deployed only to the kind of target its manifest names."""
     if manifest.get("target_kind") != TARGET_KIND:
@@ -107,6 +139,11 @@ def template_artifact(manifest: Mapping[str, Any], release_digest: str) -> tuple
     (`release.json`, the canonical JSON of the manifest and its digest), and its sha256 digest."""
     files = scaffold_files(DatabricksApplicationSpec())
     files["release.json"] = canonical({"manifest": manifest, "digest": release_digest})
+    return archive(files)
+
+
+def archive(files: dict[str, bytes]) -> tuple[bytes, str]:
+    """The artifact archive of `files` (at most 5 MB) and its sha256 digest."""
     content = create_archive(files)
     if len(content) > MAX_ARTIFACT_BYTES:
         raise ValidationFailed("the artifact exceeds 5 MB")
@@ -120,8 +157,9 @@ def _constraint(exc: IntegrityError) -> str | None:
 
 
 class PlanService:
-    def __init__(self, scope: TenantScope) -> None:
+    def __init__(self, scope: TenantScope, runtime: IntegrationRuntime) -> None:
         self.sc = scope
+        self.runtime = runtime
 
     # ================================================================== helpers
     def _settle(self) -> None:
@@ -285,7 +323,11 @@ class PlanService:
             # the SDK template artifact is Databricks only until SP6-6 renders Snowflake releases
             raise ReleaseTargetMismatch("The release is for another kind of target.")
         release, passing = self._gate(target, body.release_id)
-        content, artifact_digest = template_artifact(release["manifest"], release["digest"])
+        generator_version = service.app_generator_version(release["manifest"])
+        if generator_version is None:
+            content, artifact_digest = template_artifact(release["manifest"], release["digest"])
+        else:
+            content, artifact_digest = self._app_artifact(target, release)
         session = self.sc.session
         principal_id = self.sc.principal.principal_id
         artifact_id, plan_id = uuid7(), uuid7()
@@ -336,9 +378,55 @@ class PlanService:
             release_id=str(release["id"]),
             release_digest=release["digest"],
             evaluation_run_id=str(passing["id"]),
+            **({"generator_version": generator_version} if generator_version else {}),
         )
         session.commit()
         return self._out(row)
+
+    def _app_artifact(
+        self, target: Mapping[str, Any], release: Mapping[str, Any]
+    ) -> tuple[bytes, str]:
+        """The generated app's archive and digest for a `/2` release (SP5 6.6): the serving
+        endpoint and model checks, `Resolved` under the requester's scope, then render."""
+        manifest = release["manifest"]
+        endpoint = target["bindings"].get("serving_endpoint")
+        if not endpoint:
+            raise ServingEndpointRequired("The target has no serving endpoint binding.")
+        bindings = list(((manifest.get("bindings") or {}).get("model_bindings") or {}).values())
+        if len(bindings) != 1 or bindings[0].get("model") != endpoint:
+            raise ServingEndpointMismatch(
+                "The release's model binding is not the target's serving endpoint."
+            )
+        if not self._in_workspace(bindings[0].get("provider_id"), target["address"]):
+            raise ModelNotInTargetWorkspace(
+                "The release's model provider is not in the target's workspace."
+            )
+        resolved = resolved_for_release(self.sc, self.runtime, manifest)
+        return archive(render(manifest, release["digest"], resolved))
+
+    def _in_workspace(self, provider_id: Any, address: str) -> bool:  # Any: a JSON value
+        """The provider is an `openai_compatible` provider the caller can read whose `base_url`
+        (scheme and host) normalizes to `address`, or a `fake` one in development and test."""
+        try:
+            found = ModelService(self.sc, self.runtime).provider_destination(UUID(str(provider_id)))
+        except ValueError:
+            return False
+        if found is None:
+            return False
+        adapter_key, base_url = found
+        settings = self.runtime.settings
+        if adapter_key == "fake":
+            return settings.env in ("development", "test")
+        if adapter_key != "openai_compatible" or base_url is None:
+            return False
+        try:
+            parts = urlsplit(base_url)
+            origin = normalize_databricks_address(
+                f"{parts.scheme}://{parts.netloc}", settings.delivery_databricks_host_suffixes
+            )
+        except (AddressRefused, ValueError):
+            return False
+        return origin == address
 
     def _gate(
         self, target: Mapping[str, Any], release_id: UUID

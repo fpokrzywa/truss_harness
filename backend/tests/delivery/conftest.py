@@ -48,6 +48,8 @@ for _table in (
     "solutions",
     "artifact_versions",
     "artifacts",
+    "model_providers",
+    "connections",
     "delivery_executor_credentials",
     "delivery_executors",
     "delivery_targets",

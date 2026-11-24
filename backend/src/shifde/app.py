@@ -22,6 +22,7 @@ from shifde.adapters.registry import AdapterRegistry
 from shifde.adapters.runtime import IntegrationRuntime
 from shifde.admin import api as admin_api
 from shifde.appgen import api as appgen_api
+from shifde.assist import api as assist_api
 from shifde.board import api as board_api
 from shifde.build import api as build_api
 from shifde.connections import api as connections_api
@@ -184,6 +185,7 @@ def create_app(
     app.include_router(delivery_api.router, dependencies=guard)
     app.include_router(mcp_api.router, dependencies=guard)
     app.include_router(board_api.router, dependencies=guard)
+    app.include_router(assist_api.router, dependencies=guard)
     # the executor gateway authenticates `shx_` executor tokens itself: no user session (B-2664)
     app.include_router(delivery_gateway_api.router)
     if settings.mcp_enabled:

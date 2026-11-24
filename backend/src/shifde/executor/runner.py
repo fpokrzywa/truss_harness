@@ -634,7 +634,14 @@ class Runner:
         receipt = ctx.deployment.receipt
         if job.kind == "observe":
             return adapter.observe(ObserveRequest(receipt=receipt), read)
-        return adapter.verify(VerifyRequest(receipt=receipt), read)
+        # a generated app's deep health must answer the plan's release digest (SP5 6.6); a
+        # generated app's plan without one fails closed rather than skip deep health
+        release_digest = None
+        if ctx.plan.generator_version is not None:
+            if ctx.plan.release_digest is None:
+                raise ValueError("the generated app's plan has no release digest")
+            release_digest = ctx.plan.release_digest
+        return adapter.verify(VerifyRequest(receipt=receipt, release_digest=release_digest), read)
 
     def _artifact(
         self,

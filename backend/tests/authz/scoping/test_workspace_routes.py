@@ -78,6 +78,7 @@ DATASETS = "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/evaluation-datase
 EVALUATIONS = "/api/v1/orgs/{org}/releases/{release_id}/evaluations"
 APP_REQUESTS = "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/app-requests"
 APP_REQUEST = "/api/v1/orgs/{org}/app-requests/{request_id}"
+ASSIST = "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/assist"
 
 ROUTES: dict[Op, tuple[str, str]] = {
     # ------------------------------------------------------------------ no organization
@@ -595,6 +596,16 @@ ROUTES: dict[Op, tuple[str, str]] = {
     # ------------------------------------------------------------------ board
     ("GET", "/api/v1/orgs/{org}/board"): (SCOPED, "board"),
     ("GET", "/api/v1/orgs/{org}/workspaces/{ws}/projects/{proj}/board"): (SCOPED, "board"),
+    # ------------------------------------------------------------------ assist
+    ("GET", "/api/v1/orgs/{org}/assist/catalog"): (SCOPED, "assist"),
+    ("GET", "/api/v1/orgs/{org}/assist/settings"): (CLIENT, "assist:admin at the organization"),
+    ("PUT", "/api/v1/orgs/{org}/assist/settings"): (CLIENT, "assist:admin at the organization"),
+    ("POST", "/api/v1/orgs/{org}/assist/enable"): (CLIENT, "assist:admin at the organization"),
+    ("POST", "/api/v1/orgs/{org}/assist/disable"): (CLIENT, "assist:admin at the organization"),
+    ("POST", ASSIST + "/install"): (SCOPED, "assist"),
+    ("GET", ASSIST + "/specialists"): (SCOPED, "assist"),
+    ("POST", ASSIST + "/specialists/{key}/enable"): (SCOPED, "assist"),
+    ("POST", ASSIST + "/specialists/{key}/disable"): (SCOPED, "assist"),
     # ------------------------------------------------------------------ models
     ("GET", "/api/v1/orgs/{org}/model-allowlists"): (SCOPED, "models"),
     ("PUT", "/api/v1/orgs/{org}/model-allowlists"): (SCOPED, "models"),
@@ -1711,6 +1722,47 @@ _register(
 )
 
 
+# ---------------------------------------------------------------------- assist
+ASSIST_ROWS = (
+    "SELECT * FROM shifde.assist_specialists WHERE workspace_id = :w ORDER BY id",
+    *ART[:2],
+)
+
+
+def _assist(n: int, tail: str) -> str:
+    return f"/workspaces/w{n}/projects/p{n}/assist{tail}"
+
+
+# the catalog lists each side's install by project; the disable case before the enable case (W1's
+# specialist is enabled again at the end)
+_register(
+    "assist",
+    {
+        ("GET", ORG + "/assist/catalog"): lambda w: _case(
+            LIST, "GET", lambda n: "/assist/catalog", ids=lambda n: w("proj", n)
+        ),
+        ("POST", ASSIST + "/install"): lambda w: _case(
+            CREATE,
+            "POST",
+            lambda n: _assist(n, "/install"),
+            body=lambda n: {"model_id": w("assist_model", 0), "keys": ["cost"]},
+            state=w.snap(*ASSIST_ROWS),
+        ),
+        ("GET", ASSIST + "/specialists"): lambda w: _case(
+            LIST, "GET", lambda n: _assist(n, "/specialists"), ids=lambda n: w("specialist", n)
+        ),
+        ("POST", ASSIST + "/specialists/{key}/disable"): lambda w: _case(
+            WRITE, "POST", lambda n: _assist(n, "/specialists/cost/disable"),
+            state=w.snap(*ASSIST_ROWS),
+        ),
+        ("POST", ASSIST + "/specialists/{key}/enable"): lambda w: _case(
+            WRITE, "POST", lambda n: _assist(n, "/specialists/cost/enable"),
+            state=w.snap(*ASSIST_ROWS),
+        ),
+    },
+)  # fmt: skip
+
+
 def _rest_connection(base_url: str, n: int, name: str) -> dict[str, Any]:  # Any: JSON body
     return {
         "name": name,
@@ -2411,6 +2463,20 @@ def test_app_requests(client: TestClient, world: World, owner_session: Session) 
 def test_board(client: TestClient, world: World, owner_session: Session) -> None:
     w = _world(client, owner_session, world.passwords)
     _check(w, "board")
+
+
+def test_assist(client: TestClient, world: World, owner_session: Session) -> None:
+    w = _world(client, owner_session, world.passwords)
+    w.post("/assist/enable", None, 200)
+    w.set("assist_model", 0, fake_model_stack(w.admin.client, w.admin)["model"])
+    for n in (1, 2):
+        [made] = w.post(
+            f"/workspaces/w{n}/projects/p{n}/assist/install",
+            {"model_id": w("assist_model", 0), "keys": ["cost"]},
+            200,
+        )
+        w.set("specialist", n, made["id"])
+    _check(w, "assist")
 
 
 def test_models(client: TestClient, world: World, owner_session: Session) -> None:

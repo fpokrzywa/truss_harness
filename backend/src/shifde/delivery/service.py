@@ -82,6 +82,7 @@ from shifde.core.redaction import register_secret
 from shifde.delivery import repository
 from shifde.delivery import schemas as s
 from shifde.identity import apikeys
+from shifde.packaging.service import COMPILER_VERSION_APP, release_record
 from shifde.tenancy import service as tenancy
 from shifde.tenancy.scope import TenantScope
 
@@ -303,7 +304,7 @@ class TargetService:
                 "address": address,
                 "claim_id": claim_id,
                 "environment": body.environment,
-                "bindings": body.bindings.model_dump(),
+                "bindings": body.bindings.model_dump(exclude_none=True),
                 "credential_ref": body.credential_ref,
                 "created_by": self.sc.principal.principal_id,
             },
@@ -735,20 +736,42 @@ def plan_digest(
     adapter_version: str,
     toolchain_digest: str,
     release_digest: str | None,
+    generator_version: str | None = None,
 ) -> str:
     """The sealed plan's digest (design 4): artifact digest, target revision, snapshot
-    fingerprint, steps, adapter version, toolchain digest and release digest (SP3 section 6)."""
-    return digest(
-        {
-            "artifact_digest": artifact_digest,
-            "target_revision": target_revision,
-            "snapshot_fingerprint": snapshot_fingerprint,
-            "steps": steps,
-            "adapter_version": adapter_version,
-            "toolchain_digest": toolchain_digest,
-            "release_digest": release_digest,
-        }
-    )
+    fingerprint, steps, adapter version, toolchain digest and release digest (SP3 section 6),
+    plus the app generator version of a generated app (SP5 6.6; absent otherwise, so a template
+    plan's digest is unchanged)."""
+    value: dict[str, Any] = {
+        "artifact_digest": artifact_digest,
+        "target_revision": target_revision,
+        "snapshot_fingerprint": snapshot_fingerprint,
+        "steps": steps,
+        "adapter_version": adapter_version,
+        "toolchain_digest": toolchain_digest,
+        "release_digest": release_digest,
+    }
+    if generator_version is not None:
+        value["generator_version"] = generator_version
+    return digest(value)
+
+
+def app_generator_version(manifest: Mapping[str, Any]) -> str | None:
+    """The app generator version of a `/2` release manifest (SP5 6.2); None for any other."""
+    if manifest.get("compiler_version") != COMPILER_VERSION_APP:
+        return None
+    app = manifest.get("app")
+    version = app.get("generator_version") if isinstance(app, Mapping) else None
+    return str(version) if version is not None else None
+
+
+def plan_generator_version(session: Session, plan: Mapping[str, Any]) -> str | None:
+    """The app generator version of the plan's release, read in the plan's organization only;
+    None for a template plan."""
+    if plan["release_id"] is None:
+        return None
+    release = release_record(session, plan["release_id"], tenant_id=plan["tenant_id"])
+    return app_generator_version(release["manifest"]) if release is not None else None
 
 
 def start_planning(session: Session, job: Mapping[str, Any]) -> None:
@@ -821,6 +844,7 @@ def on_plan_result(session: Session, job: Mapping[str, Any], body: JobResultSubm
                 adapter_version=value.adapter_version,
                 toolchain_digest=value.toolchain_digest,
                 release_digest=plan["release_digest"],
+                generator_version=plan_generator_version(session, plan),
             ),
         },
         tenant_id=tenant_id,
@@ -832,6 +856,7 @@ READ_ONLY_MAX_ATTEMPTS = 4  # one lease plus up to 3 re-queues (settled call 8)
 APPLY_MAX_ATTEMPTS = 1  # a platform write is never retried
 POLL_DELAY = timedelta(seconds=15)  # settled call 5: the next observe/verify job
 REQUIRED_CHECKS = ("native-runtime", "runtime-warehouse")
+APP_REQUIRED_CHECKS = (*REQUIRED_CHECKS, "app-deep-health")  # a generated app (SP5 6.6)
 
 
 def enqueue_job(
@@ -1084,7 +1109,9 @@ def on_observe_result(session: Session, job: Mapping[str, Any], body: JobResultS
 
 def on_verify_result(session: Session, job: Mapping[str, Any], body: JobResultSubmission) -> None:
     """The `verify` kind's result hook: `verified` only when `native-runtime` and
-    `runtime-warehouse` both passed, otherwise `failed`."""
+    `runtime-warehouse` both passed, and for a generated app (the plan's release is `/2`, SP5 6.6)
+    `app-deep-health` too, even when the report omits it; otherwise `failed`. It fails closed: a
+    plan that cannot be read, or a plan release that cannot be read, is `failed`."""
     row = _deployment(session, job, ("verifying",))
     if row is None:
         return
@@ -1096,7 +1123,8 @@ def on_verify_result(session: Session, job: Mapping[str, Any], body: JobResultSu
         session, row["id"], report.model_dump(mode="json"), tenant_id=row["tenant_id"]
     )
     passed = {check.name for check in report.checks if check.status == "passed"}
-    if all(name in passed for name in REQUIRED_CHECKS):
+    required = _required_checks(session, row)
+    if required is not None and all(name in passed for name in required):
         repository.set_deployment_status(
             session,
             row["id"],
@@ -1107,6 +1135,21 @@ def on_verify_result(session: Session, job: Mapping[str, Any], body: JobResultSu
         )
     else:
         _fail(session, row, "verification failed")
+
+
+def _required_checks(session: Session, row: Mapping[str, Any]) -> tuple[str, ...] | None:
+    """The checks the deployment's verification needs, read in its organization only; None
+    when its plan, or the plan's release, cannot be read."""
+    plan = repository.get_plan(session, row["plan_id"], tenant_id=row["tenant_id"])
+    if plan is None:
+        return None
+    if plan["release_id"] is None:
+        return REQUIRED_CHECKS
+    release = release_record(session, plan["release_id"], tenant_id=plan["tenant_id"])
+    if release is None:
+        return None
+    generated = app_generator_version(release["manifest"]) is not None
+    return APP_REQUIRED_CHECKS if generated else REQUIRED_CHECKS
 
 
 def on_reconcile_result(

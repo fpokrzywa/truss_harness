@@ -82,7 +82,7 @@ def test_register_list_get_archive(client: TestClient, world: World, people: Peo
     assert made["address"] == f"https://{host}"
     assert made["workspace"] == ws_slug(a) and made["project"] == project_slug(a)
     assert made["status"] == "active" and made["revision"] == 1
-    assert made["bindings"] == {"warehouse_id": "abc123def456"}
+    assert made["bindings"] == {"warehouse_id": "abc123def456", "serving_endpoint": None}
     assert made["platform_kind"] == "databricks" and made["environment"] == "dev"
     listed = client.get(targets(a.slug), headers=h)
     assert listed.status_code == 200, listed.text

@@ -8,6 +8,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 
+from shifde.adapters.deps import RuntimeDep
 from shifde.core.deps import SettingsDep
 from shifde.core.pagination import DEFAULT_LIMIT, Page
 from shifde.delivery import schemas as s
@@ -33,8 +34,8 @@ def _executors(scope: ScopeDep, settings: SettingsDep) -> ExecutorService:
 Executors = Annotated[ExecutorService, Depends(_executors)]
 
 
-def _plans(scope: ScopeDep) -> PlanService:
-    return PlanService(scope)
+def _plans(scope: ScopeDep, runtime: RuntimeDep) -> PlanService:
+    return PlanService(scope, runtime)
 
 
 Plans = Annotated[PlanService, Depends(_plans)]

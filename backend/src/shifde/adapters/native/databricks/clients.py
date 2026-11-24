@@ -24,6 +24,7 @@ class WorkspaceGateway(Protocol):
     def get_app(self, name: str) -> dict[str, Any] | None: ...
     def probe(self, warehouse_id: str) -> None: ...
     def health_check(self, url: str) -> dict[str, Any]: ...
+    def deep_health(self, url: str) -> tuple[int, dict[str, Any]]: ...
 
 
 class BundleRunner(Protocol):
@@ -98,6 +99,19 @@ class DatabricksWorkspaceGateway:
         if not isinstance(body, dict):
             raise ValueError("unexpected health response")
         return body
+
+    def deep_health(self, url: str) -> tuple[int, dict[str, Any]]:
+        """A generated app's `GET /health?deep=1`: its status (200 or 503) and JSON object."""
+        check_app_origin(url)
+        with self._client() as client:
+            response = client.get(url.rstrip("/") + "/health", params={"deep": "1"})
+        if response.status_code not in (200, 503):
+            response.raise_for_status()
+            raise ValueError("unexpected deep health status")
+        body = response.json()
+        if not isinstance(body, dict):
+            raise ValueError("unexpected deep health response")
+        return response.status_code, body
 
 
 class DatabricksCLI:
