@@ -54,7 +54,7 @@ FIXED_KEYS = {
     "release.json",
 }
 # the post-split Databricks render of the SP5 fixture, static files excluded (DECISIONS B-3999)
-GOLDEN_DATABRICKS = "021da9288f71120aba492e8a1d5fa091ad280e5bc697dbfb87e2b9c0fd2ead48"
+GOLDEN_DATABRICKS = "e6ec8d765ef3b88a8d566720605da502a1d908cb2c44029c51a779044ba6fe13"
 # a SETH origin or credential: the API prefix, SETH's settings, test hosts, key prefixes
 FORBIDDEN = [
     re.compile(re.escape(p))
@@ -85,14 +85,19 @@ def test_two_renders_give_equal_files_and_archive_bytes() -> None:
 
 
 def test_the_databricks_render_of_the_sp5_fixture_is_pinned() -> None:
-    """Golden digest (Call S6-B): the sha256 of `create_archive` of the Databricks render of
-    `SAMPLE_MANIFEST`/`SAMPLE_RESOLVED`, the `app/static/` entries left out (the web bundle is
-    pinned byte for byte by the copy test and its `BUILD_DIGEST`). Any change to the Databricks
-    app's templates, config files or `release.json` changes it; change this constant only with a
-    logged decision in `docs/build/DECISIONS.md`."""
+    """Golden digest (Call S6-B): the sha256 of the sorted file names and contents of the Databricks
+    render of `SAMPLE_MANIFEST`/`SAMPLE_RESOLVED`, the `app/static/` entries left out (the web
+    bundle is pinned byte for byte by the copy test and its `BUILD_DIGEST`). The files are hashed,
+    not the zip, whose bytes depend on the platform. Any change to the Databricks app's templates,
+    config files or `release.json` changes it; change this constant only with a logged decision in
+    `docs/build/DECISIONS.md`."""
     rendered = {k: v for k, v in _render().items() if not k.startswith("app/static/")}
     assert set(rendered) == FIXED_KEYS
-    assert hashlib.sha256(create_archive(rendered)).hexdigest() == GOLDEN_DATABRICKS
+    golden = hashlib.sha256()
+    for name, content in sorted(rendered.items()):
+        for part in (name.encode("utf-8"), content):  # each part after its length
+            golden.update(len(part).to_bytes(8, "big") + part)
+    assert golden.hexdigest() == GOLDEN_DATABRICKS
 
 
 def test_the_rendered_keys_are_exactly_the_app_files() -> None:
