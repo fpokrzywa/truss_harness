@@ -4,7 +4,9 @@ Claims are written only by the `shifde.delivery_claim_platform` definer, which r
 from the session context and serializes claims on one address with an advisory lock. Another
 organization's attempt gets the fixed `409 platform_already_registered` and learns nothing about
 the holder; archiving the last target on a claim releases it. Snowflake accounts (SP6-3) are
-claimed the same way, under their own platform kind (delivery_0007 widens the CHECKs).
+claimed the same way, under their own platform kind (delivery_0007 widens the CHECKs), and so are
+Fabric workspaces, Palantir Foundry stacks and Docker daemons (SP8-1, delivery_0008): every
+accepted form of one address is one claim, and another organization gets the same fixed 409.
 """
 
 from __future__ import annotations
@@ -31,12 +33,15 @@ from shifde.delivery.service import PLATFORM_ALREADY_REGISTERED
 from tests.connections.routes import as_user
 from tests.delivery.routes import (
     SNOWFLAKE_BINDINGS,
+    SP8_KINDS,
     address,
     counts,
     delivery_client,
     register,
     snowflake_address,
     snowflake_body,
+    sp8_address,
+    sp8_body,
     target_body,
     targets,
 )
@@ -617,3 +622,139 @@ def test_bs_snowflake_target_and_claim_are_invisible_to_a(
             == 1
         )
         s.rollback()
+
+
+# ------------------------------------------------------------------ Fabric, Palantir, Docker (SP8-1)
+def _forms(kind: str, url: str) -> list[str]:
+    """Every accepted form of the normalized address `url` of `kind` (the Docker daemon id is
+    never case-folded, so a Docker address has one form)."""
+    if kind == "fabric":
+        guid = url.rsplit("/", 1)[1].upper()
+        return [url, guid, f"https://app.fabric.microsoft.com/groups/{guid}/lakehouses"]
+    if kind == "palantir":
+        return [url, url.upper() + ":443/", url + "/"]
+    return [url]
+
+
+@pytest.mark.parametrize("kind", SP8_KINDS)
+def test_sp8_targets_of_one_organization_share_one_claim(
+    client: TestClient, world: World, people: People, owner_db: Database, kind: str
+) -> None:
+    h = as_user(client, people.owner_a)
+    url = sp8_address(kind)
+    forms = _forms(kind, url)
+    spaces = (ws_slug(world.a), ws2_slug(world.a), ws_slug(world.a))
+    made = [
+        register(client, h, world.a.slug, sp8_body(kind, ws, form))
+        for ws, form in zip(spaces, forms, strict=False)
+    ]
+    second = register(client, h, world.a.slug, sp8_body(kind, ws2_slug(world.a), url))
+    assert {m["address"] for m in [*made, second]} == {url}
+    assert all(m["platform_kind"] == kind for m in made)
+    assert counts(owner_db, world.a.tenant) == (len(made) + 1, 1)
+    with owner_db.session() as o:
+        claim = o.execute(
+            text(
+                "SELECT platform_kind, address_key FROM shifde.delivery_platform_claims "
+                "WHERE tenant_id = :t"
+            ),
+            {"t": world.a.tenant},
+        ).one()
+    assert tuple(claim) == (kind, address_key(url))
+
+
+@pytest.mark.parametrize("kind", SP8_KINDS)
+def test_another_organization_registering_an_sp8_address_gets_the_fixed_409(
+    client: TestClient, world: World, people: People, owner_db: Database, kind: str
+) -> None:
+    url = sp8_address(kind)
+    register(
+        client, as_user(client, people.owner_a), world.a.slug, sp8_body(kind, ws_slug(world.a), url)
+    )
+    for form in _forms(kind, url):
+        hb = as_user(client, people.owner_b)
+        r = client.post(
+            targets(world.b.slug), headers=hb, json=sp8_body(kind, ws_slug(world.b), form)
+        )
+        _assert_fixed_409(r, world, url)
+        assert address_key(url) not in r.text and url not in r.text
+    assert counts(owner_db, world.b.tenant) == (0, 0)
+    assert counts(owner_db, world.a.tenant) == (1, 1)
+
+
+@pytest.mark.parametrize("kind", SP8_KINDS)
+def test_archiving_the_last_sp8_target_releases_the_claim(
+    client: TestClient, world: World, people: People, owner_db: Database, kind: str
+) -> None:
+    url = sp8_address(kind)
+    ha = as_user(client, people.owner_a)
+    made = register(client, ha, world.a.slug, sp8_body(kind, ws_slug(world.a), url))
+    hb = as_user(client, people.owner_b)
+    blocked = client.post(
+        targets(world.b.slug), headers=hb, json=sp8_body(kind, ws_slug(world.b), url)
+    )
+    _assert_fixed_409(blocked, world, url)
+    ha = as_user(client, people.owner_a)
+    assert client.post(f"{targets(world.a.slug)}/{made['id']}/archive", headers=ha).is_success
+    assert counts(owner_db, world.a.tenant) == (1, 0)
+    hb = as_user(client, people.owner_b)
+    taken = register(client, hb, world.b.slug, sp8_body(kind, ws_slug(world.b), url))
+    assert taken["address"] == url
+    assert counts(owner_db, world.b.tenant) == (1, 1)
+
+
+def test_the_widened_checks_accept_the_sp8_kinds(app_db: Database, world: World) -> None:
+    """delivery_0008: each new platform kind in claims and targets, and each new target kind in
+    artifacts, as `shifde_app` in a client context; any other value is still 23514."""
+    principal = uuid7()
+    target = (
+        "INSERT INTO shifde.delivery_targets (id, tenant_id, workspace_id, name, platform_kind, "
+        "address, claim_id, environment, bindings, credential_ref, status, created_by) VALUES "
+        "(:i, :t, :w, 'x', :k, 'https://x', NULL, 'dev', '{}', 'ref', 'archived', :i)"
+    )
+    artifact = (
+        "INSERT INTO shifde.delivery_artifacts (tenant_id, id, target_kind, digest, size, "
+        "content, created_by) VALUES (:t, :i, :k, :d, 1, :c, :i)"
+    )
+    kinds = {
+        "fabric": "fabric.solution/v1",
+        "palantir": "palantir.marketplace/v1",
+        "docker": "docker.compose/v1",
+    }
+    for n, (kind, target_kind) in enumerate(kinds.items()):
+        with app_session(app_db, world.a.tenant, principal) as s:
+            claimed = s.execute(
+                text("SELECT shifde.delivery_claim_platform(:p, :k)"),
+                {"p": kind, "k": str(n) * 64},
+            ).scalar_one()
+            assert isinstance(claimed, UUID)
+            s.execute(text(target), {"i": uuid7(), "t": world.a.tenant, "w": world.a.ws, "k": kind})
+            s.execute(
+                text(artifact),
+                {"i": uuid7(), "t": world.a.tenant, "k": target_kind, "d": "e" * 64, "c": b"\x00"},
+            )
+            s.commit()
+    for sql, params in (
+        ("SELECT shifde.delivery_claim_platform('fabric.iq', :k)", {"k": "f" * 64}),
+        (target, {"i": uuid7(), "t": world.a.tenant, "w": world.a.ws, "k": "Docker"}),
+        (target, {"i": uuid7(), "t": world.a.tenant, "w": world.a.ws, "k": "foundry"}),
+        (
+            artifact,
+            {
+                "i": uuid7(),
+                "t": world.a.tenant,
+                "k": "palantir.superrepo/v1",
+                "d": "e" * 64,
+                "c": b"\x00",
+            },
+        ),
+        (
+            artifact,
+            {"i": uuid7(), "t": world.a.tenant, "k": "fabric.iq/v1", "d": "e" * 64, "c": b"\x00"},
+        ),
+    ):
+        with app_session(app_db, world.a.tenant, principal) as s:
+            with pytest.raises(DBAPIError) as raised:
+                s.execute(text(sql), params)
+            assert _sqlstate(raised.value) == "23514"
+            s.rollback()

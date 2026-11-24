@@ -12,15 +12,27 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationInfo, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
-from shifde.adapters.native.contracts import EnvironmentSnapshot, PlanStep
+from shifde.adapters.native.contracts import EnvironmentSnapshot, PlanStep, Target
+from shifde.adapters.native.palantir import source as palantir_source
 
 Strict = ConfigDict(extra="forbid")
 Environment = Literal["dev", "test", "prod"]
 CREDENTIAL_REF = r"^[A-Za-z][A-Za-z0-9_.-]{0,127}$"
-PlatformKind = Literal["databricks", "snowflake"]
+PlatformKind = Literal["databricks", "snowflake", "fabric", "palantir", "docker"]
 SNOWFLAKE_IDENTIFIER = r"^[A-Za-z_][A-Za-z0-9_$]{0,254}$"  # `snowflake.source.identifier`
+FABRIC_ITEM_NAME = r"^[A-Za-z][A-Za-z0-9_]{0,99}$"  # `fabric.source._NAME`
+WAREHOUSE_ID = r"^[A-Za-z0-9-]{1,64}$"
+SERVING_ENDPOINT = r"^[A-Za-z0-9_-]{1,63}$"
 
 
 class TargetBindings(BaseModel):
@@ -28,8 +40,8 @@ class TargetBindings(BaseModel):
     app (a `/2` release) queries, by name; a template plan ignores it (SP5 6.6)."""
 
     model_config = Strict
-    warehouse_id: str = Field(pattern=r"^[A-Za-z0-9-]{1,64}$")
-    serving_endpoint: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,63}$")
+    warehouse_id: str = Field(pattern=WAREHOUSE_ID)
+    serving_endpoint: str | None = Field(default=None, pattern=SERVING_ENDPOINT)
 
 
 class SnowflakeBindings(BaseModel):
@@ -43,9 +55,84 @@ class SnowflakeBindings(BaseModel):
     cortex_model: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
-BINDINGS: dict[str, type[TargetBindings | SnowflakeBindings]] = {
+class FabricBindings(BaseModel):
+    """A Fabric target's bindings: the lakehouse and notebook item names in the workspace
+    (SP8 design section 2)."""
+
+    model_config = Strict
+    lakehouse_name: str = Field(pattern=FABRIC_ITEM_NAME)
+    notebook_name: str = Field(pattern=FABRIC_ITEM_NAME)
+
+    @model_validator(mode="after")
+    def _distinct(self) -> FabricBindings:
+        if self.lakehouse_name == self.notebook_name:
+            raise ValueError("lakehouse_name and notebook_name must differ")
+        return self
+
+
+class PalantirBindings(BaseModel):
+    """A Palantir Marketplace target's bindings (Call S8-H): every RID, the product version, the
+    object type and the frontend asset. Each is checked with `palantir.source`'s validators; an
+    error never echoes the value."""
+
+    model_config = Strict
+    marketplace_rid: str
+    product_id: UUID
+    version_id: UUID
+    namespace_rid: str
+    parent_folder_rid: str
+    ontology_rid: str
+    object_type: str
+    frontend_origin: str
+    frontend_asset_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    allow_preview_apis: bool
+
+    @field_validator("marketplace_rid", "namespace_rid", "parent_folder_rid", "ontology_rid")
+    @classmethod
+    def _rid(cls, value: str, info: ValidationInfo) -> str:
+        kind = {
+            "marketplace_rid": "local",
+            "namespace_rid": "namespace",
+            "parent_folder_rid": "folder",
+            "ontology_rid": "ontology",
+        }[str(info.field_name)]
+        return palantir_source.rid(value, kind)
+
+    @field_validator("object_type")
+    @classmethod
+    def _object_type(cls, value: str) -> str:
+        return palantir_source.object_type(value)
+
+    @field_validator("frontend_origin")
+    @classmethod
+    def _origin(cls, value: str) -> str:
+        try:
+            return str(Target._validate_host(value))
+        except ValueError:  # `urlsplit` may echo the value
+            raise ValueError("frontend_origin must be an HTTPS origin") from None
+
+
+class DockerBindings(BaseModel):
+    """A Docker target's bindings: the compose project and published port on the daemon, and the
+    Databricks workspace, warehouse and serving endpoint the generated app queries (SP8 design
+    section 2)."""
+
+    model_config = Strict
+    project: str = Field(pattern=r"^[a-z][a-z0-9-]{0,39}$")
+    port: int = Field(ge=1024, le=65535)
+    workspace_host: str = Field(pattern=r"^https://[a-z0-9-]{1,63}(\.[a-z0-9-]{1,63})+$")
+    warehouse_id: str = Field(pattern=WAREHOUSE_ID)
+    serving_endpoint: str = Field(pattern=SERVING_ENDPOINT)
+
+
+Bindings = TargetBindings | SnowflakeBindings | FabricBindings | PalantirBindings | DockerBindings
+
+BINDINGS: dict[str, type[Bindings]] = {
     "databricks": TargetBindings,
     "snowflake": SnowflakeBindings,
+    "fabric": FabricBindings,
+    "palantir": PalantirBindings,
+    "docker": DockerBindings,
 }
 
 
@@ -57,14 +144,12 @@ class TargetCreate(BaseModel):
     platform_kind: PlatformKind = "databricks"
     address: str = Field(min_length=1, max_length=2048)
     environment: Environment
-    bindings: TargetBindings | SnowflakeBindings
+    bindings: Bindings
     credential_ref: str = Field(pattern=CREDENTIAL_REF)
 
     @field_validator("bindings")
     @classmethod
-    def _bindings_of_the_platform(
-        cls, value: TargetBindings | SnowflakeBindings, info: ValidationInfo
-    ) -> TargetBindings | SnowflakeBindings:
+    def _bindings_of_the_platform(cls, value: Bindings, info: ValidationInfo) -> Bindings:
         kind = info.data.get("platform_kind")
         if kind is not None and not isinstance(value, BINDINGS[kind]):
             raise ValueError(f"bindings are not {kind} target bindings")
@@ -79,7 +164,7 @@ class TargetOut(BaseModel):
     platform_kind: PlatformKind
     address: str
     environment: str
-    bindings: TargetBindings | SnowflakeBindings
+    bindings: Bindings
     credential_ref: str
     status: str
     revision: int

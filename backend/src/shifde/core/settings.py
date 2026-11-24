@@ -20,7 +20,15 @@ from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from dotenv import dotenv_values
-from pydantic import AnyHttpUrl, Field, SecretStr, ValidationError, field_validator, model_validator
+from pydantic import (
+    AnyHttpUrl,
+    Field,
+    SecretStr,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
@@ -207,6 +215,9 @@ class Settings(BaseSettings):
     # gcp.databricks.com. `SHIFDE_DELIVERY_DATABRICKS_HOST_SUFFIXES` is comma-separated; each entry
     # is a bare domain of two or more labels (no scheme, port, wildcard or leading dot).
     delivery_databricks_host_suffixes: Annotated[list[str], NoDecode] = []
+    # Palantir Foundry stack host suffixes accepted for `palantir` deployment targets in addition
+    # to the built-in palantirfoundry.com (SP8-1); same format as the Databricks list.
+    delivery_palantir_host_suffixes: Annotated[list[str], NoDecode] = []
     # Development switch (design 2026-11-22 7.5, B-2755): `databricks` and `snowflake` connections
     # reach the in-process fakes (`shifde.adapters.dataplatforms.fakes`) instead of the network,
     # for the local e2e and demo. Refused unless `env` is development or test.
@@ -267,21 +278,23 @@ class Settings(BaseSettings):
             else:
                 yield name, value
 
-    @field_validator("delivery_databricks_host_suffixes", mode="before")
+    @field_validator(
+        "delivery_databricks_host_suffixes", "delivery_palantir_host_suffixes", mode="before"
+    )
     @classmethod
     def _split_host_suffixes(cls, value: object) -> object:
         if isinstance(value, str):
             return [part.strip().lower() for part in value.split(",") if part.strip()]
         return value
 
-    @field_validator("delivery_databricks_host_suffixes")
+    @field_validator("delivery_databricks_host_suffixes", "delivery_palantir_host_suffixes")
     @classmethod
-    def _valid_host_suffixes(cls, value: list[str]) -> list[str]:
+    def _valid_host_suffixes(cls, value: list[str], info: ValidationInfo) -> list[str]:
         suffixes = [entry.strip().lower() for entry in value]
         for entry in suffixes:
             if not _HOST_SUFFIX.fullmatch(entry):
                 raise ValueError(
-                    "SHIFDE_DELIVERY_DATABRICKS_HOST_SUFFIXES entries must be bare domains "
+                    f"SHIFDE_{str(info.field_name).upper()} entries must be bare domains "
                     "of two or more letter, digit or hyphen labels"
                 )
         return suffixes
