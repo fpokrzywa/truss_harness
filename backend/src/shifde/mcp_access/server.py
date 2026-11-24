@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import traceback
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
@@ -436,16 +437,18 @@ class Gate:
         except AppError as exc:
             session.rollback()
             return _Outcome(_error(exc.code, exc.detail), "failure", exc.code)
-        except Exception:  # noqa: BLE001 - one tool error, never the arguments in the log
+        except Exception as exc:  # noqa: BLE001 - one tool error, never the arguments in the log
             session.rollback()
-            log.error("mcp.tool_failed", tool=tool.name, exc_info=True)
+            # the type and the frames only: a message can carry the arguments (SQL parameters)
+            frames = traceback.format_tb(exc.__traceback__)
+            log.error("mcp.tool_failed", tool=tool.name, error=type(exc).__name__, frames=frames)
             return _Outcome(
                 _error("internal_error", "an unexpected error occurred"),
                 "failure",
                 "internal_error",
             )
         session.rollback()  # services commit their own writes
-        run_id = result.get("run_id") if tool.name == "start_run" else None
+        run_id = result.get("run_id") if tool.name in ("start_run", "assist_ask") else None
         return _Outcome(_ok(result), "success", None, run_id=run_id)
 
 

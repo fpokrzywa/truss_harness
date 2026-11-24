@@ -4,7 +4,9 @@ and a sync handler that calls the owning module's service with the caller's `Ten
 Handlers run on a worker thread inside a database session of their own (`server.Gate`). Every id
 of an argument resolves only in the key's client and resource scope: the services answer
 `NotFound` for anything else, and the gate turns every `NotFound` into one `not_found` text. No
-tool approves, rejects, cancels, applies, seals or plans anything (Call S8-D).
+tool approves, rejects, cancels, applies, seals or plans anything (Call S8-D). `board_get`,
+`assist_ask` and `assist_get` (SP8-3) answer the routes' documents; a proposal is accepted or
+dismissed in SETH's screens only.
 """
 
 from __future__ import annotations
@@ -19,8 +21,12 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from shifde.adapters.runtime import IntegrationRuntime
+from shifde.assist.schemas import AssistRequestIn
+from shifde.assist.service import AssistService
 from shifde.authz.service import ResourceRef
+from shifde.board.service import BoardService
 from shifde.build.service import ArtifactService
+from shifde.core.bodies import Body
 from shifde.core.errors import NotFound
 from shifde.core.pagination import MAX_LIMIT, decode_cursor, encode_cursor, paginate
 from shifde.delivery.deployments import DeploymentService
@@ -72,6 +78,18 @@ class ReleaseArgs(_Args):
 
 class DeploymentArgs(_Args):
     deployment_id: UUID
+
+
+class BoardArgs(_Args):
+    project_id: UUID
+
+
+class AssistAskArgs(AssistRequestIn, Body, _Args):  # `Body`: no text PostgreSQL cannot store
+    project_id: UUID
+
+
+class AssistGetArgs(_Args):
+    request_id: UUID
 
 
 # ------------------------------------------------------------------ the caller
@@ -341,6 +359,35 @@ def get_deployment(scope: TenantScope, _: Env, args: DeploymentArgs) -> Result:
     }
 
 
+def board_get(scope: TenantScope, env: Env, args: BoardArgs) -> Result:
+    """The project's board as its route gives it: what the caller may not read is null or left
+    out by the board itself."""
+    _need(scope, "project:read")
+    _, ws, project = _project(scope, args.project_id)
+    return BoardService(scope).project_board(ws, project).model_dump(mode="json")
+
+
+def assist_ask(scope: TenantScope, env: Env, args: AssistAskArgs) -> Result:
+    """An assist request in a project, as the key's principal. The router call and the
+    specialist's run together stay within `max_cost_per_call`; a refused or failed request is a
+    result with its `status` and `status_reason`."""
+    _need(scope, "assist:request:write")
+    _, ws, project = _project(scope, args.project_id)
+    body = AssistRequestIn(text=args.text, specialist=args.specialist, context=args.context)
+    request = AssistService(scope, env.runtime, env.hooks).create_request(
+        ws, project, body, max_cost=env.mcp.max_cost_per_call
+    )
+    return request.model_dump(mode="json")
+
+
+def assist_get(scope: TenantScope, env: Env, args: AssistGetArgs) -> Result:
+    """An assist request as its route gives it (proposal payloads and `result_ref` only with the
+    read permissions of what they name)."""
+    _need(scope, "assist:request:read")
+    request = AssistService(scope, env.runtime, env.hooks).get_request(args.request_id)
+    return request.model_dump(mode="json")
+
+
 TOOLS: dict[str, Tool] = {
     t.name: t
     for t in (
@@ -406,6 +453,27 @@ TOOLS: dict[str, Tool] = {
             DeploymentArgs,
             "delivery:deployment:read",
             get_deployment,
+        ),
+        Tool(
+            "board_get",
+            "A project's board: solutions, releases, evaluations and deployments per target.",
+            BoardArgs,
+            "project:read",
+            board_get,
+        ),
+        Tool(
+            "assist_ask",
+            "Ask a project's specialists; returns the assist request and the run it started.",
+            AssistAskArgs,
+            "assist:request:write",
+            assist_ask,
+        ),
+        Tool(
+            "assist_get",
+            "An assist request: routing decision, run status and proposals.",
+            AssistGetArgs,
+            "assist:request:read",
+            assist_get,
         ),
     )
 }
