@@ -392,7 +392,7 @@ class PlanService:
         endpoint = target["bindings"].get("serving_endpoint")
         if not endpoint:
             raise ServingEndpointRequired("The target has no serving endpoint binding.")
-        bindings = list((manifest.get("bindings") or {}).get("model_bindings", {}).values())
+        bindings = list(((manifest.get("bindings") or {}).get("model_bindings") or {}).values())
         if len(bindings) != 1 or bindings[0].get("model") != endpoint:
             raise ServingEndpointMismatch(
                 "The release's model binding is not the target's serving endpoint."
@@ -419,12 +419,12 @@ class PlanService:
             return settings.env in ("development", "test")
         if adapter_key != "openai_compatible" or base_url is None:
             return False
-        parts = urlsplit(base_url)
         try:
+            parts = urlsplit(base_url)
             origin = normalize_databricks_address(
                 f"{parts.scheme}://{parts.netloc}", settings.delivery_databricks_host_suffixes
             )
-        except AddressRefused:
+        except (AddressRefused, ValueError):
             return False
         return origin == address
 
