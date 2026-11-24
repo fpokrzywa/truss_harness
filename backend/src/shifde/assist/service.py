@@ -23,23 +23,48 @@ with `publish_pending` and leaves the row `installing`; installing again resumes
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any  # Any: rows and JSON specs
 from uuid import UUID
 
+from jsonschema import Draft202012Validator
 from sqlalchemy.orm import Session
 
 from shifde.adapters.runtime import IntegrationRuntime
-from shifde.assist import catalog, repository
+from shifde.assist import catalog, repository, routing
 from shifde.assist import schemas as s
+from shifde.assist.routing import SpecialistUnknown
 from shifde.audit import service as audit
+from shifde.authz import service as authz
 from shifde.authz.service import ResourceRef
 from shifde.build import schemas as build_schemas
 from shifde.build.service import ArtifactService
-from shifde.core.errors import AppError, Conflict, Forbidden, NotFound, PublishPending
+from shifde.core import db
+from shifde.core.context import RequestContext
+from shifde.core.db import Database
+from shifde.core.errors import (
+    AppError,
+    Conflict,
+    Forbidden,
+    NotFound,
+    PublishPending,
+    ScopeArchived,
+)
 from shifde.core.ids import uuid7
+from shifde.core.pagination import Page, decode_cursor, encode_cursor, paginate
+from shifde.delivery.deployments import DeploymentService
+from shifde.delivery.plans import PlanService
+from shifde.delivery.service import TargetService
+from shifde.evaluation.service import EvaluationService
+from shifde.models_admin import schemas as model_schemas
 from shifde.models_admin.service import ModelService
+from shifde.packaging.service import SolutionService, scoped_release
+from shifde.runtime.governance import GovernanceHooks, TokenBudgetHooks
+from shifde.runtime.schemas import RunCreate
+from shifde.runtime.service import RunService
 from shifde.tenancy import service as tenancy
 from shifde.tenancy.scope import TenantScope
 
@@ -66,10 +91,35 @@ SPECIALIST_NOT_FOUND = "specialist not found"
 PUBLISH_NOTE = "installed by assist"
 SETTINGS_TARGET = "assist_settings"
 SPECIALIST_TARGET = "assist_specialist"
-
-
-class SpecialistUnknown(AppError):
-    status, code, title = 422, "specialist_unknown", "Unprocessable Entity"
+WRITE = "assist:request:write"
+ROUTE_JOB_KIND = "assist.route"  # `shifde.jobs.kind` of the model fallback and handover recovery
+REQUEST_TARGET = "assist_request"
+REQUEST_NOT_FOUND = "assist request not found"
+CONTEXT_NOT_FOUND = "context not found"
+DONE = frozenset({"routed", "refused", "failed"})
+ROUTER_MAX_TOKENS = 300
+INVALID_OUTPUT = "invalid_model_output"
+INSTALL_AGAIN = "the specialist differs from its catalog entry; run install again"
+ROUTER_PROMPT = (
+    "You route a person's request to exactly one SETH specialist. The user message is a JSON "
+    'object with the request "text" and the "candidates" the routing rules found (empty when '
+    "they found none). Answer with one JSON object and nothing else: "
+    '{"specialist": <a specialist key, or null>, "reason": <at most 300 characters>}. When '
+    '"candidates" is not empty pick one of them; otherwise pick any key below. Answer null when '
+    "no specialist fits.\n\nSpecialists:\n"
+    + "\n".join(f"- {e.key}: {e.router_description}" for e in catalog.CATALOG.values())
+)
+ROUTER_REPLY = Draft202012Validator(
+    {
+        "type": "object",
+        "required": ["specialist", "reason"],
+        "additionalProperties": False,
+        "properties": {
+            "specialist": {"type": ["string", "null"]},
+            "reason": {"type": "string", "maxLength": 300},
+        },
+    }
+)
 
 
 class AssistNotEnabled(AppError):
@@ -118,6 +168,104 @@ def _comparable(kind: str, spec: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+@dataclass(frozen=True)
+class _Refusal:
+    """A handover pre-check that failed (design 5.4 steps 1-3)."""
+
+    code: str
+    missing: list[str] | None = None
+
+    def details(self) -> dict[str, object]:
+        if self.missing is not None:
+            return {"missing_permissions": self.missing}
+        return {"detail": INSTALL_AGAIN} if self.code == "specialist_modified" else {}
+
+
+def _request_ref(tenant_id: UUID, row: Mapping[str, Any]) -> ResourceRef:
+    return ResourceRef(tenant_id, row["workspace_id"], row["project_id"], REQUEST_TARGET, row["id"])
+
+
+def _record_request(
+    session: Session,
+    ctx: RequestContext,
+    tenant_id: UUID,
+    action: str,
+    row: Mapping[str, Any],
+    extra: Mapping[str, object] | None = None,
+) -> None:
+    """The audit event of a request transition: the routing fields, never the text."""
+    audit.record(
+        session,
+        ctx,
+        action=action,
+        tenant_id=tenant_id,
+        target_type=REQUEST_TARGET,
+        target_id=row["id"],
+        workspace_id=row["workspace_id"],
+        project_id=row["project_id"],
+        details={
+            "specialist_key": row["specialist_key"],
+            "route_method": row["route_method"],
+            "rule_id": row["rule_id"],
+            "router_version": row["router_version"],
+            "status_reason": row["status_reason"],
+            **(extra or {}),
+        },
+    )
+
+
+def _change(
+    session: Session,
+    ctx: RequestContext,
+    tenant_id: UUID,
+    row: Mapping[str, Any],
+    expected: Sequence[str],
+    status: str,
+    extra: Mapping[str, object] | None = None,
+    **fields: Any,
+) -> Mapping[str, Any] | None:
+    """Move the request to `status` while it is in `expected`, audit it and commit; None (rolled
+    back) when it was in another state."""
+    changed = repository.change_request(
+        session, row["id"], tenant_id=tenant_id, expected=expected, status=status, **fields
+    )
+    if changed is None:
+        session.rollback()
+        return None
+    _record_request(session, ctx, tenant_id, f"assist.request.{status}", changed, extra)
+    session.commit()
+    return changed
+
+
+def _context_kind(row: Mapping[str, Any]) -> str | None:
+    return str(row["context"]["kind"]) if row["context"] else None
+
+
+def _candidates(row: Mapping[str, Any]) -> tuple[str, ...]:
+    """The routing candidates of a stored request (none once its text is scrubbed)."""
+    if not row["text"]:
+        return ()
+    return routing.route(row["text"], row["requested_specialist"], _context_kind(row)).candidates
+
+
+def _choice(reply: str, allowed: Sequence[str]) -> tuple[str | None, str | None]:
+    """(key, None) for an allowed key the router model chose; (None, None) for null or a key
+    outside `allowed`; (None, `invalid_model_output`) for a reply that is not the closed JSON
+    object."""
+    try:
+        doc = json.loads(reply)
+    except ValueError:
+        return None, INVALID_OUTPUT
+    if not ROUTER_REPLY.is_valid(doc):
+        return None, INVALID_OUTPUT
+    key = doc["specialist"]
+    return (key, None) if key in allowed else (None, None)
+
+
+def _canonical(spec: Mapping[str, Any] | None) -> str:
+    return json.dumps(spec, sort_keys=True)
+
+
 def _known(keys: Sequence[str]) -> None:
     unknown = [k for k in keys if k not in catalog.CATALOG]
     if unknown or len(set(keys)) != len(keys):
@@ -136,9 +284,12 @@ def _known(keys: Sequence[str]) -> None:
 
 
 class AssistService:
-    def __init__(self, scope: TenantScope, runtime: IntegrationRuntime) -> None:
+    def __init__(
+        self, scope: TenantScope, runtime: IntegrationRuntime, hooks: GovernanceHooks
+    ) -> None:
         self.sc = scope
         self.runtime = runtime
+        self.hooks = hooks
         self.artifacts = ArtifactService(scope, runtime)
         self.models = ModelService(scope, runtime)
 
@@ -569,3 +720,529 @@ class AssistService:
 
     def disable_specialist(self, ws: str, proj: str, key: str) -> s.SpecialistOut:
         return self._toggle(ws, proj, key, False)
+
+    # ================================================================== requests (design 5.1)
+    def _requester_fields(self) -> dict[str, str | None]:
+        """Who sends a request, as its job's payload carries it (re-derived when the job runs)."""
+        p = self.sc.principal
+        return {
+            "principal_id": str(p.principal_id),
+            "principal_type": p.principal_type,
+            "api_key_id": str(p.api_key_id) if p.api_key_id else None,
+        }
+
+    def _enqueue(self, request_id: UUID, job_id: UUID) -> None:
+        repository.enqueue_job(
+            self._session,
+            tenant_id=self.sc.tenant_id,
+            kind=ROUTE_JOB_KIND,
+            job_id=job_id,
+            dedupe_key=f"{ROUTE_JOB_KIND}:{request_id}",
+            payload={"request_id": str(request_id), **self._requester_fields()},
+        )
+
+    def _active_project(self, ws: str, proj: str) -> None:
+        if self.sc.tenant_status != "active":
+            raise ScopeArchived("organization is archived")
+        if tenancy.get_workspace(self.sc, ws).status != "active":
+            raise ScopeArchived("workspace is archived")
+        if tenancy.get_project(self.sc, ws, proj).status != "active":
+            raise ScopeArchived("project is archived")
+
+    def _in_project(self, ws: str, proj: str, project: ResourceRef, ctx: s.ContextIn) -> bool:
+        """Whether the context object, read through its owning service under the caller's scope,
+        is in the request's project (a target, plan or deployment: or its workspace)."""
+        if ctx.kind == "solution":
+            SolutionService(self.sc, self.runtime).get(ws, proj, ctx.id)
+            return True
+        if ctx.kind == "release":
+            return bool(scoped_release(self.sc, ctx.id)["project_id"] == project.project_id)
+        if ctx.kind == "evaluation_run":
+            run = EvaluationService(self.sc, self.runtime, self.hooks).get_run(ctx.id)
+            release = scoped_release(self.sc, run.release_id)
+            return bool(release["project_id"] == project.project_id)
+        if ctx.kind == "plan":
+            target_id = PlanService(self.sc, self.runtime).get(ctx.id).target_id
+        elif ctx.kind == "deployment":
+            target_id = DeploymentService(self.sc).get(ctx.id).target_id
+        else:
+            target_id = ctx.id
+        target = TargetService(self.sc).get(target_id)
+        return target.workspace == ws and target.project in (None, proj)
+
+    def _context(
+        self, ws: str, proj: str, project: ResourceRef, ctx: s.ContextIn | None
+    ) -> dict[str, str] | None:
+        if ctx is None:
+            return None
+        try:
+            found = self._in_project(ws, proj, project, ctx)
+        except (NotFound, Forbidden):
+            found = False
+        if not found:
+            raise NotFound(CONTEXT_NOT_FOUND)
+        return {"kind": ctx.kind, "id": str(ctx.id)}
+
+    def _drifted(self, project: ResourceRef, key: str, spec: Mapping[str, Any]) -> bool:
+        """Whether the pinned agent version is no longer the catalog's (design 5.4 step 3): its
+        agent is not active or not the project's, or its tools are not exactly the entry's
+        internal tools with the generated specs."""
+        if spec["agent_id"] is None or spec["agent_version_id"] is None:
+            return True
+        try:
+            agent = self.artifacts.artifact_row("agents", spec["agent_id"])
+        except NotFound:
+            return True
+        if agent["status"] != "active" or agent["project_id"] != project.project_id:
+            return True
+        version = self.artifacts.version_access(spec["agent_version_id"])
+        if version is None or version.artifact_id != agent["id"]:
+            return True
+        agent_spec = self.artifacts.version_spec(version.version_id) or {}
+        tools: list[str] = []
+        for raw in agent_spec.get("tool_version_ids") or []:
+            access = self.artifacts.version_access(UUID(str(raw)))
+            if access is None or access.kind != "tools" or access.project_id != project.project_id:
+                return True
+            tools.append(_canonical(self.artifacts.version_spec(access.version_id)))
+        expected = [_canonical(catalog.tool_spec(t)) for t in catalog.CATALOG[key].tools]
+        return sorted(tools) != sorted(expected)
+
+    def _precheck(
+        self, project: ResourceRef, key: str, settings: Mapping[str, Any]
+    ) -> Mapping[str, Any] | _Refusal:
+        """The project's specialist row for `key` when the handover may run (design 5.4 steps
+        1-3), else the refusal."""
+        assert project.project_id is not None
+        if not self._live(settings):
+            return _Refusal("specialist_disabled")
+        spec = repository.get_specialist(
+            self._session, tenant_id=self.sc.tenant_id, project_id=project.project_id, key=key
+        )
+        if spec is None:
+            return _Refusal("specialists_not_installed")
+        if spec["status"] != "enabled":
+            return _Refusal("specialist_disabled")
+        needed = set(catalog.CATALOG[key].required_permissions) | {"agent:execute"}
+        missing = sorted(self.sc.pdp.missing_permissions(needed, project))
+        if missing:
+            return _Refusal("specialist_not_permitted", missing)
+        if self._drifted(project, key, spec):
+            return _Refusal("specialist_modified")
+        return spec
+
+    def _transition(
+        self,
+        row: Mapping[str, Any],
+        expected: Sequence[str],
+        status: str,
+        extra: Mapping[str, object] | None = None,
+        **fields: Any,
+    ) -> Mapping[str, Any]:
+        """`_change` under the caller's context; the request as it now is either way."""
+        changed = _change(
+            self._session, self.sc.ctx, self.sc.tenant_id, row, expected, status, extra, **fields
+        )
+        if changed is not None:
+            return changed
+        fresh = repository.get_request(
+            self._session, tenant_id=self.sc.tenant_id, request_id=row["id"]
+        )
+        assert fresh is not None
+        return fresh
+
+    def _hand_over(
+        self, row: Mapping[str, Any], spec: Mapping[str, Any], settings: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """Design 5.4 steps 4 (after `handing_over` is committed) and 5: the run of the project's
+        own specialist as the requester; a repeat returns the same run (idempotency key)."""
+        ws_slugs, proj_slugs = tenancy.scope_slug_map(
+            self.sc, [row["workspace_id"]], [row["project_id"]]
+        )
+        context = json.dumps(row["context"], sort_keys=True) if row["context"] else ""
+        body = RunCreate(
+            kind="agent",
+            agent_id=spec["agent_id"],
+            version_id=spec["agent_version_id"],
+            workspace=ws_slugs[row["workspace_id"]],
+            project=proj_slugs[row["project_id"]],
+            input=row["text"],
+            variables={"assist_request_id": str(row["id"]), "context": context},
+        )
+        runs = RunService(self.sc, self.runtime, self.hooks)
+        try:
+            created, _ = runs.create(
+                body,
+                f"assist:{row['id']}",
+                max_cost=Decimal(settings["specialist_max_cost"]),
+            )
+            run = runs.get(created.id)  # by (tenant_id, run_id) under the requester's scope
+        except AppError as exc:
+            self._session.rollback()
+            return self._transition(row, ["handing_over"], "failed", status_reason=exc.code)
+        if run.project.id != row["project_id"]:
+            return self._transition(
+                row, ["handing_over"], "failed", status_reason="run_project_mismatch"
+            )
+        if run.status == "failed":
+            return self._transition(
+                row, ["handing_over"], "failed", status_reason=run.error_class, run_id=run.id
+            )
+        return self._transition(row, ["handing_over"], "routed", run_id=run.id)
+
+    def create_request(self, ws: str, proj: str, body: s.AssistRequestIn) -> s.AssistRequestOut:
+        """Store and route a request (design 5.1 to 5.4): rule or explicit routing hands over at
+        once; an undecided request is queued for the model (`queued`, answered 202) or refused."""
+        project = self._project(ws, proj)
+        self.sc.pdp.require(WRITE, project)
+        self._active_project(ws, proj)
+        if body.specialist is not None and body.specialist not in catalog.CATALOG:
+            raise SpecialistUnknown(f"{body.specialist} is not a catalog key")
+        context = self._context(ws, proj, project, body.context)
+        decision = routing.route(
+            body.text, body.specialist, body.context.kind if body.context else None
+        )
+        settings = self._settings()
+        request_id, job_id = uuid7(), uuid7()
+        values: dict[str, Any] = {
+            "tenant_id": self.sc.tenant_id,
+            "id": request_id,
+            "workspace_id": project.workspace_id,
+            "project_id": project.project_id,
+            "requested_by": self.sc.principal.principal_id,
+            "text": body.text,
+            "requested_specialist": body.specialist,
+            "context": context,
+            "status_reason": None,
+            "specialist_key": decision.specialist,
+            "route_method": decision.method if decision.specialist else None,
+            "rule_id": decision.rule_id,
+            "router_version": routing.ROUTER_VERSION,
+            "job_id": None,
+        }
+        refusal: _Refusal | None = None
+        spec: Mapping[str, Any] | None = None
+        if decision.specialist is None:
+            if settings["model_routing_enabled"]:
+                values.update(status="queued", job_id=job_id)
+            else:
+                many = len(decision.candidates) >= 2
+                refusal = _Refusal("route_ambiguous" if many else "route_unclear")
+        else:
+            checked = self._precheck(project, decision.specialist, settings)
+            if isinstance(checked, _Refusal):
+                refusal = checked
+            else:
+                spec = checked
+                values.update(status="handing_over", job_id=job_id)
+        if refusal is not None:
+            values.update(status="refused", status_reason=refusal.code)
+        repository.insert_request(self._session, values)
+        if values["job_id"] is not None:
+            # queued: the model fallback; handing_over: the recovery of an interrupted handover
+            self._enqueue(request_id, job_id)
+        row = repository.get_request(
+            self._session, tenant_id=self.sc.tenant_id, request_id=request_id
+        )
+        assert row is not None
+        ctx, tenant = self.sc.ctx, self.sc.tenant_id
+        candidates = {"candidates": list(decision.candidates)}
+        _record_request(self._session, ctx, tenant, "assist.request.created", row, candidates)
+        if refusal is not None:
+            extra = refusal.details()
+            if refusal.code == "route_ambiguous":
+                extra = {**extra, **candidates}
+            _record_request(self._session, ctx, tenant, "assist.request.refused", row, extra)
+        elif spec is not None:
+            _record_request(self._session, ctx, tenant, "assist.request.handing_over", row)
+        self._session.commit()
+        if spec is not None:
+            row = self._hand_over(row, spec, settings)
+        out = self._out(row, refusal.missing if refusal is not None else None)
+        self._session.rollback()
+        return out
+
+    def _out(self, row: Mapping[str, Any], missing: list[str] | None = None) -> s.AssistRequestOut:
+        run: s.RunRefOut | None = None
+        if row["run_id"] is not None:
+            try:
+                got = RunService(self.sc, self.runtime, self.hooks).get(row["run_id"])
+                run = s.RunRefOut(id=got.id, status=got.status, error_code=got.error_class)
+            except NotFound:
+                run = None
+        proposals = repository.list_proposals(
+            self._session, tenant_id=self.sc.tenant_id, request_id=row["id"]
+        )
+        return s.AssistRequestOut(
+            **_summary_fields(row),
+            rule_id=row["rule_id"],
+            router_version=row["router_version"],
+            candidates=list(_candidates(row)),
+            missing_permissions=missing,
+            context=s.ContextIn(**row["context"]) if row["context"] else None,
+            run=run,
+            proposals=[
+                s.ProposalOut(
+                    id=p["id"],
+                    run_id=p["run_id"],
+                    kind=p["kind"],
+                    payload=p["payload"],
+                    status=p["status"],
+                    status_reason=p["status_reason"],
+                    result_ref=p["result_ref"],
+                    decided_by=p["decided_by"],
+                    decided_at=p["decided_at"],
+                    created_at=p["created_at"],
+                    updated_at=p["updated_at"],
+                )
+                for p in proposals
+            ],
+        )
+
+    def list_requests(
+        self, ws: str, proj: str, *, status: str | None, limit: int, cursor: str | None
+    ) -> Page[s.AssistRequestSummary]:
+        project = self._project(ws, proj)
+        self.sc.pdp.require(READ, project)
+        assert project.project_id is not None
+        rows = repository.list_requests(
+            self._session,
+            tenant_id=self.sc.tenant_id,
+            project_id=project.project_id,
+            status=status,
+            before=decode_cursor(cursor),
+            limit=limit + 1,
+        )
+        page, more = paginate(rows, limit)
+        self._session.rollback()
+        return Page(
+            items=[s.AssistRequestSummary(**_summary_fields(r)) for r in page],
+            next_cursor=encode_cursor(page[-1]["id"]) if more and page else None,
+        )
+
+    def get_request(self, request_id: UUID) -> s.AssistRequestOut:
+        """The request read from its row, under `assist:request:read` on its own project; an
+        unknown id, another client's and an unreadable one get one answer."""
+        row = repository.get_request(
+            self._session, tenant_id=self.sc.tenant_id, request_id=request_id
+        )
+        if row is None:
+            raise NotFound(REQUEST_NOT_FOUND)
+        try:
+            self.sc.pdp.require(READ, _request_ref(self.sc.tenant_id, row), hide_unless=READ)
+        except NotFound as exc:
+            raise NotFound(REQUEST_NOT_FOUND) from exc
+        out = self._out(row)
+        self._session.rollback()
+        return out
+
+    # ================================================================== the job (design 5.3)
+    def _resume(self, row: Mapping[str, Any]) -> None:
+        """An interrupted handover: step 4 again (the idempotency key returns the same run)."""
+        spec = repository.get_specialist(
+            self._session,
+            tenant_id=self.sc.tenant_id,
+            project_id=row["project_id"],
+            key=row["specialist_key"],
+        )
+        if spec is None:
+            self._transition(
+                row, ["handing_over"], "failed", status_reason="specialists_not_installed"
+            )
+            return
+        self._hand_over(row, spec, self._settings())
+
+    def route(self, row: Mapping[str, Any], database: Database) -> None:
+        """The `assist.route` job's work for a `queued` or `handing_over` request, as the
+        requester: one router model call, then the handover of design 5.4."""
+        if row["status"] == "handing_over":
+            self._resume(row)
+            return
+        settings = self._settings()
+        if settings["router_model_id"] is None:
+            self._transition(row, ["queued"], "failed", status_reason="router_model_missing")
+            return
+        candidates = _candidates(row)
+        classifying = _change(
+            self._session, self.sc.ctx, self.sc.tenant_id, row, ["queued"], "classifying"
+        )
+        if classifying is None:
+            return
+        # committed before the call: a job that finds it again never calls twice (design 5.3)
+        body = model_schemas.InvokeIn(
+            messages=[
+                model_schemas.ChatMessageIn(role="system", content=ROUTER_PROMPT),
+                model_schemas.ChatMessageIn(
+                    role="user",
+                    content=json.dumps({"text": row["text"], "candidates": list(candidates)}),
+                ),
+            ],
+            max_tokens=ROUTER_MAX_TOKENS,
+        )
+        try:
+            out = ModelService(self.sc, self.runtime, database).invoke_at(
+                _request_ref(self.sc.tenant_id, row),
+                settings["router_model_id"],
+                body,
+                usage_event_type="model_call",
+            )
+        except AppError as exc:
+            self._session.rollback()
+            self._transition(classifying, ["classifying"], "failed", status_reason=exc.code)
+            return
+        key, problem = _choice(out.output, candidates or catalog.KEYS)
+        if key is None:
+            self._transition(
+                classifying,
+                ["classifying"],
+                "refused",
+                {"detail": problem} if problem else None,
+                status_reason="route_unclear",
+            )
+            return
+        project = ResourceRef(self.sc.tenant_id, row["workspace_id"], row["project_id"])
+        chosen: dict[str, Any] = {"specialist_key": key, "route_method": "model", "rule_id": None}
+        checked = self._precheck(project, key, settings)
+        if isinstance(checked, _Refusal):
+            self._transition(
+                classifying,
+                ["classifying"],
+                "refused",
+                checked.details(),
+                status_reason=checked.code,
+                **chosen,
+            )
+            return
+        handing = _change(
+            self._session,
+            self.sc.ctx,
+            self.sc.tenant_id,
+            classifying,
+            ["classifying"],
+            "handing_over",
+            **chosen,
+        )
+        if handing is not None:
+            self._hand_over(handing, checked, settings)
+
+
+def _summary_fields(r: Mapping[str, Any]) -> dict[str, Any]:  # Any: field values
+    return {
+        "id": r["id"],
+        "workspace_id": r["workspace_id"],
+        "project_id": r["project_id"],
+        "status": r["status"],
+        "status_reason": r["status_reason"],
+        "requested_specialist": r["requested_specialist"],
+        "specialist_key": r["specialist_key"],
+        "route_method": r["route_method"],
+        "run_id": r["run_id"],
+        "requested_by": r["requested_by"],
+        "created_at": r["created_at"],
+        "updated_at": r["updated_at"],
+    }
+
+
+@dataclass(frozen=True)
+class _Requester:
+    """Who sent a request (`authz.execution.RunRef`): re-derived when its job runs."""
+
+    tenant_id: UUID
+    initiated_by_principal_id: UUID
+    principal_type: str
+    api_key_id: UUID | None
+
+
+def _requester_scope(
+    session: Session, tenant_id: UUID, request_id: str, payload: Mapping[str, Any]
+) -> TenantScope:
+    """The scope of the job's requester, re-derived from the database (`ExecutionDenied` when the
+    requester or the client is no longer available)."""
+    principal = authz.execution_principal(
+        session,
+        _Requester(
+            tenant_id,
+            UUID(payload["principal_id"]),
+            payload["principal_type"],
+            UUID(payload["api_key_id"]) if payload.get("api_key_id") else None,
+        ),
+    )
+    header = tenancy.tenant_header(session, tenant_id)
+    if header is None:
+        raise authz.ExecutionDenied("the client is not available")
+    return TenantScope(
+        session=session,
+        ctx=RequestContext(request_id=request_id, principal=principal, tenant_id=tenant_id),
+        principal=principal,
+        tenant_id=tenant_id,
+        tenant_slug=header[0],
+        tenant_name=header[1],
+        tenant_status=header[2],
+        pdp=authz.new_pdp(session, principal, tenant_id),
+    )
+
+
+def run_route_job(
+    database: Database, runtime: IntegrationRuntime, tenant_id: UUID, job_id: UUID
+) -> str | None:
+    """Execute the `assist.route` job `job_id` of `tenant_id` (called by `shifde-worker`).
+
+    Returns None once the outcome is recorded on the request (or there is nothing to do: the
+    request is gone or already ended), `not_found` when the job is not this client's route job.
+    The router model is called at most once per request."""
+    tag = f"assist-route-{job_id}"
+    session = database.session()
+    db.init_context(session, tag)
+    try:
+        db.set_tenant(session, tenant_id)
+        job = repository.get_job(session, tenant_id=tenant_id, job_id=job_id, kind=ROUTE_JOB_KIND)
+        if job is None:
+            return NotFound.code
+        payload = job["payload"]
+        row = repository.get_request(
+            session, tenant_id=tenant_id, request_id=UUID(payload["request_id"])
+        )
+        if row is None or row["status"] in DONE:
+            return None
+        system_ctx = RequestContext(request_id=tag, tenant_id=tenant_id)
+        if row["status"] == "classifying":
+            # an earlier attempt may have reached the provider: never call again
+            _change(
+                session,
+                system_ctx,
+                tenant_id,
+                row,
+                ["classifying"],
+                "failed",
+                status_reason="model_call_unknown",
+            )
+            return None
+        try:
+            scope = _requester_scope(session, tenant_id, tag, payload)
+        except authz.ExecutionDenied:
+            session.rollback()
+            _change(
+                session,
+                system_ctx,
+                tenant_id,
+                row,
+                [row["status"]],
+                "failed",
+                status_reason="access_revoked",
+            )
+            return None
+        if not scope.pdp.authorize(WRITE, _request_ref(tenant_id, row)).allowed:
+            _change(
+                session,
+                scope.ctx,
+                tenant_id,
+                row,
+                [row["status"]],
+                "failed",
+                status_reason="access_revoked",
+            )
+            return None
+        AssistService(scope, runtime, TokenBudgetHooks()).route(row, database)
+        return None
+    finally:
+        session.close()
