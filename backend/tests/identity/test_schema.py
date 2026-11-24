@@ -65,7 +65,8 @@ def test_a_head_named_in_depends_on_is_not_a_version_head() -> None:
     identity_0007 (issue #287) and is the mcp head. assist_0001 (issue #278) depends on
     appgen_0001 (through which it reaches authz_0002, identity_0007, tenancy_0007, build_0002,
     runtime_0007 and models_admin_0004), so appgen_0001 is not a version head any more and
-    assist_0001 is the assist head."""
+    assist_0001 is the assist head. packaging_0004 follows packaging_0003 with no depends_on
+    (issue #271), so it is the packaging version head (packaging_0003 stays a non-head)."""
     heads = code_heads()
     assert "assist_0001" in heads
     assert "appgen_0001" not in heads
@@ -89,6 +90,7 @@ def test_a_head_named_in_depends_on_is_not_a_version_head() -> None:
     assert "runtime_0003" not in heads
     assert "runtime_0002" not in heads
     assert "runtime_0001" not in heads
+    assert "packaging_0004" in heads
     assert "packaging_0003" not in heads
     assert "packaging_0002" not in heads
     assert "packaging_0001" not in heads
