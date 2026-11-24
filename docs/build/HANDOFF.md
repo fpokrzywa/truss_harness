@@ -1,27 +1,32 @@
-# Handoff — 2026-11-24 15:15 EST, charter 7 factory run (lead session b10341d0), written early as a safety record
+# Handoff — 2026-11-24 17:50 EST, charter 7 factory run (lead session b10341d0), context limit
 
-Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` (newest progress entry and sub-projects table), then this file. The previous lead (847b16bd) exited at 15:05 without a handoff record; its gate run of 173 died with it (no result).
+Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` (newest progress entry and sub-projects table), then this file.
 
-## Rulings (supervising session)
-- 173: S-040, conditional: merge `155d4c30` only after `gates.py --name 173-merge` passes **every gate in full** on that commit. If a worker C1 or job-kind test fails there, do not merge as "intermittent": keep the FAILED lines for a ruling.
-- 175 (PR #357, `a86fa42a`) and 176 (PR #356, `489bf9af`): **NOT ruled, hold both** (S-041 and the next number, queued in `new_session_handoff.md` for the next supervising session). 176: the red CI (C1 [cancel]/[deadline], `test_jobkinds`) counts against approval until #361 finds the cause or shows that the diff cannot reach it.
-- Next supervisor ruling S-041 (theirs). **Next free lead decision id: B-4030** (178: B-4025..B-4029; 172: B-3998..B-4002).
+**State:** cluster running; no agent or gate running at handoff. Nothing was merged this session.
 
-- Ruling 15:42 (supervisor, message; no S- row yet): **173 hold; S-040 does not cover an unexplained CI failure on the approved commit.** 173 and 176 may merge when #361 finds the cause and the fix is on main, or shows with evidence that the diff cannot reach that path; then sync, full gates, green CI on the new head, and a fresh supervisor OK in DECISIONS. 174: only with green CI; its CI is red on C1 [cancel]/[deadline], so it is **held too** and reported. No skip, retry or loosening of those tests.
-
-## Open jobs
-- 172 (#272 SP6-5, PR #353): build round 3 on `feedback-1.md` (B-4009), builder started 15:11. Round 2: isolation review 2 APPROVED, CI red on a guard test (the Snowpark dev pin). Round 3 changes need gate, code and security reviews and an isolation look at the new diff.
-- 173 (#286 SP8-1, PR #354): needs-human, HELD. `gates.py --name 173-merge` on `155d4c30` at 15:40: 18/18 (6988 passed, 12 skipped), but CI backend on the same commit (run 45472694614) failed: `FAILED tests/runtime/test_jobkinds.py::test_a_registered_kind_runs_in_its_own_client_and_its_code_ends_the_job - the job did not end in time` (6990 passed). main is ahead of it by docs only.
-- 174 (#283 SP7-7, PR #355, `0d2e6c36`): approver APPROVE (front end only; its `backend` tree is main's object, so the red CI C1 tests cannot come from it). Held by the ruling above until its CI is green (after the #361 fix: sync, gate, CI, then `factory/bin/job merge`).
-- 175 (#288), 176 (#351): needs-human, held (above).
-- 177 (#359): intake ACCEPT, at intake; hold until 175 merges (its spec needs a test file of 175's branch), then route + `job advance ... spec`.
-- 178 (#361): build round 1; `868a8e7` moves the reaper sweeps to their own thread (runtime product code: isolation review needed). **It comes first: 173, 174 and 176 wait on it.** Spec's leading hypothesis: the reaper's first-pass sweeps over every client run on the worker's main loop and stall claiming; not yet proven. If the fix touches `backend/src/shifde/runtime`, add an `isolation-reviewer` (only `code` is routed).
-
-## Dependencies (job queue does not know them)
-#273 needs #272; #274/#275 after #273; #284 needs #283; #290, #292, #294, #352 need #286; #358 needs #272; #360 needs #288; #295, #296 last. Hold those `new` lines until their dependency merges. When SP6, SP7 and SP8 finish, run each done-when demo and record it in STATUS.md. After 173 merges, the supervising session re-runs the hosted DB setup.
+## Rulings (supervising session is now `agt-trus-harness-19`; send ruling requests there)
+- S-041 (176) and S-042 (175) are in `docs/build/DECISIONS.md` with their conditions; read the rows.
+- 173: held. S-040 no longer covers it (15:42). After 178 merges: sync, full gates, green CI, then send the new head for a fresh ruling.
+- 174: merge through `job merge` only with green CI.
+- 178: not ruled; the supervisor read it and saw no blocker. If its approver escalates, send the decision once CI `backend` on `d01e6732` has finished. It goes first.
+- Never skip, loosen or add retries to the C1 and job-kind tests.
+- If `scripts/supervisor/autostart.ps1` shows as deleted, neither commit the deletion nor restore it; tell the supervisor.
 
 ## Exact next step
-`PYTHONUTF8=1 factory/bin/job queue`, then the jobs above from their stage.
+1. `PYTHONUTF8=1 factory/bin/job queue`.
+2. **178** (#361, PR #362, approve, round 1): `gh pr checks 362`; spawn `approver` with the header and `PR: #362. Final round: 1.`; give it `docs/build/reviews/178-isolation-review-1.md` (APPROVED). The diff is runtime product code with no migration.
+3. **172** (#272, PR #353, approve, round 3): spawn `approver` (`Final round: 3.`). Isolation review 2 APPROVED was at `c98948c`; round 3's diff has had no isolation look (code and security PASS): spawn `isolation-reviewer` for `c98948c..d32183b`. The PR body still says Snowpark is pinned in the dev group: edit it (`gh pr edit 353`).
+4. **175** (#288, PR #357): full `175-merge` gates and green CI on one head (S-042); does not wait for 178. Then 177.
+5. After 178 is on main: **174** sync, CI green, `job merge`; **176** per S-041 (sync, `176-merge` gates, green CI on that head); **173** sync, gates, CI, fresh ruling. After a merge with migrations the supervisor re-runs the hosted DB setup.
+6. **177** (#359): intake ACCEPT, at intake; after 175 merges, `route` and `job advance ... spec`.
+
+Next free lead decision id: **B-4031**. Given out: 172 B-3998..B-4002, 178 B-4025..B-4029 (B-4025 used).
+
+## Open jobs (stage)
+172 approve r3, 173 needs-human, 174 approve r2 (APPROVE written), 175 needs-human, 176 needs-human, 177 intake (ACCEPT), 178 approve r1.
+
+## Dependencies (job queue does not know them)
+#273 needs #272; #274/#275 after #273; #284 needs #283; #290, #292, #294, #352 need #286; #358 needs #272; #360 needs #288; #363 needs #361; #364 needs #351 (new migrations); #295, #296 last. Hold those `new` lines until their dependency merges. When SP6, SP7 and SP8 finish, run each done-when demo and record it in STATUS.md.
 
 ## Traps learned
 - **Wait for the builder's completion notification before `factory/bin/gate`:** the builder's SubagentStop hook (`gate --hook`) runs checks.sh in the same worktree for ~10 minutes after its READY message; a gate started meanwhile runs twice in one worktree. The hook can also make the agent end as "stalled 600s"; when build.md says READY and the tree is clean and pushed, gate anyway.
@@ -37,3 +42,5 @@ Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` (n
 - Earlier traps hold: PYTHONUTF8=1, UV_LINK_MODE=copy, unset VIRTUAL_ENV, full job ids only, `factory/bin/job` run directly (never `bash factory/bin/job`), worktree scripts via `uv run --frozen --project backend python ...`, DECISIONS id ranges per builder, isolation-reviewer is read-only (the lead saves its review), approver escalates any new migration by design, `job merge` can be rerun after a transient GitHub error.
 - A lead must run a long gate as its own background Bash task: when an agent that started a gate in the background returns and the lead ends its turn, the `-p` process can exit and kill the run.
 - The startup reads (whole STATUS.md, transcripts) cost 80k tokens: read STATUS.md progress lines with `cut`, and use `python scripts/context_size.py` early.
+- Run one load generator or full suite at a time across builders: 178's CPU-load runs overlapped 172's `checks.sh`, whose frontend tests then failed on 5 s timeouts (36, then 307).
+- A wait loop that greps process command lines can match its own; exclude its own PID.
