@@ -25,6 +25,20 @@ const REQUIRED = 'This release has no passing evaluation.';
 const RELEASE_HELP =
   'Releases are sealed on the Solutions screen and need a passing evaluation before a plan can be requested.';
 const SEALED = `${RELEASE_DIGEST.slice(0, 12)}, sealed ${formatDate(RELEASE.sealed_at)}`;
+const HINTS = {
+  serving_endpoint_required: {
+    detail: 'The target has no serving endpoint binding.',
+    hint: "This release is a generated app, and the target has no serving endpoint. Use a target registered with a serving endpoint, the model serving endpoint named in the release's model binding.",
+  },
+  serving_endpoint_mismatch: {
+    detail: "The release's model binding is not the target's serving endpoint.",
+    hint: "The target's serving endpoint is not the model the release is bound to. Use a target whose serving endpoint matches the release's model binding, or a release bound to that endpoint.",
+  },
+  model_not_in_target_workspace: {
+    detail: "The release's model provider is not in the target's workspace.",
+    hint: "The release's model provider is not in the target's Databricks workspace. Use a release whose model provider is in the target's workspace (its address matches the target's address).",
+  },
+};
 const LATER = ['Project', 'Solution', 'Version', 'Release'];
 const TARGETS = {
   ...RELEASE_CASCADE,
@@ -317,7 +331,31 @@ describe('PlansView request', () => {
       'href',
       `/o/acme/releases/${RELEASE.id}`,
     );
+    for (const { hint } of Object.values(HINTS)) {
+      expect(within(dialog).queryByText(hint)).toBeNull();
+    }
   });
+
+  it.each(Object.entries(HINTS))(
+    'shows a 409 %s problem with its plain-words hint and no release link',
+    async (code, { detail, hint }) => {
+      stubDelivery({
+        ...TARGETS,
+        [`POST ${D}/plans`]: () => problemResponse(409, code, { detail }),
+      });
+      renderWithClient(<PlansView />);
+      const dialog = await fillRequest();
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Request plan' }));
+      const alert = await within(dialog).findByText(detail);
+      expect(alert.closest('[role="alert"]')).toHaveTextContent('Could not request the plan');
+      expect(within(dialog).getByText(code)).toBeInTheDocument();
+      expect(within(dialog).getByText(hint)).toBeInTheDocument();
+      for (const other of Object.values(HINTS)) {
+        if (other.hint !== hint) expect(within(dialog).queryByText(other.hint)).toBeNull();
+      }
+      expect(within(dialog).queryByRole('link', { name: 'Open the release' })).toBeNull();
+    },
+  );
 
   it('validates the application key before calling the API', async () => {
     const fetchMock = stubDelivery(TARGETS);
@@ -340,5 +378,8 @@ describe('PlansView request', () => {
     expect(alert.closest('[role="alert"]')).toHaveTextContent('Could not request the plan');
     expect(within(dialog).getByText('target_unresolved')).toBeInTheDocument();
     expect(within(dialog).queryByRole('link', { name: 'Open the release' })).toBeNull();
+    for (const { hint } of Object.values(HINTS)) {
+      expect(within(dialog).queryByText(hint)).toBeNull();
+    }
   });
 });
