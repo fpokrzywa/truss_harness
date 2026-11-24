@@ -16,6 +16,7 @@ HERE = Path(__file__).resolve().parent
 STATIC = HERE / "static"
 CONFIG = HERE / "config"
 MAX_MESSAGE = 4000
+MAX_BODY = 1024 * 1024
 WAREHOUSE_REASON = "the app cannot run SELECT 1 on the warehouse"
 SERVING_REASON = "the serving endpoint is not ready"
 
@@ -47,6 +48,8 @@ def _check(name, passed, reason):
     return {"name": name, "status": "passed" if passed else "failed", "reason": None if passed else reason[:200]}
 
 
+# The app has no access check of its own: it relies on Databricks Apps authentication in front of
+# it (design 6.4). Request bodies are capped at MAX_BODY (413 request_too_large).
 def create_app(workspace_client=None):
     client = workspace_client or WorkspaceClient()
     warehouse_id = os.environ["DATABRICKS_WAREHOUSE_ID"]
@@ -54,6 +57,11 @@ def create_app(workspace_client=None):
     config = agent_loop.load_config(CONFIG)
     agent = config["agent"]
     app = Flask(__name__, static_folder=None)
+    app.config["MAX_CONTENT_LENGTH"] = MAX_BODY
+
+    @app.errorhandler(413)
+    def too_large(_error):
+        return jsonify(error="request_too_large"), 413
 
     @app.get("/")
     def index():
