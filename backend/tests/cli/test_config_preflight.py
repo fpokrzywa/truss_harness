@@ -72,6 +72,7 @@ def test_a_passing_production_env_prints_only_ok_and_pending_lines_and_exits_0(
         "ok: api docs",
         "ok: local login",
         "ok: metrics token",
+        "ok: mcp access",
         "ok: database role",
         "ok: migrations",
         "ok: register",
@@ -119,6 +120,20 @@ def test_the_metrics_token_line_outside_production(tmp_path: Path, app_url: str)
     assert "refused: metrics token: SHIFDE_METRICS_TOKEN is not set" in lines and code == 1
     _, lines = _preflight(tmp_path, _env(app_url, SHIFDE_ENV="test", SHIFDE_API_DOCS_ENABLED="0"))
     assert "ok: metrics token" in lines
+
+
+def test_mcp_access_on_without_allowed_hosts_is_refused(tmp_path: Path, app_url: str) -> None:
+    code, lines = _preflight(tmp_path, _env(app_url, SHIFDE_MCP_ENABLED="true"))
+    assert code == 1
+    assert (
+        "refused: mcp access: SHIFDE_MCP_ENABLED is true and SHIFDE_MCP_ALLOWED_HOSTS is empty"
+        in lines
+    )
+    code, lines = _preflight(
+        tmp_path,
+        _env(app_url, SHIFDE_MCP_ENABLED="true", SHIFDE_MCP_ALLOWED_HOSTS="seth.example.com"),
+    )
+    assert "ok: mcp access" in lines and code == 0
 
 
 def test_an_accepted_req_f22_row_permits_local_login(tmp_path: Path, app_url: str) -> None:
@@ -237,6 +252,6 @@ def test_the_committed_register_parses() -> None:
         "ARCH M11": "closed",
         "ARCH M5": "closed",
         "REQ F-08": "accepted",
-        "REQ F-22": "pending-owner",
+        "REQ F-22": "closed",
         "Hosting target": "accepted",
     }

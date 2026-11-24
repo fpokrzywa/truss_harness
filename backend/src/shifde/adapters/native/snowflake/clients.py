@@ -3,6 +3,16 @@
 Every statement carries a freshly signed key-pair JWT (no cache) and goes only to the target's
 `*.snowflakecomputing.com` host. The CLI is used for one thing, `snow stage copy <local>
 @<stage>/<digest>/ --no-overwrite`, the only write the SQL API cannot do.
+
+Egress: the SQL API reaches only `*.snowflakecomputing.com`. `snow stage copy` also reaches the
+account's stage cloud storage (the presigned S3, Azure Blob or GCS endpoints the account returns)
+and the certificate OCSP responders. The deploy key file is written with mode 0600, which Windows
+does not enforce: there it relies on the ACL of the per-call temporary directory.
+
+Every credential is checked against the target before any request or subprocess: its host, its
+`tenant_id`, its `account` and `user` (the connection account-identifier pattern, so no leading `-`
+reaches the argv) and its account against the target host. Every signed JWT is registered with the
+redaction module.
 """
 
 from __future__ import annotations
@@ -17,14 +27,17 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol  # Any: decoded JSON bodies and result values
+from uuid import UUID
 
 import httpx
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from shifde.adapters import snowflake_jwt
+from shifde.adapters.dataplatforms.snowflake import ACCOUNT
 from shifde.adapters.native.addresses import normalize_snowflake_address
 from shifde.adapters.native.contracts import Target
 from shifde.adapters.native.snowflake.source import CLI_VERSION, identifier
+from shifde.core.redaction import register_secret
 
 TIMEOUT = httpx.Timeout(30, connect=5)
 STATEMENTS = "/api/v2/statements"
@@ -35,6 +48,7 @@ POLL_INTERVAL_S = 0.5
 QUERY_TAG = "shifde-native-app"
 _HANDLE = re.compile(r"[A-Za-z0-9-]{1,128}")
 _DIGEST = re.compile(r"[a-f0-9]{64}")
+FOREIGN_CREDENTIAL = "Snowflake credential belongs to another account host or organization"
 
 sleep = time.sleep  # between polls of a running statement; patched by tests
 clock = time.time  # wall clock of the JWT `iat`; patched by tests
@@ -42,8 +56,10 @@ clock = time.time  # wall clock of the JWT `iat`; patched by tests
 
 @dataclass(frozen=True)
 class SnowflakeKeyPair:
-    """The deploy user's key pair for one account; `repr` never shows the key."""
+    """The deploy user's key pair for one account of one organization; `repr` never shows the
+    key."""
 
+    tenant_id: UUID
     host: str
     account: str
     user: str
@@ -73,15 +89,33 @@ class StageCopier(Protocol):
 CredentialProvider = Callable[[], SnowflakeKeyPair]
 
 
-def _bound_credential(provider: CredentialProvider, host: str) -> SnowflakeKeyPair:
-    """The provider's credential, refused unless it belongs to the (normalized) target `host`."""
+def _host_accounts(host: str) -> tuple[str, str]:
+    """The account part of a normalized host (the labels before `snowflakecomputing.com`, a
+    trailing `privatelink` dropped) and its first label."""
+    labels = host.removeprefix("https://").split(".")[:-2]
+    if len(labels) > 1 and labels[-1] == "privatelink":
+        labels = labels[:-1]
+    return ".".join(labels), labels[0]
+
+
+def _bound_credential(provider: CredentialProvider, target: Target) -> SnowflakeKeyPair:
+    """The provider's credential, refused unless it belongs to `target`: the same (normalized)
+    host and tenant, an `account` and `user` of the account-identifier pattern, and an `account`
+    that is the host's account part or its first label. One fixed message, never a value."""
+    host = normalize_snowflake_address(target.host)
     credential = provider()
     try:
         credential_host = normalize_snowflake_address(credential.host)
     except ValueError:
         credential_host = ""
-    if credential_host != host:
-        raise PermissionError("Snowflake credential belongs to another account host")
+    if (
+        credential_host != host
+        or credential.tenant_id != target.tenant_id
+        or not ACCOUNT.fullmatch(credential.account)
+        or not ACCOUNT.fullmatch(credential.user)
+        or credential.account.lower().replace("_", "-") not in _host_accounts(host)
+    ):
+        raise PermissionError(FOREIGN_CREDENTIAL)
     return credential
 
 
@@ -97,7 +131,7 @@ class SnowflakeSqlApi:
         credential_provider: CredentialProvider,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
-        self.host = normalize_snowflake_address(target.host)  # the egress rule
+        self.target, self.host = target, normalize_snowflake_address(target.host)  # egress rule
         self.credential_provider, self.transport = credential_provider, transport
         self._parsed: tuple[str, rsa.RSAPrivateKey] | None = None
 
@@ -105,7 +139,7 @@ class SnowflakeSqlApi:
         return f"SnowflakeSqlApi({self.host})"
 
     def _credential(self) -> SnowflakeKeyPair:
-        return _bound_credential(self.credential_provider, self.host)
+        return _bound_credential(self.credential_provider, self.target)
 
     def _key(self, pem: str) -> rsa.RSAPrivateKey:
         """The parsed key of `pem` (kept for the last PEM only: parsing checks the key, slowly)."""
@@ -119,6 +153,7 @@ class SnowflakeSqlApi:
     def _headers(self, credential: SnowflakeKeyPair) -> dict[str, str]:
         key = self._key(credential.private_key_pem)
         token = snowflake_jwt.sign(key, credential.account, credential.user, int(clock()))
+        register_secret(token)
         return {
             "Authorization": f"Bearer {token}",
             "X-Snowflake-Authorization-Token-Type": "KEYPAIR_JWT",
@@ -188,7 +223,10 @@ def _rows(doc: dict[str, Any]) -> list[dict[str, Any]]:  # Any: JSON body and va
 
 class SnowflakeStageCopier:
     """The pinned Snowflake CLI in a minimal environment: version check and stage copy only, to
-    `target.host` with a credential of that host."""
+    `target.host` with a credential of that host. `snow stage copy` also reaches the account's
+    stage cloud storage (presigned S3, Azure Blob or GCS endpoints) and the certificate OCSP
+    responders. The key file's 0600 mode is not enforced on Windows, which relies on the ACL of
+    the per-call temporary directory."""
 
     platform = "snowflake"
 
@@ -200,7 +238,7 @@ class SnowflakeStageCopier:
         credential_provider: CredentialProvider,
         timeout: float = 600,
     ) -> None:
-        self.host = normalize_snowflake_address(target.host)  # the egress rule
+        self.target, self.host = target, normalize_snowflake_address(target.host)  # egress rule
         self.executable, self.credential_provider = executable, credential_provider
         self.timeout = timeout
 
@@ -252,7 +290,7 @@ class SnowflakeStageCopier:
         stage = ".".join(identifier(part) for part in stage.split("."))
         if not _DIGEST.fullmatch(digest):
             raise ValueError("invalid release digest")
-        credential = _bound_credential(self.credential_provider, self.host)
+        credential = _bound_credential(self.credential_provider, self.target)
         host = self.host.removeprefix("https://")
         with tempfile.TemporaryDirectory(prefix="shifde-snowcli-") as temporary:
             self._version(temporary)

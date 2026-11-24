@@ -1,10 +1,13 @@
-"""The runner: lease one job, run it through the Databricks adapter, post its result (design 4
-and 5, settled calls 5, 8 and 14; FDE SDK `shifde_executor.runner`, synchronous, one job at a time;
-B-2688..B-2695).
+"""The runner: lease one job, run it through the adapter of its target's platform (Databricks or
+Snowflake), post its result (design 4 and 5, settled calls 5, 8 and 14; FDE SDK
+`shifde_executor.runner`, synchronous, one job at a time; B-2688..B-2695; SP6 design 6.4).
 
 Every job reads its context (target, plan, deployment, owned resources) and a credential grant
 under its lease; a grant the broker refuses ends the job `credential_unavailable` before any
 adapter call. The deploying service principal comes from the credential entry, not the target.
+The job context's `platform_kind` picks the adapter: `databricks` (`DatabricksAdapter`, tokens
+from the broker) or `snowflake` (`SnowflakeNativeAdapter`, a key pair the broker re-checks and
+reads on every statement). An entry of another platform is refused like any other mismatch.
 While a job runs it is heartbeated in the background; a 409 marks the lease lost.
 
 `apply` writes at most once: before each platform write the adapter's journal posts an `intent`
@@ -13,10 +16,13 @@ Any exception ends the job with one failed result `execution_failed` (none once 
 lost: the server's sweep decides `unknown_outcome` or `failed`). Nothing is retried here; the
 server re-queues read-only jobs after a lost lease. A failed result never carries error text.
 
-The platform is real (`RealPlatform`: pinned CLI and workspace REST reads with tokens from the
-broker) or the in-memory fake (`FakePlatform`, one per process). The toolchain digest names the
-platform, so a plan made on the fake is never applied by a real executor, and the fake marks
-every `complete` receipt and the apply receipt's handles with `platform: fake`.
+The platform is real (`RealPlatform`: the pinned Databricks CLI and workspace REST reads with
+tokens from the broker, or the Snowflake SQL API and the pinned Snowflake CLI's stage copy with the
+broker's key pair) or the in-memory fakes (`FakePlatform`, one Databricks and one Snowflake fake
+per process; the Snowflake fake is built with the executor's `SHIFDE_ENV`, so it refuses outside
+development and test). The toolchain digest names the adapter, its CLI version and the platform,
+so a plan made on a fake is never applied by a real executor, and the fake marks every `complete`
+receipt and the apply receipt's handles with `platform: fake`.
 
 Process control (SP4 design 6.2): `stop()` requests no new lease, while the job in flight runs to
 its normal end, result included. `last_tick` is the monotonic time of the last run-loop pass (or
@@ -24,7 +30,8 @@ lease heartbeat while a job is in flight) and `live()` / `ready()` hold while it
 last successful gateway call, are within `window()`. `abandon()` (the shutdown grace ran out)
 posts nothing more for the job in flight; `write_in_flight()` tells whether a platform write was.
 
-A plan's artifact is the SDK source plus a root `release.json`, the release it deploys (SP3-4).
+A plan's artifact is the application source (the SDK source, or a Snowflake Native App package)
+plus a root `release.json`, the release it deploys (SP3-4).
 Its digest covers the whole archive; the adapter reads the source without `release.json`
 (`ReleaseArtifactStore`), so the record is checked but never deployed.
 """
@@ -43,6 +50,7 @@ from uuid import UUID, uuid5
 
 from pydantic import BaseModel
 
+from shifde.adapters import snowflake_jwt
 from shifde.adapters.native.addresses import AddressRefused, normalize_databricks_address
 from shifde.adapters.native.base import (
     DeployContext,
@@ -68,6 +76,7 @@ from shifde.adapters.native.contracts import (
     PlanRequest,
     ReconcileRequest,
     ResourceBinding,
+    SnowflakeApplicationSpec,
     SourceArchive,
     Target,
     VerifyRequest,
@@ -85,6 +94,15 @@ from shifde.adapters.native.databricks.clients import DatabricksCLI, DatabricksW
 from shifde.adapters.native.databricks.fake import FakeDatabricksPlatform
 from shifde.adapters.native.databricks.source import ADAPTER_VERSION, CLI_VERSION
 from shifde.adapters.native.planning import bindings_digest, seal_plan
+from shifde.adapters.native.snowflake import source as snowflake_source
+from shifde.adapters.native.snowflake.adapter import RESOURCE_KEY_OF_TYPE, SnowflakeNativeAdapter
+from shifde.adapters.native.snowflake.clients import (
+    CredentialProvider,
+    SnowflakeKeyPair,
+    SnowflakeSqlApi,
+    SnowflakeStageCopier,
+)
+from shifde.adapters.native.snowflake.fake import FakeSnowflakeNativePlatform
 from shifde.executor.client import GatewayClient, LeaseLost
 from shifde.executor.credentials import CredentialBroker, CredentialUnavailable
 
@@ -99,17 +117,29 @@ RELEASE_ENTRY = "release.json"  # the release a plan deploys, at the artifact's 
 
 TokenProvider = Callable[[str], str]
 ErrorCode = Literal["execution_failed", "credential_unavailable"]
+TargetKind = Literal["databricks", "snowflake"]
+Adapter = DatabricksAdapter | SnowflakeNativeAdapter
 
 
-def toolchain_digest(platform: str) -> str:
-    """The executing toolchain: adapter version, pinned CLI version and platform kind."""
+def toolchain_digest(platform: str, target_kind: TargetKind = "databricks") -> str:
+    """The executing toolchain: the adapter of `target_kind`, its version, its pinned CLI version
+    and the platform (`fake`, or the real platform)."""
+    if target_kind == "snowflake":
+        return digest(
+            {
+                "adapter": "snowflake",
+                "adapter_version": snowflake_source.ADAPTER_VERSION,
+                "cli_version": snowflake_source.CLI_VERSION,
+                "platform": "fake" if platform == "fake" else "snowflake",
+            }
+        )
     return digest(
         {"adapter_version": ADAPTER_VERSION, "cli_version": CLI_VERSION, "platform": platform}
     )
 
 
 def application_id(target_id: UUID, application_key: str) -> UUID:
-    """Stable per target and application key, so redeployments keep the Databricks app name."""
+    """Stable per target and application key, so redeployments keep the native app names."""
     return uuid5(APPLICATION_NAMESPACE, f"{target_id}/{application_key}")
 
 
@@ -130,9 +160,15 @@ class Platform(Protocol):
 
     def adapter(self, target: Target, token_provider: TokenProvider) -> DatabricksAdapter: ...
 
+    def snowflake_adapter(
+        self, target: Target, credential_provider: CredentialProvider
+    ) -> SnowflakeNativeAdapter: ...
+
 
 class RealPlatform:
-    """A Databricks workspace: the pinned CLI writes, httpx reads, tokens from the broker."""
+    """A Databricks workspace (the pinned CLI writes, httpx reads, tokens from the broker) or a
+    Snowflake account (SQL API statements and the pinned CLI's stage copy, key pairs from the
+    broker)."""
 
     kind = "databricks"
 
@@ -144,16 +180,36 @@ class RealPlatform:
             ),
         )
 
+    def snowflake_adapter(
+        self, target: Target, credential_provider: CredentialProvider
+    ) -> SnowflakeNativeAdapter:
+        return SnowflakeNativeAdapter(
+            gateway_factory=lambda t: SnowflakeSqlApi(t, credential_provider=credential_provider),
+            copier_factory=lambda t: SnowflakeStageCopier(
+                t, credential_provider=credential_provider
+            ),
+        )
+
 
 class FakePlatform:
-    """One in-memory fake for the process: its state outlives a job, so observe sees what apply
-    deployed. It accepts writes by the job's service principal and treats the target's bound
-    warehouse as existing."""
+    """One in-memory fake per platform for the process: its state outlives a job, so observe sees
+    what apply deployed. The Databricks fake accepts writes by the job's service principal and
+    treats the target's bound warehouse as existing. The Snowflake fake is built on first use with
+    `environment` (the executor's `SHIFDE_ENV`; it refuses anything but development and test) and
+    the public key of the job's key pair, so it accepts the JWTs signed with the entry's key."""
 
     kind = "fake"
 
-    def __init__(self, fake: FakeDatabricksPlatform | None = None) -> None:
+    def __init__(
+        self,
+        fake: FakeDatabricksPlatform | None = None,
+        *,
+        snowflake: FakeSnowflakeNativePlatform | None = None,
+        environment: str = "",
+    ) -> None:
         self.fake = fake or FakeDatabricksPlatform(service_principal="unset")
+        self.snowflake = snowflake
+        self.environment = environment
 
     def adapter(self, target: Target, token_provider: TokenProvider) -> DatabricksAdapter:
         self.fake.service_principal = target.bindings[PRINCIPAL_BINDING]
@@ -161,6 +217,31 @@ class FakePlatform:
         if warehouse:
             self.fake.warehouses.add(warehouse)
         return DatabricksAdapter(cli=self.fake, workspace_factory=self.fake.workspace)
+
+    def snowflake_fake(self, credential: SnowflakeKeyPair) -> FakeSnowflakeNativePlatform:
+        """The process's Snowflake fake, built for `credential`'s key, account and user on first
+        use."""
+        if self.snowflake is None:
+            key = snowflake_jwt.private_key(credential.private_key_pem)
+            if isinstance(key, str):
+                raise ValueError(key)
+            self.snowflake = FakeSnowflakeNativePlatform(
+                environment=self.environment,
+                public_key=key.public_key(),
+                account=credential.account,
+                user=credential.user,
+            )
+        return self.snowflake
+
+    def snowflake_adapter(
+        self, target: Target, credential_provider: CredentialProvider
+    ) -> SnowflakeNativeAdapter:
+        return SnowflakeNativeAdapter(
+            gateway_factory=lambda t: self.snowflake_fake(credential_provider()).gateway(
+                t, credential_provider
+            ),
+            copier_factory=lambda t: self.snowflake_fake(credential_provider()).copier(t),
+        )
 
 
 class JobFailure(Exception):
@@ -407,6 +488,24 @@ class Runner:
 
         return token
 
+    def _key_pair_provider(self, state: LeaseState, target: Target) -> CredentialProvider:
+        """The Snowflake key pair, re-checked by the broker (and its key file read) on every call;
+        an expired grant is refreshed first."""
+
+        def key_pair() -> SnowflakeKeyPair:
+            grant = state.grant
+            if grant is None or grant.expires_at <= utcnow():
+                grant = state.grant = self.client.credential_grant(state.lease)
+            return self.broker.key_pair_for(
+                grant,
+                job_id=state.lease.job.id,
+                executor_id=self.executor_id,
+                target_id=target.id,
+                tenant_id=target.tenant_id,
+            )
+
+        return key_pair
+
     def _execute(self, state: LeaseState) -> BaseModel:
         lease = state.lease
         job = lease.job
@@ -423,36 +522,69 @@ class Runner:
         ):
             raise ValueError("the context names another organization")
         state.grant = self.client.credential_grant(lease)
-        entry = self.broker.entry_for(
-            state.grant,
-            job_id=job.id,
-            executor_id=self.executor_id,
-            target_id=ctx.target.id,
-            tenant_id=ctx.target.tenant_id,
-        )
-        target = ctx.target.model_copy(
-            update={"bindings": {**ctx.target.bindings, PRINCIPAL_BINDING: entry.service_principal}}
-        )
-        spec = DatabricksApplicationSpec()
-        app_id = application_id(target.id, ctx.plan.application_key)
-        adapter = self.platform.adapter(target, self._token_provider(state, target))
-        owned = tuple(
-            ResourceBinding(
-                key=spec.app_resource_key,
-                native_id=r.native_id,
-                resource_type=r.resource_type,
-                application_id=app_id,
-                target_id=target.id,
+        kind = ctx.platform_kind
+        toolchain = toolchain_digest(self.platform.kind, kind)
+        app_id = application_id(ctx.target.id, ctx.plan.application_key)
+        spec: DatabricksApplicationSpec | SnowflakeApplicationSpec
+        adapter: Adapter
+        if kind == "snowflake":
+            self.broker.snowflake_entry_for(
+                state.grant,
+                job_id=job.id,
+                executor_id=self.executor_id,
+                target_id=ctx.target.id,
+                tenant_id=ctx.target.tenant_id,
             )
-            for r in ctx.owned_resources
-        )
+            target = ctx.target
+            spec = SnowflakeApplicationSpec()
+            adapter_version = snowflake_source.ADAPTER_VERSION
+            adapter = self.platform.snowflake_adapter(
+                target, self._key_pair_provider(state, target)
+            )
+            owned = tuple(
+                ResourceBinding(
+                    key=_snowflake_key(r.resource_type),
+                    native_id=r.native_id,
+                    resource_type=r.resource_type,
+                    application_id=app_id,
+                    target_id=target.id,
+                )
+                for r in ctx.owned_resources
+            )
+        else:
+            entry = self.broker.entry_for(
+                state.grant,
+                job_id=job.id,
+                executor_id=self.executor_id,
+                target_id=ctx.target.id,
+                tenant_id=ctx.target.tenant_id,
+            )
+            target = ctx.target.model_copy(
+                update={
+                    "bindings": {**ctx.target.bindings, PRINCIPAL_BINDING: entry.service_principal}
+                }
+            )
+            spec = DatabricksApplicationSpec()
+            adapter_version = ADAPTER_VERSION
+            adapter = self.platform.adapter(target, self._token_provider(state, target))
+            owned = tuple(
+                ResourceBinding(
+                    key=spec.app_resource_key,
+                    native_id=r.native_id,
+                    resource_type=r.resource_type,
+                    application_id=app_id,
+                    target_id=target.id,
+                )
+                for r in ctx.owned_resources
+            )
         deadline = job.deadline or utcnow() + timedelta(hours=1)
         read = ReadContext(
             tenant_id=target.tenant_id, target=target, owned_resources=owned, deadline=deadline
         )
+        build = (spec, adapter_version, toolchain)
         if job.kind == "plan":
             store = ReleaseArtifactStore()
-            artifact = self._artifact(state, ctx.plan, target, store, app_id, spec)
+            artifact = self._artifact(state, ctx.plan, target, store, app_id, build)
             planned = adapter.plan(PlanRequest(artifact=artifact), read)
             return PlanJobResult(
                 steps=planned.steps,
@@ -464,8 +596,8 @@ class Runner:
             if ctx.deployment is None:
                 raise ValueError("the apply job has no deployment")
             store = ReleaseArtifactStore()
-            artifact = self._artifact(state, ctx.plan, target, store, app_id, spec)
-            plan = self._plan(ctx, target, app_id, spec)
+            artifact = self._artifact(state, ctx.plan, target, store, app_id, build)
+            plan = self._plan(ctx, target, app_id, spec, self._details(adapter, ctx, read, app_id))
             journal = GatewayJournal(
                 self.client,
                 state,
@@ -482,7 +614,7 @@ class Runner:
                 operation_id=ctx.deployment.id,
                 artifacts=store,
                 journal=journal,
-                toolchain_digest=self.toolchain_digest,
+                toolchain_digest=toolchain,
                 write_guard=state.guard,
             )
             receipt = adapter.apply(ApplyRequest(artifact=artifact, plan=plan), deploy)
@@ -492,7 +624,10 @@ class Runner:
                 )
             return receipt
         if job.kind == "reconcile":
-            plan = self._plan(ctx, target, app_id, spec)
+            # The Snowflake adapter's reconcile reads no plan details, and after an unknown
+            # outcome the native state no longer gives the planned ones.
+            details = {} if kind == "snowflake" else self._details(adapter, ctx, read, app_id)
+            plan = self._plan(ctx, target, app_id, spec, details)
             return adapter.reconcile(ReconcileRequest(plan=plan), read)
         if ctx.deployment is None or ctx.deployment.receipt is None:
             raise ValueError("the job's deployment has no receipt")
@@ -508,9 +643,11 @@ class Runner:
         target: Target,
         store: ReleaseArtifactStore,
         app_id: UUID,
-        spec: DatabricksApplicationSpec,
+        build: tuple[DatabricksApplicationSpec | SnowflakeApplicationSpec, str, str],
     ) -> BuildArtifact:
-        """The plan's artifact (digest-checked against the header and the plan) in `store`."""
+        """The plan's artifact (digest-checked against the header and the plan) in `store`, for
+        `build` (spec, adapter version, toolchain digest)."""
+        spec, adapter_version, toolchain = build
         data = self.client.artifact(state.lease)
         if hashlib.sha256(data).hexdigest() != plan.artifact_digest:
             raise ArtifactMismatch
@@ -523,16 +660,41 @@ class Runner:
             source_digest=archive.digest,
             spec_digest=digest(spec),
             spec=spec,
-            adapter_version=ADAPTER_VERSION,
-            toolchain_digest=self.toolchain_digest,
+            adapter_version=adapter_version,
+            toolchain_digest=toolchain,
         )
 
     @staticmethod
+    def _details(
+        adapter: Adapter, ctx: JobContext, read: ReadContext, app_id: UUID
+    ) -> dict[str, Any]:  # Any: plan details JSON
+        """The details the adapter sealed into the plan: for Snowflake from the adapter's own
+        helper on the current native state, for Databricks derived from the target."""
+        if ctx.plan is None:
+            raise ValueError("the job has no plan")
+        if isinstance(adapter, SnowflakeNativeAdapter):
+            return adapter.plan_details(ctx.plan.artifact_digest, app_id, read)
+        target = read.target
+        warehouse = target.bindings.get(DatabricksApplicationSpec().warehouse_binding)
+        if not warehouse:
+            raise ValueError("required warehouse binding is missing")
+        return {
+            "cli_version": CLI_VERSION,
+            "app_name": app_name(app_id, target.id),
+            "root_path": root_path(target.bindings[PRINCIPAL_BINDING], app_id, target.id),
+            "warehouse_id": warehouse,
+        }
+
+    @staticmethod
     def _plan(
-        ctx: JobContext, target: Target, app_id: UUID, spec: DatabricksApplicationSpec
+        ctx: JobContext,
+        target: Target,
+        app_id: UUID,
+        spec: DatabricksApplicationSpec | SnowflakeApplicationSpec,
+        details: dict[str, Any],  # Any: plan details JSON
     ) -> DeploymentPlan:
         """The sealed plan as the adapter's `DeploymentPlan`: the server's steps, snapshot,
-        versions and expiry, the details derived from the target, sealed with the local digest."""
+        versions and expiry, the adapter's details, sealed with the local digest."""
         p = ctx.plan
         if (
             p is None
@@ -544,9 +706,6 @@ class Runner:
             or p.expires_at is None
         ):
             raise ValueError("the job's plan is not sealed")
-        warehouse = target.bindings.get(spec.warehouse_binding)
-        if not warehouse:
-            raise ValueError("required warehouse binding is missing")
         return seal_plan(
             DeploymentPlan(
                 id=p.id,
@@ -562,13 +721,16 @@ class Runner:
                 toolchain_digest=p.toolchain_digest,
                 snapshot=p.snapshot,
                 steps=p.steps,
-                details={
-                    "cli_version": CLI_VERSION,
-                    "app_name": app_name(app_id, target.id),
-                    "root_path": root_path(target.bindings[PRINCIPAL_BINDING], app_id, target.id),
-                    "warehouse_id": warehouse,
-                },
+                details=details,
                 expires_at=p.expires_at,
                 digest="0" * 64,
             )
         )
+
+
+def _snowflake_key(resource_type: str) -> str:
+    """The Snowflake adapter's resource key of an owned resource type."""
+    key = RESOURCE_KEY_OF_TYPE.get(resource_type)
+    if key is None:
+        raise ValueError("the target owns a resource the Snowflake adapter does not bind")
+    return key

@@ -1,5 +1,5 @@
-"""Native delivery wire models (Databricks Apps and Snowflake Native Apps) and canonical hashing
-(FDE SDK `shifde_contracts`).
+"""Native delivery wire models (Databricks Apps, Snowflake Native Apps and Palantir Marketplace
+installations) and canonical hashing (FDE SDK `shifde_contracts`).
 
 The values an executor reports back in a job result carry length and count limits (`NAME_MAX`,
 `NATIVE_ID_MAX`, `EVIDENCE_MAX`, `HANDLES_MAX`, `RESOURCES_MAX`, `ITEMS_MAX`; B-2736): a value
@@ -255,13 +255,32 @@ class SnowflakeApplicationSpec(Model):
     kind: Literal["snowflake.native-app/v1"] = "snowflake.native-app/v1"
 
 
+class FoundryMarketplaceSpec(Model):
+    """A Palantir Marketplace installation. The product version, object type, asset digest and RIDs
+    come from the target bindings (SP8 design call S8-H)."""
+
+    kind: Literal["palantir.marketplace/v1"] = "palantir.marketplace/v1"
+    frontend_asset_path: RelativePath
+
+    @field_validator("frontend_asset_path")
+    @classmethod
+    def _names_a_file(cls, value: str) -> str:
+        if value == ".":
+            raise ValueError("frontend asset path must identify a file")
+        return value
+
+
 class DockerComposeSpec(Model):
     kind: Literal["docker.compose/v1"] = "docker.compose/v1"
     health_path: Literal["/health"] = "/health"
 
 
 ApplicationSpec = Annotated[
-    DatabricksApplicationSpec | SnowflakeApplicationSpec | FabricSolutionSpec | DockerComposeSpec,
+    DatabricksApplicationSpec
+    | SnowflakeApplicationSpec
+    | FabricSolutionSpec
+    | FoundryMarketplaceSpec
+    | DockerComposeSpec,
     Field(discriminator="kind"),
 ]
 
@@ -545,10 +564,13 @@ class OwnedResource(Model):
 
 
 class JobContext(Model):
-    """What a leased job runs against (never a credential, the claim or the artifact bytes)."""
+    """What a leased job runs against (never a credential, the claim or the artifact bytes).
+    `platform_kind` is the target's platform; it is not on `Target`, whose digest every sealed
+    plan's `bindings_digest` is."""
 
     job: LeasedJob
     target: Target
+    platform_kind: Literal["databricks", "snowflake"] = "databricks"
     plan: ContextPlan | None
     deployment: ContextDeployment | None
     owned_resources: list[OwnedResource]

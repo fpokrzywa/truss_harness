@@ -6,7 +6,7 @@ import { endpoints } from '@/lib/api/endpoints';
 import { TARGET_KIND, type SolutionOut } from '@/lib/api/packaging-types';
 import { useCan } from '@/lib/hooks';
 import { useRefreshReleases, useSolutions } from '@/lib/release-hooks';
-import { solutionHref } from '@/lib/scope';
+import { generateHref, solutionHref } from '@/lib/scope';
 import { ConfirmDialog } from '../ConfirmDialog';
 import {
   ActionError,
@@ -38,12 +38,18 @@ export function SolutionsView() {
         title="Solutions"
         description="Deployable solutions of a project: each version pins an entrypoint, and each release seals a version with its environment bindings."
         actions={
-          canWrite &&
-          chosen && (
-            <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
-              New solution
-            </button>
-          )
+          <>
+            {can('appgen:request:read') && (
+              <Link className="btn" href={generateHref(org, ws, proj)}>
+                Generate solution
+              </Link>
+            )}
+            {canWrite && chosen && (
+              <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
+                New solution
+              </button>
+            )}
+          </>
         }
       />
       <ProjectScopePicker org={org} />

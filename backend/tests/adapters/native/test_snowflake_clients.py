@@ -24,6 +24,7 @@ from shifde.adapters.native.snowflake.clients import (
     SnowflakeSqlApi,
     SnowflakeStageCopier,
 )
+from shifde.core.redaction import REDACTED, scrub_text
 from tests.adapters.native.conftest import SF_HOST, SF_PEM, sf_credential
 
 DIGEST = "e" * 64
@@ -42,8 +43,11 @@ ALLOWED_ENV = {
 }
 
 
+TENANT = uuid4()
+
+
 def _target(host: str = SF_HOST) -> Target:
-    return Target(tenant_id=uuid4(), host=host)
+    return Target(tenant_id=TENANT, host=host)
 
 
 def _answer(rows: list[list[Any]], columns: list[str], handle: str = "01b0-1") -> httpx.Response:
@@ -57,10 +61,12 @@ def _answer(rows: list[list[Any]], columns: list[str], handle: str = "01b0-1") -
     )
 
 
-def _api(handler: Any, **kw: Any) -> SnowflakeSqlApi:  # Any: handler and overrides
-    credential = sf_credential(**kw)
+def _api(handler: Any, target_host: str = SF_HOST, **kw: Any) -> SnowflakeSqlApi:  # Any
+    credential = sf_credential(TENANT, **kw)
     return SnowflakeSqlApi(
-        _target(), credential_provider=lambda: credential, transport=httpx.MockTransport(handler)
+        _target(target_host),
+        credential_provider=lambda: credential,
+        transport=httpx.MockTransport(handler),
     )
 
 
@@ -159,8 +165,19 @@ def test_a_bad_key_is_refused_with_a_fixed_reason_and_no_request() -> None:
     assert seen == []
 
 
+def test_every_signed_jwt_is_registered_for_redaction() -> None:
+    sent: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request.headers["authorization"].removeprefix("Bearer "))
+        return _answer([["OK"]], ["STATUS"])
+
+    _api(handler).execute("SELECT 1")
+    assert scrub_text(f"leaked {sent[0]} here") == f"leaked {REDACTED} here"
+
+
 def test_the_key_pair_repr_hides_the_key() -> None:
-    credential = sf_credential()
+    credential = sf_credential(TENANT)
     assert KEY_LINE not in repr(credential) and "acct1" in repr(credential)
     assert KEY_LINE not in repr(_api(lambda r: _answer([], [])))
 
@@ -194,8 +211,8 @@ def run(monkeypatch: pytest.MonkeyPatch) -> _Run:
     return recorder
 
 
-def _copier(credential_host: str = SF_HOST) -> SnowflakeStageCopier:
-    credential = sf_credential(credential_host)
+def _copier(credential_host: str = SF_HOST, **kw: Any) -> SnowflakeStageCopier:  # Any: overrides
+    credential = sf_credential(TENANT, credential_host, **kw)
     return SnowflakeStageCopier(_target(), credential_provider=lambda: credential)
 
 
@@ -310,7 +327,7 @@ def test_the_copier_compares_the_credential_host_normalized(run: _Run, tmp_path:
 )
 def test_the_copier_is_bound_to_a_snowflakecomputing_com_target(host: str) -> None:
     target = _target().model_copy(update={"host": host})
-    credential = sf_credential(host)
+    credential = sf_credential(TENANT, host)
     with pytest.raises(ValueError):
         SnowflakeStageCopier(target, credential_provider=lambda: credential)
 
@@ -319,3 +336,64 @@ def test_a_missing_cli_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(clients.shutil, "which", lambda name: None)
     with pytest.raises(FileNotFoundError):
         _copier().check_version()
+
+
+# ------------------------------------------------------------------ credential checks
+BAD_NAMES = ["-acct1", "acct 1", "acct1;x", "acct1/x", "acct1\n"]
+
+
+def _refused_everywhere(run: _Run, tmp_path: Path, **kw: Any) -> None:  # Any: overrides
+    seen: list[httpx.Request] = []
+    with pytest.raises(PermissionError) as refused:
+        _api(seen.append, **kw).execute("SELECT 1")
+    assert str(refused.value) == clients.FOREIGN_CREDENTIAL
+    with pytest.raises(PermissionError):
+        _copier(**kw).copy(tmp_path, "SHIFDE_PKG.SHIFDE.SOURCE", DIGEST)
+    assert seen == [] and run.calls == []
+
+
+def test_an_account_of_another_host_is_refused_before_anything_runs(
+    run: _Run, tmp_path: Path
+) -> None:
+    _refused_everywhere(run, tmp_path, account="acct2")
+
+
+@pytest.mark.parametrize("name", BAD_NAMES)
+def test_a_bad_account_or_user_is_refused_before_anything_runs(
+    run: _Run, tmp_path: Path, name: str
+) -> None:
+    _refused_everywhere(run, tmp_path, account=name)
+    _refused_everywhere(run, tmp_path, user=name.replace("acct1", "deployer"))
+
+
+def test_the_refusal_echoes_no_value(run: _Run, tmp_path: Path) -> None:
+    seen: list[httpx.Request] = []
+    with pytest.raises(PermissionError) as refused:
+        _api(seen.append, account="secretacct", user="-secretuser").execute("SELECT 1")
+    assert "secret" not in str(refused.value) and "acct1" not in str(refused.value)
+    assert str(TENANT) not in str(refused.value)
+
+
+REGION_HOST = "https://xy12345.us-east-2.aws.snowflakecomputing.com"
+
+
+@pytest.mark.parametrize("account", ["xy12345.us-east-2.aws", "xy12345", "XY12345"])
+def test_a_region_host_accepts_its_account_or_its_locator(account: str) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return _answer([["OK"]], ["STATUS"])
+
+    api = _api(handler, target_host=REGION_HOST, host=REGION_HOST, account=account)
+    assert api.execute("SELECT 1").rows == [{"status": "OK"}]
+    assert seen == [f"{REGION_HOST}/api/v2/statements"]
+
+
+@pytest.mark.parametrize("account", ["us-east-2", "xy12345.us-east-2", "xy12346"])
+def test_a_region_host_refuses_another_account(account: str) -> None:
+    seen: list[httpx.Request] = []
+    api = _api(seen.append, target_host=REGION_HOST, host=REGION_HOST, account=account)
+    with pytest.raises(PermissionError):
+        api.execute("SELECT 1")
+    assert seen == []

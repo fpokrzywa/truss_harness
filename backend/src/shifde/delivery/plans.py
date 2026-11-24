@@ -281,6 +281,9 @@ class PlanService:
             raise gateway.TargetUnavailable("the target is archived")
         if repository.target_unresolved(self.sc.session, target["id"], tenant_id=self.sc.tenant_id):
             raise TargetUnresolved("the target has an unresolved unknown outcome")
+        if target["platform_kind"] != "databricks":
+            # the SDK template artifact is Databricks only until SP6-6 renders Snowflake releases
+            raise ReleaseTargetMismatch("The release is for another kind of target.")
         release, passing = self._gate(target, body.release_id)
         content, artifact_digest = template_artifact(release["manifest"], release["digest"])
         session = self.sc.session

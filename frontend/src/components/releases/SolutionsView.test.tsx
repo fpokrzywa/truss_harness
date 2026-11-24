@@ -75,6 +75,22 @@ describe('SolutionsView list', () => {
     expect(screen.queryByRole('button', { name: 'New solution' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Archive/ })).not.toBeInTheDocument();
   });
+
+  it('links to the solution generator with the chosen project for appgen readers', async () => {
+    stubReleases({}, [...ALL_PERMS, ...RELEASE_READ_PERMS, 'appgen:request:read']);
+    renderWithClient(<SolutionsView />);
+    expect(await screen.findByRole('link', { name: 'Generate solution' })).toHaveAttribute(
+      'href',
+      '/o/acme/solutions/generate?ws=eng&proj=api',
+    );
+  });
+
+  it('has no generator link without appgen:request:read', async () => {
+    stubReleases({}, [...ALL_PERMS, ...RELEASE_READ_PERMS]);
+    renderWithClient(<SolutionsView />);
+    await screen.findByRole('table', { name: 'Solutions' });
+    expect(screen.queryByRole('link', { name: 'Generate solution' })).not.toBeInTheDocument();
+  });
 });
 
 describe('SolutionsView write', () => {

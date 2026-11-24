@@ -1,8 +1,8 @@
 """SP5-1: publish-time validation of `connection.sql` tools on a Databricks `data_platform`
 connection (design 6.1): such a tool publishes, its derived maturity is the Databricks adapter's,
-the SELECT-only statement rules of `core/sqlrules.py` run on its template, a Snowflake connection
-is `executor_adapter_unsupported`, postgres tools validate as before, and client B's Databricks
-connection is the unknown-id outcome. With `RepoEnv` and the production `Env`, as `shifde_app` and
+the SELECT-only statement rules of `core/sqlrules.py` run on its template, a `data_platform`
+adapter other than Databricks and Snowflake is `executor_adapter_unsupported`, postgres tools
+validate as before, and client B's Databricks connection is the unknown-id outcome. With `RepoEnv` and the production `Env`, as `shifde_app` and
 as the schema owner (no row-level security)."""
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from uuid import UUID
 
@@ -210,21 +210,39 @@ def test_a_write_keyword_is_refused_whatever_the_side_effect_class(
         s.rollback()
 
 
-def test_a_snowflake_sql_tool_is_executor_adapter_unsupported(
+class _AdapterKey:
+    """An `Env` whose connections report another `adapter_key` (a data_platform adapter that has no
+    `connection.sql` support)."""
+
+    def __init__(self, inner: Env, adapter_key: str) -> None:
+        self.inner = Overriding(inner)
+        self.adapter_key = adapter_key
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
+
+    def connection(self, connection_id: UUID) -> Any:  # Any: ConnectionInfo | None
+        info = self.inner.connection(connection_id)
+        return None if info is None else replace(info, adapter_key=self.adapter_key)
+
+
+def test_another_data_platform_adapter_is_executor_adapter_unsupported(
     conns: Conns,
     world: World,
     open_session: Callable[[UUID], AbstractContextManager[Session]],
     make_env: EnvFactory,
 ) -> None:
+    """Replaces the Snowflake case (Snowflake now publishes, SP6-1): the same refusal, for an
+    adapter key outside `DATA_PLATFORM_ADAPTER_OF`."""
     with open_session(world.a.tenant) as s:
-        env = make_env(s, world.a.tenant)
+        env = _AdapterKey(make_env(s, world.a.tenant), "bigquery")
         report = Report()
-        validate_tool(_sql_tool(conns.snowflake, "select 1"), env, report)
+        validate_tool(_sql_tool(conns.snowflake, "select 1"), env, report)  # type: ignore[arg-type]
         assert [(e.path, e.code, e.message) for e in report.errors] == [
             (
                 "binding.connection_id",
                 "executor_adapter_unsupported",
-                "connection.sql supports Databricks data platform connections only",
+                "connection.sql supports Databricks and Snowflake data platform connections only",
             )
         ]
         s.rollback()

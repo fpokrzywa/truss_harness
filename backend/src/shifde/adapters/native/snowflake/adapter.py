@@ -94,6 +94,14 @@ STEPS = (
     TERMINAL_STEP,
 )
 RESOURCE_KEYS = ("package", "stage", "version", "application")
+# The resource key of each native resource type `_resources` binds (an executor maps the target's
+# owned resources back to these keys).
+RESOURCE_KEY_OF_TYPE = {
+    "snowflake.application_package": "package",
+    "snowflake.stage": "stage",
+    "snowflake.application_version": "version",
+    "snowflake.application": "application",
+}
 SESSION = "SELECT CURRENT_ACCOUNT() AS ACCOUNT, CURRENT_ROLE() AS ROLE"
 RECONCILE_EVIDENCE = "inspect query history; no automatic replay"
 FAILED_STATES = ("FAILED", "DISABLED")
@@ -400,12 +408,14 @@ class SnowflakeNativeAdapter:
             toolchain_digest=ctx.toolchain_digest,
         )
 
-    def plan(self, request: PlanRequest, ctx: ReadContext) -> DeploymentPlan:
-        artifact = request.artifact
-        self._check_artifact(artifact, ctx)
+    def _planned(
+        self, release: str, application_id: UUID, ctx: ReadContext
+    ) -> tuple[dict[str, Any], dict[str, ResourceBinding], list[PlanStep], dict[str, Any]]:
+        """(state, owned resources found, steps, plan details) of deploying the release with
+        digest `release` on the current native state; reads only."""  # Any: snapshot JSON
         names = names_for(ctx.target)
         state = self._snapshot(self._gateway(ctx), names)
-        resources = self._check_ownership(state, names, artifact.application_id, ctx)
+        resources = self._check_ownership(state, names, application_id, ctx)
         application = state["application"]
         patches = _patches(state)
         if application:
@@ -448,7 +458,32 @@ class SnowflakeNativeAdapter:
             ),
             PlanStep(key=TERMINAL_STEP, action="update", resource_key="application"),
         ]
+        details = {
+            "cli_version": CLI_VERSION,
+            **names,
+            "version": VERSION,
+            "patch": patch,
+            "label": f"shifde {release[:12]}",
+            "stage": stage_name(names["package"]),
+            "stage_location": stage_location(names["package"], release),
+            "role": state["role"],
+            "existing_package": bool(state["package"]),
+            "existing_application": bool(application),
+        }
+        return state, resources, steps, details
+
+    def plan_details(
+        self, release: str, application_id: UUID, ctx: ReadContext
+    ) -> dict[str, Any]:  # Any: plan details JSON
+        """The details `plan()` seals for the release with digest `release` on the current
+        native state (read only), so an executor can rebuild a sealed plan for `apply`."""
+        return self._planned(release, application_id, ctx)[3]
+
+    def plan(self, request: PlanRequest, ctx: ReadContext) -> DeploymentPlan:
+        artifact = request.artifact
+        self._check_artifact(artifact, ctx)
         release = artifact.archive.digest
+        state, resources, steps, details = self._planned(release, artifact.application_id, ctx)
         return seal_plan(
             DeploymentPlan(
                 tenant_id=ctx.tenant_id,
@@ -465,18 +500,7 @@ class SnowflakeNativeAdapter:
                     resources=list(resources.values()), fingerprint=digest(state)
                 ),
                 steps=steps,
-                details={
-                    "cli_version": CLI_VERSION,
-                    **names,
-                    "version": VERSION,
-                    "patch": patch,
-                    "label": f"shifde {release[:12]}",
-                    "stage": stage_name(names["package"]),
-                    "stage_location": stage_location(names["package"], release),
-                    "role": state["role"],
-                    "existing_package": bool(state["package"]),
-                    "existing_application": bool(application),
-                },
+                details=details,
                 expires_at=utcnow() + timedelta(minutes=15),
                 digest="0" * 64,
             )

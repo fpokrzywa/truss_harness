@@ -54,11 +54,13 @@ def test_catalog_is_seths_final_catalog(owner_session: Session) -> None:
     counts = owner_session.execute(
         text(
             "SELECT (SELECT count(*) FROM shifde.permissions WHERE key NOT LIKE 'delivery:%' "
-            "AND key NOT LIKE 'packaging:%' AND key NOT LIKE 'evaluation:%'), "
+            "AND key NOT LIKE 'packaging:%' AND key NOT LIKE 'evaluation:%' "
+            "AND key NOT LIKE 'appgen:%' AND key NOT LIKE 'mcp:%'), "
             "(SELECT count(*) FROM shifde.roles WHERE is_system), "
             "(SELECT count(*) FROM shifde.role_permissions WHERE tenant_id IS NULL "
             "AND permission_key NOT LIKE 'delivery:%' AND permission_key NOT LIKE 'packaging:%' "
-            "AND permission_key NOT LIKE 'evaluation:%')"
+            "AND permission_key NOT LIKE 'evaluation:%' AND permission_key NOT LIKE 'appgen:%' "
+            "AND permission_key NOT LIKE 'mcp:%')"
         )
     ).one()
     assert tuple(counts) == (92, 8, 339)
@@ -79,6 +81,25 @@ def test_catalog_is_seths_final_catalog(owner_session: Session) -> None:
         )
     ).one()
     assert tuple(packaging) == (8, 15)
+    appgen = owner_session.execute(
+        text(
+            "SELECT (SELECT count(*) FROM shifde.permissions WHERE key LIKE 'appgen:%' "
+            "AND NOT is_privileged), "
+            "(SELECT count(*) FROM shifde.role_permissions rp JOIN shifde.roles r "
+            "ON r.id = rp.role_id WHERE rp.tenant_id IS NULL AND rp.permission_key LIKE 'appgen:%' "
+            "AND r.key IN ('tenant_administrator', 'developer'))"
+        )
+    ).one()
+    assert tuple(appgen) == (3, 6)
+    mcp = owner_session.execute(
+        text(
+            "SELECT (SELECT count(*) FROM shifde.permissions WHERE key LIKE 'mcp:%'), "
+            "(SELECT count(*) FROM shifde.role_permissions rp JOIN shifde.roles r "
+            "ON r.id = rp.role_id WHERE rp.tenant_id IS NULL AND rp.permission_key LIKE 'mcp:%' "
+            "AND r.key IN ('tenant_administrator', 'developer'))"
+        )
+    ).one()
+    assert tuple(mcp) == (3, 5)
     platform = set(
         owner_session.execute(
             text(

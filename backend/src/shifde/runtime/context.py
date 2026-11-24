@@ -34,6 +34,7 @@ from shifde.core.settings import Settings
 from shifde.runtime import repository as repo
 from shifde.runtime import state
 from shifde.runtime.governance import GovernanceHooks
+from shifde.runtime.internal_tools import InternalToolRegistry
 from shifde.tenancy import service as tenancy
 from shifde.tenancy.scope import TenantScope
 
@@ -64,6 +65,7 @@ class RunContext:
         principal: Principal,
         tenant_header: tuple[str, str, str],
         db: Database | None = None,
+        internal_tools: InternalToolRegistry | None = None,
     ) -> None:
         self.session = session
         self.settings = settings
@@ -81,6 +83,9 @@ class RunContext:
         # tree read use their own short session too and leave the caller's transaction untouched
         # (the caller must not hold the run-row lock then, B-2717)
         self.db = db
+        # the worker's `seth.*` functions (`runtime.internal_tools`); None: such a tool call fails
+        # with `internal_function_unavailable`
+        self.internal_tools = internal_tools
         self.tenant_id: UUID = run["tenant_id"]
         self.scope = TenantScope(
             session=session,

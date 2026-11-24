@@ -208,7 +208,11 @@ def test_a_202_is_polled_until_it_finishes(sf: FakeSnowflakeAccount) -> None:
 
     sf._submit = finish_on_first_poll  # type: ignore[method-assign]
     result = _invoke(sf, {"sql": SELECT_ONE})
-    assert result.result == {"columns": ["1"], "rows": [["1"]], "row_count": 1}
+    assert result.result == {
+        "columns": [{"name": "1", "type": ""}],  # the answer gave no type
+        "rows": [["1"]],
+        "row_count": 1,
+    }
     assert [p[0] for p in sf.paths()] == ["POST", "GET"]
 
 
@@ -377,7 +381,11 @@ def test_the_statement_body_and_bindings(sf: FakeSnowflakeAccount) -> None:
         role="READER",
         statement_timeout_seconds=20,
     )
-    assert result.result == {"columns": ["1"], "rows": [["1"]], "row_count": 1}
+    assert result.result == {
+        "columns": [{"name": "1", "type": "text"}],
+        "rows": [["1"]],
+        "row_count": 1,
+    }
     assert result.truncated is False
     (body,) = sf.bodies()
     assert body == {
@@ -420,7 +428,10 @@ def test_the_row_cap_sets_truncated(sf: FakeSnowflakeAccount) -> None:
     sf.row_count = 10
     capped = _invoke(sf, {"sql": ROWS_STATEMENT}, max_rows=4)
     assert capped.result["row_count"] == 4 and len(capped.result["rows"]) == 4
-    assert capped.truncated is True and capped.result["columns"] == ["N", "LABEL"]
+    assert capped.truncated is True and capped.result["columns"] == [
+        {"name": "N", "type": "text"},
+        {"name": "LABEL", "type": "text"},
+    ]
     sf.row_count = 4
     exact = _invoke(sf, {"sql": ROWS_STATEMENT}, max_rows=4)
     assert exact.result["row_count"] == 4 and exact.truncated is False
@@ -463,6 +474,10 @@ REFUSED_SQL = [
     "WITH a AS (SELECT 1) DELETE FROM t",
     "with a as (select 1) Insert into t select * from a",
     "With a As (Select 1) dElEtE From t",
+    # a positional `:n` bind reference in the code (#319)
+    "SELECT :1",
+    "SELECT :12",
+    "SELECT * FROM t WHERE id = :1",
 ]
 ACCEPTED_SQL = [
     "SELECT $$hello$$",
@@ -477,6 +492,11 @@ ACCEPTED_SQL = [
     "SELECT 'insert' AS w -- delete",
     'SELECT "update" FROM t // drop',
     "SELECT updated_at, deleted FROM t",
+    "SELECT ':1'",
+    "SELECT $$:1$$",
+    "SELECT 1 -- :1",
+    "SELECT x::int FROM t",
+    "SELECT * FROM t WHERE id = :id",
 ]
 
 
@@ -492,6 +512,12 @@ def test_refused_statements_make_no_request(sf: FakeSnowflakeAccount, sql: str) 
 @pytest.mark.parametrize("sql", ACCEPTED_SQL)
 def test_read_statements_pass_the_snowflake_check(sql: str) -> None:
     sqlapi.check_read_only(sql, dialect="snowflake")
+
+
+def test_a_positional_bind_reference_gets_its_own_message() -> None:
+    with pytest.raises(AdapterFailure) as raised:
+        sqlapi.check_read_only("SELECT :1", dialect="snowflake")
+    assert raised.value.message == sqlapi._POSITIONAL_BIND
 
 
 def test_an_accepted_dollar_quoted_select_reaches_the_account(sf: FakeSnowflakeAccount) -> None:

@@ -2,16 +2,19 @@
 section 3, `GET /api/v1/tool-executors`).
 
 Only four executor kinds exist. `builtin.function` runs code that ships with the platform and is
-listed in `BUILTIN_FUNCTIONS` (nothing a tenant or a model can add). The other three reach external
+listed in `BUILTIN_FUNCTIONS` (nothing a tenant or a model can add), or binds a `seth.*` key
+declared in `internal_functions.INTERNAL_FUNCTIONS`, which runs only inside a run (the worker's
+`runtime.internal_tools` registry; refused anywhere else). The other three reach external
 systems exclusively through a P3 connection (`ConnectionService.open_for_use`), so every call passes
 the connection's status gates, `connection:use` / `connection:write`, the EgressGuard and secret
 redaction: there is no second network path.
 
 `connection.sql` runs on a `database` connection (postgres, `%(name)s` parameters) or on a
-`data_platform` connection whose adapter is in `DATA_PLATFORM_ADAPTER_OF` (Databricks): there the
-stored `%(name)s` template is sent as `:name` with typed parameters, the tool's derived maturity is
-that of the Databricks adapter's `query.sql`, and publish runs the SELECT-only statement rules of
-`core/sqlrules.py` on it.
+`data_platform` connection whose adapter is in `DATA_PLATFORM_ADAPTER_OF` (Databricks and
+Snowflake): there the stored `%(name)s` template is sent as `:name` with typed parameters
+(Databricks) or as positional `?` with types keyed by position (Snowflake), the tool's derived
+maturity is that of the platform adapter's `query.sql`, and publish runs the SELECT-only statement
+rules of `core/sqlrules.py` on it in the platform's dialect.
 """
 
 from __future__ import annotations
@@ -20,6 +23,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any  # Any: JSON arguments / results
+
+from shifde.build.internal_functions import INTERNAL_FUNCTIONS
 
 SIDE_EFFECT_CLASSES = ("none", "read", "write_idempotent", "write_non_idempotent", "destructive")
 WRITE_CLASSES = frozenset({"write_idempotent", "write_non_idempotent", "destructive"})
@@ -37,7 +42,10 @@ CONNECTION_TYPES_OF: dict[str, frozenset[str]] = {
     "connection.sql": frozenset({"database", "data_platform"}),
 }
 # data_platform adapter key -> (adapter key, capability) a connection.sql tool on it inherits
-DATA_PLATFORM_ADAPTER_OF = {"databricks": ("databricks", "query.sql")}
+DATA_PLATFORM_ADAPTER_OF = {
+    "databricks": ("databricks", "query.sql"),
+    "snowflake": ("snowflake", "query.sql"),
+}
 
 
 @dataclass(frozen=True)
@@ -241,7 +249,12 @@ def binding_schema(executor: str) -> dict[str, Any]:
             "type": "object",
             "required": ["function_key"],
             "additionalProperties": False,
-            "properties": {"function_key": {"type": "string", "enum": sorted(BUILTIN_FUNCTIONS)}},
+            "properties": {
+                "function_key": {
+                    "type": "string",
+                    "enum": sorted(BUILTIN_FUNCTIONS.keys() | INTERNAL_FUNCTIONS.keys()),
+                }
+            },
         }
     if executor == "rest.http":
         return {

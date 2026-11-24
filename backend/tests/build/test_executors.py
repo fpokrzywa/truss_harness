@@ -16,6 +16,7 @@ from shifde.build.executors import (
     WRITE_CLASSES,
     binding_schema,
 )
+from shifde.build.internal_functions import INTERNAL_FUNCTIONS
 from shifde.core.errors import ValidationFailed
 
 
@@ -62,7 +63,9 @@ def test_ontology_query_runs_only_inside_a_run() -> None:
 
 def test_binding_schemas_name_the_connection_and_list_the_functions() -> None:
     builtin = binding_schema("builtin.function")
-    assert builtin["properties"]["function_key"]["enum"] == sorted(BUILTIN_FUNCTIONS)
+    assert builtin["properties"]["function_key"]["enum"] == sorted(
+        BUILTIN_FUNCTIONS.keys() | INTERNAL_FUNCTIONS.keys()
+    )
     for executor in ("rest.http", "mcp.tool", "connection.sql"):
         schema = binding_schema(executor)
         assert "connection_id" in schema["required"]
