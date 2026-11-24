@@ -578,10 +578,10 @@ def test_a_whole_pass_due_during_an_overdue_sweep_logs_it_and_starts_no_second_o
         assert _still_running(logs) == []
         _sweep_ran(w, 5)
         with structlog.testing.capture_logs() as logs:
-            for skipped in (1, 2):
+            for held_up in (1, 2):
                 w._reap()
                 assert w.ready()
-                assert len(_still_running(logs)) == skipped
+                assert len(_still_running(logs)) == held_up
         for e in _still_running(logs):
             assert e["worker_id"] == "w-overdue" and e["log_level"] == "warning"
             assert bound < e["elapsed_seconds"] < bound + 60
@@ -616,7 +616,7 @@ def test_a_running_worker_logs_an_overdue_sweep_and_stays_ready(
         return rows
 
     def three_more_reaps() -> None:
-        seen = len(reaps)  # the sweeps of the first two came due and were skipped by the third
+        seen = len(reaps)  # the sweeps of the first two came due and were held up by the third
         _until(lambda: len(reaps) >= seen + 3)
 
     monkeypatch.setattr(worker_mod.repo, "reap", counted)
@@ -680,8 +680,14 @@ def test_an_overdue_sweep_turns_the_reaper_stale_in_platform_health_until_it_end
         old = mark_long_ago()
         assert reaper_status() == "stale"
         _sweep_ran(w, 5)
-        lost = _queued(owner_db, world.a.tenant, status="leased", lease_owner="w-dead",
-                       lease_expires_at=utcnow() - timedelta(seconds=1), attempts=1)  # fmt: skip
+        lost = _queued(
+            owner_db,
+            world.a.tenant,
+            status="leased",
+            lease_owner="w-dead",
+            lease_expires_at=utcnow() - timedelta(seconds=1),
+            attempts=1,
+        )
         w._reap()
         assert last_reap() == old and reaper_status() == "stale"
         assert _job_state(owner_db, lost)[0] == "done"  # closed as a stale lease all the same
@@ -774,8 +780,13 @@ def _rows_but_the_jobs(owner_db: Database, job: T) -> dict[str, list[str]]:
         "connection_tests": "id <> :test",
         "audit_events": "correlation_id IS DISTINCT FROM :request",
     }
-    params = {"t": job.tenant, "job": job.job, "connection": job.connection, "test": job.test_id,
-              "request": f"connection-test-{job.job}"}  # fmt: skip
+    params = {
+        "t": job.tenant,
+        "job": job.job,
+        "connection": job.connection,
+        "test": job.test_id,
+        "request": f"connection-test-{job.job}",
+    }
     with owner_db.session() as o:
         tables = o.execute(
             text(
