@@ -1,31 +1,26 @@
-# Handoff — 2026-11-23 ~23:40 EST, charter 7 factory run (lead session e12af1ce)
+# Handoff — 2026-11-24 ~02:45 EST, charter 7 factory run (lead session dbf449f7)
 
 Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` (newest progress entry and sub-projects table), then this file.
 
-**State:** main = origin/main after this commit. Cluster on 55450 running. Lead context ~185k at handoff. No agent running, no gate run.
+**State:** main = origin/main after this commit (code head b813e71, PR #337). Cluster on 55450 running. Lead context ~180k at handoff. No agent running, no gate run.
 
 ## Finished this session
-- Merged 140 (#293, PR #303), 157 (#325, PR #331), 158 (#329, PR #330), 156 (#316, PR #332), 151 (#315, PR #322). Gate counts in the STATUS entry; ruling B-3980.
-- Filed #333 (flaky runtime worker test) → job 159.
-- Advisories posted as issue comments: #259 (SP5-6 must gather `Resolved` under the requester's RLS context, add design 9.5 test, runbook note), #279/#280 (trusted prompt variables; bare run/job ids; proposal scoping; worker org context).
-- **Next free lead decision id: B-3983.** (B-3968 is on main from 151; B-3969 on 143's branch; B-3979 on 155's branch; B-3970 on main from 157; B-3971-B-3978, B-3981-B-3982 were reserved for builders and are unused.)
+- Merged 159 (#333, PR #334), 160 (#324, PR #335), 161 (#327, PR #336), 153 (#258, PR #323), 143 (#285, PR #308), 155 (#278, PR #328), 162 (#259, PR #337). Gate counts in the STATUS entry; ruling B-3984.
+- Filed #339 (bound `SYSTEM$` names via `IDENTIFIER(?)`, depends on #312). Advisory posted on #261 (app preview must respect pinned prompt/tool visibility).
+- **Next free lead decision id: B-3985.** (B-3981 used by 161, B-3983 on 163's branch, B-3982 unused.)
+- PR #337 (162) and PR #328 (155) were each gated on main before the other merged; they touch different modules and GitHub merged cleanly, but the first full gate run of the next merge is the first full run over both.
 
 ## Exact next step
-1. `PYTHONUTF8=1 factory/bin/job queue`; start every `resume`/`new` line (check "Depends on" in each issue body before `job create`; `job queue` does not know dependencies, and none of the current `new` lines 259/261/262/271-274 is startable until 153 merges).
-2. **159** (#333, PR #334) at review round 1: spawn `reviewer-code` (model sonnet), then approver, then `job merge`.
-3. Needs-human, each already synced with main (re-sync first: main moved): for each, merge origin/main in its worktree (DECISIONS conflicts: keep both, main first), `python scripts/gates.py --ref <sha> --name <job>-merge` (one at a time), then `gh pr merge <pr> --merge --match-head-commit <sha>`:
-   - **153** (#258, PR #323): isolation APPROVED. Merging it unblocks #259 and #327 (cap body size; #327 must merge before #259 deploys the app).
-   - **155** (#278, PR #328): protected migration `assist_0001`; reviews and isolation done, ruling B-3979 on the branch. Unblocks #279.
-   - **143** (#285, PR #308): isolation APPROVED. Unblocks #312.
-4. Startable after those merges: #327 and #259 (after 153), #279 (after 155), #312 (after 143), #324 (#315 merged: startable now).
+1. `PYTHONUTF8=1 factory/bin/job queue`; start every `resume`/`new` line whose issue's "Depends on" is merged (`job queue` does not know dependencies). Now startable: **#261** (SP5-8; #259 and #260 merged), **#279** (SP7-3; #278 merged). Not yet: #262 (needs #261), #271-#275 (need #262), #280+ (need #279), #339 (needs #312), SP8 chain.
+2. **163** (#312, PR #338) needs-human: approver escalated only for the adapter outbound rule; code/security PASS. As human: accept the behaviour change (it only refuses more), spawn `isolation-reviewer` if wanted (read-only SQL check, not org data), then an agent to merge origin/main in `.worktrees/163-read-only-sql-check`, `python scripts/gates.py --ref <sha> --name 163-merge`, `gh pr merge 338 --merge --match-head-commit <sha>`. Then #339 is startable.
 
 ## Open jobs (stage)
-143 needs-human · 153 needs-human · 155 needs-human · 159 review.
+163 needs-human. No other job in a running stage.
 
 ## Traps learned
-- Agents often stall ("no progress for 600s") after pushing: check `git ls-remote origin <branch>` and the worktree's `git status` before redoing anything.
-- `gh pr merge` refuses on conflicts with a moved main even after a green gate run; a DECISIONS-only conflict can be resolved in the worktree (main's rows first) and checked with targeted `gates.py --tests ... --no-frontend` (B-3980).
-- Full suite takes ~30 min under load; timing tests can fail when builders run `checks.sh` at the same time (#333).
-- The gate's protected-path check covers modified/deleted files only; new migrations go through the approver's escalation by design.
-- Reviewers sometimes report PASS without writing their file: `job advance ... approve` then refuses; resume the reviewer and ask it to write the file.
-- Earlier traps hold (PYTHONUTF8=1, UV_LINK_MODE=copy, unset VIRTUAL_ENV, full job ids only, never two full gate runs at once, `gates.py` output buffered until exit).
+- A factory gate failed with `'eslint' is not recognized` in a job worktree while other gates ran: run `pnpm install --frozen-lockfile` in that worktree's `frontend` and rerun `factory/bin/gate` (run factory gates one at a time when possible).
+- `tests/core/test_startup_role_check.py::test_api_serves_under_application_role` can fail with `[Errno 10048]` (port race) under load; a targeted rerun passes (B-3984).
+- Full gate runs catch stale pinned expectations that `checks.sh` skips (`tests/authz/test_catalog.py`, `tests/app/test_routes.py` when a module adds permissions or routes): tell builders of new modules to run both.
+- `uv run alembic heads` does not work from `backend/` (no alembic.ini); the migrations have per-module heads by design.
+- For needs-human merges, give the merge agent a "wait until no gates.py runs" step; it lets two merges be queued safely.
+- Earlier traps hold (PYTHONUTF8=1, UV_LINK_MODE=copy, unset VIRTUAL_ENV, full job ids only, never two full gate runs at once, `gates.py` output buffered until exit, reviewers sometimes forget to write their file).
