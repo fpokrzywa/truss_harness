@@ -15,8 +15,10 @@ evaluation of a release that is not withdrawn and that a delivery plan names, or
 evaluation that has not ended, so one stuck in `running` can still be scored: issue #174,
 B-3987). Migration `runtime_0006` admits the deletes only for runs that ended before the cutoff
 the pass sets in `shifde.retention_delete_cutoff`; since `runtime_0008` the guard also refuses a
-client on legal hold and a cutoff later than now() minus the run retention floor. Usage,
-policy-decision and audit rows are kept.
+client on legal hold and a cutoff later than now() minus the run retention floor, and since
+`runtime_0009` (issue #347, B-3993) a cutoff inside the client's effective run retention. `delete`
+takes its cutoff from the database clock (the client transaction's `now()`, the one the guard
+compares with; B-3994). Usage, policy-decision and audit rows are kept.
 """
 
 from __future__ import annotations
@@ -223,6 +225,9 @@ _FAMILY_RUNS = text(
     "AND x.id IN (SELECT id FROM eligible)) ORDER BY r.id"
 )
 _SET_CUTOFF = text("SELECT set_config('shifde.retention_delete_cutoff', :c, true)")
+# The transaction's start on the database clock, the `now()` the guard compares the cutoff with
+# (B-3994).
+_DB_NOW = text("SELECT now()")
 
 
 @dataclass(frozen=True)
@@ -258,13 +263,13 @@ def _delete_pass(
     slug: str,
     *,
     older_than_days: int,
-    now: datetime,
     dry_run: bool,
     actor_label: str,
 ) -> ClientDelete:
     rows = retention_rows(session, tenant_id)
     legal_hold = any(r["legal_hold"] for r in rows)
     days = effective_days(older_than_days, {r["data_class"]: r["retain_days"] for r in rows})
+    now = session.execute(_DB_NOW).scalar_one()
     result = ClientDelete(slug, legal_hold, days, now - timedelta(days=days))
     if not legal_hold:
         selected, kept = _deletable(session, tenant_id, result.cutoff)
@@ -310,12 +315,12 @@ def delete(
     database: Database,
     *,
     older_than_days: int,
-    now: datetime,
     dry_run: bool,
     actor_label: str,
 ) -> Iterator[ClientDelete]:
     """Delete every client's old ended run families in id order, yielding each one's result once
-    its transaction has committed. A database error rolls the current client back and
+    its transaction has committed. Each client's cutoff is its transaction's start on the
+    database clock minus its effective days. A database error rolls the current client back and
     propagates; clients already yielded stay committed."""
 
     def client_pass(session: Session, tenant_id: UUID, slug: str) -> ClientDelete:
@@ -324,7 +329,6 @@ def delete(
             tenant_id,
             slug,
             older_than_days=older_than_days,
-            now=now,
             dry_run=dry_run,
             actor_label=actor_label,
         )
