@@ -1,8 +1,8 @@
 {
-  "session_id": "93ea764f-a005-4af6-a703-fc95416e9392",
-  "head_sha": "224216c039c0adc4ce13ad372c817282bf4d979a",
+  "session_id": "b10341d0-d311-4831-ada9-844f4835af2a",
+  "head_sha": "7cdce5d023cd3aa42e7e357cb9b7c69464ad0ca6",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "Per docs/build/HANDOFF.md: job queue; start builders 172 (round 2), 174, 175, 176 (round 1); spawn approver for 173 with its BLOCKED isolation review, then feedback round 2",
-  "written_at": "2026-11-24T18:48:07Z"
+  "next_step": "Per docs/build/HANDOFF.md: job queue; approvers for 178 (#361, goes first) and 172; 175-merge gates (S-042); then 174, 176, 173 after 178 is on main",
+  "written_at": "2026-11-24T22:48:41Z"
 }
