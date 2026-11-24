@@ -104,6 +104,31 @@ executor (API running):
    `evaluation_required`). Approve it as a second person, and follow the deployment through
    apply, observe and verify on the Deployments screen.
 
+### Generated app
+
+A release sealed with screens (compiler `shifde.packaging/2`) deploys the generated app instead of
+the SDK template:
+
+- **Serving endpoint binding.** The target needs a `serving_endpoint` binding (the model serving
+  endpoint's name), and it must equal the `model` of the release's single model binding. Without
+  it the plan request is refused (409 `serving_endpoint_required`), with another name too (409
+  `serving_endpoint_mismatch`). The binding's provider must be an `openai_compatible` provider
+  whose `base_url` is on the target's workspace host (409 `model_not_in_target_workspace`
+  otherwise).
+- **Resources.** Apply adds the endpoint to the app as the `serving-endpoint` resource with
+  `CAN_QUERY`, next to the `sql-warehouse` resource (`CAN_USE`).
+- **SELECT grants.** The app's service principal needs SELECT on each table the release reads
+  (its data reads). Grant them by hand (the client or the FDE) after the first apply; SETH never
+  grants them. Until it has them, verify's `app-deep-health` check fails with "the app cannot
+  read <table>" for each missing table, and the deployment ends `failed`.
+
+The app identity's grants are the only data boundary inside the client. The app runs with no SETH
+check in the loop: it queries the warehouse and the serving endpoint under its own identity, so
+grant it SELECT on exactly the data-read tables and nothing else.
+
+A generated deployment is `verified` only when `native-runtime`, `runtime-warehouse` and
+`app-deep-health` all pass; record all three.
+
 ## What to record
 
 For each run, record:

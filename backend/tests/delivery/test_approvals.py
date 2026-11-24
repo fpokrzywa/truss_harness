@@ -19,15 +19,17 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
+from shifde.adapters.runtime import IntegrationRuntime
 from shifde.authz.service import new_pdp
 from shifde.core.context import Principal, RequestContext
 from shifde.core.db import Database, set_principal, set_tenant
 from shifde.core.errors import AppError
 from shifde.core.ids import uuid7
+from shifde.core.settings import Settings
 from shifde.delivery import schemas
 from shifde.delivery.plans import PlanService
 from shifde.tenancy.scope import TenantScope
-from tests.connections.routes import as_user, system_role_user
+from tests.connections.routes import REGISTRY, as_user, system_role_user
 from tests.delivery.conftest import ExecutorSide
 from tests.delivery.releases import release_for_target
 from tests.delivery.routes import (
@@ -440,7 +442,13 @@ def _service_account(owner_db: Database, tenant: UUID, owner: UUID | None) -> UU
 
 
 def _decide_as_service_account(
-    app_db: Database, world: World, sa: UUID, plan_id: object, decision: str, digest: str
+    app_db: Database,
+    settings: Settings,
+    world: World,
+    sa: UUID,
+    plan_id: object,
+    decision: str,
+    digest: str,
 ) -> Any:  # Any: a PlanOut, or the AppError raised
     """`PlanService` approve or reject in A as the service account `sa` (an API key caller)."""
     with app_db.session() as session:
@@ -464,7 +472,7 @@ def _decide_as_service_account(
             tenant_status="active",
             pdp=new_pdp(session, principal, world.a.tenant),
         )
-        service = PlanService(scope)
+        service = PlanService(scope, IntegrationRuntime(settings=settings, registry=REGISTRY))
         pid = UUID(str(plan_id))
         try:
             if decision == "approve":
@@ -512,13 +520,15 @@ def _requested_by(owner_db: Database, template: dict[str, Any], requester: UUID)
 
 
 def test_a_service_account_owned_by_the_requester_cannot_decide(
-    world: World, owner_db: Database, app_db: Database, sealed: Sealed
+    world: World, owner_db: Database, app_db: Database, settings: Settings, sealed: Sealed
 ) -> None:
     plan = sealed.plan
     requester = _user_id(owner_db, sealed.requester)
     sa = _service_account(owner_db, world.a.tenant, requester)
     for decision in ("approve", "reject"):
-        out = _decide_as_service_account(app_db, world, sa, plan["id"], decision, plan["digest"])
+        out = _decide_as_service_account(
+            app_db, settings, world, sa, plan["id"], decision, plan["digest"]
+        )
         assert isinstance(out, AppError) and out.code == "self_approval_forbidden", out
         assert out.status == 403
     assert _approvals(owner_db, plan["id"]) == []
@@ -562,13 +572,20 @@ def test_the_owner_of_a_requesting_service_account_cannot_decide(
 
 @pytest.mark.parametrize("owned", [False, True])
 def test_an_unrelated_service_account_can_approve(
-    world: World, owner_db: Database, app_db: Database, sealed: Sealed, owned: bool
+    world: World,
+    owner_db: Database,
+    app_db: Database,
+    settings: Settings,
+    sealed: Sealed,
+    owned: bool,
 ) -> None:
     """Owner NULL, or a person other than the requester."""
     other = _user_id(owner_db, sealed.approver) if owned else None
     sa = _service_account(owner_db, world.a.tenant, other)
     plan = sealed.plan
-    out = _decide_as_service_account(app_db, world, sa, plan["id"], "approve", plan["digest"])
+    out = _decide_as_service_account(
+        app_db, settings, world, sa, plan["id"], "approve", plan["digest"]
+    )
     assert isinstance(out, schemas.PlanOut), out
     assert out.status == "approved" and out.approval is not None and out.approval.decided_by == sa
     assert plan_row(owner_db, plan["id"])["status"] == "approved"
@@ -576,7 +593,7 @@ def test_an_unrelated_service_account_can_approve(
 
 
 def test_a_sibling_service_account_cannot_decide(
-    world: World, owner_db: Database, app_db: Database, sealed: Sealed
+    world: World, owner_db: Database, app_db: Database, settings: Settings, sealed: Sealed
 ) -> None:
     """Two service accounts with the same owner (B-2911)."""
     owner = _user_id(owner_db, sealed.approver)
@@ -585,7 +602,9 @@ def test_a_sibling_service_account_cannot_decide(
     plan_id = _requested_by(owner_db, sealed.plan, requester)
     digest = sealed.plan["digest"]
     for decision in ("approve", "reject"):
-        out = _decide_as_service_account(app_db, world, sibling, plan_id, decision, digest)
+        out = _decide_as_service_account(
+            app_db, settings, world, sibling, plan_id, decision, digest
+        )
         assert isinstance(out, AppError) and out.code == "self_approval_forbidden", out
         assert out.status == 403
     assert _approvals(owner_db, plan_id) == []
@@ -605,7 +624,12 @@ def test_a_sibling_service_account_cannot_decide(
 
 @pytest.mark.parametrize("owned", [False, True])
 def test_a_service_account_that_is_no_sibling_can_approve(
-    world: World, owner_db: Database, app_db: Database, sealed: Sealed, owned: bool
+    world: World,
+    owner_db: Database,
+    app_db: Database,
+    settings: Settings,
+    sealed: Sealed,
+    owned: bool,
 ) -> None:
     """Both owners NULL, or two different owners (B-2911)."""
     first = _user_id(owner_db, sealed.approver) if owned else None
@@ -614,7 +638,7 @@ def test_a_service_account_that_is_no_sibling_can_approve(
     decider = _service_account(owner_db, world.a.tenant, second)
     plan_id = _requested_by(owner_db, sealed.plan, requester)
     out = _decide_as_service_account(
-        app_db, world, decider, plan_id, "approve", sealed.plan["digest"]
+        app_db, settings, world, decider, plan_id, "approve", sealed.plan["digest"]
     )
     assert isinstance(out, schemas.PlanOut), out
     assert out.status == "approved" and out.approval is not None

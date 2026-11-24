@@ -5,11 +5,18 @@
 built over the fake reads and writes that state, so a new adapter over the same fake models a
 restart. The CLI deploys as `service_principal` and, like Databricks, may only write under its
 home folder. Fault switches are off by default.
+
+A deployed generated app (one with `app/config/agent.json`) is recorded with its release digest,
+generator version and tables, and the bundle's warehouse and `serving-endpoint` resources
+(`releases[host][name]`); deep health answers from that record in the SP5 6.4 shape, never by
+running the app. `deep_health_bad` fails its first table check (the warehouse check when it has no
+table).
 """
 
 from __future__ import annotations
 
 import copy
+import json
 import threading
 from pathlib import Path
 from typing import Any  # Any: Databricks app JSON
@@ -40,6 +47,46 @@ class FakeWorkspaceGateway:
     def health_check(self, url: str) -> dict[str, Any]:
         return dict(UNHEALTHY_WAREHOUSE if self.platform.health_bad else HEALTHY)
 
+    def deep_health(self, url: str) -> tuple[int, dict[str, Any]]:
+        apps = self.platform.apps.get(self.target.host, {})
+        name = next((n for n, app in apps.items() if app.get("url") == url), None)
+        release = self.platform.releases.get(self.target.host, {}).get(name or "")
+        if release is None:
+            raise RuntimeError("the app answered 404")
+        checks = [
+            {
+                "name": "warehouse",
+                "passed": release["warehouse_id"] in self.platform.warehouses,
+                "reason": "the warehouse is not reachable",
+            },
+            {
+                "name": "serving_endpoint",
+                "passed": release["bundle_endpoint"] is not None
+                and release["bundle_endpoint"] == release["serving_endpoint"],
+                "reason": "the serving endpoint is not bound to the app",
+            },
+            *(
+                {"name": f"table:{t}", "passed": True, "reason": f"the app cannot read {t}"}
+                for t in release["tables"]
+            ),
+        ]
+        if self.platform.deep_health_bad:
+            checks[2 if len(checks) > 2 else 0]["passed"] = False
+        good = all(c["passed"] for c in checks)
+        return (200 if good else 503), {
+            "status": "ok" if good else "failed",
+            "generator_version": release["generator_version"],
+            "release_digest": release["release_digest"],
+            "checks": [
+                {
+                    "name": c["name"],
+                    "status": "passed" if c["passed"] else "failed",
+                    "reason": None if c["passed"] else c["reason"],
+                }
+                for c in checks
+            ],
+        }
+
 
 class FakeDatabricksPlatform:
     def __init__(
@@ -53,11 +100,13 @@ class FakeDatabricksPlatform:
         self.warehouses: set[str] = set(warehouses or ())
         self.hang_timeout = hang_timeout
         self.apps: dict[str, dict[str, dict[str, Any]]] = {}
+        self.releases: dict[str, dict[str, dict[str, Any]]] = {}
         self.actions: list[tuple[str, str | None, str]] = []
         self.fail_after_accept = False
         self.crash_app = False
         self.no_new_deployment = False
         self.health_bad = False
+        self.deep_health_bad = False
         self.hang = False
         self._released = threading.Event()
         self._counter = 0
@@ -101,6 +150,7 @@ class FakeDatabricksPlatform:
                     "app_status": {"state": "RUNNING"},
                 }
             app["source_code_path"] = f"{root_path}/files/app"
+            self._record_release(host, name, directory, resource)
             if self.fail_after_accept:
                 raise TimeoutError("connection lost after native acceptance")
         elif action == "run":
@@ -117,3 +167,25 @@ class FakeDatabricksPlatform:
             self._released.wait(self.hang_timeout)
             raise TimeoutError("native write accepted but never confirmed")
         return {}
+
+    def _record_release(
+        self, host: str, name: str, directory: Path, resource: dict[str, Any]
+    ) -> None:
+        """The deployed generated app's release and bound resources (none for the template)."""
+        releases = self.releases.setdefault(host, {})
+        agent = directory / "app" / "config" / "agent.json"
+        if not agent.is_file():
+            releases.pop(name, None)
+            return
+        config = json.loads(agent.read_text(encoding="utf-8"))
+        bound = {item["name"]: item for item in resource.get("resources") or []}
+        releases[name] = {
+            "release_digest": config.get("release_digest"),
+            "generator_version": config.get("generator_version"),
+            "tables": list(config.get("tables") or []),
+            "serving_endpoint": config.get("serving_endpoint"),
+            "warehouse_id": (bound.get("sql-warehouse") or {}).get("sql_warehouse", {}).get("id"),
+            "bundle_endpoint": (bound.get("serving-endpoint") or {})
+            .get("serving_endpoint", {})
+            .get("name"),
+        }

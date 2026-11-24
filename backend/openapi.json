@@ -3772,7 +3772,7 @@
       },
       "ContextPlan": {
         "additionalProperties": false,
-        "description": "The job's plan as the executor needs it; the sealed fields are `None` before sealing.",
+        "description": "The job's plan as the executor needs it; the sealed fields are `None` before sealing.\n`release_digest` is the plan's release digest and `generator_version` its release's app\ngenerator version (`None` unless the release is a generated app, SP5 6.6).",
         "properties": {
           "adapter_version": {
             "anyOf": [
@@ -3827,10 +3827,33 @@
             ],
             "title": "Expires At"
           },
+          "generator_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generator Version"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "release_digest": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Digest"
           },
           "snapshot": {
             "anyOf": [
@@ -3896,7 +3919,9 @@
           "adapter_version",
           "toolchain_digest",
           "digest",
-          "expires_at"
+          "expires_at",
+          "release_digest",
+          "generator_version"
         ],
         "title": "ContextPlan",
         "type": "object"
@@ -16578,8 +16603,20 @@
       },
       "TargetBindings": {
         "additionalProperties": false,
-        "description": "A Databricks target's bindings.",
+        "description": "A Databricks target's bindings. `serving_endpoint`: the model serving endpoint a generated\napp (a `/2` release) queries, by name; a template plan ignores it (SP5 6.6).",
         "properties": {
+          "serving_endpoint": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9_-]{1,63}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Serving Endpoint"
+          },
           "warehouse_id": {
             "pattern": "^[A-Za-z0-9-]{1,64}$",
             "title": "Warehouse Id",

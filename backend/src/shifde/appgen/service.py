@@ -62,6 +62,7 @@ from shifde.authz import service as authz
 from shifde.authz.service import ResourceRef
 from shifde.build import schemas as build_schemas
 from shifde.build.service import ArtifactService
+from shifde.build.tools import named_sql
 from shifde.connections.service import ConnectionService
 from shifde.core import db, sqlrules
 from shifde.core.context import RequestContext
@@ -110,6 +111,13 @@ TOOL_TIMEOUT_S = 60
 AGENT_LIMITS = {"max_iterations": 8, "max_tool_calls": 8, "max_tokens": 200_000, "deadline_s": 60}
 ACCEPT_CLAIM_SECONDS = 120  # the lease of an accept call's claim (database time), renewed per step
 CLAIM = "claim"  # the `accept_progress` entry of the claim, never returned by the API
+
+
+class ReleaseSourceChanged(AppError):
+    status, code, title = 409, "release_source_changed", "Conflict"
+
+
+SOURCE_CHANGED = "a version the release pins has changed or cannot be read; seal the release again"
 
 
 class ConnectionNotDatabricks(AppError):
@@ -907,6 +915,98 @@ class AppGenService:
             ).id
 
         return self._step(row, claim, "solution_version_id", version)
+
+
+# ====================================================================== Resolved (design 6.3)
+def _parameter_type(prop: Any) -> str:  # Any: an input schema property
+    """The draft type of an input schema property (the inverse of `PARAMETER_SCHEMAS`)."""
+    kind = prop.get("type") if isinstance(prop, dict) else None
+    if kind in ("integer", "number", "boolean"):
+        return str(kind)
+    if kind == "string" and prop.get("format") == "date":
+        return "date"
+    return "string"
+
+
+def _version_uuid(value: Any) -> UUID | None:  # Any: a JSON value
+    try:
+        return UUID(str(value)) if isinstance(value, str) else None
+    except ValueError:
+        return None
+
+
+def resolved_for_release(
+    scope: TenantScope, runtime: IntegrationRuntime, manifest: Mapping[str, Any]
+) -> s.Resolved:  # Any: the release manifest
+    """`Resolved` of a `/2` release (design 6.3): its pinned agent, prompt and tool versions read
+    through `build`'s service reads under `scope` (the plan requester's organization and RLS
+    context, never another), the release's single model binding's `model` as the serving endpoint
+    and the manifest's screens. Every version the manifest pins (the entrypoint and each pin) must
+    exist in this organization with the pinned `spec_hash`, and the agent may name only pinned
+    versions; anything else is 409 `release_source_changed`, with nothing written."""
+    artifacts = ArtifactService(scope, runtime)
+    pinned: dict[UUID, str] = {}
+    for item in [manifest.get("entrypoint") or {}, *(manifest.get("pins") or [])]:
+        version_id = _version_uuid(item.get("version_id"))
+        if version_id is None:
+            raise ReleaseSourceChanged(SOURCE_CHANGED)
+        pinned[version_id] = str(item.get("spec_hash"))
+    kinds: dict[UUID, str] = {}
+    for version_id, spec_hash in pinned.items():
+        access = artifacts.version_access(version_id)
+        if access is None or access.spec_hash != spec_hash:
+            raise ReleaseSourceChanged(SOURCE_CHANGED)
+        kinds[version_id] = access.kind
+
+    def read(value: Any, kind: str) -> tuple[Mapping[str, Any], dict[str, Any]]:  # Any: JSON
+        """(artifact row, spec) of the pinned version `value` of `kind`."""
+        version_id = _version_uuid(value)
+        if version_id is None or kinds.get(version_id) != kind:
+            raise ReleaseSourceChanged(SOURCE_CHANGED)
+        spec = artifacts.version_spec(version_id)
+        access = artifacts.version_access(version_id)
+        if spec is None or access is None:
+            raise ReleaseSourceChanged(SOURCE_CHANGED)
+        return artifacts.artifact_row(kind, access.artifact_id), spec
+
+    agent_art, agent = read((manifest.get("entrypoint") or {}).get("version_id"), "agents")
+    _, prompt = read(agent.get("prompt_version_id"), "prompts")
+    tools = []
+    for value in agent.get("tool_version_ids") or []:
+        tool_art, tool = read(value, "tools")
+        properties = tool["input_schema"].get("properties") or {}
+        required = set(tool["input_schema"].get("required") or [])
+        tools.append(
+            {
+                "version_id": value,
+                "spec_hash": pinned[UUID(str(value))],
+                "name": tool_art["key"],
+                "description": tool_art["description"] or "",
+                "sql": named_sql(tool["binding"]["sql_template"]),
+                "parameters": [
+                    {"name": n, "type": _parameter_type(properties[n]), "required": n in required}
+                    for n in sorted(properties)
+                ],
+                "input_schema": tool["input_schema"],
+                "max_rows": tool["binding"]["max_rows"],
+            }
+        )
+    entry = UUID(str(manifest["entrypoint"]["version_id"]))
+    model_bindings = manifest["bindings"]["model_bindings"]
+    return s.Resolved.model_validate(
+        {
+            "agent": {
+                "version_id": entry,
+                "spec_hash": pinned[entry],
+                "name": agent_art["key"],
+                "instructions": str((prompt.get("sections") or {}).get("system") or ""),
+                "limits": {key: agent["limits"][key] for key in AGENT_LIMITS},
+            },
+            "tools": sorted(tools, key=lambda t: t["name"]),
+            "model": {"serving_endpoint": next(iter(model_bindings.values()))["model"]},
+            "screens": manifest.get("screens") or [],
+        }
+    )
 
 
 # ====================================================================== the job (design 5.2)

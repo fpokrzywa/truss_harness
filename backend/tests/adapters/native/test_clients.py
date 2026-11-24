@@ -70,6 +70,57 @@ def test_health_check_sends_the_bearer_token_to_the_app_origin() -> None:
     assert sent[0].headers["authorization"] == "Bearer tok"
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://evil.example.com",
+        "http://app.databricksapps.com",
+        "https://app.databricksapps.com/path",
+        "https://user:pw@app.databricksapps.com",
+        "https://app.databricksapps.com:8443",
+        "https://app.databricksapps.com?q=1",
+    ],
+)
+def test_deep_health_refuses_unrecognized_origins_without_a_request(url: str) -> None:
+    sent: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(200, json={"status": "ok"})
+
+    with pytest.raises(ValueError, match="origin"):
+        _gateway(handler).deep_health(url)
+    assert sent == []
+
+
+@pytest.mark.parametrize("status", [200, 503])
+def test_deep_health_sends_the_bearer_token_and_returns_the_answer(status: int) -> None:
+    sent: list[httpx.Request] = []
+    body = {"status": "ok" if status == 200 else "failed", "checks": []}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(status, json=body)
+
+    assert _gateway(handler).deep_health("https://app.databricksapps.com") == (status, body)
+    assert str(sent[0].url) == "https://app.databricksapps.com/health?deep=1"
+    assert sent[0].headers["authorization"] == "Bearer tok"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        httpx.Response(500, json={"status": "ok"}),
+        httpx.Response(302, headers={"location": "https://evil.example.com/health"}),
+        httpx.Response(200, json=["not", "an", "object"]),
+    ],
+    ids=["500", "redirect", "not-an-object"],
+)
+def test_deep_health_raises_on_another_status_or_body(answer: httpx.Response) -> None:
+    with pytest.raises((httpx.HTTPError, ValueError)):
+        _gateway(lambda request: answer).deep_health("https://app.databricksapps.com")
+
+
 def test_get_app_maps_404_to_none() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/2.0/apps/missing"
