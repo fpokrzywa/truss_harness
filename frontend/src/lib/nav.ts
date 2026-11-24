@@ -4,6 +4,7 @@ import {
   connectionsHref,
   datasetsHref,
   deliverHref,
+  generateHref,
   governHref,
   integrateHref,
   landingHref,
@@ -233,6 +234,10 @@ export const NAV_ITEMS: readonly NavItem[] = [
   {
     ...deliver('solutions', 'Solutions', ['packaging:solution:read']),
     href: (s) => (s.org ? solutionsHref(s.org) : null),
+  },
+  {
+    ...deliver('generate', 'Generate solution', ['appgen:request:read']),
+    href: (s) => (s.org ? generateHref(s.org) : null),
   },
   {
     ...deliver('evaluation-datasets', 'Evaluation datasets', ['evaluation:dataset:read']),
