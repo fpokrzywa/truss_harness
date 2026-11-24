@@ -1,24 +1,24 @@
-# Handoff — 2026-11-24 ~06:40 EST, charter 7 factory run (lead session 5c5285b9)
+# Handoff — 2026-11-24 ~07:30 EST, charter 7 factory run (lead session 09217743), stopped early: owner reboot
 
 Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` (newest progress entry and sub-projects table), then this file.
 
-**State:** main = origin/main after this commit (code head 58f6615, PR #348). Cluster on 55450 running. Lead context ~180k at handoff. No agent or gate running.
+**State:** the supervisor asked for an early handoff because the owner is rebooting; `.devdata/supervisor/PAUSE` is set by the supervisor. After the reboot, start the local cluster (`python scripts/dev_db.py start`) before anything else. No agent or gate is running at handoff.
 
 ## Finished this session
-- Merged #174 lead hand work (PR #346, runtime_0008, B-3987) and #271 SP6-4 (job 169, PR #348, packaging_0004, B-3988..B-3992, B-3995). Both 18/18 full gates.
-- Filed #347 (review note 6 of #174): job 171 built and reviewed, needs sync + full gate + merge (below).
-- **Next free lead decision id: B-3998.** (B-3993/B-3994 job 171, B-3995 lead 169, B-3996 lead 171, B-3997 reserved for job 170's renumber.)
+- Job 170 (#280 SP7-4, PR #350): round 2 fixed the code review's malformed-UUID finding (commit 4fb8c25); round 2 gate PASS; code PASS, security PASS. Advanced to stage `approve`; **approver not yet spawned**.
+- Job 171 (#347, PR #349): merged: synced with main (DECISIONS rows by id; test_schema keeps runtime_0009, packaging_0004 heads), `gates.py --name 171-merge` 18/18 on `d718ffc` (full suite 6738 passed), PR merged as `2d691f8`; issue closed.
+- Jobs 172 (#272 SP6-5) and 173 (#286 SP8-1): specs written (172: decision ids B-3998..B-4002; 173: B-4003..B-4007, migrations `delivery_0008_sp8_kinds` and `packaging_0005_sp8_target_kinds` allowed). Builders started round 1 and were **stopped for the reboot** with uncommitted work in their worktrees (172: 18 changed files, 173: 22; nothing committed or pushed).
+- **Next free lead decision id: B-4008.** (B-3997 reserved for job 170's renumber.)
 
 ## Exact next step
-1. `PYTHONUTF8=1 factory/bin/job queue`.
-2. **Job 170 (#280 SP7-4, PR #350):** factory gate round 1 PASS; stage `review` round 1: spawn reviewer-code and reviewer-security (model opus) in one message. **Its DECISIONS row is numbered B-3987 (collides with #174's): at merge, renumber it to B-3997.** It touches no migration; on APPROVE run `factory/bin/job merge` (fix the DECISIONS conflict by hand if it stops on it).
-3. **Job 171 (#347, PR #349, needs-human, head f70a213):** isolation APPROVED (record committed), lead edits done (B-3996). Remaining: in `.worktrees/171-retention-delete-guard-enforce` run `git fetch origin && git merge origin/main` (expect conflicts in `docs/build/DECISIONS.md` (keep both, order by id) and `backend/tests/identity/test_schema.py` docstring (combine runtime_0009 + packaging_0004 sentences; the asserts auto-merge: keep `runtime_0009 in heads`, `runtime_0008 not in heads`, `packaging_0004 in heads`)), push, then one `gates.py --ref <sha> --name 171-merge` via a verifier agent, then `gh pr merge 349 --merge --match-head-commit <sha>`.
-4. Jobs **172 (#272 SP6-5)** and **173 (#286 SP8-1)** are at stage `spec` (intake ACCEPT, routed code+security): spawn `spec-writer` for each. 173 intake RESCOPED: read intake.md's first lines. Migrations on job branches are allowed (approver escalates, lead merges after isolation review, B-2530).
-5. Dependencies (job queue does not know them): #273 needs #272; #274/#275 after #273; #283 needs #280; #284 needs #280 and #283; #288 needs #280; #290, #292, #294 need #286; #295, #296 last. #147 stays open: its remaining parts (API key creator relation, delivery_approvals trigger) need a protected migration; file a factory issue for them or do it as lead hand work like #174.
-6. When SP6, SP7 and SP8 finish, run each sub-project's done-when demo and record it in STATUS.md.
+1. Start the cluster; `PYTHONUTF8=1 factory/bin/job queue`.
+2. **Job 170 (approve, restart):** spawn `approver` with the header and `PR: #350. Final round: 2.` On APPROVE run `factory/bin/job merge 170-sp7-4-assist-internal`. **Its DECISIONS row is numbered B-3987 (collides with #174's): renumber it to B-3997 when syncing (fix the DECISIONS conflict by hand if `job merge` stops on it).**
+3. **Jobs 172 and 173 (build round 1, restart):** spawn a new `builder` named `builder-<job id>`, telling it it is resuming round 1: the previous builder was stopped mid-work and left uncommitted changes in the worktree (review them with `git status`/`git diff`, keep what fits the spec, finish, commit, push, open the draft PR, write build.md). Ports: 172 → 6820, 173 → 6830. Give the decision-id ranges above.
+4. Dependencies (job queue does not know them): #273 needs #272; #274/#275 after #273; #283 needs #280; #284 needs #280 and #283; #288 needs #280; #290, #292, #294 need #286; #295, #296 last. Hold those `new` lines until their dependency merges. #147 stays open: its remaining parts (API key creator relation, delivery_approvals trigger) need a protected migration; file a factory issue for them or do it as lead hand work like #174.
+5. When SP6, SP7 and SP8 finish, run each sub-project's done-when demo and record it in STATUS.md.
 
 ## Open jobs (stage)
-170 review (r1), 171 needs-human (merge pending), 172 spec, 173 spec.
+170 approve (restart: approver), 171 merged, 172 build r1 (restart), 173 build r1 (restart).
 
 ## Traps learned
 - A factory gate failed with `'eslint' is not recognized` in a job worktree while other gates ran: run `pnpm install --frozen-lockfile` in that worktree's `frontend` and rerun `factory/bin/gate` (run factory gates one at a time when possible).
@@ -34,3 +34,4 @@ Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` (n
 - The factory gate counts only modified/deleted protected files; a new migration passes the gate and the approver escalates it (by design, not a bug).
 - `python` on PATH can resolve to the main checkout's venv: run demo scripts in a worktree with `uv run --frozen --project backend python scripts/<demo>.py`.
 - isolation-reviewer is read-only: the lead writes `docs/build/reviews/<job>-isolation-review-1.md` from its reply and commits it on the branch.
+- Before a reboot handoff, stopped builders leave uncommitted work in their worktrees; the next builder must be told to review it, not start clean.
