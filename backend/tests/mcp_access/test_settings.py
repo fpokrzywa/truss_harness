@@ -4,7 +4,8 @@ cross-client 404s, forced row-level security, the grants, the checks and the rol
 
 from __future__ import annotations
 
-from typing import Any  # Any: JSON bodies
+import re
+from typing import Any, get_args  # Any: JSON bodies
 from uuid import UUID
 
 import psycopg
@@ -16,12 +17,15 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from shifde.core.settings import Settings
+from shifde.mcp_access import schemas
+from shifde.mcp_access.tools import TOOLS
 from tests._support.fullapp import World
 from tests.mcp_access.helpers import (
     ADMIN_A,
     ADMIN_B,
     ORG_A,
     ORG_B,
+    V1_TOOLS,
     A,
     B,
     mcp_client,
@@ -72,7 +76,7 @@ def test_a_missing_row_reads_as_the_defaults_and_put_upserts_with_an_audit_event
         {"rate_per_minute": 601},
         {"max_cost_per_call": 0},
         {"max_cost_per_call": 25.01},
-        {"allowed_tools": ["whoami", "board_get"]},
+        {"allowed_tools": ["whoami", "assist_accept"]},
         {"allowed_tools": ["drop_table"]},
         {"surprise": True},
     ],
@@ -81,6 +85,28 @@ def test_put_out_of_range_is_422(mcp: TestClient, world: World, change: dict[str
     h = sign_in(mcp, world, ADMIN_A)
     r = mcp.put(f"{A}/mcp/settings", json={**BODY, **change}, headers=h)
     assert r.status_code == 422, r.text
+
+
+def test_put_accepts_the_three_sp8_3_tools(mcp: TestClient, world: World) -> None:
+    tools = ["board_get", "assist_ask", "assist_get"]
+    assert set_mcp(mcp, world, ADMIN_A, A, allowed_tools=tools)["allowed_tools"] == tools
+    h = sign_in(mcp, world, ADMIN_A)
+    everything = sorted(V1_TOOLS)
+    r = mcp.put(f"{A}/mcp/settings", json={**BODY, "allowed_tools": everything}, headers=h)
+    assert r.status_code == 200 and r.json()["allowed_tools"] == everything, r.text
+
+
+def test_the_tool_names_are_the_same_everywhere(owner_session: Session) -> None:
+    check = owner_session.execute(
+        text(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conname = 'ck_mcp_client_settings__allowed_tools'"
+        )
+    ).scalar_one()
+    admitted = set(re.findall(r"'([a-z_]+)'", check))
+    assert len(schemas.V1_TOOLS) == len(set(schemas.V1_TOOLS)) == 12
+    assert set(schemas.V1_TOOLS) == set(get_args(schemas.ToolName)) == set(TOOLS) == admitted
+    assert set(schemas.V1_TOOLS) - set(schemas.DEFAULT_TOOLS) == {"start_run", "assist_ask"}
 
 
 def test_another_clients_settings_are_404_and_unchanged(

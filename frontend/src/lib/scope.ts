@@ -1,3 +1,5 @@
+import type { AssistContext } from './api/assist-types';
+
 export type ScopeArea = 'dashboard' | 'command' | 'workspaces' | 'projects' | 'platform' | 'other';
 
 export interface ScopePath {
@@ -27,6 +29,7 @@ export function parseScope(pathname: string): ScopePath {
     seg[2] === 'evaluations' ||
     seg[2] === 'runs' ||
     seg[2] === 'approvals' ||
+    seg[2] === 'assist' ||
     seg[2] === 'connections'
   )
     return { org, area: 'other' };
@@ -75,6 +78,12 @@ export const evaluationsHref = (org: string, area = '') =>
   `${orgHref(org)}/evaluations${area ? `/${area}` : ''}`;
 export const datasetsHref = (org: string, ws?: string, proj?: string) =>
   `${evaluationsHref(org, 'datasets')}${projQuery(ws, proj)}`;
+/** The project's Ask SETH screen (SP7), about one object when a context is given. */
+export const assistHref = (org: string, ws: string, proj: string, context?: AssistContext | null) =>
+  `${projHref(org, ws, proj)}/assist${context ? `?context=${e(context.kind)}:${e(context.id)}` : ''}`;
+export const assistRequestHref = (org: string, id: string) => `${orgHref(org)}/assist/${e(id)}`;
+export const assistSettingsHref = (org: string, ws?: string, proj?: string) =>
+  `${orgHref(org)}/assist/settings${projQuery(ws, proj)}`;
 /** The Connections space (CM-6); the scope comes from `?ws=&proj=`. */
 export const connectionsHref = (org: string, ws?: string, proj?: string) =>
   `${orgHref(org)}/connections${projQuery(ws, proj)}`;

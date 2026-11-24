@@ -186,3 +186,35 @@ describe('ReleaseDetailView withdraw', () => {
     expect(screen.queryByRole('button', { name: 'Withdraw' })).not.toBeInTheDocument();
   });
 });
+
+describe('ReleaseDetailView Ask SETH', () => {
+  const WRITE = [...RELEASE_PERMS, 'assist:request:write'];
+
+  it('opens the project screen about this release, beside the existing actions', async () => {
+    const fetchMock = stubReleases({}, WRITE);
+    renderWithClient(<ReleaseDetailView id="r-1" />);
+    expect(await screen.findByRole('link', { name: 'Ask SETH' })).toHaveAttribute(
+      'href',
+      '/o/acme/w/eng/p/api/assist?context=release:r-1',
+    );
+    expect(await screen.findByRole('button', { name: 'Run evaluation' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Withdraw' })).toBeEnabled();
+    expect(
+      fetchMock.calls.some((c) => c.url.includes('/me/permissions?workspace=eng&project=api')),
+    ).toBe(true);
+  });
+
+  it('is absent without assist:request:write', async () => {
+    stubReleases();
+    renderWithClient(<ReleaseDetailView id="r-1" />);
+    await screen.findByRole('button', { name: 'Run evaluation' });
+    expect(screen.queryByRole('link', { name: 'Ask SETH' })).not.toBeInTheDocument();
+  });
+
+  it('is absent when the release names no project', async () => {
+    stubReleases({ [`GET ${R}`]: () => jsonResponse({ ...RELEASE, project: null }) }, WRITE);
+    renderWithClient(<ReleaseDetailView id="r-1" />);
+    await screen.findByRole('button', { name: 'Run evaluation' });
+    expect(screen.queryByRole('link', { name: 'Ask SETH' })).not.toBeInTheDocument();
+  });
+});

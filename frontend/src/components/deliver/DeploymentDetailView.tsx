@@ -4,8 +4,9 @@ import Link from 'next/link';
 import { useState, type FormEvent } from 'react';
 import { endpoints } from '@/lib/api/endpoints';
 import type { DeploymentDetail, VerificationCheck } from '@/lib/api/delivery-types';
-import { useDeployment, useRefreshDelivery, useTargets } from '@/lib/delivery-hooks';
+import { useDeployment, usePlan, useRefreshDelivery, useTargets } from '@/lib/delivery-hooks';
 import { useCan } from '@/lib/hooks';
+import { useRelease } from '@/lib/release-hooks';
 import { deliverHref } from '@/lib/scope';
 import { ConfirmDialog } from '../ConfirmDialog';
 import {
@@ -20,6 +21,7 @@ import {
   TextField,
   useAction,
 } from '../admin/ui';
+import { AskSethButton } from '../assist/AskSethButton';
 import { MaturityBadge } from '../integrate/Maturity';
 import { useOrgParam } from '../security/useOrg';
 import { DeploymentStatusBadge } from './DeploymentStatusBadge';
@@ -86,12 +88,14 @@ function DeploymentBody({ org, deployment: d }: { org: string; deployment: Deplo
         title={d.application_key}
         description="Deployment"
         actions={
-          canResolve &&
-          d.status === 'queued' && (
-            <button type="button" className="btn" onClick={() => setCancelling(true)}>
-              Cancel deployment
-            </button>
-          )
+          <>
+            <AskAboutDeployment org={org} deployment={d} />
+            {canResolve && d.status === 'queued' && (
+              <button type="button" className="btn" onClick={() => setCancelling(true)}>
+                Cancel deployment
+              </button>
+            )}
+          </>
         }
       />
       <ActionError error={cancel.error} title="Could not cancel the deployment" />
@@ -279,6 +283,62 @@ function DeploymentBody({ org, deployment: d }: { org: string; deployment: Deplo
       </ConfirmDialog>
     </>
   );
+}
+
+/**
+ * "Ask SETH" in the deployment's project: its target's, or, on a workspace-level target, the one of
+ * the release it deploys.
+ */
+function AskAboutDeployment({ org, deployment: d }: { org: string; deployment: DeploymentDetail }) {
+  const target = useTargets(org).data?.items.find((t) => t.id === d.target_id);
+  if (!target?.workspace) return null;
+  return target.project ? (
+    <AskSethButton
+      org={org}
+      ws={target.workspace}
+      proj={target.project}
+      context={{ kind: 'deployment', id: d.id }}
+    />
+  ) : (
+    <AskInPlanProject org={org} deployment={d} ws={target.workspace} />
+  );
+}
+
+function AskInPlanProject({
+  org,
+  deployment: d,
+  ws,
+}: {
+  org: string;
+  deployment: DeploymentDetail;
+  ws: string;
+}) {
+  const releaseId = usePlan(org, d.plan_id).data?.release_id;
+  return releaseId ? (
+    <AskInReleaseProject org={org} deployment={d} ws={ws} releaseId={releaseId} />
+  ) : null;
+}
+
+function AskInReleaseProject({
+  org,
+  deployment: d,
+  ws,
+  releaseId,
+}: {
+  org: string;
+  deployment: DeploymentDetail;
+  ws: string;
+  releaseId: string;
+}) {
+  const release = useRelease(org, releaseId).data;
+  return release?.project && release.workspace === ws ? (
+    <AskSethButton
+      org={org}
+      ws={ws}
+      proj={release.project}
+      context={{ kind: 'deployment', id: d.id }}
+    />
+  ) : null;
 }
 
 function MarkFailedDialog({ org, id, onClose }: { org: string; id: string; onClose: () => void }) {

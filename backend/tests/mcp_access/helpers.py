@@ -24,7 +24,8 @@ ORG_A, ORG_B = "demo-a", "demo-b"
 A, B = f"/api/v1/orgs/{ORG_A}", f"/api/v1/orgs/{ORG_B}"
 ADMIN_A, VIEWER_A, ADMIN_B = "admin@demo-a.local", "viewer@demo-a.local", "admin@demo-b.local"
 # the tools resolve a project and assemble a run as the routes do: the workspace must be
-# readable, and a run's agent pins a prompt the key must be able to read
+# readable, and a run's agent pins a prompt the key must be able to read; `assist_ask` also needs
+# what its specialist (`cost`) and the router model call need
 TOOL_SCOPES = [
     "mcp:access",
     "workspace:read",
@@ -36,6 +37,16 @@ TOOL_SCOPES = [
     "approval:read",
     "packaging:solution:read",
     "delivery:deployment:read",
+    "evaluation:run:read",
+    "delivery:target:read",
+    "delivery:plan:read",
+    "tool:read",
+    "model:read",
+    "model:invoke",
+    "usage:read",
+    "budget:read",
+    "assist:request:read",
+    "assist:request:write",
 ]
 V1_TOOLS = {
     "whoami",
@@ -47,6 +58,9 @@ V1_TOOLS = {
     "get_release",
     "list_deployments",
     "get_deployment",
+    "board_get",
+    "assist_ask",
+    "assist_get",
 }
 ACCEPT = {"Accept": "application/json, text/event-stream"}
 

@@ -15,10 +15,10 @@ Process control (SP4 design 6.2): exit 0 stopped on request, 1 crashed (or stopp
 abandoned cap, below: restart it), 2 configuration refused, 3 unsafe database role, 4 database
 schema not at the code's head (checked at startup, before anything is claimed). With
 `worker_health_port` set, `GET /healthz` is 200 while the heartbeat loop ticked within two of its
-intervals and `GET /readyz` while the database answers, a main-loop tick (a claim pass or a
-reaper sweep step) happened within three polls and no stop was requested
-(`shifde.core.healthserver`). A stop request ends a reaper sweep early, after the client in
-progress; the sweeps are idempotent, so the next reap finishes them.
+intervals and `GET /readyz` while the database answers, a main-loop tick (a claim pass or a lease
+reap) happened within three polls and no stop was requested (`shifde.core.healthserver`). A stop
+request ends a reaper sweep early, after the client in progress, which the shutdown waits for
+within its grace; the sweeps are idempotent, so the next reap finishes them.
 
 Client isolation (RT-12, B-2291..B-2294): the worker's database is the application role (refused
 at startup otherwise, like the API: `run` exits 3, and `Database` itself refuses a privileged role,
@@ -41,18 +41,22 @@ waited for) and `shifde-worker` exits 1, so a supervisor is expected to restart 
 pool and fresh threads. The caps only gate claiming and dispatch: a wedged run is still settled
 by lease expiry and the reaper (C1), never cancelled.
 
-Capture-off sweep (F-12, issue #34): on a tick where this worker won the reaper lock, the reaper
-also sweeps every capture-off client for ended runs (run and root terminal) whose content scrub
-never ran (the reaper's follow-up transaction failed, or a worker died first) and scrubs them:
-per client, in a transaction of its own under that client's context and a per-client advisory
-lock. A failure is logged and the sweep moves on to the next client.
+Client sweeps (issue #361): on a tick where this worker won the reaper lock, the reaper also runs
+the two sweeps below. Each visits every client, so a running worker gives them a thread of their
+own, one at a time: the main loop keeps claiming and reaping leases meanwhile, however many
+clients there are, and a reap that comes due during a sweep starts no second one.
 
-Invocation-hold sweep (issue #91): on the same ticks the reaper also settles, per client in a
-transaction of its own under that client's context, every direct-invocation hold whose provider
-call may have started (marker set) and whose TTL has passed
-(`ledger.reservations.settle_orphaned_invocations`): it becomes `settled_unknown` at its full
-amount with one unknown-usage row attributed from the budgets and quotas it names. A failure is
-rolled back and logged, and the sweep moves on to the next client.
+Capture-off sweep (F-12, issue #34): the first sweeps every capture-off client for ended runs (run
+and root terminal) whose content scrub never ran (the reaper's follow-up transaction failed, or a
+worker died first) and scrubs them: per client, in a transaction of its own under that client's
+context and a per-client advisory lock. A failure is logged and the sweep moves on to the next
+client.
+
+Invocation-hold sweep (issue #91): the second settles, per client in a transaction of its own under
+that client's context, every direct-invocation hold whose provider call may have started (marker
+set) and whose TTL has passed (`ledger.reservations.settle_orphaned_invocations`): it becomes
+`settled_unknown` at its full amount with one unknown-usage row attributed from the budgets and
+quotas it names. A failure is rolled back and logged, and the sweep moves on to the next client.
 
 Jobs are dispatched by `kind` (ARCH M2, B-2610, B-2720, B-2971, issue #190): `run.advance`
 advances its run; `connection.test` and `connection.discover` (no run) run
@@ -204,7 +208,7 @@ class Worker:
         self.exit_code = 0
         self.grace = settings.worker_shutdown_grace_seconds
         self.health: HealthServer | None = None
-        # monotonic times of the last heartbeat-loop tick and main-loop claim tick (`/healthz`,
+        # monotonic times of the last heartbeat-loop tick and main-loop tick (`/healthz`,
         # `/readyz`)
         self.beat_interval = max(self.lease / 4, 0.2)
         self.heartbeat_tick: float | None = None
@@ -221,6 +225,7 @@ class Worker:
         self._inflight: dict[UUID, _Job] = {}
         self._lock = threading.Lock()
         self._idle = threading.Condition(self._lock)  # a job ended or was abandoned
+        self._sweeping = threading.Lock()  # held while this worker's client sweeps run
 
     # ------------------------------------------------------------------ lifecycle
     def run(self) -> int:
@@ -242,7 +247,8 @@ class Worker:
                 self.claim_tick = time.monotonic()
                 self._claim_and_dispatch()
                 if time.monotonic() >= next_reap:
-                    self._reap()
+                    if self._reap_leases():
+                        self._start_sweep()
                     next_reap = time.monotonic() + self.reap_every
                 self.wake.wait(self.poll)
                 self.wake.clear()
@@ -255,9 +261,11 @@ class Worker:
         self.wake.set()
 
     def _shutdown(self) -> None:
-        """Wait up to the grace for the running jobs, then mark the worker stopped: a job still
-        running is left to lease expiry and the reaper (its thread is a daemon)."""
+        """Wait up to the grace for the running jobs and the sweep step in progress, then mark the
+        worker stopped: a job still running is left to lease expiry and the reaper (its thread is
+        a daemon)."""
         log.info("worker.stopping", worker_id=self.worker_id)
+        grace_ends = time.monotonic() + self.grace
         with self._idle:
             drained = self._idle.wait_for(lambda: not self._active(), timeout=self.grace)
             active = len(self._active())
@@ -268,7 +276,11 @@ class Worker:
                 grace_seconds=self.grace,
                 active=active,
             )
-        self.closed.set()  # no more heartbeats: the leases of what still runs expire
+        # no more heartbeats (the leases of what still runs expire) and no further sweep step
+        self.closed.set()
+        # kept once taken, so no sweep uses the pool disposed below
+        if not self._sweeping.acquire(timeout=max(0.0, grace_ends - time.monotonic())):
+            log.warning("worker.sweep_outlived_grace", worker_id=self.worker_id)
         try:
             with self.db.session() as s:
                 s.execute(text("SET LOCAL statement_timeout = '2s'"))
@@ -306,8 +318,8 @@ class Worker:
         return tick is not None and time.monotonic() - tick <= 2 * self.beat_interval
 
     def ready(self) -> bool:
-        """`/readyz`: no stop requested, a main-loop tick (a claim pass or a reaper sweep step)
-        within three polls, the database answers."""
+        """`/readyz`: no stop requested, a main-loop tick (a claim pass or a lease reap) within
+        three polls, the database answers."""
         tick = self.claim_tick
         if self.stop.is_set() or tick is None or time.monotonic() - tick > 3 * self.poll:
             return False
@@ -588,6 +600,33 @@ class Worker:
 
     # ------------------------------------------------------------------ reaper
     def _reap(self) -> None:
+        """One whole reaper pass, sweeps included, on the calling thread (the main loop never
+        waits for the sweeps: `_start_sweep`)."""
+        if self._reap_leases() and self._sweeping.acquire(blocking=False):
+            self._sweep()
+
+    def _start_sweep(self) -> None:
+        """Run the client sweeps on a thread of their own, unless they are still in progress."""
+        if self._sweeping.acquire(blocking=False):
+            threading.Thread(target=self._sweep, daemon=True, name="_sweep").start()
+
+    def _sweep(self) -> None:
+        """Both client sweeps, in order; releases `_sweeping`, which the caller took."""
+        try:
+            self._sweep_capture_off()
+            self._sweep_invocation_holds()
+        except Exception:  # noqa: BLE001 - the next reap sweeps again
+            log.error("worker.sweep_failed", exc_info=True)
+        finally:
+            self._sweeping.release()
+
+    def _sweep_over(self) -> bool:
+        """No further client is swept: a stop was requested or the worker is shutting down."""
+        return self.stop.is_set() or self.closed.is_set()
+
+    def _reap_leases(self) -> bool:
+        """Reap the expired leases; True when the client sweeps are due: this worker got the
+        reaper lock and no stop was requested."""
         try:
             with self.db.session() as s:
                 got = s.execute(
@@ -600,15 +639,13 @@ class Worker:
                 s.commit()
         except Exception:  # noqa: BLE001
             log.error("worker.reap_failed", exc_info=True)
-            return
+            return False
         self.claim_tick = time.monotonic()
         if rows:
             self.wake.set()
         for row in rows:
             self._audit_reaped(row["tenant_id"], row["run_id"], row["reason"])
-        if got and not self.stop.is_set():
-            self._sweep_capture_off()
-            self._sweep_invocation_holds()
+        return bool(got) and not self.stop.is_set()
 
     def _audit_reaped(self, tenant_id: UUID, run_id: UUID, reason: str) -> None:
         self._settle_reaped_holds(tenant_id, run_id)
@@ -646,13 +683,12 @@ class Worker:
         (a follow-up transaction failed, or a worker died first). Clients are listed under the
         platform-administrator context; each one is then swept in a transaction of its own with
         only that client set, under a per-client advisory lock. Idempotent; writes no audit. Ends
-        early on a stop request; each client swept is a main-loop tick for readiness."""
+        early on a stop request."""
         clients = self._clients("worker.capture_sweep_failed")
         for tenant_id in clients or []:
-            if self.stop.is_set():
+            if self._sweep_over():
                 return
             self._sweep_client(tenant_id)
-            self.claim_tick = time.monotonic()
 
     def _clients(self, event: str) -> list[UUID] | None:
         """Every client's id, listed under the platform-administrator context; None (logged as
@@ -670,12 +706,11 @@ class Worker:
     def _sweep_invocation_holds(self) -> None:
         """Settle every client's marked direct-invocation holds past their TTL (issue #91), each
         client in a transaction of its own with only that client set. Idempotent. Ends early on a
-        stop request; each client swept is a main-loop tick for readiness."""
+        stop request."""
         for tenant_id in self._clients("worker.invocation_sweep_failed") or []:
-            if self.stop.is_set():
+            if self._sweep_over():
                 return
             self._sweep_client_invocations(tenant_id)
-            self.claim_tick = time.monotonic()
 
     def _sweep_client_invocations(self, tenant_id: UUID) -> None:
         with self.db.session() as s:

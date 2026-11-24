@@ -20,6 +20,8 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any
 from uuid import UUID
 
@@ -29,10 +31,12 @@ from alembic import command
 from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
 from sqlalchemy.pool import NullPool
+from sqlalchemy.sql import text
 
 from shifde.adapters.runtime import IntegrationRuntime
 from shifde.connections import service as connections
 from shifde.core import settings as settings_mod
+from shifde.core.clock import utcnow
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.core.migrations import alembic_config, code_heads
@@ -294,6 +298,234 @@ def test_a_worker_in_a_slow_reaper_sweep_stays_ready(
         assert w.ready(), len(captured)
         time.sleep(0.2)
     assert 3 * w.poll / SWEEP_STEP < len(captured) < SWEPT_CLIENTS
+
+
+@dataclass
+class HeldSweep:
+    """A client sweep whose first capture-off step is held until `release` is set."""
+
+    clients: list[UUID] = field(default_factory=lambda: [uuid7() for _ in range(3)])
+    captured: list[UUID] = field(default_factory=list)  # clients the capture-off sweep reached
+    invocations: list[UUID] = field(default_factory=list)  # ... the invocation-hold sweep reached
+    ended: list[UUID] = field(default_factory=list)  # capture-off steps that returned
+    holding: threading.Event = field(default_factory=threading.Event)
+    release: threading.Event = field(default_factory=threading.Event)
+
+    @property
+    def in_progress(self) -> bool:
+        return self.captured == self.clients[:1] and self.ended == []
+
+
+@pytest.fixture
+def held_sweep(monkeypatch: pytest.MonkeyPatch) -> Iterator[HeldSweep]:
+    held = HeldSweep()
+
+    def sweep_client(self: Worker, tenant_id: UUID) -> None:
+        held.captured.append(tenant_id)
+        held.holding.set()
+        held.release.wait(300)
+        held.ended.append(tenant_id)
+
+    monkeypatch.setattr(Worker, "_clients", lambda self, event: list(held.clients))
+    monkeypatch.setattr(Worker, "_sweep_client", sweep_client)
+    monkeypatch.setattr(
+        Worker,
+        "_sweep_client_invocations",
+        lambda self, tenant_id: held.invocations.append(tenant_id),
+    )
+    yield held
+    held.release.set()
+
+
+def _queued(owner_db: Database, tenant: UUID, **values: Any) -> UUID:
+    job = uuid7()
+    with owner_db.session() as o:
+        insert(o, "jobs", id=job, tenant_id=tenant, kind=connections.TEST_JOB_KIND,
+               dedupe_key=f"sweep:{job}", **values)  # fmt: skip
+        o.commit()
+    return job
+
+
+def _job_state(owner_db: Database, job: UUID) -> tuple[Any, ...]:  # Any: row values
+    with owner_db.session() as o:
+        return tuple(
+            o.execute(
+                text("SELECT status, lease_owner FROM shifde.jobs WHERE id = :j"), {"j": job}
+            ).one()
+        )
+
+
+def test_a_job_queued_during_a_client_sweep_ends_before_the_sweep(
+    world: World,
+    owner_db: Database,
+    settings: Settings,
+    held_sweep: HeldSweep,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #361: the reaper's sweeps visit every client; a worker with one slot claims client
+    B's job, queued while the sweep is held at its first client, and runs it to its end."""
+    ran: list[tuple[UUID, UUID]] = []
+
+    def done(db: Database, runtime: object, tenant_id: UUID, job_id: UUID) -> None:
+        ran.append((tenant_id, job_id))
+
+    monkeypatch.setattr(connections, "run_test_job", done)
+    first = _queued(owner_db, world.a.tenant)
+    w = _worker(settings, "w-sweep-claim")
+    loop = threading.Thread(target=w.run, daemon=True, name="test-sweep-claim")
+    loop.start()
+    try:
+        _until(lambda: _job_state(owner_db, first) == ("done", "w-sweep-claim"))
+        assert held_sweep.holding.wait(30), "the first reap's sweep never started"
+        second = _queued(owner_db, world.b.tenant)
+        _until(lambda: _job_state(owner_db, second) == ("done", "w-sweep-claim"))
+        assert held_sweep.in_progress and not held_sweep.release.is_set()
+        assert ran == [(world.a.tenant, first), (world.b.tenant, second)]
+        held_sweep.release.set()  # the sweep goes on: every client, capture-off first
+        _until(lambda: held_sweep.invocations == held_sweep.clients)
+        assert held_sweep.captured == held_sweep.clients
+    finally:
+        held_sweep.release.set()
+        w.request_stop()
+        loop.join(60)
+    assert not loop.is_alive(), "the worker did not stop"
+
+
+def test_a_reap_due_during_a_client_sweep_reaps_leases_and_starts_no_second_sweep(
+    world: World,
+    owner_db: Database,
+    settings: Settings,
+    held_sweep: HeldSweep,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reaps: list[str] = []
+    mark_reap = worker_mod.repo.mark_reap
+
+    def counted(session: Any, worker_id: str) -> None:  # Any: a Session
+        mark_reap(session, worker_id)
+        reaps.append(worker_id)
+
+    monkeypatch.setattr(worker_mod.repo, "mark_reap", counted)
+    w = _worker(settings, "w-sweep-reap")
+    w.reap_every = 0.2
+    loop = threading.Thread(target=w.run, daemon=True, name="test-sweep-reap")
+    loop.start()
+    try:
+        assert held_sweep.holding.wait(30), "the first reap's sweep never started"
+        lost = _queued(owner_db, world.a.tenant, status="leased", lease_owner="w-dead",
+                       lease_expires_at=utcnow() - timedelta(seconds=1), attempts=1)  # fmt: skip
+        _until(lambda: _job_state(owner_db, lost)[0] == "done")  # closed as a stale lease
+        seen = len(reaps)
+        _until(lambda: len(reaps) >= seen + 3)
+        w._reap()  # nor does a whole pass: it reaps and leaves the sweep to the one in progress
+        assert held_sweep.in_progress and held_sweep.invocations == []
+        held_sweep.release.set()
+        # once it ended, a later reap sweeps again
+        _until(lambda: len(held_sweep.captured) > len(held_sweep.clients))
+    finally:
+        held_sweep.release.set()
+        w.request_stop()
+        loop.join(60)
+    assert not loop.is_alive(), "the worker did not stop"
+
+
+def test_a_stopping_worker_waits_for_the_sweep_step_in_progress_and_ends_the_sweep(
+    settings: Settings, held_sweep: HeldSweep, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = _worker(settings, "w-sweep-stop")
+    steps_at_dispose: list[int] = []
+    dispose = w.db.dispose
+
+    def disposed() -> None:
+        steps_at_dispose.append(len(held_sweep.ended))
+        dispose()
+
+    monkeypatch.setattr(w.db, "dispose", disposed)
+    exits: list[int] = []
+    loop = threading.Thread(target=lambda: exits.append(w.run()), daemon=True, name="test-sstop")
+    loop.start()
+    try:
+        assert held_sweep.holding.wait(30), "the first reap's sweep never started"
+        w.request_stop()
+        loop.join(2)
+        assert loop.is_alive() and steps_at_dispose == []  # the step still uses the pool
+        held_sweep.release.set()
+        loop.join(30)
+        assert not loop.is_alive(), "the worker did not stop"
+        assert exits == [0] and steps_at_dispose == [1]
+        assert held_sweep.captured == held_sweep.clients[:1] and held_sweep.invocations == []
+    finally:
+        held_sweep.release.set()
+        w.request_stop()
+        loop.join(30)
+
+
+def test_a_sweep_step_blocked_past_the_grace_does_not_hold_the_worker_up(
+    settings: Settings, held_sweep: HeldSweep
+) -> None:
+    w = _worker(settings, "w-sweep-grace", worker_shutdown_grace_seconds=1)
+    exits: list[int] = []
+    loop = threading.Thread(target=lambda: exits.append(w.run()), daemon=True, name="test-sgrace")
+    loop.start()
+    try:
+        assert held_sweep.holding.wait(30), "the first reap's sweep never started"
+        with structlog.testing.capture_logs() as logs:
+            stopped = time.monotonic()
+            w.request_stop()
+            loop.join(30)
+            waited = time.monotonic() - stopped
+        assert not loop.is_alive(), "the worker waited for the blocked sweep step"
+        assert exits == [0] and held_sweep.in_progress
+        assert 0.9 <= waited < 10, waited
+        assert len([e for e in logs if e["event"] == "worker.sweep_outlived_grace"]) == 1
+    finally:
+        held_sweep.release.set()
+        loop.join(30)
+
+
+def test_a_stuck_main_loop_turns_unready_during_a_client_sweep(
+    settings: Settings,
+    running: Callable[[Worker], threading.Thread],
+    slow_sweep: tuple[list[UUID], list[UUID]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured, _ = slow_sweep
+    stuck, release = threading.Event(), threading.Event()
+    w = _worker(settings, "w-stuck")
+    claim = w._claim_and_dispatch
+
+    def blocked() -> None:
+        if captured:
+            stuck.set()
+            release.wait(300)
+        claim()
+
+    monkeypatch.setattr(w, "_claim_and_dispatch", blocked)
+    running(w)
+    try:
+        assert stuck.wait(30), "the main loop never ran during the sweep"
+        _until(lambda: not w.ready())
+        swept = len(captured)
+        _until(lambda: len(captured) > swept)  # the sweep's steps do not stand in for the loop
+        assert not w.ready()
+    finally:
+        release.set()
+
+
+def test_a_reap_on_a_worker_that_is_not_running_completes_both_sweeps_and_claims_nothing(
+    world: World, owner_db: Database, settings: Settings, held_sweep: HeldSweep
+) -> None:
+    held_sweep.release.set()
+    job = _queued(owner_db, world.a.tenant)
+    w = _worker(settings, "w-direct")
+    try:
+        for swept in (1, 2):
+            w._reap()
+            assert held_sweep.captured == held_sweep.ended == held_sweep.clients * swept
+            assert held_sweep.invocations == held_sweep.clients * swept
+    finally:
+        w.db.dispose()
+    assert _job_state(owner_db, job) == ("queued", None)
 
 
 def test_a_failing_stopped_beat_does_not_fail_the_exit(
