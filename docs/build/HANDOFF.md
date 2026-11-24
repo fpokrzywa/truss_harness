@@ -14,12 +14,12 @@ Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` (n
 2. **172 (build round 2, start):** new builder `builder-172-sp6-5-appgen-render`, port 6820: address `round-1/` reviews (code CHANGES, security CHANGES) AND `docs/build/reviews/172-isolation-review-1.md` (BLOCKED; fix findings 1-3), push, update build.md. Then gate, reviewers, and isolation review 2.
 3. **173 (approve, round 1):** gate, code and security PASS, but isolation review 1 BLOCKED (`docs/build/reviews/173-isolation-review-1.md`, finding 1). Spawn `approver` with the header, `PR: #354. Final round: 1.` and the path of that review (it must ESCALATE); `job advance ... needs-human`; `job feedback` with finding 1 and its tests and note 3; new builder (port 6830) for round 2; then gate, reviewers, isolation review 2, sync with main, full gate, hand merge (two new migrations, so it is human-gated).
 4. **174 (#283, port 6840) and 175 (#288, port 6850): build round 1, start** builders with their decision-id ranges. 175's spec changes one existing 422 case in `tests/mcp_access/test_settings.py` (spec-listed) and carries the spend cap in the `assist.route` payload.
-5. **176 (#351):** at spec. If `factory/jobs/176-assist-retention-delete-guard/spec.md` exists, `job advance ... build` and start its builder (port 6860); otherwise respawn spec-writer (the first one reported it written but the file was missing). Its cross-client test change must keep every cross-client assertion (only the cutoff changes).
+5. **176 (#351): build round 1, start** a builder (port 6860, ids B-4010..B-4014). Its cross-client test change keeps every assertion (only the cutoff and the `_seed` row ages change, spec 9c, accepted by the lead).
 6. Dependencies (job queue does not know them): #273 needs #272; #274/#275 after #273; #284 needs #283; #290, #292, #294, #352 need #286; #295, #296 last. Hold those `new` lines until their dependency merges.
 7. When SP6, SP7 and SP8 finish, run each sub-project's done-when demo and record it in STATUS.md.
 
 ## Open jobs (stage)
-172 build r2 (start), 173 approve r1 (isolation BLOCKED), 174 build r1 (start), 175 build r1 (start), 176 spec.
+172 build r2 (start), 173 approve r1 (isolation BLOCKED), 174 build r1 (start), 175 build r1 (start), 176 build r1 (start).
 
 ## Traps learned
 - **Wait for the builder's completion notification before `factory/bin/gate`:** the builder's SubagentStop hook (`gate --hook`) runs checks.sh in the same worktree for ~10 minutes after its READY message; a gate started meanwhile runs twice in one worktree. The hook can also make the agent end as "stalled 600s"; when build.md says READY and the tree is clean and pushed, gate anyway.
