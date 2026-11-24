@@ -42,6 +42,8 @@ APPROVAL_REJECTED = "approval_rejected"
 CANCELLED_CLASS = "cancelled"
 INDETERMINATE = "indeterminate_side_effect"
 INTERNAL = "internal"
+# a `seth.*` tool whose function the worker's registry does not provide (never retried)
+INTERNAL_FUNCTION_UNAVAILABLE = "internal_function_unavailable"
 
 RETRYABLE = frozenset({PROVIDER_UNAVAILABLE, RATE_LIMITED, TIMEOUT, TRANSIENT_NETWORK})
 # classes after which the next model in the fallback chain is tried

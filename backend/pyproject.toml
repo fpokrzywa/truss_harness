@@ -244,6 +244,7 @@ source_modules = [
   "shifde.runtime.lifecycle", "shifde.runtime.worker", "shifde.runtime.governance",
   "shifde.runtime.context", "shifde.runtime.state", "shifde.runtime.ontology_exec",
   "shifde.runtime.action", "shifde.build.ontologies", "shifde.build.ontology_expr",
+  "shifde.build.internal_functions", "shifde.runtime.internal_tools",
   "shifde.build.ontology_ops", "shifde.ontology.service", "shifde.ontology.repository",
   "shifde.ontology.engine", "shifde.ontology.policy",
   "shifde.adapters.base", "shifde.adapters.rest_http", "shifde.adapters.oauth2",
