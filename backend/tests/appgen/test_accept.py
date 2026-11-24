@@ -11,6 +11,13 @@ recorded id, and creates nothing twice. The refusals answer 409 `already_accepte
 tool key already used in the project) with nothing written. An accepted request's version seals
 under `/2` and its evaluation, the agent scripted by `AGENT_SCRIPT` over the sample-data fake
 workspace, passes. Cross-client and cross-project 404s are in `test_routes_cross_client.py`.
+
+Issue #316: two resumes at once, or one while another runs a step, run the steps once (the loser
+gets 409 `accept_in_progress`, writing nothing); an expired claim is taken over; the API never
+shows the claim. A resume after a crash between a create and its next record adopts the artifact
+of the id the request recorded, but a key held by another artifact is still `key_taken`. A failed
+step writes `appgen.request.accept_failed` naming the step. Key and runtime-model refusals say
+what they refuse.
 """
 
 from __future__ import annotations
@@ -20,6 +27,8 @@ import copy
 import threading
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from typing import Any  # Any: JSON bodies and row values
 
 import httpx
@@ -28,18 +37,21 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from shifde.appgen.service import sql_template
+from shifde.appgen import repository
+from shifde.appgen import schemas as appgen_schemas
+from shifde.appgen.service import AppGenService, DraftInvalid, sql_template
 from shifde.build.service import ArtifactService
 from shifde.build.tools import named_sql
 from shifde.core.errors import AppError
+from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.packaging.canonical import digest
 from shifde.runtime.worker import Worker
 from tests._support.appgen_fixtures import AGENT_SCRIPT, SAMPLE_DRAFT
 from tests._support.fullapp import World
-from tests._support.p2util import new_user, post
+from tests._support.p2util import new_user, post, tenant_id
 from tests._support.p3util import ADMIN, A, fake_model_stack
-from tests._support.p4util import art, builtin_tool_spec
+from tests._support.p4util import art, builtin_tool_spec, prompt_spec
 from tests._support.p5util import Hdr, fast, user_session, wait_for
 from tests._support.p8util import rate_card, rate_version
 from tests.appgen.helpers import (
@@ -52,6 +64,7 @@ from tests.appgen.helpers import (
     drafting_model,
     get,
     request_url,
+    requests_url,
     run_job,
     wire,
 )
@@ -385,22 +398,24 @@ def test_a_failed_step_resumes_without_duplicates(
     failures = {"left": 2}
     create = ArtifactService.create
 
-    def failing(self: ArtifactService, kind: str, payload: Any) -> Any:  # Any: DTOs
+    def failing(self: ArtifactService, kind: str, payload: Any, **kw: Any) -> Any:  # Any: DTOs
         if kind == "agents" and failures["left"]:
             failures["left"] -= 1
             raise InjectedFailure("injected after the prompt and tools steps")
-        return create(self, kind, payload)
+        return create(self, kind, payload, **kw)
 
     monkeypatch.setattr(ArtifactService, "create", failing)
     _code(_accept(admin, request["id"], _accept_body(1, model)), 503, "injected_failure")
     state = _state(owner_session, request["id"])
     assert state["status"] == "accepting" and state["status_reason"] == "injected_failure"
     progress = state["accept_progress"]
+    # the agent's id is minted and recorded before its (failed) create
     assert set(progress) == {
         "prompt_artifact_id",
         "prompt_version_id",
         "tool_artifact_ids",
         "tool_version_ids",
+        "agent_artifact_id",
     }
     assert set(progress["tool_version_ids"]) == {"orders_by_customer", "invoiced_by_region"}
     first = _counts(owner_session, project)
@@ -573,3 +588,273 @@ def test_an_accepted_request_seals_under_compiler_2_and_its_evaluation_passes(
         result: dict[str, Any] = wait_for(scored, 120.0)
     assert result["status"] == "passed", result
     assert result["accuracy"] == "1"
+
+
+# ------------------------------------------------------------------ issue #316
+AGENT_KEY = SAMPLE_DRAFT["agent"]["name"]
+
+
+def _fail_agent_create(monkeypatch: pytest.MonkeyPatch, state: dict[str, Any]) -> None:
+    """`ArtifactService.create` of an agent raises `InjectedFailure` while `state["fail"]` lasts;
+    with `state["hold"]` (entered, release events) it sets `entered` and waits for `release`
+    once."""
+    create = ArtifactService.create
+
+    def wrapped(self: ArtifactService, kind: str, payload: Any, **kw: Any) -> Any:  # Any: DTOs
+        if kind == "agents" and state.get("fail"):
+            state["fail"] -= 1
+            raise InjectedFailure("injected in the agent step")
+        if kind == "agents" and state.get("hold"):
+            entered, release = state.pop("hold")
+            entered.set()
+            assert release.wait(60)
+        return create(self, kind, payload, **kw)
+
+    monkeypatch.setattr(ArtifactService, "create", wrapped)
+
+
+def _accepting(
+    admin: Hdr, owner: Session, monkeypatch: pytest.MonkeyPatch
+) -> tuple[dict[str, Any], str, dict[str, Any]]:
+    """A request left `accepting` by a failed agent step: (request, runtime model, the injection
+    state)."""
+    request = _drafted(admin, owner)
+    model = _agent_model(admin)["model"]
+    state: dict[str, Any] = {"fail": 1}
+    _fail_agent_create(monkeypatch, state)
+    _code(_accept(admin, request["id"], _accept_body(1, model)), 503, "injected_failure")
+    assert _state(owner, request["id"])["status"] == "accepting"
+    return request, model, state
+
+
+def _set_claim(owner: Session, request_id: str, seconds: int) -> None:
+    """Store the claim of another (running or crashed) call whose lease ends in `seconds`."""
+    owner.rollback()
+    owner.execute(
+        text(
+            "UPDATE shifde.appgen_requests SET accept_progress = accept_progress || "
+            "jsonb_build_object('claim', jsonb_build_object('token', CAST(:tok AS text), "
+            "'until', to_jsonb(now() + make_interval(secs => :s)))) WHERE id = :r"
+        ),
+        {"tok": str(uuid7()), "s": seconds, "r": request_id},
+    )
+    owner.commit()
+
+
+def _audit_details(owner: Session, request_id: str, action: str) -> list[Any]:
+    """The details the service wrote (without `actor`, which `audit.record` adds to every
+    event)."""
+    return [
+        {k: v for k, v in r["details"].items() if k != "actor"}
+        for r in _rows(
+            owner,
+            "SELECT details FROM shifde.audit_events WHERE target_id = :r AND action = :a "
+            "ORDER BY chain_seq",
+            r=request_id,
+            a=action,
+        )
+    ]
+
+
+def test_concurrent_resumes_run_the_steps_once(
+    admin: Hdr, owner_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request, model, _ = _accepting(admin, owner_session, monkeypatch)
+    start = threading.Barrier(2, timeout=30)
+
+    def resume() -> httpx.Response:
+        start.wait()
+        return _accept(admin, request["id"], _accept_body(1, model))
+
+    with ThreadPoolExecutor(2) as pool:
+        answers = [f.result() for f in [pool.submit(resume), pool.submit(resume)]]
+    outcomes = sorted((r.status_code, r.json().get("code") or r.json()["status"]) for r in answers)
+    assert outcomes == [(200, "accepted"), (409, "accept_in_progress")], [r.text for r in answers]
+    assert _counts(owner_session, request["project_id"]) == EXPECTED
+    assert "claim" not in _state(owner_session, request["id"])["accept_progress"]
+
+
+def test_a_resume_while_another_runs_a_step_gets_409_and_writes_nothing(
+    admin: Hdr, owner_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request, model, state = _accepting(admin, owner_session, monkeypatch)
+    entered, release = threading.Event(), threading.Event()
+    state["hold"] = (entered, release)
+    with ThreadPoolExecutor(1) as pool:
+        first = pool.submit(_accept, admin, request["id"], _accept_body(1, model))
+        assert entered.wait(60)
+        before, audits = _state(owner_session, request["id"]), _audits(owner_session, request["id"])
+        assert "claim" in before["accept_progress"]
+        # the API never shows the claim
+        assert "claim" not in get(admin.client, admin, request["id"])["accept_progress"]
+
+        _code(_accept(admin, request["id"], _accept_body(1, model)), 409, "accept_in_progress")
+        after = _state(owner_session, request["id"])
+        assert after == before and after["status_reason"] == "injected_failure"
+        assert _audits(owner_session, request["id"]) == audits
+        release.set()
+        r = first.result()
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "accepted" and "claim" not in r.json()["accept_progress"]
+    assert _counts(owner_session, request["project_id"]) == EXPECTED
+
+
+def test_an_expired_claim_is_taken_over(
+    admin: Hdr, owner_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request, model, _ = _accepting(admin, owner_session, monkeypatch)
+    _set_claim(owner_session, request["id"], 3600)  # a holder still within its lease
+    assert "claim" not in get(admin.client, admin, request["id"])["accept_progress"]
+    _code(_accept(admin, request["id"], _accept_body(1, model)), 409, "accept_in_progress")
+    assert _counts(owner_session, request["project_id"])["agents"] == 0
+
+    _set_claim(owner_session, request["id"], -1)  # a holder that crashed: its lease has passed
+    r = _accept(admin, request["id"], _accept_body(1, model))
+    assert r.status_code == 200, r.text
+    assert _counts(owner_session, request["project_id"]) == EXPECTED
+    assert "claim" not in _state(owner_session, request["id"])["accept_progress"]
+
+
+def test_only_the_claim_holder_writes_progress(
+    admin: Hdr, owner_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request, _, _ = _accepting(admin, owner_session, monkeypatch)
+    tenant = tenant_id(owner_session, "demo-a")
+    owner_session.rollback()
+    rid, holder, other = request["id"], uuid7(), uuid7()
+    claim = {"tenant_id": tenant, "revision_no": 1, "lease_seconds": 120}
+    assert repository.claim_accepting(owner_session, rid, token=holder, **claim)
+    assert not repository.claim_accepting(owner_session, rid, token=other, **claim)
+    stamp = {"tenant_id": tenant, "key": "probe", "value": "x", "lease_seconds": 120}
+    assert not repository.record_progress(owner_session, rid, token=other, **stamp)
+    assert not repository.accept_failed(
+        owner_session, rid, tenant_id=tenant, reason="lost", token=other
+    )
+    assert not repository.finish_accepting(
+        owner_session, rid, tenant_id=tenant, solution_version_id=uuid7(), token=other
+    )
+    assert repository.record_progress(owner_session, rid, token=holder, **stamp)
+    assert repository.accept_failed(
+        owner_session, rid, tenant_id=tenant, reason="released", token=holder
+    )
+    owner_session.commit()
+    state = _state(owner_session, rid)
+    assert state["status_reason"] == "released" and state["accept_progress"]["probe"] == "x"
+    assert "claim" not in state["accept_progress"]
+
+
+def test_a_failed_step_writes_its_audit_event(
+    admin: Hdr, owner_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request, _, _ = _accepting(admin, owner_session, monkeypatch)
+    assert _audit_details(owner_session, request["id"], "appgen.request.accept_failed") == [
+        {"revision_no": 1, "step": "agent", "status_reason": "injected_failure"}
+    ]
+
+
+def test_a_resume_after_a_crash_adopts_the_recorded_artifact(
+    admin: Hdr, owner_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _drafted(admin, owner_session)
+    model = _agent_model(admin)["model"]
+    published = AppGenService._published
+    failures = {"left": 1}
+
+    def failing(self: AppGenService, kind: str, artifact_id: Any) -> str:  # Any: a UUID
+        if kind == "prompts" and failures["left"]:
+            failures["left"] -= 1
+            raise InjectedFailure("injected after the prompt's create committed")
+        return published(self, kind, artifact_id)
+
+    monkeypatch.setattr(AppGenService, "_published", failing)
+    _code(_accept(admin, request["id"], _accept_body(1, model)), 503, "injected_failure")
+    progress = _state(owner_session, request["id"])["accept_progress"]
+    assert set(progress) == {"prompt_artifact_id"}
+    assert _audit_details(owner_session, request["id"], "appgen.request.accept_failed") == [
+        {"revision_no": 1, "step": "prompt", "status_reason": "injected_failure"}
+    ]
+
+    r = _accept(admin, request["id"], _accept_body(1, model))
+    assert r.status_code == 200, r.text
+    prompts = _rows(
+        owner_session,
+        "SELECT id FROM shifde.artifacts WHERE kind = 'prompts' AND project_id = :p AND key = :k",
+        p=request["project_id"],
+        k=AGENT_KEY,
+    )
+    assert [str(p["id"]) for p in prompts] == [progress["prompt_artifact_id"]]
+    assert r.json()["accept_progress"]["prompt_artifact_id"] == progress["prompt_artifact_id"]
+    assert _counts(owner_session, request["project_id"]) == EXPECTED
+
+
+def test_a_recorded_id_without_its_artifact_adopts_no_other_holder(
+    admin: Hdr, owner_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _drafted(admin, owner_session)
+    project = request["project_id"]
+    model = _agent_model(admin)["model"]
+    create = ArtifactService.create
+    failures = {"left": 1}
+
+    def failing(self: ArtifactService, kind: str, payload: Any, **kw: Any) -> Any:  # Any: DTOs
+        if kind == "prompts" and failures["left"]:
+            failures["left"] -= 1
+            raise InjectedFailure("injected before the prompt's create")
+        return create(self, kind, payload, **kw)
+
+    monkeypatch.setattr(ArtifactService, "create", failing)
+    _code(_accept(admin, request["id"], _accept_body(1, model)), 503, "injected_failure")
+    assert set(_state(owner_session, request["id"])["accept_progress"]) == {"prompt_artifact_id"}
+    assert _counts(owner_session, project)["prompts"] == 0
+    # a prompt with the draft's key but another id appears in the project
+    scope = {"type": "project", "id": project}
+    art(admin.client, admin, "prompts", AGENT_KEY, prompt_spec(), scope)
+    before = _counts(owner_session, project)
+
+    taken = _code(_accept(admin, request["id"], _accept_body(1, model)), 422, "draft_invalid")
+    assert taken["detail"] == "a name of the draft is already used in the project"
+    assert [(e["loc"], e["type"]) for e in taken["errors"]] == [
+        (["draft", "agent", "name"], "key_taken")
+    ]
+    assert _counts(owner_session, project) == before
+    assert "claim" not in _state(owner_session, request["id"])["accept_progress"]
+
+
+def _key_check(holder: Any, agent_name: str, tools: list[str]) -> DraftInvalid:
+    """`_check_keys` of a draft built without validation, every key held by `holder`."""
+    service: Any = SimpleNamespace(  # Any: a stand-in for the service's artifact reads
+        artifacts=SimpleNamespace(key_holder=lambda kind, ws, project, key: holder)
+    )
+    draft = appgen_schemas.Draft.model_construct(
+        agent=appgen_schemas.DraftAgent.model_construct(name=agent_name, instructions="x"),
+        tools=[appgen_schemas.DraftTool.model_construct(name=t) for t in tools],
+    )
+    row = {"workspace_id": uuid7(), "project_id": uuid7(), "accept_progress": {}}
+    with pytest.raises(DraftInvalid) as raised:
+        AppGenService._check_keys(service, row, draft)
+    return raised.value
+
+
+def test_key_refusals_say_whether_a_key_is_invalid_or_taken() -> None:
+    invalid = _key_check(None, "Not A Key!", [])
+    assert invalid.detail == "a name of the draft cannot be an artifact key"
+    assert [e["type"] for e in invalid.errors or []] == ["invalid_key", "invalid_key"]
+    taken = _key_check(uuid7(), "sales-agent", ["orders"])
+    assert taken.detail == "a name of the draft is already used in the project"
+    assert {e["type"] for e in taken.errors or []} == {"key_taken"}
+    both = _key_check(uuid7(), "Not A Key!", ["orders"])
+    assert both.detail == "a name of the draft cannot be used in the project"
+
+
+def test_a_refused_runtime_model_is_named_the_runtime_model(
+    admin: Hdr, owner_session: Session
+) -> None:
+    c = admin.client
+    request = _drafted(admin, owner_session)
+    old = fake_model_stack(c, admin, lifecycle="deprecated", conn_name="old-model")["model"]
+    refused = _code(_accept(admin, request["id"], _accept_body(1, old)), 422, "model_unavailable")
+    assert refused["detail"] == "the runtime model cannot be used"
+    assert _state(owner_session, request["id"])["status"] == "drafted"
+    drafting = c.post(requests_url(), headers=admin, json=body(request["connection_id"], old))
+    refused = _code(drafting, 422, "model_unavailable")
+    assert refused["detail"] == "the drafting model cannot be used"

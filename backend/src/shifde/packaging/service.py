@@ -26,7 +26,9 @@ screens is a generated app, compiled by `shifde.packaging/2`: its manifest adds 
 an agent, each `screens.<i>` is a chat screen or a table screen of a pinned tool (by artifact
 key) whose inputs are that tool's parameters, `models` counts exactly one model pin (a route
 counts), and each `tools.<pin>` is a `connection.sql` tool on a Databricks connection the sealer
-can read.
+can read. The screens check sees only the pinned tools the sealer can see: a screen naming the key
+of a hidden tool gets the answer a screen naming a tool that is not pinned gets, so neither the
+key nor the parameters of a hidden tool can be probed (issue #316).
 
 A model or connection is hidden from the caller when only versions the caller cannot see name it
 (a version's own data reads always count as seen), and a connection also when the caller cannot
@@ -868,6 +870,7 @@ class SolutionService:
                     found.tool_specs[name]
                 )
                 for name, access in found.tools.items()
+                if access.visible  # a hidden tool reads exactly like a tool that is not pinned
             }
             report += [
                 _diagnostic(f"screens.{i}", self._screen_reason(screen, tools))

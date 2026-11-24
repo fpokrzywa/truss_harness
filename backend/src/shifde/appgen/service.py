@@ -26,8 +26,20 @@ prompt, one `connection.sql` tool per draft tool and the agent, then create the 
 dataset, the solution (or reuse the active one of that name) and the solution version with the
 draft's screens. Each step locks the request row, re-reads `accept_progress`, is skipped when its
 id is there, and records its id right after the owning service commits. Step 3 sets `accepted`.
-A failed step records its error code as `status_reason` and leaves the request `accepting` with
-its objects in place; accepting the same revision again resumes.
+A failed step records its error code as `status_reason`, writes `appgen.request.accept_failed`
+(revision, step name and code, no draft content) and leaves the request `accepting` with its
+objects in place; accepting the same revision again resumes.
+
+One accept call at a time runs the steps: it holds the claim `accept_progress.claim` (a token and
+a lease of `ACCEPT_CLAIM_SECONDS` in database time), taken by a conditional UPDATE (with
+`accepting` on the first accept, before the key check on a resume) only when no claim is there
+or its lease has passed, renewed by every recorded step and released when the accept ends. Every
+write of the steps names the token, so a call whose lease another one took records nothing. A
+resume that cannot take the claim is 409 `accept_in_progress` with nothing written; the API never
+returns the claim. The prompt, tool and agent ids are minted and recorded before their create, so
+a resume after a crash between a create and its next record adopts the artifact of the recorded
+id (it must be of that kind, in the request's project, with the draft's key, else `key_taken`)
+instead of finding the key taken; a key held by any other artifact is still `key_taken`.
 """
 
 from __future__ import annotations
@@ -96,6 +108,8 @@ PARAMETER_SCHEMAS: dict[str, dict[str, Any]] = {
 }
 TOOL_TIMEOUT_S = 60
 AGENT_LIMITS = {"max_iterations": 8, "max_tool_calls": 8, "max_tokens": 200_000, "deadline_s": 60}
+ACCEPT_CLAIM_SECONDS = 120  # the lease of an accept call's claim (database time), renewed per step
+CLAIM = "claim"  # the `accept_progress` entry of the claim, never returned by the API
 
 
 class ConnectionNotDatabricks(AppError):
@@ -154,10 +168,26 @@ class DraftInvalid(AppError):
     status, code, title = 422, "draft_invalid", "Unprocessable Entity"
 
 
+class AcceptInProgress(AppError):
+    status, code, title = 409, "accept_in_progress", "Conflict"
+
+
 MODEL_REFUSALS: dict[str, AppError] = {
     "model_not_found": NotFound("model not found"),  # the answer an unknown model id gets
     "model_unavailable": DraftModelUnavailable("the drafting model cannot be used"),
     "model_not_allowed": DraftModelNotAllowed("the drafting model is not allowed here"),
+}
+# accept's refusals of the runtime model: the codes and statuses of `MODEL_REFUSALS`
+RUNTIME_MODEL_REFUSALS: dict[str, AppError] = {
+    "model_not_found": NotFound("model not found"),
+    "model_unavailable": DraftModelUnavailable("the runtime model cannot be used"),
+    "model_not_allowed": DraftModelNotAllowed("the runtime model is not allowed here"),
+}
+# the top-level message of a key check, by the error codes it found
+KEY_MESSAGES = {
+    frozenset({"invalid_key"}): "a name of the draft cannot be an artifact key",
+    frozenset({"key_taken"}): "a name of the draft is already used in the project",
+    frozenset({"invalid_key", "key_taken"}): "a name of the draft cannot be used in the project",
 }
 
 
@@ -233,6 +263,14 @@ def _recorded(progress: Mapping[str, Any], key: str, item: str | None) -> str | 
     return str(value) if value is not None else None
 
 
+@dataclass
+class _Claim:
+    """An accept call's claim token and the step it is running (named in `accept_failed`)."""
+
+    token: UUID
+    step: str = "prompt"
+
+
 def _ref(tenant_id: UUID, r: Mapping[str, Any]) -> ResourceRef:
     return ResourceRef(tenant_id, r["workspace_id"], r["project_id"], RESOURCE_TYPE, r["id"])
 
@@ -297,7 +335,7 @@ class AppGenService:
             model_id=row["model_id"],
             discovery_id=row["discovery_id"],
             accepted_revision_no=row["accepted_revision_no"],
-            accept_progress=row["accept_progress"],
+            accept_progress={k: v for k, v in row["accept_progress"].items() if k != CLAIM},
             revisions=[_draft_out(d) for d in drafts],
         )
 
@@ -539,9 +577,30 @@ class AppGenService:
             )
         problem = self.models.problems_at(project, [body.model_id]).get(body.model_id)
         if problem is not None:
-            raise MODEL_REFUSALS[problem]
+            raise RUNTIME_MODEL_REFUSALS[problem]
         draft = s.Draft.model_validate(revision["draft"])
-        self._check_keys(row, draft)
+        claim = _Claim(uuid7())
+        if status == s.RequestStatus.ACCEPTING:
+            # the claim first, in the key check's transaction: a concurrent resume waits for the
+            # row, then finds the claim taken; the keys are checked against what was recorded
+            if not repository.claim_accepting(
+                self._session,
+                request_id,
+                tenant_id=self.sc.tenant_id,
+                revision_no=body.revision_no,
+                token=claim.token,
+                lease_seconds=ACCEPT_CLAIM_SECONDS,
+            ):
+                self._session.rollback()
+                raise AcceptInProgress("the request is being accepted by another call")
+            claimed = repository.get_request(self._session, request_id, tenant_id=self.sc.tenant_id)
+            assert claimed is not None
+            row = claimed
+        try:
+            self._check_keys(row, draft)
+        except DraftInvalid:
+            self._session.rollback()
+            raise
         if status == s.RequestStatus.DRAFTED:
             if not repository.start_accepting(
                 self._session,
@@ -549,6 +608,8 @@ class AppGenService:
                 tenant_id=self.sc.tenant_id,
                 revision_no=body.revision_no,
                 accepted_by=self.sc.principal.principal_id,
+                token=claim.token,
+                lease_seconds=ACCEPT_CLAIM_SECONDS,
             ):
                 self._session.rollback()
                 raise RequestNotAcceptable("only a drafted request can be accepted")
@@ -557,22 +618,38 @@ class AppGenService:
                 row,
                 {"revision_no": body.revision_no, "solution_name": body.solution_name},
             )
-            self._session.commit()
+        self._session.commit()
         try:
-            version_id = self._accept_steps(row, draft, body)
+            version_id = self._accept_steps(row, draft, body, claim)
+            claim.step = "finish"
             if not repository.finish_accepting(
                 self._session,
                 request_id,
                 tenant_id=self.sc.tenant_id,
                 solution_version_id=UUID(version_id),
+                token=claim.token,
             ):
                 self._session.rollback()
                 raise RequestNotAcceptable("the request is no longer being accepted")
         except AppError as exc:
             self._session.rollback()
-            repository.accept_failed(
-                self._session, request_id, tenant_id=self.sc.tenant_id, reason=exc.code
-            )
+            # a call that lost its claim records nothing
+            if repository.accept_failed(
+                self._session,
+                request_id,
+                tenant_id=self.sc.tenant_id,
+                reason=exc.code,
+                token=claim.token,
+            ):
+                self._audit(
+                    "appgen.request.accept_failed",
+                    row,
+                    {
+                        "revision_no": body.revision_no,
+                        "step": claim.step,
+                        "status_reason": exc.code,
+                    },
+                )
             self._session.commit()
             raise
         self._audit(
@@ -585,34 +662,36 @@ class AppGenService:
 
     def _check_keys(self, row: Mapping[str, Any], draft: s.Draft) -> None:
         """The draft's artifact keys are usable and free in the project (`draft_invalid`, naming
-        the field, otherwise); a key whose artifact a step already recorded is not checked."""
+        the field, otherwise); a key is free when no artifact holds it or the artifact holding it
+        has the id this request recorded for it."""
         progress = row["accept_progress"]
-        tools = progress.get("tool_artifact_ids") or {}
         name = draft.agent.name
         checks = [
-            ("prompts", name, "prompt_artifact_id" in progress, "agent.name"),
-            ("agents", name, "agent_artifact_id" in progress, "agent.name"),
+            ("prompts", name, _recorded(progress, "prompt_artifact_id", None), "agent.name"),
+            ("agents", name, _recorded(progress, "agent_artifact_id", None), "agent.name"),
         ] + [
-            ("tools", tool.name, tool.name in tools, f"tools.{i}.name")
-            for i, tool in enumerate(draft.tools)
+            ("tools", t.name, _recorded(progress, "tool_artifact_ids", t.name), f"tools.{i}.name")
+            for i, t in enumerate(draft.tools)
         ]
-        errors = []
+        errors: list[dict[str, Any]] = []  # Any: problem+json error fields
         for kind, key, recorded, path in checks:
-            if recorded:
-                continue
             if not re.match(build_schemas.KEY_PATTERN, key):
                 msg, code = f"{key!r} cannot be an artifact key", "invalid_key"
-            elif self.artifacts.key_holder(kind, row["workspace_id"], row["project_id"], key):
+            elif (
+                holder := self.artifacts.key_holder(
+                    kind, row["workspace_id"], row["project_id"], key
+                )
+            ) is not None and str(holder) != recorded:
                 msg, code = f"the project already has a {kind[:-1]} {key!r}", "key_taken"
             else:
                 continue
             errors.append({"loc": ["draft", *path.split(".")], "msg": msg, "type": code})
         if errors:
-            raise DraftInvalid("a name of the draft is already used in the project", errors=errors)
+            raise DraftInvalid(KEY_MESSAGES[frozenset(e["type"] for e in errors)], errors=errors)
 
     def _progress(self, request_id: UUID) -> dict[str, Any]:  # Any: JSON ids
-        """The request's `accept_progress`, its row locked until this transaction ends: a
-        concurrent resume waits here, then reads what the other one recorded."""
+        """The request's `accept_progress`, its row locked until this transaction ends (only the
+        claim holder runs the steps; the lock orders its reads after any write it waits for)."""
         row = repository.get_request(
             self._session, request_id, tenant_id=self.sc.tenant_id, lock=True
         )
@@ -620,14 +699,23 @@ class AppGenService:
             raise RequestNotAcceptable("the request is no longer being accepted")
         return dict(row["accept_progress"])
 
-    def _note(self, request_id: UUID, key: str, value: str, item: str | None = None) -> None:
-        """Record `value` under `key` (under `key.item` for a per-tool map) and commit."""
+    def _note(
+        self, request_id: UUID, claim: _Claim, key: str, value: str, item: str | None = None
+    ) -> None:
+        """Record `value` under `key` (under `key.item` for a per-tool map), renewing the claim,
+        and commit; a call that no longer holds the claim records nothing."""
         progress = self._progress(request_id)
         stored: Any = value  # Any: an id or a per-tool map of ids
         if item is not None:
             stored = {**(progress.get(key) or {}), item: value}
         if not repository.record_progress(
-            self._session, request_id, tenant_id=self.sc.tenant_id, key=key, value=stored
+            self._session,
+            request_id,
+            tenant_id=self.sc.tenant_id,
+            key=key,
+            value=stored,
+            token=claim.token,
+            lease_seconds=ACCEPT_CLAIM_SECONDS,
         ):
             self._session.rollback()
             raise RequestNotAcceptable("the request is no longer being accepted")
@@ -646,16 +734,45 @@ class AppGenService:
             return str(out.id)
         return str(art.latest_published_version.id)
 
+    def _adopted(
+        self, row: Mapping[str, Any], kind: str, artifact_id: UUID, key: str, path: str
+    ) -> bool:
+        """Whether the artifact of the id this request minted exists (its create committed before
+        its version was recorded); one that is not the draft's artifact of the request's project
+        is `key_taken`."""
+        try:
+            found = self.artifacts.artifact_row(kind, artifact_id)
+        except NotFound:
+            return False
+        placed = (found["workspace_id"], found["project_id"], found["key"])
+        if placed != (row["workspace_id"], row["project_id"], key):
+            raise DraftInvalid(
+                KEY_MESSAGES[frozenset({"key_taken"})],
+                errors=[
+                    {
+                        "loc": ["draft", *path.split(".")],
+                        "msg": f"the project already has a {kind[:-1]} {key!r}",
+                        "type": "key_taken",
+                    }
+                ],
+            )
+        return True
+
     def _artifact_step(
         self,
         row: Mapping[str, Any],
+        claim: _Claim,
+        step: str,
         kind: str,
         body: build_schemas.ArtifactCreate,
         keys: tuple[str, str],
+        path: str,
         item: str | None = None,
     ) -> str:
-        """Steps 2.1 to 2.3: the published version of one artifact, created and published unless
-        `keys` (artifact id, version id) are already recorded."""
+        """Steps 2.1 to 2.3: the published version of one artifact, unless `keys` (artifact id,
+        version id) already record it. The artifact id is minted and recorded before the create;
+        a recorded id whose artifact exists is adopted, one with no artifact is created."""
+        claim.step = step
         artifact_key, version_key = keys
         progress = self._progress(row["id"])
         version = _recorded(progress, version_key, item)
@@ -663,22 +780,30 @@ class AppGenService:
             return version
         artifact = _recorded(progress, artifact_key, item)
         if artifact is None:
-            artifact = str(self.artifacts.create(kind, body).id)
-            self._note(row["id"], artifact_key, artifact, item)
+            artifact = str(uuid7())
+            self._note(row["id"], claim, artifact_key, artifact, item)
+            self.artifacts.create(kind, body, artifact_id=UUID(artifact))
+        elif not self._adopted(row, kind, UUID(artifact), body.key, path):
+            self.artifacts.create(kind, body, artifact_id=UUID(artifact))
         version = self._published(kind, UUID(artifact))
-        self._note(row["id"], version_key, version, item)
+        self._note(row["id"], claim, version_key, version, item)
         return version
 
-    def _step(self, row: Mapping[str, Any], key: str, make: Callable[[], UUID]) -> str:
+    def _step(
+        self, row: Mapping[str, Any], claim: _Claim, key: str, make: Callable[[], UUID]
+    ) -> str:
         """Steps 2.4 to 2.6: the id recorded under `key`, or `make()`'s, recorded now."""
+        claim.step = key.removesuffix("_id")
         recorded = _recorded(self._progress(row["id"]), key, None)
         if recorded is not None:
             return recorded
         made = str(make())
-        self._note(row["id"], key, made)
+        self._note(row["id"], claim, key, made)
         return made
 
-    def _accept_steps(self, row: Mapping[str, Any], draft: s.Draft, body: s.AcceptIn) -> str:
+    def _accept_steps(
+        self, row: Mapping[str, Any], draft: s.Draft, body: s.AcceptIn, claim: _Claim
+    ) -> str:
         """Steps 2.1 to 2.6; returns the solution version id."""
         workspaces, projects = tenancy.scope_slug_map(
             self.sc, [row["workspace_id"]], [row["project_id"]]
@@ -696,23 +821,31 @@ class AppGenService:
 
         prompt = self._artifact_step(
             row,
+            claim,
+            "prompt",
             "prompts",
             artifact(name, {"sections": {"system": draft.agent.instructions}}),
             ("prompt_artifact_id", "prompt_version_id"),
+            "agent.name",
         )
         tools = [
             self._artifact_step(
                 row,
+                claim,
+                "tools",
                 "tools",
                 artifact(tool.name, tool_spec(tool, row["connection_id"]), tool.description),
                 ("tool_artifact_ids", "tool_version_ids"),
+                f"tools.{i}.name",
                 tool.name,
             )
-            for tool in draft.tools
+            for i, tool in enumerate(draft.tools)
         ]
         thresholds = body.thresholds
         agent = self._artifact_step(
             row,
+            claim,
+            "agent",
             "agents",
             artifact(
                 name,
@@ -728,6 +861,7 @@ class AppGenService:
                 },
             ),
             ("agent_artifact_id", "agent_version_id"),
+            "agent.name",
         )
 
         def dataset() -> UUID:
@@ -736,7 +870,7 @@ class AppGenService:
                 ws, proj, DatasetCreate.model_validate({"name": body.solution_name, "cases": cases})
             ).id
 
-        dataset_id = self._step(row, "dataset_id", dataset)
+        dataset_id = self._step(row, claim, "dataset_id", dataset)
 
         def solution() -> UUID:
             found = self.solutions.active_named(ws, proj, body.solution_name)
@@ -750,7 +884,7 @@ class AppGenService:
                 )
             return found.id
 
-        solution_id = self._step(row, "solution_id", solution)
+        solution_id = self._step(row, claim, "solution_id", solution)
 
         def version() -> UUID:
             read = packaging_schemas.DataRead(
@@ -772,7 +906,7 @@ class AppGenService:
                 ),
             ).id
 
-        return self._step(row, "solution_version_id", version)
+        return self._step(row, claim, "solution_version_id", version)
 
 
 # ====================================================================== the job (design 5.2)

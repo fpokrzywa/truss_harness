@@ -5,6 +5,11 @@
 * ``SecretProvider.resolve(ref, principal, purpose)`` is PDP-checked (``secret:use``) and audited,
   and writes ``secret_access_log``. ``resolve_system`` is the server-internal path (IdP client
   secret at token exchange) with no principal; it is audited as actor ``system``.
+* ``last_used_at`` is a throttled (60 s), non-blocking touch that skips a row another transaction
+  has locked (``FOR UPDATE SKIP LOCKED``), made after the audit event: a read no longer holds
+  the secret row lock across ``audit.record``, whose chain lock a concurrent read of the same
+  secret may hold, so concurrent reads cannot deadlock. ``last_used_at`` may lag by the interval,
+  or longer while other reads of the secret are in flight (B-3968).
 * Resolved plaintext is wrapped in ``SecretValue`` (repr/str are masked) and registered with the
   redaction registry so it can never reach logs, problem details or audit payloads verbatim.
 * Reads return ``SecretMeta`` (metadata only): the ORM row with the ciphertext, wrapped DEK, nonce
@@ -58,6 +63,7 @@ __all__ = [
 ]
 
 MAX_SECRET_BYTES = 16 * 1024
+LAST_USED_INTERVAL_SECONDS = 60
 SECRET_NAME_CONFLICT = "a secret with this name already exists"
 INSTALLATION_IDP_SECRET_RESOLVED = "secret.idp_client_secret.resolved"
 ROW_SECURITY_HIDES_SECRETS = (
@@ -354,7 +360,7 @@ class SecretProvider:
             "secret:use", self._scope_ref(secret, secret.tenant_id), hide_unless="secret:read"
         )
         value = self._decrypt(secret)
-        self._log(secret, principal.principal_id, purpose, run_id)
+        used_at = self._log(secret, principal.principal_id, purpose, run_id)
         audit.record(
             self._session,
             self._ctx,
@@ -365,6 +371,7 @@ class SecretProvider:
             target_label=f"secret:{secret.name}",
             details={"purpose": purpose, "version": secret.secret_version},
         )
+        self._touch(secret, used_at)
         return value
 
     def resolve_system(self, ref: UUID, purpose: str, *, tenant_id: UUID | None) -> SecretValue:
@@ -377,7 +384,7 @@ class SecretProvider:
         if secret is None or secret.status != "active":
             raise NotFound("secret not found")
         value = self._decrypt(secret)
-        self._log(secret, None, purpose, None)
+        used_at = self._log(secret, None, purpose, None)
         audit.record(
             self._session,
             self._ctx,
@@ -389,6 +396,7 @@ class SecretProvider:
             target_label=f"secret:{secret.name}",
             details={"purpose": purpose, "version": secret.secret_version},
         )
+        self._touch(secret, used_at)
         return value
 
     def resolve_installation_idp(self, idp_id: UUID) -> SecretValue:
@@ -441,7 +449,7 @@ class SecretProvider:
 
     def _log(
         self, secret: Secret, principal_id: UUID | None, purpose: str, run_id: UUID | None
-    ) -> None:
+    ) -> datetime:
         now: datetime = utcnow()
         repository.insert_access(
             self._session,
@@ -456,11 +464,9 @@ class SecretProvider:
                 "outcome": "success",
             },
         )
-        repository.update_secret(
-            self._session,
-            secret.id,
-            None,
-            {"last_used_at": now},
-            tenant_id=secret.tenant_id,
-            bump=False,
+        return now
+
+    def _touch(self, secret: Secret, now: datetime) -> None:
+        repository.touch_secret(
+            self._session, secret.id, now, LAST_USED_INTERVAL_SECONDS, tenant_id=secret.tenant_id
         )
