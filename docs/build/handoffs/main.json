@@ -1,8 +1,8 @@
 {
-  "session_id": "282359fa-71e8-41d7-86e8-1160f402e09e",
-  "head_sha": "7f9cad3f94ee70aedc3d1b8376c0e4fa11de2895",
+  "session_id": "e12af1ce-3b45-4329-9b08-67515f378885",
+  "head_sha": "a8adbd181d29321726045c79a15606609705336b",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "Per docs/build/HANDOFF.md: job queue; gate 155 (protected migration, lead merges); sync+full gates+merge 151, 153 (isolation review first), 143, 140",
-  "written_at": "2026-11-24T02:49:40Z"
+  "next_step": "Per docs/build/HANDOFF.md: job queue; review 159; re-sync, full gates and merge 153, 155, 143",
+  "written_at": "2026-11-24T04:43:23Z"
 }
