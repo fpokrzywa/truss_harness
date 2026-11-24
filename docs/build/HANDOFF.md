@@ -9,11 +9,11 @@ Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` (n
 
 ## Open jobs
 - 172 (#272 SP6-5, PR #353): build round 3 on `feedback-1.md` (B-4009), builder started 15:11. Round 2: isolation review 2 APPROVED, CI red on a guard test (the Snowpark dev pin). Round 3 changes need gate, code and security reviews and an isolation look at the new diff.
-- 173 (#286 SP8-1, PR #354): needs-human, gates running since 15:09 on `155d4c30` (`/tmp/gates173.out`, logs `.worktrees/_gate-logs/173-merge/`).
-- 174 (#283 SP7-7, PR #355, `0d2e6c36`): round 2 gate, code, ux, ui PASS; at approve (approver started 15:11); CI backend red on C1 only (#361).
+- 173 (#286 SP8-1, PR #354): needs-human, HELD. `gates.py --name 173-merge` on `155d4c30` at 15:40: 18/18 (6988 passed, 12 skipped), but CI backend on the same commit (run 45472694614) failed: `FAILED tests/runtime/test_jobkinds.py::test_a_registered_kind_runs_in_its_own_client_and_its_code_ends_the_job - the job did not end in time` (6990 passed). Asked the supervisor whether S-040 still covers the merge; not merged without an answer. main is ahead of it by docs only.
+- 174 (#283 SP7-7, PR #355, `0d2e6c36`): approver APPROVE (front end only; its `backend` tree is main's object, so the red CI C1 tests cannot come from it). Not yet merged: merging it moves main beyond docs, which ends S-040's cover of `155d4c30`. Merge with `factory/bin/job merge` after 173, or at once when 173 has to be synced and gated again anyway.
 - 175 (#288), 176 (#351): needs-human, held (above).
 - 177 (#359): intake ACCEPT, at intake; hold until 175 merges (its spec needs a test file of 175's branch), then route + `job advance ... spec`.
-- 178 (#361): the intermittent approved-write tests; at intake. The cause is not known.
+- 178 (#361): build round 1 (builder started 15:15). Spec's leading hypothesis: the reaper's first-pass sweeps over every client run on the worker's main loop and stall claiming; not yet proven. If the fix touches `backend/src/shifde/runtime`, add an `isolation-reviewer` (only `code` is routed).
 
 ## Dependencies (job queue does not know them)
 #273 needs #272; #274/#275 after #273; #284 needs #283; #290, #292, #294, #352 need #286; #358 needs #272; #360 needs #288; #295, #296 last. Hold those `new` lines until their dependency merges. When SP6, SP7 and SP8 finish, run each done-when demo and record it in STATUS.md. After 173 merges, the supervising session re-runs the hosted DB setup.
