@@ -3,7 +3,9 @@
 written to a directory and their modules imported, a real `databricks.sdk.WorkspaceClient` whose
 `requests` traffic goes through a test-only transport adapter to a `FakeDatabricksWorkspace` (no
 socket is opened), and SETH's own answer of a tool on the same fake (`_answer` of
-`tests/adapters/dataplatforms/test_databricks_appgen_fixtures.py`)."""
+`tests/adapters/dataplatforms/test_databricks_appgen_fixtures.py`). SP6-5 adds the
+`snowflake.native-app/v1` release of `SNOWFLAKE_SAMPLE_DRAFT` (`SNOWFLAKE_MANIFEST`, bound to
+Cortex model `CORTEX_MODEL`)."""
 
 from __future__ import annotations
 
@@ -22,14 +24,21 @@ from requests.structures import CaseInsensitiveDict
 
 from shifde.adapters.dataplatforms.databricks import DatabricksAdapter
 from shifde.adapters.dataplatforms.fakes import FakeDatabricksWorkspace
-from shifde.appgen.render import GENERATOR_VERSION
+from shifde.appgen.render import GENERATOR_VERSION, GENERATOR_VERSIONS
 from shifde.appgen.service import AGENT_LIMITS, PARAMETER_SCHEMAS
 from shifde.build.tool_runtime import param_type
 from shifde.packaging.canonical import digest
-from tests._support.appgen_fixtures import SAMPLE_DRAFT, SAMPLE_TABLES
+from tests._support.appgen_fixtures import (
+    SAMPLE_DRAFT,
+    SAMPLE_TABLES,
+    SNOWFLAKE_SAMPLE_DRAFT,
+    SNOWFLAKE_SAMPLE_TABLES,
+)
 from tests.adapters.dataplatforms.helpers import HOST, PAT, WAREHOUSE, conn, ctx_for
 
 ENDPOINT = "agent-endpoint"
+CORTEX_MODEL = "mistral-large2"
+SNOWFLAKE_KIND = "snowflake.native-app/v1"
 SPEC_HASH = "0" * 64
 
 
@@ -74,6 +83,7 @@ def resolved_of(draft: dict[str, Any], *, endpoint: str = ENDPOINT) -> dict[str,
 def manifest_of(draft: dict[str, Any]) -> dict[str, Any]:  # Any: a `/2` release manifest
     return {
         "schema_version": "shifde.release/2",
+        "target_kind": "databricks.app/v1",
         "app": {"generator_version": GENERATOR_VERSION},
         "screens": draft["screens"],
         "data_reads": [
@@ -91,6 +101,30 @@ SAMPLE_DIGEST = digest(SAMPLE_MANIFEST)
 SAMPLE_RESOLVED = resolved_of(SAMPLE_DRAFT)
 
 
+def snowflake_manifest_of(draft: dict[str, Any]) -> dict[str, Any]:  # Any: a `/2` manifest
+    """The `snowflake.native-app/v1` manifest of `draft`: its data-read tables in mixed case, one
+    twice."""
+    return {
+        **manifest_of(draft),
+        "target_kind": SNOWFLAKE_KIND,
+        "app": {"generator_version": GENERATOR_VERSIONS[SNOWFLAKE_KIND]},
+        "data_reads": [
+            {
+                "connection_id": "00000000-0000-0000-0000-00000000c002",
+                "tables": [
+                    t.upper() if i == 0 else t for i, t in enumerate(SNOWFLAKE_SAMPLE_TABLES)
+                ]
+                + [SNOWFLAKE_SAMPLE_TABLES[1]],
+            }
+        ],
+    }
+
+
+SNOWFLAKE_MANIFEST = snowflake_manifest_of(SNOWFLAKE_SAMPLE_DRAFT)
+SNOWFLAKE_DIGEST = digest(SNOWFLAKE_MANIFEST)
+SNOWFLAKE_RESOLVED = resolved_of(SNOWFLAKE_SAMPLE_DRAFT, endpoint=CORTEX_MODEL)
+
+
 def write_files(directory: Path, files: dict[str, bytes]) -> Path:
     for name, content in files.items():
         path = directory / name
@@ -99,20 +133,25 @@ def write_files(directory: Path, files: dict[str, bytes]) -> Path:
     return directory
 
 
+def _clear_siblings() -> None:
+    for name in [n for n in sys.modules if n == "agent_loop" or n.startswith("backend_")]:
+        sys.modules.pop(name, None)
+
+
 def load_module(path: Path, name: str) -> ModuleType:
     """Import `path` as module `name`, with its directory first on `sys.path` while it loads (the
-    generated `app.py` imports its sibling `agent_loop`)."""
+    generated `app.py` imports its siblings `agent_loop` and `backend_databricks`)."""
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     sys.path.insert(0, str(path.parent))
-    sys.modules.pop("agent_loop", None)
+    _clear_siblings()
     try:
         spec.loader.exec_module(module)
     finally:
         sys.path.remove(str(path.parent))
-        sys.modules.pop("agent_loop", None)
+        _clear_siblings()
     return module
 
 

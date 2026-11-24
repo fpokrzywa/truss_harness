@@ -309,7 +309,7 @@ def test_the_bundle_and_only_the_screens_config_are_served(
         assert client.get(path).status_code == 404, path
 
 
-@pytest.mark.parametrize("name", ["app.py", "agent_loop.py"])
+@pytest.mark.parametrize("name", ["app.py", "agent_loop.py", "backend_databricks.py"])
 def test_the_generated_service_imports_no_seth_module(generated: ModuleType, name: str) -> None:
     source = Path(str(generated.HERE), name).read_text(encoding="utf-8")
     imported: set[str] = set()
@@ -325,12 +325,14 @@ def test_the_generated_service_imports_no_seth_module(generated: ModuleType, nam
 def test_the_deadline_stops_the_run(
     generated: ModuleType, client_for: Client, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    loop = generated.agent_loop
+    loop, backend = generated.agent_loop, generated.backend_databricks
     config = loop.load_config(Path(str(generated.CONFIG)))
     ticks = iter([0.0, 61.0])
     workspace = workspace_client(fake_workspace(AGENT_SCRIPT), monkeypatch)
+    call_model = backend.call_model(workspace, ENDPOINT)
+    run_sql = backend.run_sql(workspace, WAREHOUSE)
     with pytest.raises(loop.Stop) as caught:
-        loop.ask(workspace, config, WAREHOUSE, ENDPOINT, "Go.", clock=lambda: next(ticks))
+        loop.ask(call_model, run_sql, config, "Go.", clock=lambda: next(ticks))
     assert caught.value.code == "limit_exceeded"
 
 
