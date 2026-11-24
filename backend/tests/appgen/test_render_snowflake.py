@@ -4,10 +4,11 @@
 every release, the `setup.sql` rules (no INSERT grant, no `EXECUTE IMMEDIATE`, no external access,
 no references, `IMPORTS` exactly the deep-health handler and its two config files, a stdlib-only
 handler), `agent.json` and `tools.json` (positional SQL and `param_order`), `RUNTIME_VERSION` and
-the Streamlit and Snowpark pins equal in `environment.yml` and the dev group (Call S6-G), no SETH
-origin, account address, key material or secret-scan finding, the artifact cap, the generator
-version of the other platform refused both ways, and a data-read table or tool SQL the app may not
-run refused before any byte (`release_not_renderable`)."""
+the Streamlit pin equal in `environment.yml` and the dev group, Snowpark pinned in
+`environment.yml` only (Call S6-G, DECISIONS B-3998), no SETH origin, account address, key material
+or secret-scan finding, the artifact cap, the generator version of the other platform refused both
+ways, and a data-read table or tool SQL the app may not run refused before any byte
+(`release_not_renderable`)."""
 
 from __future__ import annotations
 
@@ -316,17 +317,17 @@ def test_the_runtime_version_is_the_environments_python() -> None:
     assert found.group(1) == _environment()["python"] == "3.11"
 
 
-def test_the_streamlit_and_snowpark_pins_equal_the_dev_group_only() -> None:
-    """Call S6-G: `ui/environment.yml` pins Streamlit and Snowpark at the versions the dev group
-    pins for the generated app's tests; neither is a runtime dependency."""
+def test_the_streamlit_pin_equals_the_dev_group_and_snowpark_is_the_apps_only() -> None:
+    """Call S6-G and DECISIONS B-3998: `ui/environment.yml` pins Streamlit at the version the dev
+    group pins for the generated app's tests, and Snowpark, which the backend never installs;
+    neither is a runtime dependency."""
     environment = _environment()
     assert set(environment) == {"python", "streamlit", "snowflake-snowpark-python"}
+    assert environment["snowflake-snowpark-python"] == "1.55.0"
     project = tomllib.loads((BACKEND / "pyproject.toml").read_text(encoding="utf-8"))
     dev = [d.lower() for d in project["dependency-groups"]["dev"]]
-    pins = sorted(d for d in dev if d.split("==")[0] in ("streamlit", "snowflake-snowpark-python"))
-    assert pins == sorted(
-        f"{name}=={environment[name]}" for name in ("streamlit", "snowflake-snowpark-python")
-    )
+    pins = [d for d in dev if d.startswith(("streamlit", "snowflake"))]
+    assert pins == [f"streamlit=={environment['streamlit']}"]
     runtime = [d.lower() for d in project["project"]["dependencies"]]
     assert not any(d.startswith(("streamlit", "snowflake")) for d in runtime)
 

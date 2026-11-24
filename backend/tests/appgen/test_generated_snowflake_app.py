@@ -38,6 +38,7 @@ from shifde.evaluation.schemas import Case
 from shifde.packaging.canonical import digest
 from tests._support.appgen_fixtures import AGENT_SCRIPT, CASE_CALLS, SNOWFLAKE_SAMPLE_DRAFT
 from tests._support.snowpark_session import TOKEN, FakeSnowparkSession
+from tests._support.snowpark_types import LongType, StructField, quoted
 from tests.adapters.dataplatforms.helpers import ctx_for, make_snowflake, sf_conn
 from tests.appgen.rendered import (
     BAD_TABLES,
@@ -202,6 +203,29 @@ def test_an_unaliased_expression_has_seths_column_name(app_more: App) -> None:
     assert [c["name"] for c in result["columns"]] == ["COUNT(*)", "SUM(O.AMOUNT)", "CUSTOMER"]
     assert result["row_count"] >= 1
     assert result == seth_answer(COUNT_TOOL, {"n": 2})
+
+
+@pytest.mark.parametrize(
+    ("name", "snowpark"),
+    [
+        ("ID", "ID"),
+        ("_X", "_X"),
+        ("A$1", "A$1"),
+        ("$1", "$1"),
+        ("id", '"id"'),
+        ("1A", '"1A"'),
+        ("$A", '"$A"'),
+        ("A B", '"A B"'),
+        ("COUNT(*)", '"COUNT(*)"'),
+        ('a "b" c', '"a ""b"" c"'),
+        ('ID"', '"ID"""'),
+    ],
+)
+def test_the_stand_in_names_a_column_as_snowpark_does(app: App, name: str, snowpark: str) -> None:
+    """The names Snowpark 1.55.0's own `StructField` gave for the same input; the app's
+    `column_name` gives SETH's name back."""
+    assert StructField(quoted(name), LongType()).name == snowpark
+    assert app.backend.column_name(snowpark) == name
 
 
 @pytest.mark.parametrize(
@@ -395,8 +419,8 @@ def test_deep_health_reads_the_snowflake_import_directory(
 @pytest.fixture
 def streamlit_app(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[[App, Any], AppTest]]:
     """`AppTest` of an app's `streamlit_app.py` whose `get_active_session()` is `session`: a stub
-    `snowflake.snowpark.context` sits ahead of the installed package in `sys.modules` (removed
-    afterwards), and the app's own siblings are imported from its directory."""
+    `snowflake.snowpark.context` sits in `sys.modules` (removed afterwards), and the app's own
+    siblings are imported from its directory."""
 
     def clear() -> None:
         for name in ("agent_loop", "backend_snowflake"):

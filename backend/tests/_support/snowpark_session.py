@@ -4,11 +4,12 @@ app's `backend_snowflake.py`, `deep_health.py` and `streamlit_app.py` get from
 
 `session.sql(query, params=[...])` returns a frame whose `.collect()` sends the statement to the
 fake's SQL API v2 handler in process (positional typed bindings, as Snowpark binds Python values,
-and an accepted programmatic access token) and returns Snowpark `Row`s with each value converted
+and an accepted programmatic access token) and returns `Row`s with each value converted
 by its `rowType` as Snowpark returns it (`fixed` -> int or Decimal, `real` -> float, `text` -> str,
 `date` -> `datetime.date`, `boolean` -> bool, null -> None); `.schema` is the matching Snowpark
 `StructType`, its names quoted as Snowpark quotes them (a plain uppercase name comes back bare, any
-other keeps its quotes, `"COUNT(*)"`). A failed statement raises `SessionSqlError`. The fake's
+other keeps its quotes, `"COUNT(*)"`). `Row`, `StructType` and the types are the local stand-ins of
+`tests/_support/snowpark_types.py`. A failed statement raises `SessionSqlError`. The fake's
 SQLite is read-only, so `INSERT INTO APP_DATA.USAGE` is answered here: the row goes to the
 session's own `usage` list (`fail_usage` refuses it instead)."""
 
@@ -22,20 +23,21 @@ from decimal import Decimal
 from typing import Any  # Any: SQL values and JSON
 
 import httpx
-from snowflake.snowpark import Row
-from snowflake.snowpark.types import (
+
+from shifde.adapters.dataplatforms.fakes import SNOWFLAKE_STATEMENTS, FakeSnowflakeAccount
+from tests._support.snowpark_types import (
     BooleanType,
     DataType,
     DateType,
     DecimalType,
     DoubleType,
     LongType,
+    Row,
     StringType,
     StructField,
     StructType,
+    quoted,
 )
-
-from shifde.adapters.dataplatforms.fakes import SNOWFLAKE_STATEMENTS, FakeSnowflakeAccount
 
 TOKEN = "sf-shim-pat-0001"  # scan-secrets: allow, the fake's accepted token
 _USAGE = re.compile(
@@ -84,11 +86,6 @@ def _cell(value: Any, kind: str) -> Any:  # Any: a SQL API text cell / its Snowp
     if kind == "boolean":
         return str(value).lower() == "true"
     return str(value)
-
-
-def _quoted(name: str) -> str:
-    """The name as Snowpark's `quote_name_without_upper_casing` passes it to `StructField`."""
-    return '"' + name.replace('"', '""') + '"'
 
 
 def _datatype(kind: str, sample: Any) -> DataType:  # Any: a converted cell
@@ -161,7 +158,7 @@ class FakeSnowparkSession:
         rows = [Row(*(_cell(v, k) for v, k in zip(r, kinds, strict=True))) for r in doc["data"]]
         fields = [
             StructField(
-                _quoted(str(c["name"])),
+                quoted(str(c["name"])),
                 _datatype(kinds[i], next((r[i] for r in rows if r[i]), None)),
             )
             for i, c in enumerate(row_type)
@@ -175,4 +172,4 @@ class FakeSnowparkSession:
             raise SessionSqlError(403, "insufficient privileges on APP_DATA.USAGE")
         values = dict(zip(columns[1:], params, strict=True))
         self.usage.append({columns[0]: datetime.datetime.now(datetime.UTC), **values})
-        return [Row(1)], StructType([StructField("number of rows inserted", LongType())])
+        return [Row(1)], StructType([StructField(quoted("number of rows inserted"), LongType())])
