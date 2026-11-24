@@ -329,6 +329,12 @@ def test_read_statements_pass_the_check(sql: str) -> None:
     sqlapi.check_read_only(sql)
 
 
+@pytest.mark.parametrize("sql", ["SELECT 'SYSTEM$X'", "SELECT SYSTEM$CANCEL_ALL_QUERIES()"])
+def test_the_databricks_dialect_has_no_system_dollar_rule(sql: str) -> None:
+    sqlapi.check_read_only(sql)  # Snowflake's SYSTEM$ refusal (#285) is not Databricks'
+    sqlapi.check_read_only("SELECT 1")
+
+
 def test_refusals_are_capability_failures() -> None:
     for sql in REFUSED:
         with pytest.raises(AdapterFailure) as raised:

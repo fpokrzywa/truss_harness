@@ -2,7 +2,8 @@
 keyword. On a Databricks `data_platform` connection served by the in-process fake
 (`dev_fake_data_platforms`): `WITH ... INSERT`, `WITH ... DELETE` and a second statement are 422
 with a `capability` failure audit, `SELECT 1` still answers; client A's refusal carries nothing of
-client B's connection, and B gets 404 on A's connection."""
+client B's connection, and B gets 404 on A's connection. #285: on a Snowflake connection a
+`SYSTEM$` function is refused the same way."""
 
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ TOKEN_A = "rq267-token-a-0001"  # scan-secrets: allow, accepted by the developme
 TOKEN_B = "rq267-token-b-zz-9f3c"  # scan-secrets: allow, accepted by the development fake
 B_NAME = "client-b-lakehouse-q7x"
 WITH_INSERT = "WITH a AS (SELECT 1) INSERT INTO t SELECT * FROM a"
+SF_PAT = "rq285-sf-pat-0001"  # scan-secrets: allow, any non-empty token passes the dev fake
 REFUSED = [WITH_INSERT, "WITH a AS (SELECT 1) DELETE FROM t", "SELECT 1; DELETE FROM t"]
 
 
@@ -106,3 +108,33 @@ def test_a_refusal_leaks_nothing_of_another_client(
         r = c.post(f"{base}/connections/{a_cid}/invoke", headers=hb, json={"sql": WITH_INSERT})
         assert r.status_code == 404, (base, r.text)
     assert len(_invoked(owner_db, a_cid)) == len(audits)
+
+
+def test_a_snowflake_system_function_is_refused_through_invoke(
+    dev_client: TestClient, world: World, people: People, owner_db: Database
+) -> None:
+    c, A = dev_client, org(world.a.slug)
+    h = as_user(c, people.owner_a)
+    body = {
+        "name": "warehouse-a",
+        "connection_type": "data_platform",
+        "adapter_key": "snowflake",
+        "config": {"account": "acct1", "user": "reader", "warehouse": "COMPUTE_WH"},
+        "auth_method": "bearer",
+        "credential": {"value": SF_PAT},
+        "read_only_confirmed": True,
+    }
+    cid = connection(c, h, body, A)["id"]
+    assert activate(c, h, cid, A)["status"] == "active"
+    sql = "SELECT SYSTEM$CANCEL_ALL_QUERIES()"
+    status, refused = invoke_outcome(c, h, A, cid, {"sql": sql}, tenant_id=world.a.tenant)
+    assert status == 422, refused
+    assert refused["status"] == "failed" and refused["result"] is None, refused
+    assert "SYSTEM$" not in str(refused).upper()
+    ok = invoke_outcome(c, h, A, cid, {"sql": "SELECT 1"}, tenant_id=world.a.tenant)
+    assert ok[0] == 200 and ok[1]["result"]["rows"] == [["1"]], ok
+    audits = _invoked(owner_db, cid)
+    assert [(o, d.get("error_class")) for o, d in audits] == [
+        ("failure", "capability"),
+        ("success", None),
+    ]

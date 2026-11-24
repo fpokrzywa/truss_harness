@@ -217,6 +217,16 @@ def test_a_bad_question_is_400(generated: ModuleType, client_for: Client, body: 
     assert response.status_code == 400
 
 
+@pytest.mark.parametrize("path", ["/api/tools/invoiced_by_region", "/api/ask"])
+def test_an_oversized_body_is_413_too_large(
+    generated: ModuleType, client_for: Client, path: str
+) -> None:
+    assert generated.MAX_BODY == 1024 * 1024
+    body = {"message": "Go.", "params": {"x": "a" * (generated.MAX_BODY + 1)}}
+    response = client_for(generated, AGENT_SCRIPT).post(path, json=body)
+    assert (response.status_code, response.get_json()) == (413, {"error": "request_too_large"})
+
+
 def test_an_upstream_failure_is_502_without_detail(
     generated: ModuleType, client_for: Client
 ) -> None:
