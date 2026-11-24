@@ -150,6 +150,16 @@ class TargetService:
             raise NotFound("target not found")
         return row
 
+    def readable(self, target_id: UUID) -> bool:
+        """Whether the caller may read the target `target_id` of this client (False for an unknown
+        id and another client's alike): no recorded decision, no commit."""
+        row = repository.get_target(self.sc.session, target_id, tenant_id=self.sc.tenant_id)
+        return bool(
+            row is not None
+            and row["tenant_id"] == self.sc.tenant_id
+            and self.sc.pdp.authorize("delivery:target:read", self._ref(row)).allowed
+        )
+
     def _require(self, action: str, row: Mapping[str, Any]) -> None:
         try:
             self.sc.pdp.require(action, self._ref(row), hide_unless="delivery:target:read")

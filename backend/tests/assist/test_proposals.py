@@ -11,6 +11,15 @@ project's release) fails the proposal with the service's code and creates nothin
 Organization B's administrator gets 404 on A's proposal, a P1-only developer 404 on P2's, a viewer
 403 on accept; a viewer reads the request with every payload and `result_ref` null, a developer
 with the read keys sees them. Each test has a database of its own (the full-app harness).
+
+A proposal dismissed while an accept holds its claim (issue #351): the accepter gets 409
+`proposal_not_open`, the proposal stays `dismissed` with `result_ref` null, and one
+`assist.proposal.accept_superseded` event names the created plan without any payload; when the
+owning service refused, nothing is created and no such event is written. A payload changed to
+client B's or P2's target or connection fails with `not_found` and creates nothing anywhere. With
+every read key, the payload is still null when it names a connection or target the caller cannot
+read (P2's for a P1-only developer, B's for anyone of A) or a malformed id, and reading it records
+no policy decision.
 """
 
 from __future__ import annotations
@@ -210,6 +219,89 @@ def test_two_concurrent_accepts_create_one_plan(
     assert proposal_row(owner_session, proposal)["status"] == "accepted"
 
 
+def _dismiss_during_request(monkeypatch: pytest.MonkeyPatch, h: Hdr, proposal: str) -> list[int]:
+    """`PlanService.request` dismisses the proposal over the route, in `h`'s own session, before
+    its own work (the accept holds the claim); the dismiss answers' status codes."""
+    from shifde.delivery import plans as plans_module
+
+    original = plans_module.PlanService.request
+    answers: list[int] = []
+
+    def request(self: Any, body: Any) -> Any:  # Any: the service and its body
+        answers.append(decide(h, proposal, "dismiss").status_code)
+        return original(self, body)
+
+    monkeypatch.setattr(plans_module.PlanService, "request", request)
+    return answers
+
+
+def _proposal_events(owner: Session, proposal: str) -> list[tuple[Any, ...]]:
+    return rows(owner, "SELECT action, details, actor_id::text, tenant_id, workspace_id::text, "
+                       "project_id::text FROM shifde.audit_events WHERE target_id = :p "
+                       "ORDER BY chain_seq", p=proposal)  # fmt: skip
+
+
+def test_an_accept_that_loses_to_a_dismiss_is_409_and_its_plan_is_audited(
+    client: TestClient, world: World, admin: Hdr, owner_session: Session, owner_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:  # fmt: skip
+    target, release = _target(admin), _release(owner_db, owner_session)
+    fde = _fde(client, world, owner_session, admin)
+    payload = _plan_payload(target, release)
+    request, proposal = seed_proposal(owner_session, "demo-a", "delivery_plan", payload)
+    dismisser = user_session(client, world.passwords, ADMIN)  # a session of their own
+    dismissals = _dismiss_during_request(monkeypatch, dismisser, proposal)
+    r = decide(fde, proposal, "accept")
+    assert r.status_code == 409 and r.json()["code"] == "proposal_not_open", r.text
+    assert dismissals == [200]
+    [(plan_id, plan_tenant, requested_by, _)] = _plans(owner_session)
+    stored = proposal_row(owner_session, proposal)
+    assert (stored["status"], stored["result_ref"]) == ("dismissed", None)
+    ws, proj = _ids(owner_session)
+    a = tenant_id(owner_session, "demo-a")
+    assert plan_tenant == a
+    dismissed, superseded = sorted(_proposal_events(owner_session, proposal), reverse=True)
+    assert dismissed[0] == "assist.proposal.dismissed"
+    assert dismissed[1]["result_ref"] is None and dismissed[2] == str(stored["decided_by"])
+    assert superseded[0] == "assist.proposal.accept_superseded"
+    assert superseded[1] == {
+        "actor": FDE, "kind": "delivery_plan", "request_id": request, "status_reason": None,
+        "result_ref": {"kind": "delivery_plan", "id": plan_id},
+    }  # fmt: skip
+    assert superseded[2:] == (requested_by, a, ws, proj) and requested_by != dismissed[2]
+    assert not set(payload) & set(superseded[1])
+    assert not any(value in str(superseded[1]) for value in payload.values())
+    # client B has no such event
+    assert rows(owner_session, "SELECT count(*) FROM shifde.audit_events WHERE tenant_id = :t "
+                               "AND action = 'assist.proposal.accept_superseded'",
+                t=tenant_id(owner_session, "demo-b")) == [(0,)]  # fmt: skip
+    # accepting again: 409, nothing more
+    assert decide(fde, proposal, "accept").status_code == 409
+    assert len(_plans(owner_session)) == 1
+
+
+def test_a_refused_accept_that_loses_to_a_dismiss_is_409_and_records_no_object(
+    client: TestClient, world: World, admin: Hdr, owner_session: Session, owner_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:  # fmt: skip
+    target, release = _target(admin), _release(owner_db, owner_session)
+    _ok(admin.client.post(f"{A}/delivery/targets/{target}/archive", headers=admin))
+    fde = _fde(client, world, owner_session, admin)
+    _, proposal = seed_proposal(owner_session, "demo-a", "delivery_plan",
+                                _plan_payload(target, release))  # fmt: skip
+    dismisser = user_session(client, world.passwords, ADMIN)  # a session of their own
+    dismissals = _dismiss_during_request(monkeypatch, dismisser, proposal)
+    r = decide(fde, proposal, "accept")
+    assert r.status_code == 409 and r.json()["code"] == "proposal_not_open", r.text
+    assert dismissals == [200]
+    assert _plans(owner_session) == []
+    stored = proposal_row(owner_session, proposal)
+    assert (stored["status"], stored["result_ref"]) == ("dismissed", None)
+    assert [e[0] for e in _proposal_events(owner_session, proposal)] == [
+        "assist.proposal.dismissed"
+    ]
+
+
 def test_an_evaluation_run_proposal_is_accepted_through_evaluation(
     admin: Hdr, owner_session: Session
 ) -> None:
@@ -275,6 +367,44 @@ def test_a_payload_changed_to_a_foreign_release_fails_and_creates_nothing(
                                "WHERE status <> 'passed'") == [(0,)]  # fmt: skip
 
 
+@pytest.mark.parametrize("where", ["client B", "project P2"])
+def test_a_payload_changed_to_a_foreign_target_or_connection_fails_and_creates_nothing(
+    client: TestClient, world: World, admin: Hdr, owner_session: Session, owner_db: Database,
+    where: str,
+) -> None:  # fmt: skip
+    wire(admin.client)
+    target, release = _target(admin), _release(owner_db, owner_session)
+    connection = databricks(admin.client, admin, scope={"workspace": "main", "project": "sample"})
+    app = {"connection_id": connection, "tables": TABLES, "brief": "A sales app",
+           "model_id": model(admin)}  # fmt: skip
+    plan = _plan_payload(target, release)
+    _, plan_proposal = seed_proposal(owner_session, "demo-a", "delivery_plan", plan)
+    _, app_proposal = seed_proposal(owner_session, "demo-a", "appgen_request", app)
+    if where == "client B":
+        b = user_session(client, world.passwords, ADMIN_B)
+        foreign_target = _target(b, "demo-b")
+        foreign_connection = databricks(b.client, b, "lake-b", B)
+    else:
+        add_project(admin, "other")
+        foreign_target = _target(admin, "demo-a", "other")
+        foreign_connection = databricks(admin.client, admin, "lake-p2",
+                                        scope={"workspace": "main", "project": "other"})  # fmt: skip
+    set_payload(owner_session, plan_proposal, {**plan, "target_id": foreign_target})
+    set_payload(owner_session, app_proposal, {**app, "connection_id": foreign_connection})
+    for proposal in (plan_proposal, app_proposal):
+        out = _ok(decide(admin, proposal, "accept"))
+        assert (out["status"], out["status_reason"], out["result_ref"]) == (
+            "failed", "not_found", None,
+        )  # fmt: skip
+    # the schema owner sees every client's and project's rows
+    assert _plans(owner_session) == []
+    assert rows(owner_session, "SELECT count(*) FROM shifde.appgen_requests") == [(0,)]
+    # otherwise fully valid: the same payloads with P1's own ids are accepted
+    for kind, payload in (("delivery_plan", plan), ("appgen_request", app)):
+        _, proposal = seed_proposal(owner_session, "demo-a", kind, payload)
+        assert _ok(decide(admin, proposal, "accept"))["status"] == "accepted", kind
+
+
 def test_bs_administrator_gets_404_on_as_proposal(
     client: TestClient, world: World, admin: Hdr, owner_session: Session
 ) -> None:
@@ -332,3 +462,66 @@ def test_payload_and_result_ref_are_shown_only_with_the_read_keys(
     assert shown["result_ref"] == accepted["result_ref"]
     [mine] = _ok(admin.client.get(url, headers=admin))["proposals"]
     assert mine == accepted
+
+
+def _denials(owner: Session) -> list[tuple[Any, ...]]:
+    return rows(owner, "SELECT action, resource_id FROM shifde.policy_decisions "
+                       "WHERE decision = 'deny' ORDER BY id")  # fmt: skip
+
+
+@pytest.mark.parametrize("kind", ["delivery_plan", "appgen_request"])
+def test_the_payload_is_shown_only_when_what_it_names_is_readable(
+    client: TestClient, world: World, admin: Hdr, owner_session: Session, kind: str
+) -> None:
+    """The developer is bound only at P1 and holds every `PAYLOAD_READ` key there."""
+    add_project(admin, "other")
+    b = user_session(client, world.passwords, ADMIN_B)
+    if kind == "delivery_plan":
+        key = "target_id"
+        named = {"p1": _target(admin), "p2": _target(admin, "demo-a", "other"),
+                 "b": _target(b, "demo-b")}  # fmt: skip
+        payload = _plan_payload(named["p1"], str(uuid7()))
+    else:
+        wire(admin.client)
+        key = "connection_id"
+        named = {
+            name: databricks(h.client, h, f"lake-{name}", org,
+                             scope={"workspace": "main", "project": project})
+            for name, h, org, project in (
+                ("p1", admin, A, "sample"), ("p2", admin, A, "other"), ("b", b, B, "sample"),
+            )
+        }  # fmt: skip
+        payload = {"connection_id": named["p1"], "tables": TABLES, "brief": "A sales app",
+                   "model_id": str(uuid7())}  # fmt: skip
+    developer = project_member(client, world, "p1-payload@demo-a.local",
+                               project_of(owner_session, "demo-a")[1])  # fmt: skip
+    request, proposal = seed_proposal(owner_session, "demo-a", kind, payload)
+    url = f"{A}/assist/requests/{request}"
+    denials = _denials(owner_session)
+
+    def seen(h: Hdr) -> Any:  # Any: the payload
+        [out] = _ok(h.client.get(url, headers=h))["proposals"]
+        return out["payload"]
+
+    cases: list[tuple[dict[str, Any], bool, bool]] = [  # payload, developer sees, admin sees
+        (payload, True, True),
+        ({**payload, key: named["p2"]}, False, True),
+        ({**payload, key: named["b"]}, False, False),
+        ({**payload, key: str(uuid7())}, False, False),
+        ({**payload, key: "not-an-id"}, False, False),
+        ({**payload, key: None}, False, False),
+        ({k: v for k, v in payload.items() if k != key}, False, False),
+    ]
+    for stored, developer_sees, admin_sees in cases:
+        set_payload(owner_session, proposal, stored)
+        assert seen(developer) == (stored if developer_sees else None), stored
+        assert seen(admin) == (stored if admin_sees else None), stored
+    assert _denials(owner_session) == denials
+    # the accept and dismiss answers follow the same rule
+    set_payload(owner_session, proposal, {**payload, key: named["p2"]})
+    failed = _ok(decide(developer, proposal, "accept"))
+    assert (failed["status"], failed["payload"]) == ("failed", None)
+    dismissed = _ok(decide(developer, proposal, "dismiss"))
+    assert (dismissed["status"], dismissed["payload"]) == ("dismissed", None)
+    _, readable = seed_proposal(owner_session, "demo-a", kind, payload)
+    assert _ok(decide(developer, readable, "dismiss"))["payload"] == payload
