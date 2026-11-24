@@ -2,8 +2,17 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DeploymentDetail } from '@/lib/api/delivery-types';
-import { D, DELIVERY_PERMS, DEPLOYMENT, DEPLOYMENT_DETAIL, stubDelivery } from '@/test/delivery';
-import { bodyOf } from '@/test/security';
+import {
+  D,
+  DELIVERY_PERMS,
+  DEPLOYMENT,
+  DEPLOYMENT_DETAIL,
+  PLAN,
+  stubDelivery,
+  TARGET,
+} from '@/test/delivery';
+import { ORG, RELEASE } from '@/test/releases';
+import { bodyOf, list } from '@/test/security';
 import { jsonResponse, problemResponse, renderWithClient } from '@/test/utils';
 import { DeploymentDetailView } from './DeploymentDetailView';
 
@@ -217,5 +226,79 @@ describe('DeploymentDetailView content', () => {
     const { container } = renderWithClient(<DeploymentDetailView id="dep-1" />);
     expect(await screen.findByText(evil)).toBeInTheDocument();
     expect(container.querySelector('img')).toBeNull();
+  });
+});
+
+describe('DeploymentDetailView Ask SETH', () => {
+  const WRITE = [...DELIVERY_PERMS, 'assist:request:write'];
+  const GET_PLAN = `GET ${D}/plans/p-1`;
+  const GET_RELEASE = `GET ${ORG}/releases/${PLAN.release_id}`;
+  const workspaceTarget = {
+    [`GET ${D}/targets`]: () => list([{ ...TARGET, project: null }]),
+  };
+  const ask = () => screen.findByRole('link', { name: 'Ask SETH' });
+  const called = (fetchMock: ReturnType<typeof stubDelivery>, key: string) =>
+    fetchMock.calls.some((c) => c.key === key);
+  /** Once everything the screen asked for has been answered. */
+  const noLink = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByRole('link', { name: 'Ask SETH' })).not.toBeInTheDocument();
+  };
+
+  it('uses the project of the target without reading the plan, beside the existing actions', async () => {
+    const fetchMock = stubDelivery(detail({ status: 'queued' }), WRITE);
+    renderWithClient(<DeploymentDetailView id="dep-1" />);
+    expect(await ask()).toHaveAttribute(
+      'href',
+      '/o/acme/w/eng/p/api/assist?context=deployment:dep-1',
+    );
+    expect(await screen.findByRole('button', { name: 'Cancel deployment' })).toBeEnabled();
+    expect(called(fetchMock, GET_PLAN)).toBe(false);
+  });
+
+  it('is absent without assist:request:write', async () => {
+    stubDelivery();
+    renderWithClient(<DeploymentDetailView id="dep-1" />);
+    await within(await loaded()).findByText('Analytics prod');
+    await noLink();
+  });
+
+  it('uses the project of the released plan on a workspace-level target', async () => {
+    stubDelivery(
+      {
+        ...workspaceTarget,
+        [GET_RELEASE]: () => jsonResponse({ ...RELEASE, project: 'web' }),
+      },
+      WRITE,
+    );
+    renderWithClient(<DeploymentDetailView id="dep-1" />);
+    expect(await ask()).toHaveAttribute(
+      'href',
+      '/o/acme/w/eng/p/web/assist?context=deployment:dep-1',
+    );
+  });
+
+  it('is absent when the plan has no release', async () => {
+    const fetchMock = stubDelivery(
+      { ...workspaceTarget, [GET_PLAN]: () => jsonResponse({ ...PLAN, release_id: null }) },
+      WRITE,
+    );
+    renderWithClient(<DeploymentDetailView id="dep-1" />);
+    await waitFor(() => expect(called(fetchMock, GET_PLAN)).toBe(true));
+    await noLink();
+    expect(called(fetchMock, GET_RELEASE)).toBe(false);
+  });
+
+  it('is absent when the release is in another workspace', async () => {
+    const fetchMock = stubDelivery(
+      {
+        ...workspaceTarget,
+        [GET_RELEASE]: () => jsonResponse({ ...RELEASE, workspace: 'other' }),
+      },
+      WRITE,
+    );
+    renderWithClient(<DeploymentDetailView id="dep-1" />);
+    await waitFor(() => expect(called(fetchMock, GET_RELEASE)).toBe(true));
+    await noLink();
   });
 });
