@@ -25,6 +25,7 @@ from uuid import UUID
 
 from shifde.adapters.base import AdapterFailure, ErrorClass
 from shifde.build.executors import BUILTIN_FUNCTIONS, WRITE_CLASSES
+from shifde.build.internal_functions import INTERNAL_FUNCTIONS
 from shifde.build.tools import BRACE_NAME, PARAM_NAME, named_sql, positional_sql
 from shifde.connections.service import ConnectionService, UseSession, failure_to_error
 from shifde.core.errors import ValidationFailed
@@ -152,6 +153,10 @@ def sql_request(
 
 
 def run_builtin(function_key: str, args: dict[str, Any]) -> Any:  # Any: tool result
+    """Run a vetted builtin function. A `seth.*` internal function runs only inside a run (the
+    runtime dispatches it to the worker's registry), so it is refused here."""
+    if function_key in INTERNAL_FUNCTIONS:
+        raise ValidationFailed("seth.* functions run only inside an agent run")
     return BUILTIN_FUNCTIONS[function_key].fn(args)
 
 

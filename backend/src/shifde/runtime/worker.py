@@ -65,6 +65,12 @@ refusal on its invocation and ends `done`). The built-in kinds are checked first
 `worker_main`, so `runtime` never imports the modules above it): a registered handler runs
 the job in its own client and returns None (`done`) or an error code (`dead` with that code), as
 the built-in run-less handlers do; any other kind ends `dead` without running.
+
+Beside the `JobKindRegistry`, the composition root hands the worker an `InternalToolRegistry`
+(`runtime.internal_tools`): the `seth.*` functions a `builtin.function` tool may bind. The worker
+passes it through `lifecycle.advance` to the run's `RunContext`, where `steps.py` runs such a tool
+in the run, in the step's session under the run principal; without a registry, or without the key
+in it, the call fails with `internal_function_unavailable`.
 """
 
 from __future__ import annotations
@@ -110,6 +116,7 @@ from shifde.observability.logging import configure_logging
 from shifde.runtime import lifecycle
 from shifde.runtime import repository as repo
 from shifde.runtime.governance import GovernanceHooks, TokenBudgetHooks
+from shifde.runtime.internal_tools import InternalToolRegistry
 from shifde.runtime.jobkinds import JobKindRegistry
 from shifde.runtime.settle import capture_full, scrub_ended
 
@@ -160,9 +167,12 @@ class Worker:
         runtime: IntegrationRuntime | None = None,
         hooks: GovernanceHooks | None = None,
         job_handlers: JobKindRegistry | None = None,
+        internal_tools: InternalToolRegistry | None = None,
     ) -> None:
         self.settings = settings
         self.job_handlers = job_handlers or JobKindRegistry.of({})
+        # None (no registry): a `seth.*` tool call fails with `internal_function_unavailable`
+        self.internal_tools = internal_tools
         self.worker_id = worker_id or f"{socket.gethostname()}-{os.getpid()}-{uuid4().hex[:6]}"
         self.concurrency = concurrency or settings.worker_concurrency
         self.lease = lease_seconds or settings.worker_lease_seconds
@@ -422,6 +432,7 @@ class Worker:
                 self.stop,
                 job.lease_lost,
                 job.id,
+                internal_tools=self.internal_tools,
             )
         if job.kind == connections.TEST_JOB_KIND:
             # in the job's own client, as its requester re-derived from the database (B-2610)
@@ -796,7 +807,11 @@ def refuse_schema_mismatch(settings: Settings) -> None:
         raise SystemExit(EXIT_SCHEMA_MISMATCH)
 
 
-def run(argv: list[str] | None = None, job_handlers: JobKindRegistry | None = None) -> int:
+def run(
+    argv: list[str] | None = None,
+    job_handlers: JobKindRegistry | None = None,
+    internal_tools: InternalToolRegistry | None = None,
+) -> int:
     parser = argparse.ArgumentParser(prog="shifde-worker", description="SHIFDE execution worker")
     parser.add_argument("--concurrency", type=int, default=None)
     parser.add_argument("--worker-id", default=None)
@@ -817,6 +832,7 @@ def run(argv: list[str] | None = None, job_handlers: JobKindRegistry | None = No
         poll_ms=args.poll_ms,
         reap_seconds=args.reap_seconds,
         job_handlers=job_handlers,
+        internal_tools=internal_tools,
     )
     _install_signals(worker)
     return worker.run()

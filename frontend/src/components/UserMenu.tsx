@@ -1,21 +1,14 @@
 'use client';
 
-import { useQueryClient } from '@tanstack/react-query';
-import { useRouter } from 'next/navigation';
 import { useEffect, useId, useRef, useState } from 'react';
-import { endpoints } from '@/lib/api/endpoints';
 import type { User } from '@/lib/api/types';
-import { ErrorMessage } from './ErrorMessage';
+import { SignOutButton } from './SignOutButton';
 
 export function UserMenu({ user }: { user: User }) {
   const [open, setOpen] = useState(false);
-  const [error, setError] = useState<unknown>(null);
-  const [busy, setBusy] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelId = useId();
-  const router = useRouter();
-  const queryClient = useQueryClient();
 
   useEffect(() => {
     if (!open) return;
@@ -35,19 +28,6 @@ export function UserMenu({ user }: { user: User }) {
       document.removeEventListener('mousedown', onPointer);
     };
   }, [open]);
-
-  async function logout() {
-    setBusy(true);
-    setError(null);
-    try {
-      await endpoints.logout();
-      queryClient.clear();
-      router.replace('/login');
-    } catch (e) {
-      setError(e);
-      setBusy(false);
-    }
-  }
 
   return (
     <div ref={wrapRef} className="relative">
@@ -72,19 +52,7 @@ export function UserMenu({ user }: { user: User }) {
           {user.is_platform_admin && (
             <p className="mt-1 text-xs text-slate-600">Platform administrator</p>
           )}
-          {error !== null && (
-            <div className="mt-2">
-              <ErrorMessage error={error} title="Could not sign out" />
-            </div>
-          )}
-          <button
-            type="button"
-            className="btn mt-3 w-full"
-            onClick={() => void logout()}
-            disabled={busy}
-          >
-            {busy ? 'Signing out...' : 'Sign out'}
-          </button>
+          <SignOutButton className="btn mt-3 w-full" />
         </div>
       )}
     </div>

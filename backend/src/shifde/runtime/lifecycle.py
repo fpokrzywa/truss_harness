@@ -56,6 +56,7 @@ from shifde.runtime.agent import AgentRunner
 from shifde.runtime.context import RunContext, RunIdentity, tenant_header
 from shifde.runtime.governance import GovernanceHooks
 from shifde.runtime.graph import GraphRunner
+from shifde.runtime.internal_tools import InternalToolRegistry
 from shifde.runtime.pipeline import PipelineRunner
 from shifde.runtime.settle import settle_terminal
 from shifde.tenancy import service as tenancy
@@ -295,6 +296,8 @@ def advance(
     stop: threading.Event,
     lease_lost: threading.Event,
     job_id: UUID,
+    *,
+    internal_tools: InternalToolRegistry | None = None,
 ) -> str:
     """Advance one run inside a span of the run's trace (the API request that created the run
     started that trace). Returns what happened (`done`, `released`, `lease_lost`, `skipped`).
@@ -305,7 +308,7 @@ def advance(
     try:
         return _advance_in(
             session, database, settings, runtime, hooks, tenant_id, run_id, worker_id, stop,
-            lease_lost, job_id,
+            lease_lost, job_id, internal_tools=internal_tools,
         )  # fmt: skip
     finally:
         try:
@@ -326,6 +329,8 @@ def _advance_in(
     stop: threading.Event,
     lease_lost: threading.Event,
     job_id: UUID,
+    *,
+    internal_tools: InternalToolRegistry | None = None,
 ) -> str:
     """`advance` on a session the caller owns (private: it does not check the role behind
     `session`; the worker calls `advance`, runtime isolation review 9 finding 3). `usage_db`
@@ -346,7 +351,7 @@ def _advance_in(
         ):
             outcome = _advance(
                 session, usage_db, settings, runtime, hooks, tenant_id, run_id, worker_id, stop,
-                lease_lost, job_id,
+                lease_lost, job_id, internal_tools=internal_tools,
             )  # fmt: skip
             # carries trace_id, span_id, tenant_id, run_id and correlation_id from the log context
             log.info("run.advance_finished", outcome=outcome, worker_id=worker_id)
@@ -367,6 +372,8 @@ def _advance(
     stop: threading.Event,
     lease_lost: threading.Event,
     job_id: UUID,
+    *,
+    internal_tools: InternalToolRegistry | None = None,
 ) -> str:
     db.set_tenant(session, tenant_id)
     job = repo.job_of_run(session, tenant_id, run_id, job_id)
@@ -532,6 +539,7 @@ def _advance(
         principal=principal,
         tenant_header=header,
         db=usage_db,
+        internal_tools=internal_tools,
     )
     return _run(ctx)
 

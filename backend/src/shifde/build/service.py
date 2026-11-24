@@ -257,6 +257,20 @@ class ArtifactService:
             raise NotFound(f"{SINGULAR[kind]} not found")
         return row
 
+    def key_holder(
+        self, kind: str, workspace_id: UUID | None, project_id: UUID | None, key: str
+    ) -> UUID | None:
+        """The id of the artifact of `kind` that holds `key` at exactly this scope, visible to the
+        caller or not (a create there with that key would conflict)."""
+        return repository.artifact_id_by_key(
+            self.session,
+            self.sc.tenant_id,
+            kind=kind,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            key=key,
+        )
+
     def label(self, user_id: UUID | None) -> s.PrincipalRef | None:
         if user_id is None:
             return None

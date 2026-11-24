@@ -1,5 +1,6 @@
 """`shifde-executor` (B-2693, B-2694): `--help`, the environment it needs, https outside
-development and test, and `--fake-platform` refused outside them, before any gateway call."""
+development and test, and `--fake-platform` refused outside them, before any gateway call; the fake
+platform's Snowflake fake built only with a development or test `SHIFDE_ENV` (SP6-3)."""
 
 from __future__ import annotations
 
@@ -11,10 +12,11 @@ from uuid import uuid4
 
 import pytest
 
+from shifde.adapters.native.snowflake.clients import SnowflakeKeyPair
 from shifde.core.httplogs import HTTP_CLIENT_LOGGERS
 from shifde.executor import main
 from shifde.executor.runner import FakePlatform, RealPlatform
-from tests.executor.support import credentials_file
+from tests.executor.support import credentials_file, snowflake_key_pem
 
 TOKEN = "shx_prefix_executor-token-never-logged"  # noqa: S105 - a test value
 HOST = "https://adb-1234567890.cloud.databricks.com"
@@ -136,3 +138,45 @@ def test_the_logging_setup_raises_the_http_client_loggers_to_warning(
     finally:
         for name, value in levels.items():
             logging.getLogger(name).setLevel(value)
+
+
+def test_help_shows_both_credentials_entry_shapes() -> None:
+    script = Path(sys.executable).with_name("shifde-executor")
+    done = subprocess.run(  # nosec B603 - fixed arguments
+        [str(script), "--help"], capture_output=True, text=True, check=False, timeout=60
+    )
+    assert done.returncode == 0, done.stderr
+    text = " ".join(done.stdout.split())
+    assert "Databricks {tenant_id, host, token, service_principal}" in text
+    assert (
+        'Snowflake {tenant_id, host, platform: "snowflake", user, role, private_key_file}' in text
+    )
+    assert "fake Databricks and Snowflake platforms" in text
+
+
+@pytest.mark.parametrize("shifde_env", ["development", "test"])
+def test_the_fake_platform_carries_the_executors_environment(
+    env: None, monkeypatch: pytest.MonkeyPatch, shifde_env: str
+) -> None:
+    monkeypatch.setenv("SHIFDE_ENV", shifde_env)
+    platform = main.configure(["--fake-platform"], main.os.environ).platform
+    assert isinstance(platform, FakePlatform) and platform.environment == shifde_env
+
+
+@pytest.mark.parametrize("environment", ["", "production", "staging"])
+def test_the_fake_platform_refuses_to_build_the_snowflake_fake_outside_development_and_test(
+    environment: str,
+) -> None:
+    pair = SnowflakeKeyPair(
+        tenant_id=uuid4(),
+        host="https://acct-1.snowflakecomputing.com",
+        account="acct-1",
+        user="deployer",
+        role="DEPLOY_ROLE",
+        private_key_pem=snowflake_key_pem(),
+    )
+    platform = FakePlatform(environment=environment)
+    with pytest.raises(RuntimeError, match="only in development or test"):
+        platform.snowflake_fake(pair)
+    assert platform.snowflake is None
+    assert FakePlatform(environment="test").snowflake_fake(pair).account == "acct-1"

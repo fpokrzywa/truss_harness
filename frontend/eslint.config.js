@@ -15,6 +15,7 @@ const config = [
       'node_modules/',
       'next-env.d.ts',
       'coverage/',
+      'appgen-web/',
     ],
   },
 ];

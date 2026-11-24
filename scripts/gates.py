@@ -9,7 +9,8 @@ Usage (from any checkout of this repository):
 The ref is checked out, detached, in the worktree `.worktrees/<name>` (default `verify`) of the
 main checkout. Everything git does not track is removed except the dependency caches
 (`backend/.venv`, `frontend/node_modules`) and `.devdata/`; the caches are then reconciled with
-the lockfiles (`uv sync --frozen`, `pnpm install --frozen-lockfile`). The worktree's database
+the lockfiles (`uv sync --frozen`, `pnpm install --frozen-lockfile`). The frontend gates include the
+`@shifde/appgen-web` package and `scripts/appgen_web.py --check`. The worktree's database
 comes from `scripts/dev_db.py env` (the local cluster must be running).
 
 Each gate prints one line: name, exit code, seconds, and the last non-empty output line. Full
@@ -29,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 TAIL_LINES = 40
+APPGEN_WEB_STEPS = ("lint", "typecheck", "test", "build")
 
 
 @dataclass
@@ -74,6 +76,10 @@ def plan(*, tests: list[str], workers: str, frontend: bool, backend: bool = True
             Gate("pnpm test", ["pnpm", "test"], "frontend"),
             Gate("pnpm build", ["pnpm", "build"], "frontend"),
         ]
+        # The generated app's web bundle (SP5 design 6.5): its package, then the committed copy.
+        appgen = ["pnpm", "--filter", "@shifde/appgen-web"]
+        gates += [Gate(" ".join([*appgen, step]), [*appgen, step], "frontend") for step in APPGEN_WEB_STEPS]
+        gates.append(Gate("appgen_web.py --check", ["python", "scripts/appgen_web.py", "--check"], ""))
     return gates
 
 
