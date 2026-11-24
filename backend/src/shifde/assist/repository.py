@@ -456,7 +456,8 @@ _SCRUBBABLE = (
 # every proposal of a deletable request is older than the cutoff too (the delete guard's rule)
 # (a dry run counts the runs the same pass would delete, `:gone`, as gone)
 _DELETABLE = _ENDED_REQUEST.format(live=" AND x.id <> ALL (CAST(:gone AS uuid[]))") + (
-    " AND NOT EXISTS (SELECT 1 FROM shifde.assist_proposals p WHERE p.tenant_id = :t "
+    # a fixed fragment; values are bound
+    " AND NOT EXISTS (SELECT 1 FROM shifde.assist_proposals p WHERE p.tenant_id = :t "  # nosec B608
     "AND p.request_id = r.id AND p.created_at >= :c)"
 )
 
