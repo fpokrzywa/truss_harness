@@ -52,7 +52,8 @@ FETCH_BATCH = 256
 READ_WORDS = frozenset({"select", "with", "show", "values", "table", "explain"})
 # `SELECT ... INTO` creates a table
 _REFUSED_WORDS = WRITE_KEYWORDS | {"into"}
-# functions with side effects even inside a READ ONLY transaction (#285)
+# functions with side effects even inside a READ ONLY transaction (#285), functions that run a
+# SQL string or cursor and server-file / large-object reads (#312); a best-effort deny-list
 _REFUSED_FUNCTIONS = frozenset(
     {
         "pg_terminate_backend",
@@ -74,6 +75,17 @@ _REFUSED_FUNCTIONS = frozenset(
         "lo_import",
         "lo_export",
         "dblink",
+        "query_to_xml",
+        "query_to_xmlschema",
+        "query_to_xml_and_xmlschema",
+        "cursor_to_xml",
+        "cursor_to_xmlschema",
+        "ts_stat",
+        "ts_rewrite",
+        "pg_read_file",
+        "pg_read_binary_file",
+        "pg_ls_dir",
+        "lo_get",
     }
 )
 _REFUSED_FUNCTION_PREFIXES = ("dblink_",)
@@ -93,8 +105,13 @@ _OPS = {"=": "=", "!=": "<>", "<": "<", "<=": "<=", ">": ">", ">=": ">=", "like"
 def check_read_only(sql: str) -> None:
     """Refuse (CAPABILITY) anything but a statement whose first word of code is a read keyword
     and whose code holds no word of `WRITE_KEYWORDS` and not `into`, and no side-effecting
-    function of `_REFUSED_FUNCTIONS` or starting with `dblink_` (#285), as a word of code or as a
-    whole `"..."` identifier. `'...'` strings, `"..."` identifiers (a doubled quote stays inside)
+    function of `_REFUSED_FUNCTIONS` or starting with `dblink_` (#285), no function that runs a
+    SQL string or cursor (`query_to_xml`, `query_to_xmlschema`, `query_to_xml_and_xmlschema`,
+    `cursor_to_xml`, `cursor_to_xmlschema`, `ts_stat`, `ts_rewrite`) and no server-file or
+    large-object read (`pg_read_file`, `pg_read_binary_file`, `pg_ls_dir`, `lo_get`) (#312), as
+    a word of code or as a whole `"..."` identifier. The function deny-list is best-effort: the
+    least-privileged read credential (B-1507) and the READ ONLY transaction are the limiting
+    controls. `'...'` strings, `"..."` identifiers (a doubled quote stays inside)
     and `--`/`/* */` comments are otherwise never read as code.
     Text Postgres could read differently is refused (fail closed): an unterminated quote or
     comment, a nested `/*`, a backslash in a string (E-strings, `standard_conforming_strings`)

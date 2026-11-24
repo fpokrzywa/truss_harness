@@ -2,8 +2,9 @@
 
 * `check_read_only`: the keyword check a `read` invoke passes before any network call (a read
   first keyword, no write keyword anywhere in the code; in the Snowflake dialect also no
-  `procedure`/`call` word and no `SYSTEM$` function, #285). It is defense in depth; the
-  read-only credential (B-1507) is the real control.
+  `procedure`/`call` word, no `SYSTEM$` function, #285, and an `IDENTIFIER(...)` call only
+  with one simple argument, #312). Its function deny-list is best-effort defense in depth; the
+  least-privileged read credential (B-1507) is the real control.
 * `classify_status`: HTTP status -> `ErrorClass`, with fixed messages (never a body).
 * `send`: one request through an egress-guarded client, with one `Retry-After` retry on 429.
 * `run_statement`: submit, poll, cancel at the deadline.
@@ -55,6 +56,11 @@ _SNOWFLAKE_REFUSED_WORDS = frozenset({"procedure", "call"})
 _SNOWFLAKE_REFUSED_PREFIX = "system$"
 # Snowflake reads `:1` as a positional bind reference; the runtime binds only `?` in order (#319)
 _SNOWFLAKE_POSITIONAL_BIND = re.compile(r":[0-9]")
+# Snowflake dialect tokens of `_code_of`'s `code` (comments already blanked): a `'...'` literal
+# (backslash escapes), a `"..."` identifier, a `$$...$$` string, a word, whitespace, one character
+_SNOWFLAKE_TOKEN = re.compile(r"""'(?:\\.|[^'\\])*'|"[^"]*"|\$\$.*?\$\$|[\w$]+|\s+|.""", re.S)
+# the one argument `IDENTIFIER(...)` may hold: a literal without backslash, `?`, `:name`, a name
+_IDENTIFIER_ARGUMENT = re.compile(r"'[^'\\]*'|\?|:?[A-Za-z_][A-Za-z0-9_$]*")
 _QUOTES = ("'", '"', "`")
 # Snowflake has no backtick quoting and no raw literals; only `'` takes backslash escapes,
 # `"` takes only the doubled `""` (B-3212)
@@ -155,8 +161,11 @@ def check_read_only(sql: str, *, dialect: Dialect = "databricks") -> None:
     `core/sqlrules.py`); comments are stripped first, quoted text is never read as code. The
     Snowflake dialect also refuses a `procedure` or `call` word anywhere in the code (anonymous
     procedures), a word or a whole `"..."` identifier starting with `SYSTEM$` (system
-    functions, #285) and a `:` directly followed by a digit (a positional bind reference, #319);
-    `'...'`, `$$...$$` and comments stay unread."""
+    functions, #285), a `:` directly followed by a digit (a positional bind reference, #319) and
+    an `IDENTIFIER(...)` call whose argument is not exactly one `'...'` literal without a
+    backslash and without `system$` anywhere, one `?`, one `:name` or one plain name (#312);
+    `'...'`, `$$...$$` and comments stay unread otherwise. The function deny-list is
+    best-effort; the least-privileged read credential (B-1507) is the limiting control."""
     code, semicolons, bare, identifiers = _code_of(sql, dialect)
     stripped = code.rstrip()
     if semicolons:
@@ -178,6 +187,36 @@ def check_read_only(sql: str, *, dialect: Dialect = "databricks") -> None:
         raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
     if dialect == "snowflake" and _SNOWFLAKE_POSITIONAL_BIND.search(bare):
         raise AdapterFailure(ErrorClass.CAPABILITY, _POSITIONAL_BIND)
+    if dialect == "snowflake":
+        _check_identifier_calls(code)
+
+
+def _check_identifier_calls(code: str) -> None:
+    """Refuse (CAPABILITY) a Snowflake `IDENTIFIER(` word of code whose argument, trimmed, is
+    not one `'...'` literal without a backslash or `system$`, `?`, `:name` or a plain name
+    (#312): `_code_of` blanks the literal, so `IDENTIFIER('SYSTEM$X')` passes the word rule."""
+    tokens = [m.group() for m in _SNOWFLAKE_TOKEN.finditer(code)]
+    for at, token in enumerate(tokens):
+        if token.lower() != "identifier":
+            continue
+        k = at + 1
+        while k < len(tokens) and tokens[k].isspace():
+            k += 1
+        if k >= len(tokens) or tokens[k] != "(":
+            continue
+        k += 1
+        argument: list[str] = []
+        while k < len(tokens) and tokens[k] not in ("(", ")"):
+            argument.append(tokens[k])
+            k += 1
+        text = "".join(argument).strip()
+        if (
+            k >= len(tokens)
+            or tokens[k] != ")"
+            or not _IDENTIFIER_ARGUMENT.fullmatch(text)
+            or (text.startswith("'") and _SNOWFLAKE_REFUSED_PREFIX in text.lower())
+        ):
+            raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
 
 
 def classify_status(status: int, *, subject: str = "the platform") -> AdapterFailure | None:
