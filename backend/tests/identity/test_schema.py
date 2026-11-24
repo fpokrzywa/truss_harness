@@ -68,7 +68,9 @@ def test_a_head_named_in_depends_on_is_not_a_version_head() -> None:
     assist_0001 is the assist head. runtime_0008 (issue #174) follows runtime_0007 with no
     depends_on, so it is a new version head (runtime_0007 stays a non-head). packaging_0004
     follows packaging_0003 with no depends_on (issue #271), so it is the packaging version head
-    (packaging_0003 stays a non-head)."""
+    (packaging_0003 stays a non-head). delivery_0008 follows delivery_0007 and packaging_0005
+    follows packaging_0004, both with no depends_on (issue #286), so they are the delivery and
+    packaging version heads (delivery_0007 and packaging_0004 stay non-heads)."""
     heads = code_heads()
     assert "assist_0001" in heads
     assert "appgen_0001" not in heads
@@ -76,7 +78,8 @@ def test_a_head_named_in_depends_on_is_not_a_version_head() -> None:
     assert "mcp_0001" in heads
     assert "identity_0007" not in heads
     assert "identity_0006" not in heads
-    assert "delivery_0007" in heads
+    assert "delivery_0008" in heads
+    assert "delivery_0007" not in heads
     assert "delivery_0006" not in heads
     assert "evaluation_0001" not in heads
     assert "delivery_0005" not in heads
@@ -93,7 +96,8 @@ def test_a_head_named_in_depends_on_is_not_a_version_head() -> None:
     assert "runtime_0003" not in heads
     assert "runtime_0002" not in heads
     assert "runtime_0001" not in heads
-    assert "packaging_0004" in heads
+    assert "packaging_0005" in heads
+    assert "packaging_0004" not in heads
     assert "packaging_0003" not in heads
     assert "packaging_0002" not in heads
     assert "packaging_0001" not in heads
