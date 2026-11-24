@@ -474,6 +474,13 @@ REFUSED_SQL = [
     "WITH a AS (SELECT 1) DELETE FROM t",
     "with a as (select 1) Insert into t select * from a",
     "With a As (Select 1) dElEtE From t",
+    # a SYSTEM$ function as a word or a quoted identifier (#285)
+    "SELECT SYSTEM$CANCEL_ALL_QUERIES()",
+    "select system$cancel_all_queries()",
+    "SELECT SNOWFLAKE.X.SYSTEM$CANCEL_ALL_QUERIES()",
+    "WITH a AS (SELECT System$Cancel_All_Queries()) SELECT * FROM a",
+    'SELECT "SYSTEM$CANCEL_ALL_QUERIES"()',
+    'SELECT "system$abort_session"(1)',
     # a positional `:n` bind reference in the code (#319)
     "SELECT :1",
     "SELECT :12",
@@ -492,6 +499,15 @@ ACCEPTED_SQL = [
     "SELECT 'insert' AS w -- delete",
     'SELECT "update" FROM t // drop',
     "SELECT updated_at, deleted FROM t",
+    # SYSTEM$ only in a string, a comment or inside a word (#285)
+    "SELECT 'SYSTEM$CANCEL_ALL_QUERIES()'",
+    "SELECT $$SYSTEM$CANCEL_ALL_QUERIES()$$",
+    "SELECT 1 -- SYSTEM$CANCEL_ALL_QUERIES()",
+    "SELECT 1 // SYSTEM$CANCEL_ALL_QUERIES()",
+    "SELECT 1 /* SYSTEM$CANCEL_ALL_QUERIES() */",
+    "SELECT my_system$x FROM t",
+    'SELECT "my_system$x" FROM t',
+    'SELECT "a""SYSTEM$x" FROM t',
     "SELECT ':1'",
     "SELECT $$:1$$",
     "SELECT 1 -- :1",
@@ -506,6 +522,7 @@ def test_refused_statements_make_no_request(sf: FakeSnowflakeAccount, sql: str) 
         _invoke(sf, {"sql": sql})
     assert raised.value.error_class is ErrorClass.CAPABILITY
     assert sql not in raised.value.message
+    assert "system$" not in raised.value.message.lower()
     assert sf.requests == []
 
 
