@@ -6,10 +6,12 @@ tool's timeout as the call deadline) and secret redaction all apply, so a tool i
 network path. Templates substitute arguments as *data*: path values are percent-encoded, SQL values
 are bound parameters (`%(name)s`), nothing is interpolated into a statement.
 
-On a `data_platform` (Databricks) connection, a `connection.sql` request carries the template as
-`:name` parameters (`%%` as `%`), a SQL type per used parameter from the tool's input schema and the
-binding's `max_rows`; which form is sent follows the type of the connection row `open_for_use`
-re-read, never the spec or the arguments.
+On a `data_platform` connection, a `connection.sql` request carries the binding's `max_rows` and a
+SQL type per parameter from the tool's input schema (the Databricks type names). On Databricks the
+template is sent as `:name` parameters (`%%` as `%`) with named values and types; on Snowflake as
+positional `?` (outside string literals) with the values in occurrence order and the types keyed
+by position (`"1"`, `"2"`, ...). Which form is sent follows the type and adapter key of the
+connection row `open_for_use` re-read, never the spec or the arguments.
 """
 
 from __future__ import annotations
@@ -23,7 +25,8 @@ from uuid import UUID
 
 from shifde.adapters.base import AdapterFailure, ErrorClass
 from shifde.build.executors import BUILTIN_FUNCTIONS, WRITE_CLASSES
-from shifde.build.tools import BRACE_NAME, PARAM_NAME, named_sql
+from shifde.build.internal_functions import INTERNAL_FUNCTIONS
+from shifde.build.tools import BRACE_NAME, PARAM_NAME, named_sql, positional_sql
 from shifde.connections.service import ConnectionService, UseSession, failure_to_error
 from shifde.core.errors import ValidationFailed
 
@@ -125,6 +128,7 @@ def sql_request(
     args: dict[str, Any],
     input_schema: dict[str, Any],
     connection_type: str,
+    adapter_key: str | None = None,
 ) -> dict[str, Any]:
     template = str(binding["sql_template"])
     names = set(PARAM_NAME.findall(template))
@@ -132,6 +136,14 @@ def sql_request(
     if connection_type != "data_platform":
         return {"sql": template, "params": params}
     props = input_schema.get("properties") or {}
+    if adapter_key == "snowflake":
+        sql, order = positional_sql(template)
+        return {
+            "sql": sql,
+            "params": [args.get(n) for n in order],
+            "param_types": {str(i): param_type(props.get(n)) for i, n in enumerate(order, start=1)},
+            "max_rows": int(binding.get("max_rows") or 1000),
+        }
     return {
         "sql": named_sql(template),
         "params": params,
@@ -141,6 +153,10 @@ def sql_request(
 
 
 def run_builtin(function_key: str, args: dict[str, Any]) -> Any:  # Any: tool result
+    """Run a vetted builtin function. A `seth.*` internal function runs only inside a run (the
+    runtime dispatches it to the worker's registry), so it is refused here."""
+    if function_key in INTERNAL_FUNCTIONS:
+        raise ValidationFailed("seth.* functions run only inside an agent run")
     return BUILTIN_FUNCTIONS[function_key].fn(args)
 
 
@@ -204,7 +220,9 @@ def _invoke(
     if executor == "mcp.tool":
         result = session.invoke({"tool": binding["tool_name"], "arguments": args}, write=write)
         return result.result
-    request = sql_request(binding, args, spec.get("input_schema") or {}, session.connection_type)
+    request = sql_request(
+        binding, args, spec.get("input_schema") or {}, session.connection_type, session.adapter_key
+    )
     result = session.invoke(request, write=write)
     out: dict[str, Any] = dict(result.result)
     max_rows = int(binding.get("max_rows") or 1000)

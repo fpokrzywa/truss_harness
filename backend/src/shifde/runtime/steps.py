@@ -9,6 +9,12 @@ Reliability rules implemented here (SYSTEM_ARCHITECTURE 6.7):
   may have reached the target) the call becomes `indeterminate` and an operator decides;
 * `write_idempotent` retries reuse the same idempotency key;
 * usage events are keyed by step attempt, so a retried call is recorded once per attempt.
+
+A `builtin.function` tool bound to a `seth.*` key (`build.internal_functions`) takes the same path;
+only the execution call differs: it runs the function of the worker's `InternalToolRegistry`
+(`RunContext.internal_tools`) on the step's session, under the run principal, without a commit
+inside the call (its writes become durable with the step result, a raise rolls them back). No
+registry, or no function for the key, fails the call with `internal_function_unavailable`.
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ from shifde.adapters.base import AdapterFailure, ErrorClass, Usage
 from shifde.authz.service import ResourceRef
 from shifde.build import tool_runtime
 from shifde.build.env import VersionRef
+from shifde.build.internal_functions import INTERNAL_FUNCTIONS
 from shifde.build.issues import schema_errors
 from shifde.core.clock import utcnow
 from shifde.core.errors import (
@@ -50,6 +57,7 @@ from shifde.runtime import gate, ontology_exec, policies, state
 from shifde.runtime import repository as repo
 from shifde.runtime.context import RunContext
 from shifde.runtime.governance import Reservation, ReserveDetail
+from shifde.runtime.internal_tools import InternalToolCall, InternalToolFn
 from shifde.runtime.settle import capture_full
 
 MAX_OUTPUT_BYTES = 1_000_000
@@ -727,6 +735,23 @@ def _key(ctx: RunContext, call: ToolCall, epoch: int) -> str:
     return repo.sha256_hex(str(ctx.run_id), call.call_ref, str(epoch))
 
 
+def _internal_function(ctx: RunContext, spec: Mapping[str, Any]) -> InternalToolFn | None:
+    """The registry function of a `seth.*` tool; None for any other tool. A `seth.*` key the
+    context's registry does not provide (or no registry at all) fails the call, before a step is
+    recorded or anything runs."""
+    key = (spec.get("binding") or {}).get("function_key")
+    if spec.get("executor") != "builtin.function" or not isinstance(key, str):
+        return None
+    if key not in INTERNAL_FUNCTIONS:
+        return None
+    fn = ctx.internal_tools.get(key) if ctx.internal_tools is not None else None
+    if fn is None:
+        raise state.RunFailed(
+            state.INTERNAL_FUNCTION_UNAVAILABLE, f"the internal function {key} is not available"
+        )
+    return fn
+
+
 def tool_resource(ctx: RunContext, tool: VersionRef) -> ResourceRef:
     return ResourceRef(ctx.tenant_id, tool.workspace_id, tool.project_id, "tool", tool.artifact_id)
 
@@ -1186,6 +1211,7 @@ def _execute_attempts(
     )
     base = float(retry_cfg.get("backoff_s", 0))
     key = _key(ctx, call, epoch)
+    internal = _internal_function(ctx, spec)
     journaled = not (spec["executor"] == "builtin.function" and side == "none")
     seq: int | None = last["seq"] if last is not None else None
     attempt_no = last["attempt"] if last is not None else 0
@@ -1291,7 +1317,21 @@ def _execute_attempts(
             with tracing.start_span(
                 "adapter.tool_call", {"tool": tool.artifact_key, "side_effect_class": side}
             ):
-                if ontology_exec.is_ontology_tool(spec):
+                if internal is not None:
+                    # on the step's session (the run's client), no commit inside the call
+                    output = internal(
+                        InternalToolCall(
+                            session=ctx.session,
+                            scope=ctx.scope,
+                            tenant_id=ctx.tenant_id,
+                            workspace_id=ctx.run["workspace_id"],
+                            project_id=ctx.run["project_id"],
+                            run_id=ctx.run_id,
+                            step_key=key,
+                            args=call.args,
+                        )
+                    )
+                elif ontology_exec.is_ontology_tool(spec):
                     output = ontology_exec.tool_query(
                         ctx, call.args, purpose=f"tool:{tool.artifact_key}:ontology"
                     )

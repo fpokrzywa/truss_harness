@@ -60,7 +60,17 @@ advances its run; `connection.test` and `connection.discover` (no run) run
 `connections.service.run_invoke_job`, and `model.health_check` and `model.discover` (no run) run
 `models_admin.service.run_provider_job`, in the job's own client as its requester, re-derived
 from the database, and end `done`, or `dead` with the refusal's error code (an invoke records its
-refusal on its invocation and ends `done`); any other kind ends `dead` without running.
+refusal on its invocation and ends `done`). The built-in kinds are checked first, then the
+`JobKindRegistry` the worker was given (`runtime.jobkinds`, built by the composition root
+`worker_main`, so `runtime` never imports the modules above it): a registered handler runs
+the job in its own client and returns None (`done`) or an error code (`dead` with that code), as
+the built-in run-less handlers do; any other kind ends `dead` without running.
+
+Beside the `JobKindRegistry`, the composition root hands the worker an `InternalToolRegistry`
+(`runtime.internal_tools`): the `seth.*` functions a `builtin.function` tool may bind. The worker
+passes it through `lifecycle.advance` to the run's `RunContext`, where `steps.py` runs such a tool
+in the run, in the step's session under the run principal; without a registry, or without the key
+in it, the call fails with `internal_function_unavailable`.
 """
 
 from __future__ import annotations
@@ -106,6 +116,8 @@ from shifde.observability.logging import configure_logging
 from shifde.runtime import lifecycle
 from shifde.runtime import repository as repo
 from shifde.runtime.governance import GovernanceHooks, TokenBudgetHooks
+from shifde.runtime.internal_tools import InternalToolRegistry
+from shifde.runtime.jobkinds import JobKindRegistry
 from shifde.runtime.settle import capture_full, scrub_ended
 
 log = structlog.get_logger("shifde.worker")
@@ -154,8 +166,13 @@ class Worker:
         reap_seconds: float | None = None,
         runtime: IntegrationRuntime | None = None,
         hooks: GovernanceHooks | None = None,
+        job_handlers: JobKindRegistry | None = None,
+        internal_tools: InternalToolRegistry | None = None,
     ) -> None:
         self.settings = settings
+        self.job_handlers = job_handlers or JobKindRegistry.of({})
+        # None (no registry): a `seth.*` tool call fails with `internal_function_unavailable`
+        self.internal_tools = internal_tools
         self.worker_id = worker_id or f"{socket.gethostname()}-{os.getpid()}-{uuid4().hex[:6]}"
         self.concurrency = concurrency or settings.worker_concurrency
         self.lease = lease_seconds or settings.worker_lease_seconds
@@ -415,6 +432,7 @@ class Worker:
                 self.stop,
                 job.lease_lost,
                 job.id,
+                internal_tools=self.internal_tools,
             )
         if job.kind == connections.TEST_JOB_KIND:
             # in the job's own client, as its requester re-derived from the database (B-2610)
@@ -428,6 +446,9 @@ class Worker:
         elif job.kind in (models_admin.HEALTH_JOB_KIND, models_admin.DISCOVER_JOB_KIND):
             # the same, for a provider health check or model discovery (B-2720)
             job.error = models_admin.run_provider_job(self.db, self.runtime, job.tenant_id, job.id)
+        elif job.kind in self.job_handlers:
+            # a kind of a module above `runtime`, registered by the composition root
+            job.error = self.job_handlers[job.kind](self.db, self.runtime, job.tenant_id, job.id)
         else:
             job.error = UNKNOWN_KIND
         return "done" if job.error is None else "dead"
@@ -786,7 +807,11 @@ def refuse_schema_mismatch(settings: Settings) -> None:
         raise SystemExit(EXIT_SCHEMA_MISMATCH)
 
 
-def run(argv: list[str] | None = None) -> int:
+def run(
+    argv: list[str] | None = None,
+    job_handlers: JobKindRegistry | None = None,
+    internal_tools: InternalToolRegistry | None = None,
+) -> int:
     parser = argparse.ArgumentParser(prog="shifde-worker", description="SHIFDE execution worker")
     parser.add_argument("--concurrency", type=int, default=None)
     parser.add_argument("--worker-id", default=None)
@@ -806,6 +831,8 @@ def run(argv: list[str] | None = None) -> int:
         lease_seconds=args.lease_seconds,
         poll_ms=args.poll_ms,
         reap_seconds=args.reap_seconds,
+        job_handlers=job_handlers,
+        internal_tools=internal_tools,
     )
     _install_signals(worker)
     return worker.run()

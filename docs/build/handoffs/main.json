@@ -1,8 +1,8 @@
 {
-  "session_id": "cdcd7d36-d94e-43b4-845e-e53acb977a12",
-  "head_sha": "9adf7d4ced215d84111a1a28d4b32aa35b4f90ce",
+  "session_id": "a76bd9e5-8860-479f-8220-f70d81bb4aad",
+  "head_sha": "1177ea56d91a85ca67469f0b72b8c98f0464abab",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "PYTHONUTF8=1 factory/bin/job queue; read .worktrees/_gate-logs/139-merge.summary (re-sync + hand merge 139 or rerun gates); gate 140 and 143; lead merges 133, 146, 141, 137 one gates.py at a time; then 145 builder; see docs/build/HANDOFF.md",
-  "written_at": "2026-11-23T17:47:14Z"
+  "next_step": "Serial merges per docs/build/HANDOFF.md: sync and 13-gate 147 (PR #314), then 148 (PR #313), job merge 150 and 149, then 145, 140, 143; one gate run at a time",
+  "written_at": "2026-11-23T22:29:42Z"
 }

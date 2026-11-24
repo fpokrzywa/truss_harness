@@ -17,7 +17,16 @@ a three-part name `a.b.c` is read as the table `a__b__c`, `:name` parameters are
 statement naming that table `FAILED` with `PERMISSION_DENIED`, and `endpoint_not_ready` reports
 every endpoint `NOT_READY` and answers its invocations 503.
 `FakeSnowflakeAccount` does the same for the `snowflake` adapter's SQL API v2 calls and verifies
-every key-pair JWT against its registered public key.
+every key-pair JWT against its registered public key. With `sample_data=True` it serves the same
+sample rows (`SAMPLE_TABLES`, shared with the workspace) as `DEMO_DB.PUBLIC.CUSTOMERS`,
+`DEMO_DB.PUBLIC.ORDERS` and `DEMO_DB.SALES.INVOICES` from read-only SQLite, lists them in
+discovery, binds `?` from the request `bindings` by type and answers uppercased column names with
+their `rowType` types; an unknown table, a statement SQLite refuses (a write included) or a table
+under `table_denied:<D.S.T>` (an uppercase name, compared case-insensitively) answers 422.
+`cortex={model: [{match, reply}]}` answers `SELECT SNOWFLAKE.CORTEX.COMPLETE(?, PARSE_JSON(?),
+PARSE_JSON(?))` with the JSON of the options form, and serves `POST
+/api/v2/cortex/v1/chat/completions` (OpenAI chat with a bearer alone; unverified until the live
+run), both with the `FakeProvider` matching rule; `cortex_denied` refuses both.
 
 `dev_transport()` is the transport of the development switch `SHIFDE_DEV_FAKE_DATA_PLATFORMS`
 (B-2755): one lazily created, permissive Databricks workspace or Snowflake account per host
@@ -84,32 +93,37 @@ _THREE_PART = re.compile(rf"(?<![\w`.]){_NAME_PART}\s*\.\s*{_NAME_PART}\s*\.\s*{
 _QUOTED = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"")
 
 
+_REGIONS = ["North", "South", "East", "West"]
+# the sample tables both fakes serve: name -> ([(column, Databricks type)], rows)
+SAMPLE_TABLES: dict[str, SampleTable] = {
+    "customers": (
+        [("id", "bigint"), ("name", "string"), ("region", "string")],
+        [(i, f"Sample Customer {i}", _REGIONS[(i - 1) % 4]) for i in range(1, 7)],
+    ),
+    "orders": (
+        [
+            ("id", "bigint"),
+            ("customer_id", "bigint"),
+            ("amount", "double"),
+            ("ordered_on", "date"),
+        ],
+        [
+            (i, (i - 1) % 6 + 1, 25.0 * i + 0.5, f"2026-0{(i - 1) // 4 + 1}-{10 + i:02d}")
+            for i in range(1, 13)
+        ],
+    ),
+    "invoices": (
+        [("id", "bigint"), ("order_id", "bigint"), ("total", "double")],
+        [(i, i, 25.0 * i + 2.5) for i in range(1, 13)],
+    ),
+}
+
+
 def _sample_tables() -> dict[str, SampleTable]:
-    regions = ["North", "South", "East", "West"]
-    customers = [(i, f"Sample Customer {i}", regions[(i - 1) % 4]) for i in range(1, 7)]
-    orders = [
-        (i, (i - 1) % 6 + 1, 25.0 * i + 0.5, f"2026-0{(i - 1) // 4 + 1}-{10 + i:02d}")
-        for i in range(1, 13)
-    ]
-    invoices = [(i, i, 25.0 * i + 2.5) for i in range(1, 13)]
     return {
-        "main.default.customers": (
-            [("id", "bigint"), ("name", "string"), ("region", "string")],
-            customers,
-        ),
-        "main.default.orders": (
-            [
-                ("id", "bigint"),
-                ("customer_id", "bigint"),
-                ("amount", "double"),
-                ("ordered_on", "date"),
-            ],
-            orders,
-        ),
-        "main.sales.invoices": (
-            [("id", "bigint"), ("order_id", "bigint"), ("total", "double")],
-            invoices,
-        ),
+        "main.default.customers": SAMPLE_TABLES["customers"],
+        "main.default.orders": SAMPLE_TABLES["orders"],
+        "main.sales.invoices": SAMPLE_TABLES["invoices"],
     }
 
 
@@ -128,21 +142,23 @@ def _sample_db(tables: dict[str, SampleTable]) -> sqlite3.Connection:
 
 
 def _flat(match: re.Match[str]) -> str:
-    return "__".join(p.strip().strip("`").lower() for p in match.group(0).split("."))
+    return "__".join(p.strip().strip('`"').lower() for p in match.group(0).split("."))
 
 
-def _sqlite_statement(statement: str) -> tuple[str, set[str]]:
-    """The statement with every three-part name outside a quoted string as `a__b__c`, and the
-    `a.b.c` names it rewrote."""
+def _sqlite_statement(
+    statement: str, three_part: re.Pattern[str] = _THREE_PART, literals: re.Pattern[str] = _QUOTED
+) -> tuple[str, set[str]]:
+    """The statement with every three-part name outside a quoted string (a `literals` match) as
+    `a__b__c`, and the `a.b.c` names it rewrote."""
     out: list[str] = []
     names: set[str] = set()
 
     def rewrite(text: str) -> str:
-        names.update(_flat(m).replace("__", ".") for m in _THREE_PART.finditer(text))
-        return _THREE_PART.sub(_flat, text)
+        names.update(_flat(m).replace("__", ".") for m in three_part.finditer(text))
+        return three_part.sub(_flat, text)
 
     last = 0
-    for quoted in _QUOTED.finditer(statement):
+    for quoted in literals.finditer(statement):
         out += [rewrite(statement[last : quoted.start()]), quoted.group(0)]
         last = quoted.end()
     out.append(rewrite(statement[last:]))
@@ -164,6 +180,35 @@ def _bound(param: dict[str, Any]) -> Any:  # Any: a request parameter / SQLite v
 
 def _json(status: int, doc: Any, headers: dict[str, str] | None = None) -> httpx.Response:  # Any
     return httpx.Response(status, json=doc, headers=headers)
+
+
+def _scripted(script: list[dict[str, str]], messages: Any) -> tuple[str, dict[str, int]]:  # Any
+    """The `FakeProvider` matching rule: the reply of the first `{match, reply}` entry whose match
+    is in the last user message (else `fake: <message>`), and the word-counted usage."""
+    chat = [m for m in messages if isinstance(m, dict)] if isinstance(messages, list) else []
+    last = next(
+        (str(m.get("content") or "") for m in reversed(chat) if m.get("role") == "user"), ""
+    )
+    reply = next((e["reply"] for e in script if e["match"] in last), f"fake: {last}")
+    prompt = sum(len(str(m.get("content") or "").split()) for m in chat)
+    completion = len(reply.split())
+    usage = {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+    }
+    return reply, usage
+
+
+def _chat_completion(script: list[dict[str, str]], body: dict[str, Any]) -> dict[str, Any]:  # Any
+    """An OpenAI chat answer of a `{match, reply}` script to a chat request body."""
+    reply, usage = _scripted(script, body.get("messages") or [])
+    choice = {
+        "index": 0,
+        "message": {"role": "assistant", "content": reply},
+        "finish_reason": "stop",
+    }
+    return {"choices": [choice], "usage": usage}
 
 
 @dataclass
@@ -357,25 +402,7 @@ class FakeDatabricksWorkspace:
             return _json(404, {"error_code": "RESOURCE_DOES_NOT_EXIST"})
         if "endpoint_not_ready" in self.faults:
             return _json(503, {"error_code": "TEMPORARILY_UNAVAILABLE"})
-        messages = [m for m in body.get("messages") or [] if isinstance(m, dict)]
-        last = next(
-            (str(m.get("content") or "") for m in reversed(messages) if m.get("role") == "user"),
-            "",
-        )
-        reply = next((e["reply"] for e in script if e["match"] in last), f"fake: {last}")
-        prompt = sum(len(str(m.get("content") or "").split()) for m in messages)
-        completion = len(reply.split())
-        choice = {
-            "index": 0,
-            "message": {"role": "assistant", "content": reply},
-            "finish_reason": "stop",
-        }
-        usage = {
-            "prompt_tokens": prompt,
-            "completion_tokens": completion,
-            "total_tokens": prompt + completion,
-        }
-        return _json(200, {"choices": [choice], "usage": usage})
+        return _json(200, _chat_completion(script, body))
 
     def _submit(self, body: dict[str, Any]) -> httpx.Response:  # Any: request JSON
         if "warehouse_missing" in self.faults or body.get("warehouse_id") != self.warehouse_id:
@@ -473,6 +500,53 @@ _COLUMNS_QUERY = re.compile(r'FROM "((?:[^"]|"")*)"\.INFORMATION_SCHEMA\.COLUMNS
 _SF_COLUMNS = ["TABLE_SCHEMA", "TABLE_NAME", "COLUMN_NAME", "DATA_TYPE", "IS_NULLABLE"]
 _SF_CURRENT = ["CURRENT_USER()", "CURRENT_ROLE()", "CURRENT_WAREHOUSE()", "CURRENT_VERSION()"]
 SfTree = dict[str, dict[str, dict[str, list[tuple[str, str, bool]]]]]  # db -> schema -> table
+CORTEX_CHAT = "/api/v2/cortex/v1/chat/completions"
+CORTEX_DENIED = "cortex_denied"
+# a `table_denied:` switch of the Snowflake fake names its table as Snowflake stores an unquoted
+# name: an uppercase DATABASE.SCHEMA.TABLE
+_SF_DENIED_TABLE = re.compile(r"[A-Z_][A-Z0-9_$]*(\.[A-Z_][A-Z0-9_$]*){2}")
+# the Snowflake sample tables: `database.schema.table` (lowercased) -> `SAMPLE_TABLES` key
+_SF_SAMPLES = {
+    "demo_db.public.customers": "customers",
+    "demo_db.public.orders": "orders",
+    "demo_db.sales.invoices": "invoices",
+}
+# Databricks sample type -> (Snowflake data type, SQL API `rowType[].type`)
+_SF_TYPES = {
+    "bigint": ("NUMBER", "fixed"),
+    "string": ("TEXT", "text"),
+    "double": ("FLOAT", "real"),
+    "date": ("DATE", "date"),
+}
+_SF_NAME_PART = r'(?:"[^"]*"|[A-Za-z_][A-Za-z0-9_$]*)'
+_SF_THREE_PART = re.compile(
+    rf'(?<![\w".$]){_SF_NAME_PART}\s*\.\s*{_SF_NAME_PART}\s*\.\s*{_SF_NAME_PART}'
+)
+_SF_LITERALS = re.compile(r"'(?:[^'\\]|\\.)*'|\$\$.*?\$\$", re.DOTALL)
+_CORTEX_COMPLETE = re.compile(
+    r"SELECT\s+SNOWFLAKE\s*\.\s*CORTEX\s*\.\s*COMPLETE\s*\(\s*\?\s*,"
+    r"\s*PARSE_JSON\s*\(\s*\?\s*\)\s*,\s*PARSE_JSON\s*\(\s*\?\s*\)\s*\)",
+    re.IGNORECASE,
+)
+SfColumns = list[tuple[str, str]]  # (name, `rowType[].type`)
+SfAnswer = tuple[SfColumns, list[list[Any]]] | httpx.Response  # Any: row values
+
+
+def _sf_error(code: str, message: str) -> httpx.Response:
+    return _json(422, {"code": code, "message": message, "sqlState": "42000"})
+
+
+def _sf_bound(binding: Any) -> Any:  # Any: a request binding / SQLite value
+    value, kind = binding.get("value"), str(binding.get("type") or "TEXT")
+    if value is None:
+        return None
+    if kind == "FIXED":
+        return int(value)
+    if kind == "REAL":
+        return float(value)
+    if kind == "BOOLEAN":
+        return str(value).lower() == "true"
+    return str(value)
 
 
 def _sf_tree() -> SfTree:
@@ -511,15 +585,36 @@ class FakeSnowflakeAccount:
     faults: set[str] = field(default_factory=set)
     clock: Callable[[], float] = time.time  # the wall clock `exp` is checked against
     record: bool = True
+    sample_data: bool = False  # serve `DEMO_DB.*` from the SQLite sample tables
+    cortex: dict[str, list[dict[str, str]]] = field(default_factory=dict)  # model -> script
     requests: list[httpx.Request] = field(default_factory=list)
     _statements: dict[str, dict[str, Any]] = field(default_factory=dict)  # Any: statement doc
     _pending: set[str] = field(default_factory=set)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    _samples: dict[str, SampleTable] = field(default_factory=dict)
+    _db: sqlite3.Connection | None = None
 
     def __post_init__(self) -> None:
-        unknown = set(self.faults) - FAULTS
+        unknown = {
+            f
+            for f in self.faults
+            if f not in FAULTS
+            and f != CORTEX_DENIED
+            and not (
+                f.startswith(TABLE_DENIED)
+                and _SF_DENIED_TABLE.fullmatch(f.removeprefix(TABLE_DENIED))
+            )
+        }
         if unknown:
             raise ValueError(f"unknown fault switches: {sorted(unknown)}")
+        if self.sample_data:
+            self._samples = {name: SAMPLE_TABLES[key] for name, key in _SF_SAMPLES.items()}
+            self._db = _sample_db(self._samples)
+            for name, (columns, _) in self._samples.items():
+                database, schema, table = name.upper().split(".")
+                self.tree.setdefault(database, {}).setdefault(schema, {})[table] = [
+                    (c.upper(), _SF_TYPES[t][0], c != "id") for c, t in columns
+                ]
 
     def __repr__(self) -> str:
         return f"FakeSnowflakeAccount({self.host})"
@@ -542,6 +637,12 @@ class FakeSnowflakeAccount:
             for r in self.requests
             if (r.method, r.url.path) == ("POST", SNOWFLAKE_STATEMENTS)
         ]
+
+    def denied_tables(self) -> set[str]:
+        """The `d.s.t` names of the `table_denied:` switches, lowercased."""
+        return {
+            f.removeprefix(TABLE_DENIED).lower() for f in self.faults if f.startswith(TABLE_DENIED)
+        }
 
     def expected_subject(self) -> str:
         return f"{self.account.split('.', 1)[0].upper()}.{self.user.upper()}"
@@ -571,7 +672,8 @@ class FakeSnowflakeAccount:
             return _json(429, {"code": "390429"}, {"Retry-After": self.retry_after})
         if "server_error" in self.faults:
             return _json(500, {"code": "390500"})
-        if not self._authorized(request):
+        cortex = request.url.path == CORTEX_CHAT
+        if not (self._cortex_authorized(request) if cortex else self._authorized(request)):
             return _json(401, {"code": "390303", "message": "Invalid credentials."})
         if "forbidden" in self.faults:
             return _json(403, {"code": "390403"})
@@ -593,6 +695,16 @@ class FakeSnowflakeAccount:
         if kind == "KEYPAIR_JWT" and self.public_key is not None:
             return self._valid_jwt(self.public_key, value)
         return False
+
+    def _cortex_authorized(self, request: httpx.Request) -> bool:
+        """The Cortex chat path takes a bearer alone (no token-type header): the PAT, or any
+        non-empty token under `accept_any_token`."""
+        if "bad_token" in self.faults:
+            return False
+        scheme, _, value = request.headers.get("authorization", "").partition(" ")
+        if scheme != "Bearer" or not value:
+            return False
+        return self.accept_any_token or (self.pat is not None and value == self.pat)
 
     def _valid_jwt(self, public_key: rsa.RSAPublicKey, token: str) -> bool:
         parts = token.split(".")
@@ -620,6 +732,8 @@ class FakeSnowflakeAccount:
     def _route(self, request: httpx.Request, path: str) -> httpx.Response:
         if request.method == "POST" and path == SNOWFLAKE_STATEMENTS:
             return self._submit(json.loads(request.content or b"{}"))
+        if request.method == "POST" and path == CORTEX_CHAT:
+            return self._cortex_chat(json.loads(request.content or b"{}"))
         rest = path.removeprefix(f"{SNOWFLAKE_STATEMENTS}/")
         if rest != path and request.method == "POST" and rest.endswith("/cancel"):
             handle = rest.removesuffix("/cancel")
@@ -643,7 +757,13 @@ class FakeSnowflakeAccount:
         if "slow" in self.faults:
             self._pending.add(handle)
             return _json(202, {"code": "333334", "statementHandle": handle})
-        columns, rows = self._answer(str(body.get("statement", "")))
+        bindings = body.get("bindings")
+        answered = self._answer(
+            str(body.get("statement", "")), bindings if isinstance(bindings, dict) else {}
+        )
+        if isinstance(answered, httpx.Response):
+            return answered
+        columns, rows = answered
         size = max(self.partition_size, 1)
         partitions = [{"rowCount": len(rows[i : i + size])} for i in range(0, len(rows), size)]
         doc = {
@@ -653,7 +773,7 @@ class FakeSnowflakeAccount:
             "resultSetMetaData": {
                 "numRows": len(rows),
                 "format": "jsonv2",
-                "rowType": [{"name": c, "type": "text"} for c in columns],
+                "rowType": [{"name": c, "type": t} for c, t in columns],
                 "partitionInfo": partitions or [{"rowCount": 0}],
             },
             "data": rows[:size],
@@ -661,11 +781,23 @@ class FakeSnowflakeAccount:
         self._statements[handle] = doc
         return _json(200, doc)
 
-    def _answer(self, statement: str) -> tuple[list[str], list[list[Any]]]:  # Any: row values
+    def _answer(self, statement: str, bindings: dict[str, Any]) -> SfAnswer:  # Any: bindings
+        """Seeded `results`, the special statements, the Cortex call, the SQLite sample tables
+        (with `sample_data` or a `table_denied:` switch), else an empty answer."""
         text = statement.strip().rstrip(";").strip()
         if text in self.results:
             columns, rows = self.results[text]
-            return list(columns), [list(r) for r in rows]
+            return [(c, "text") for c in columns], [list(r) for r in rows]
+        special = self._special(text)
+        if special is not None:
+            return [(c, "text") for c in special[0]], special[1]
+        if _CORTEX_COMPLETE.fullmatch(text):
+            return self._complete(bindings)
+        if self._db is not None or self.denied_tables():
+            return self._query(text, bindings)
+        return [], []
+
+    def _special(self, text: str) -> tuple[list[str], list[list[Any]]] | None:  # Any: row values
         if text.startswith("SELECT CURRENT_USER()"):
             return list(_SF_CURRENT), [[self.user.upper(), "PUBLIC", self.warehouse, "9.1.0"]]
         if text.upper() == "SHOW DATABASES":
@@ -685,7 +817,64 @@ class FakeSnowflakeAccount:
             return ["1"], [["1"]]
         if text == ROWS_STATEMENT:
             return ["N", "LABEL"], [[str(i), f"row {i}"] for i in range(self.row_count)]
-        return [], []
+        return None
+
+    def _complete(self, bindings: dict[str, Any]) -> SfAnswer:  # Any: bindings
+        """`SNOWFLAKE.CORTEX.COMPLETE(model, messages, options)`: one `text` row holding the JSON
+        of the options form, from the model's script."""
+        if CORTEX_DENIED in self.faults:
+            return _sf_error("003001", "Insufficient privileges to use Cortex.")
+        model = (bindings.get("1") or {}).get("value")
+        script = self.cortex.get(model) if isinstance(model, str) else None
+        if script is None:
+            return _sf_error("100351", "Unknown model.")
+        try:
+            messages = json.loads(str((bindings.get("2") or {}).get("value") or "[]"))
+        except ValueError:
+            return _sf_error("100069", "Invalid messages.")
+        reply, usage = _scripted(script, messages)
+        doc = {
+            "choices": [{"messages": reply}],
+            "created": int(self.clock()),
+            "model": model,
+            "usage": usage,
+        }
+        return [("COMPLETE", "text")], [[json.dumps(doc)]]
+
+    def _cortex_chat(self, body: dict[str, Any]) -> httpx.Response:  # Any: request JSON
+        """The Cortex chat-completions REST path (OpenAI chat format; unverified until the live
+        run): the model's script in the OpenAI reply shape."""
+        if CORTEX_DENIED in self.faults:
+            return _json(403, {"code": "003001", "message": "Insufficient privileges."})
+        model = body.get("model")
+        script = self.cortex.get(model) if isinstance(model, str) else None
+        if script is None:
+            return _json(404, {"code": "100351", "message": "Unknown model."})
+        return _json(200, _chat_completion(script, body))
+
+    def _query(self, statement: str, bindings: dict[str, Any]) -> SfAnswer:  # Any: bindings
+        """The sample-data answer: three-part names as SQLite tables, `?` bound by position and
+        type, column names uppercased; an unknown, denied or refused statement is a 422."""
+        rewritten, names = _sqlite_statement(statement, _SF_THREE_PART, _SF_LITERALS)
+        if names & self.denied_tables():
+            return _sf_error("003001", "Insufficient privileges to operate on the table.")
+        if self._db is None:
+            return [], []
+        if names - set(self._samples):
+            return _sf_error("002003", "Object does not exist or not authorized.")
+        known = {c: _SF_TYPES[t][1] for columns, _ in self._samples.values() for c, t in columns}
+        try:
+            values = [_sf_bound(bindings[k]) for k in sorted(bindings, key=int)]
+            cursor = self._db.execute(rewritten, values)
+            found = cursor.fetchall()
+        except (sqlite3.Error, ValueError, TypeError, AttributeError, OverflowError):
+            return _sf_error("001003", "SQL compilation error.")
+        columns = [
+            (str(d[0]).upper(), known.get(str(d[0]).lower(), "text"))
+            for d in cursor.description or []
+        ]
+        rows = [[None if v is None else str(v) for v in row] for row in found]
+        return columns, rows
 
 
 class _DevFakes:

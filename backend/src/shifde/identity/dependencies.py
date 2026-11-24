@@ -83,6 +83,23 @@ def _authenticate_bearer(
         raise
 
 
+def authenticate_bearer_only(
+    request: Request, session: Session, settings: Settings, ctx: RequestContext
+) -> service.AuthResult:
+    """`Authorization: Bearer shf_...` and nothing else, for callers that accept API keys only
+    (the MCP endpoint, SP8 design 3.2). Cookies are never read. Every refusal is the one generic
+    401 `invalid_credentials` (no header, another scheme, an `shx_` credential, an unknown,
+    revoked or expired key), so the answer tells nothing about the key; failed bearer attempts
+    count in `api_key_failure_limiter` and are audited as `_authenticate_bearer` does."""
+    authorization = request.headers.get("authorization")
+    if authorization is None or authorization.partition(" ")[0].lower() != "bearer":
+        raise InvalidCredentials("invalid credentials")
+    try:
+        return _authenticate_bearer(request, session, settings, ctx, authorization)
+    except (InvalidCredentials, CredentialRevoked, CredentialExpired):
+        raise InvalidCredentials("invalid credentials") from None
+
+
 def require_auth(
     request: Request, session: SessionDep, settings: SettingsDep, ctx: RequestCtxDep
 ) -> service.AuthResult:

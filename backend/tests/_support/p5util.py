@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from shifde import worker_main
 from shifde.core.settings import Settings
 from shifde.runtime.worker import Worker
 from tests._support.p3util import A, connection, fake_model_stack
@@ -45,7 +46,10 @@ def fast(settings: Settings, **over: Any) -> Settings:
 def thread_worker(
     settings: Settings, *, lease: int = 5, reap: float = 0.3, concurrency: int = 2
 ) -> Iterator[Worker]:
-    """A real Worker running on a thread of the test process (fast iteration)."""
+    """A real Worker running on a thread of the test process (fast iteration). It gets the
+    composition root's internal tool registry (`worker_main.internal_tools()`), as the
+    `shifde-worker` process does: this is the in-process agent-run worker of `tests/_support`
+    (`SubprocessWorker`, `python -m shifde.runtime.worker`, runs without one)."""
     worker = Worker(
         fast(settings),
         worker_id=f"test-{time.monotonic_ns()}",
@@ -53,6 +57,7 @@ def thread_worker(
         lease_seconds=lease,
         poll_ms=100,
         reap_seconds=reap,
+        internal_tools=worker_main.internal_tools(),
     )
     thread = threading.Thread(target=worker.run, daemon=True)
     thread.start()

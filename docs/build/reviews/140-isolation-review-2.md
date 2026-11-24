@@ -1,0 +1,7 @@
+# 140 (#293, PR #303) lead isolation review 2 — 2026-11-23, head e66a210
+
+BLOCKED, one new finding. All four items from review 1 fixed and tested (R1 names from target id, cross-client tests; R2 fake refuses outside development/test; R3 `$` refused in raw bytes and parsed nodes, plain YAML types only, alias reuse refused, fresh DOCKER_CONFIG per command with allow-listed env and local DOCKER_HOST; R4 observe checks project and daemon, `http_get_local` answers only for the project's published port).
+
+1. (blocker) `runtime.py` `check_version` checks only `{{.Client.Version}}`; daemon version never checked; code and CLAUDE.md accept Docker 24+. On engines before 28.0 `route_localnet` lets a bridge neighbour with NET_RAW (a bundle Dockerfile `RUN` step) reach ports other projects publish on 127.0.0.1, i.e. client A's app holding A's credentials. Fix: also check `{{.Server.Version}}` and refuse < 28.0 (test, docstrings, CLAUDE.md), or refuse `RUN`; record in DECISIONS. Confirm SP8-9 accepts only generator-produced archives.
+2. (hardening) compose `labels` and Dockerfile `LABEL` allow any key (`com.docker.compose.*`, other `org.shifde.*`); worst case today is a `foreign_project` refusal. Fix: allow only `org.shifde.target_id` in compose labels and `org.shifde.release_digest` in Dockerfile LABEL.
+3. (note) `http_get_local`: race between `compose_ps` and GET could take another project's health JSON as evidence; optionally re-run `compose_ps` after the response.

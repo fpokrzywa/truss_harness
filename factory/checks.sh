@@ -106,5 +106,21 @@ for attempt in 1 2 3; do
   exit "$build_rc"
 done
 
+# SP5-4 (#257, design 2026-11-23 SP5 section 6.5): the appgen-web package and
+# its committed bundle. Runs only once the package exists on the branch.
+if [ -f "$WT/frontend/appgen-web/package.json" ]; then
+  step "appgen-web: lint"
+  pnpm --filter @shifde/appgen-web lint
+  step "appgen-web: typecheck"
+  pnpm --filter @shifde/appgen-web typecheck
+  step "appgen-web: test"
+  pnpm --filter @shifde/appgen-web test
+  step "appgen-web: build"
+  pnpm --filter @shifde/appgen-web build
+  cd "$WT"
+  step "appgen-web: bundle digest check"
+  python scripts/appgen_web.py --check
+fi
+
 echo
 echo "checks.sh: all checks passed"
