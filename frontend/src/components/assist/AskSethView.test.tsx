@@ -188,6 +188,19 @@ describe('AskSethView context', () => {
     expect(await box()).toHaveValue('Explain this');
     expect(screen.getByRole('button', { name: 'Remove the release' })).toBeEnabled();
     expect(nav.push).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Remove the release' }));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(await box()).toHaveValue('Explain this');
+  });
+
+  it('clears a failed send when the text is edited', async () => {
+    stubAssist({ [CREATE]: () => problemResponse(404, 'not_found') });
+    renderWithClient(<AskSethView />);
+    await ask('Explain this');
+    await screen.findByRole('alert');
+    await userEvent.type(await box(), '!');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });
 
@@ -313,6 +326,15 @@ describe('AskSethView access', () => {
     const url = fetchMock.calls.find((c) => c.key.endsWith('/me/permissions'))!.url;
     expect(url).toContain('workspace=eng');
     expect(url).toContain('project=api');
+  });
+
+  it('shows only the no-access view without read or write', async () => {
+    const fetchMock = stubAssist({}, { project: [] });
+    renderWithClient(<AskSethView />);
+    expect(await screen.findByText('Not found or no access')).toBeVisible();
+    expect(screen.queryByText(/can view this project's requests/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Requests' })).not.toBeInTheDocument();
+    expect(fetchMock.calls.some((c) => c.key === LIST)).toBe(false);
   });
 
   it('replaces the form with a notice while assist is off', async () => {

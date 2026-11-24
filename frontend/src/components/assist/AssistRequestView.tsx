@@ -11,7 +11,13 @@ import {
   REQUEST_STATUS,
   specialistTitle,
 } from '@/lib/assist';
-import { useAssistCatalog, useAssistRequest, useProjectSlugs } from '@/lib/assist-hooks';
+import {
+  isAssistRouting,
+  isAssistWorking,
+  useAssistCatalog,
+  useAssistRequest,
+  useProjectSlugs,
+} from '@/lib/assist-hooks';
 import { failureInfo } from '@/lib/failure';
 import { usePermissions } from '@/lib/hooks';
 import { useRunResult } from '@/lib/operate-hooks';
@@ -122,7 +128,9 @@ function RequestBody({
         <h2 className="text-lg font-semibold text-slate-900">Proposals</h2>
         {request.proposals.length === 0 ? (
           <div className="card p-0">
-            <EmptyState>No proposals.</EmptyState>
+            <EmptyState>
+              {isAssistWorking(request) ? 'No proposals yet.' : 'No proposals.'}
+            </EmptyState>
           </div>
         ) : (
           request.proposals.map((p, i) => (
@@ -215,9 +223,11 @@ function RunSection({
         <RunDetails org={org} run={run} canSeeCost={canSeeCost} />
       ) : (
         <p className="text-slate-700">
-          {request.run_id === null
-            ? 'No run was started for this request.'
-            : 'The run cannot be shown: it is gone, or you do not have access to it.'}
+          {request.run_id !== null
+            ? 'The run cannot be shown: it is gone, or you do not have access to it.'
+            : isAssistRouting(request)
+              ? 'The run has not started yet: it starts once the request is routed.'
+              : 'No run was started for this request.'}
         </p>
       )}
     </section>

@@ -24,9 +24,12 @@ const ROUTING: ReadonlySet<string> = new Set<AssistRequestStatus>([
 
 type Progress = Pick<AssistRequestOut, 'status' | 'run'>;
 
+/** True while the request is being routed, before its run. */
+export const isAssistRouting = (r: Pick<Progress, 'status'>): boolean => ROUTING.has(r.status);
+
 /** True while the request is being routed or its run has not ended. */
 export const isAssistWorking = (r: Progress | undefined): boolean =>
-  r !== undefined && (ROUTING.has(r.status) || (r.run !== null && !isTerminal(r.run.status)));
+  r !== undefined && (isAssistRouting(r) || (r.run !== null && !isTerminal(r.run.status)));
 
 /** The `refetchInterval` of one request: every 3 s while it is working, until the time limit. */
 export const assistPollInterval = (r: Progress | undefined, timedOut: boolean): number | false =>

@@ -38,6 +38,7 @@ import {
   TextField,
   useAction,
 } from '../admin/ui';
+import { NoAccess } from '../NoAccess';
 import { useOrgParam } from '../security/useOrg';
 import { linkClass, RequestStatusBadge, SettingsHint, type ProjectScope } from './parts';
 
@@ -61,18 +62,22 @@ export function AskSethView() {
         description="Ask a question or describe what you need: SETH hands it to one of this project's specialists, which answers and can propose work for a person to accept."
       />
       <QueryGate query={permissions} noun="permissions">
-        {(perms) => (
-          <>
-            {perms.has('assist:request:write') ? (
-              <AskPanel scope={scope} canInstall={perms.has('assist:install')} />
-            ) : (
-              <p className="text-sm text-slate-700">
-                You can view this project&apos;s requests but not ask.
-              </p>
-            )}
-            <RequestsList scope={scope} />
-          </>
-        )}
+        {(perms) => {
+          const canAsk = perms.has('assist:request:write');
+          if (!canAsk && !perms.has('assist:request:read')) return <NoAccess />;
+          return (
+            <>
+              {canAsk ? (
+                <AskPanel scope={scope} canInstall={perms.has('assist:install')} />
+              ) : (
+                <p className="text-sm text-slate-700">
+                  You can view this project&apos;s requests but not ask.
+                </p>
+              )}
+              <RequestsList scope={scope} />
+            </>
+          );
+        }}
       </QueryGate>
     </div>
   );
@@ -132,6 +137,7 @@ function AskPanel({ scope, canInstall }: { scope: ProjectScope; canInstall: bool
   function removeContext() {
     setRemoved(param);
     setRefusal(null);
+    action.reset();
     router.replace(assistHref(org, ws, proj));
   }
 
@@ -153,6 +159,7 @@ function AskPanel({ scope, canInstall }: { scope: ProjectScope; canInstall: bool
           onChange={(v) => {
             setText(v);
             setRefusal(null);
+            action.reset();
           }}
           multiline
           readOnly={busy}
@@ -217,7 +224,8 @@ function AskPanel({ scope, canInstall }: { scope: ProjectScope; canInstall: bool
           </QueryGate>
         ) : (
           <p className="card max-w-3xl text-sm text-slate-700">
-            Ask SETH is turned off for this organization. {settings}
+            Ask SETH is turned off for this organization, or pinned to an older catalog version.{' '}
+            {settings}
           </p>
         )
       }

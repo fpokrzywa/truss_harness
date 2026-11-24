@@ -135,6 +135,52 @@ describe('AssistSettingsView organization', () => {
     expect(within(await form()).getByLabelText('Cost cap of one request (USD)')).toHaveValue(2.5);
   });
 
+  describe('after a save', () => {
+    /** Saves once; `later` answers the saves after it. */
+    async function saved(later: () => Response | Promise<Response>) {
+      const answers = [() => jsonResponse(settings())];
+      stubAssist({ [PUT]: () => (answers.pop() ?? later)() }, ADMIN);
+      renderWithClient(<AssistSettingsView />);
+      await save();
+      expect(await screen.findByText('Settings saved.')).toBeVisible();
+    }
+    const gone = () => expect(screen.queryByText('Settings saved.')).not.toBeInTheDocument();
+
+    it('drops the message when the next save is refused by the server', async () => {
+      await saved(() => problemResponse(422, 'router_model_not_allowed'));
+      await save();
+      expect(await screen.findByRole('alert')).toHaveTextContent('router_model_not_allowed');
+      gone();
+    });
+
+    it('drops the message on an edit, and the next save is refused before any call', async () => {
+      await saved(() => jsonResponse(settings()));
+      await userEvent.click(within(await form()).getByRole('checkbox'));
+      gone();
+      await save();
+      expect(await screen.findByText(/Choose a router model/)).toBeVisible();
+      gone();
+    });
+
+    it('says it again once a second save is stored', async () => {
+      let answer: (r: Response) => void = () => {};
+      await saved(() => new Promise<Response>((resolve) => (answer = resolve)));
+      await save();
+      gone();
+      answer(jsonResponse(settings()));
+      expect(await screen.findByText('Settings saved.')).toBeVisible();
+    });
+
+    it('drops the message when the switch is refused', async () => {
+      await saved(() => jsonResponse(settings()));
+      await userEvent.click(screen.getByRole('switch', { name: 'Ask SETH' }));
+      const dialog = await screen.findByRole('dialog');
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Turn off' }));
+      expect(await screen.findByRole('alert')).toBeVisible();
+      gone();
+    });
+  });
+
   it('refuses routing without a model before any call', async () => {
     const fetchMock = stubServer();
     renderWithClient(<AssistSettingsView />);

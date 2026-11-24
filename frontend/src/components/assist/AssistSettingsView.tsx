@@ -88,21 +88,28 @@ function OrganizationSection({ org }: { org: string }) {
   const settings = useAssistSettings(org);
   // The form is remounted after each save, so its fields show what the server stored.
   const [saves, setSaves] = useState(0);
+  // Said until the next change, so it never stands beside a refusal or unsaved edits.
+  const [justSaved, setJustSaved] = useState(false);
+  const onChanging = () => setJustSaved(false);
   return (
     <section aria-label="Organization" className="space-y-4">
       <h2 className="text-lg font-semibold text-slate-900">Organization</h2>
       <QueryGate query={settings} noun="assist settings">
         {(saved) => (
           <>
-            <Switch org={org} saved={saved} />
+            <Switch org={org} saved={saved} onChanging={onChanging} />
             <RoutingForm
               key={`${saves}/${saved.model_routing_enabled}/${saved.router_model_id}/${saved.specialist_max_cost}`}
               org={org}
               saved={saved}
-              onSaved={() => setSaves((n) => n + 1)}
+              onChanging={onChanging}
+              onSaved={() => {
+                setSaves((n) => n + 1);
+                setJustSaved(true);
+              }}
             />
             <p role="status" className="text-sm text-slate-700">
-              {saves > 0 && 'Settings saved.'}
+              {justSaved && 'Settings saved.'}
             </p>
           </>
         )}
@@ -111,7 +118,15 @@ function OrganizationSection({ org }: { org: string }) {
   );
 }
 
-function Switch({ org, saved }: { org: string; saved: AssistSettingsOut }) {
+function Switch({
+  org,
+  saved,
+  onChanging,
+}: {
+  org: string;
+  saved: AssistSettingsOut;
+  onChanging: () => void;
+}) {
   const store = useStoreAssistSettings(org);
   const refresh = useRefreshAssist(org);
   const action = useAction();
@@ -120,6 +135,7 @@ function Switch({ org, saved }: { org: string; saved: AssistSettingsOut }) {
   const outdated = on && saved.catalog_version !== saved.current_catalog_version;
 
   async function change(call: typeof endpoints.enableAssist) {
+    onChanging();
     const res = await action.run(() => call(org));
     if (res.ok) {
       store(res.value);
@@ -201,10 +217,13 @@ function Switch({ org, saved }: { org: string; saved: AssistSettingsOut }) {
 function RoutingForm({
   org,
   saved,
+  onChanging,
   onSaved,
 }: {
   org: string;
   saved: AssistSettingsOut;
+  /** A field was edited, or a save starts. */
+  onChanging: () => void;
   onSaved: () => void;
 }) {
   const store = useStoreAssistSettings(org);
@@ -216,6 +235,7 @@ function RoutingForm({
 
   async function submit(e: FormEvent) {
     e.preventDefault();
+    onChanging();
     const next: typeof errors = {};
     if (routing && modelId === '') next.model = 'Choose a router model to use model routing.';
     const amount = cost.trim();
@@ -240,6 +260,7 @@ function RoutingForm({
   return (
     <form
       onSubmit={(e) => void submit(e)}
+      onChange={onChanging}
       aria-label="Routing and cost"
       className="card max-w-3xl space-y-4"
       noValidate

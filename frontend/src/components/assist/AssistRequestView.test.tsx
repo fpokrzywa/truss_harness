@@ -83,6 +83,25 @@ describe('AssistRequestView route', () => {
     expect(screen.getByText('No run was started for this request.')).toBeVisible();
   });
 
+  it.each(['queued', 'classifying', 'handing_over'] as const)(
+    'says the run of a %s request has not started yet',
+    async (status) => {
+      stubAssist(serve(request({ status, run: null, run_id: null })));
+      view();
+      const section = await card('Run');
+      expect(section).toHaveTextContent('The run has not started yet');
+      expect(section).not.toHaveTextContent('No run was started');
+      expect(await card('Proposals')).toHaveTextContent('No proposals yet.');
+    },
+  );
+
+  it('says no run was started for a failed request, and that there are no proposals', async () => {
+    stubAssist(serve(refused('budget_denied', { status: 'failed' })));
+    view();
+    expect(await card('Run')).toHaveTextContent('No run was started for this request.');
+    expect(await card('Proposals')).toHaveTextContent('No proposals.');
+  });
+
   it('shows an unknown reason code once and offers Ask again on a failed request', async () => {
     stubAssist(serve(refused('budget_denied', { status: 'failed' })));
     view();
