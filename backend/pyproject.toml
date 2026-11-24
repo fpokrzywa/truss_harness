@@ -55,6 +55,8 @@ dev = [
   "pytest-cov>=7.1.0",
   "flask==3.1.3",
   "databricks-sdk==0.163.0",
+  "streamlit==1.52.2",
+  "snowflake-snowpark-python==1.55.0",
 ]
 
 [build-system]
@@ -215,7 +217,7 @@ forbidden_modules = [
 [[tool.importlinter.contracts]]
 name = "appgen.render is pure"
 type = "forbidden"
-source_modules = ["shifde.appgen.render"]
+source_modules = ["shifde.appgen.render", "shifde.appgen.render_snowflake"]
 forbidden_modules = [
   "sqlalchemy", "psycopg", "httpx", "shifde.core.db", "shifde.build", "shifde.connections",
   "shifde.models_admin", "shifde.packaging", "shifde.evaluation", "shifde.runtime",
@@ -225,9 +227,11 @@ forbidden_modules = [
 [[tool.importlinter.contracts]]
 name = "SETH never imports the generated app's libraries"
 type = "forbidden"
-# flask and databricks-sdk are dev-only pins for the generated app's tests (SP5 design R32)
+# flask and databricks-sdk (SP5 design R32), streamlit and snowflake-snowpark-python (SP6 design
+# section 4, Call S6-G) are dev-only pins for the generated apps' tests; `snowflake` is the external
+# distribution, `shifde.adapters.native.snowflake` is internal and unaffected
 source_modules = ["shifde"]
-forbidden_modules = ["flask", "databricks"]
+forbidden_modules = ["flask", "databricks", "streamlit", "snowflake"]
 
 [[tool.importlinter.contracts]]
 name = "Only API layers and the app factory may import FastAPI routing; services stay HTTP-free"
@@ -278,6 +282,7 @@ source_modules = [
   "shifde.evaluation.assertions", "shifde.evaluation.scoring",
   "shifde.appgen.service", "shifde.appgen.repository", "shifde.appgen.schemas",
   "shifde.appgen.draft", "shifde.appgen.sqlcheck", "shifde.appgen.render",
+  "shifde.appgen.render_snowflake",
   "shifde.board.service", "shifde.board.repository", "shifde.board.schemas",
   "shifde.assist.service", "shifde.assist.repository", "shifde.assist.schemas",
   "shifde.assist.catalog", "shifde.assist.routing",

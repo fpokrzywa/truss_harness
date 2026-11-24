@@ -1,0 +1,119 @@
+"""The Snowflake backend of the generated app's agent loop (stdlib only; the Snowpark session is
+passed in): `call_model` asks the Cortex model with `SNOWFLAKE.CORTEX.COMPLETE` in its options
+form, `run_sql` runs a tool's positional SQL with its arguments in `param_order`, and
+`record_usage` inserts the one `APP_DATA.USAGE` row of an answer under the application's own
+rights. Any failure is `agent_loop.UpstreamFailed`, with no exception text. A tool result is
+SETH's Snowflake shape: `{columns: [{name, type}], rows, row_count}` and `truncated` when more than
+the tool's `max_rows` came back, with `type` the SQL API `rowType` name and every value in the SQL
+API text form (null stays null)."""
+
+from __future__ import annotations
+
+import datetime
+import json
+from decimal import Decimal
+from typing import Any  # Any: the Snowpark session and JSON
+
+import agent_loop
+
+COMPLETE = "SELECT SNOWFLAKE.CORTEX.COMPLETE(?, PARSE_JSON(?), PARSE_JSON(?))"
+OPTIONS = '{"max_tokens": 4000}'
+USAGE = (
+    "INSERT INTO APP_DATA.USAGE (at, release_digest, model, prompt_tokens, completion_tokens) "
+    "VALUES (CURRENT_TIMESTAMP(), ?, ?, ?, ?)"
+)
+# Snowpark data type -> SQL API `rowType[].type`
+ROW_TYPES = {
+    "LongType": "fixed",
+    "IntegerType": "fixed",
+    "ShortType": "fixed",
+    "ByteType": "fixed",
+    "DecimalType": "fixed",
+    "DoubleType": "real",
+    "FloatType": "real",
+    "StringType": "text",
+    "BooleanType": "boolean",
+    "DateType": "date",
+    "TimeType": "time",
+    "BinaryType": "binary",
+    "VariantType": "variant",
+    "MapType": "object",
+    "StructType": "object",
+    "ArrayType": "array",
+}
+
+
+def row_type(datatype: Any) -> str:  # Any: a Snowpark data type
+    name = type(datatype).__name__
+    if name == "TimestampType":
+        zone = str(getattr(getattr(datatype, "tz", None), "value", "") or "ntz").lower()
+        return "timestamp_" + (zone if zone in ("ltz", "tz") else "ntz")
+    return ROW_TYPES.get(name, "text")
+
+
+def text_value(value: Any) -> str | None:  # Any: a Snowpark cell
+    """A cell as the SQL API sends it: text, `true`/`false` for a boolean, null kept."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    if isinstance(value, datetime.date | datetime.time):
+        return value.isoformat()
+    if isinstance(value, bytes | bytearray):
+        return bytes(value).hex()
+    return str(value)
+
+
+def call_model(session: Any, model: str) -> agent_loop.CallModel:  # Any: the Snowpark session
+    """`call_model(messages) -> (text, prompt_tokens, completion_tokens)` on Cortex `model`."""
+
+    def call(messages: list[dict[str, str]]) -> tuple[str, int, int]:
+        try:
+            rows = session.sql(COMPLETE, params=[model, json.dumps(messages), OPTIONS]).collect()
+            doc = json.loads(rows[0][0])
+            text = doc["choices"][0]["messages"]
+            usage = doc.get("usage") or {}
+            prompt = int(usage.get("prompt_tokens") or 0)
+            completion = int(usage.get("completion_tokens") or 0)
+        except Exception as exc:
+            raise agent_loop.UpstreamFailed() from exc
+        if not isinstance(text, str):
+            raise agent_loop.UpstreamFailed()
+        return text, prompt, completion
+
+    return call
+
+
+def run_sql(session: Any) -> agent_loop.RunSql:  # Any: the Snowpark session
+    """`run_sql(tool, arguments) -> result` on the session; no row limit is added to the SQL."""
+
+    def run(tool: dict[str, Any], arguments: dict[str, Any]) -> dict[str, Any]:  # Any: JSON
+        params = [arguments.get(name) for name in tool["param_order"]]
+        max_rows = int(tool["max_rows"])
+        try:
+            frame = session.sql(tool["sql"], params=params)
+            data = frame.collect()
+            fields = frame.schema.fields
+        except Exception as exc:
+            raise agent_loop.UpstreamFailed() from exc
+        columns = [{"name": str(f.name), "type": row_type(f.datatype)} for f in fields]
+        rows = [[text_value(v) for v in row] for row in data[:max_rows]]
+        result: dict[str, Any] = {"columns": columns, "rows": rows, "row_count": len(rows)}
+        if len(data) > max_rows:
+            result["truncated"] = True
+        return result
+
+    return run
+
+
+def record_usage(
+    session: Any, release_digest: str, model: str, prompt_tokens: int, completion_tokens: int
+) -> None:  # Any: the Snowpark session
+    """One `APP_DATA.USAGE` row of an answer; `UpstreamFailed` when it cannot be written."""
+    try:
+        params = [release_digest, model, prompt_tokens, completion_tokens]
+        session.sql(USAGE, params=params).collect()
+    except Exception as exc:
+        raise agent_loop.UpstreamFailed() from exc

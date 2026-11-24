@@ -27,6 +27,7 @@ env:
 GENERATED_FILES = (
     "app/app.py",
     "app/agent_loop.py",
+    "app/backend_databricks.py",
     "app/requirements.txt",
     "app/config/agent.json",
     "app/config/tools.json",

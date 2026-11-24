@@ -1,0 +1,58 @@
+"""The handler of `APP_PUBLIC.DEEP_HEALTH()` (stdlib only; Snowflake passes the session): SP5's
+deep-health document `{status, generator_version, release_digest, checks}` with the checks
+`warehouse` (`SELECT 1`), `serving_endpoint` (a one-token Cortex `COMPLETE` of the app's model)
+and one `table:<D.S.T>` per data-read table (`SELECT * FROM <t> LIMIT 0`). Each failed check's
+reason names what is missing; `status` is `ok` only when every check passed. `agent.json` is read
+from Snowflake's import directory, or from `config_dir`."""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from typing import Any  # Any: the Snowpark session and JSON
+
+COMPLETE = "SELECT SNOWFLAKE.CORTEX.COMPLETE(?, PARSE_JSON(?), PARSE_JSON(?))"
+PING = json.dumps([{"role": "user", "content": "ping"}])
+PING_OPTIONS = '{"max_tokens": 1}'
+WAREHOUSE_REASON = (
+    "the app cannot run SELECT 1 on the warehouse: the application's USAGE grant on the "
+    "warehouse is missing"
+)
+
+
+def _passed(session: Any, statement: str, params: list[str] | None = None) -> bool:  # Any
+    try:
+        session.sql(statement, params=params).collect()
+    except Exception:
+        return False
+    return True
+
+
+def _check(name: str, passed: bool, reason: str) -> dict[str, Any]:  # Any: JSON
+    return {"name": name, "status": "passed" if passed else "failed", "reason": None if passed else reason[:200]}
+
+
+def run(session: Any, config_dir: str | None = None) -> dict[str, Any]:  # Any: session, JSON
+    directory = Path(config_dir or sys._xoptions["snowflake_import_directory"])
+    agent = json.loads((directory / "agent.json").read_text(encoding="utf-8"))
+    model = agent["cortex_model"]
+    checks = [
+        _check("warehouse", _passed(session, "SELECT 1"), WAREHOUSE_REASON),
+        _check(
+            "serving_endpoint",
+            _passed(session, COMPLETE, [model, PING, PING_OPTIONS]),
+            f"the app cannot use Cortex model {model}: the application's "
+            "SNOWFLAKE.CORTEX_USER grant is missing",
+        ),
+    ]
+    for table in agent["tables"]:
+        readable = _passed(session, f"SELECT * FROM {table} LIMIT 0")
+        checks.append(_check(f"table:{table}", readable, f"the app cannot read {table}"))
+    passed = all(c["status"] == "passed" for c in checks)
+    return {
+        "status": "ok" if passed else "failed",
+        "generator_version": agent["generator_version"],
+        "release_digest": agent["release_digest"],
+        "checks": checks,
+    }
