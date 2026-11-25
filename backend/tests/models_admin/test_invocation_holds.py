@@ -23,7 +23,7 @@ from shifde.ledger import budgeting
 from shifde.models_admin import limiter
 from tests.conftest import CLEAN_TABLES
 from tests.connections.routes import as_user, org, post
-from tests.ledger.util import add_budget
+from tests.ledger.util import add_budget, daily_since
 from tests.models_admin.conftest import start_of_window
 from tests.models_admin.routes import fake_model_stack, invoke_body
 from tests.tenancy.conftest import World
@@ -199,7 +199,7 @@ def test_an_unexpected_provider_error_settles_the_hold_as_unknown_usage_of_the_c
         )
     ]
     rule = {"id": budget, "scope_type": "workspace", "scope_id": world.a.ws, "period": "daily"}
-    since = budgeting.period_start("daily")
+    since = daily_since(o, world.a.tenant)
     assert budgeting.used_and_held(o, world.a.tenant, None, rule, metric="tokens", since=since) == (
         amount,
         0,

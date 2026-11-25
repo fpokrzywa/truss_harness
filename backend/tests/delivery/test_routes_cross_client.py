@@ -18,10 +18,13 @@ behind an unknown outcome stay byte for byte unchanged through A's lease and A's
 deployment list and get, until B's own call settles them. The executor gateway routes (`delivery.gateway_api.router`) have
 their own table, `GATEWAY_ROUTE_TESTS`, in `test_gateway_cross_client.py`. Snowflake targets
 (SP6-3) answer A the same 404s and stay out of A's list, and B's executor leases none of A's
-Snowflake plan jobs. Generated Snowflake apps (SP6-6): in both directions, a plan on the other
-organization's target or of its release, its plan (an approval quoting the real digest included)
-and its deployment answer the unknown-id 404, its provider is `model_not_in_target_account`, its
-rows stay out of the lists and unreadable to `shifde_app`, and they never change.
+Snowflake plan jobs. So do Fabric, Palantir and Docker targets (SP8-1), and within one
+organization a member bound only to project P1 gets on P2's target of each kind the 404 an
+unknown id gets and does not find it in the list. Generated Snowflake apps (SP6-6): in both
+directions, a plan on the other organization's target or of its release, its plan (an approval
+quoting the real digest included) and its deployment answer the unknown-id 404, its provider is
+`model_not_in_target_account`, its rows stay out of the lists and unreadable to `shifde_app`, and
+they never change.
 """
 
 from __future__ import annotations
@@ -43,11 +46,13 @@ from shifde.core.settings import Settings
 from shifde.delivery import api as delivery_api
 from shifde.delivery import gateway, repository, service
 from shifde.identity.apikeys import hash_key
+from tests.board.conftest import add_project, member
 from tests.connections.routes import as_user, org, system_role_user
 from tests.delivery.app_releases import AppRelease, add_provider
 from tests.delivery.conftest import make_executor
 from tests.delivery.releases import release_for_target
 from tests.delivery.routes import (
+    SP8_KINDS,
     WHOAMI,
     Flow,
     address,
@@ -76,12 +81,15 @@ from tests.delivery.routes import (
     request_plan,
     snowflake_address,
     snowflake_body,
+    sp8_address,
+    sp8_body,
     target_body,
     targets,
 )
 from tests.delivery.snowflake import app_release, app_target, snowflake_plan
+from tests.delivery.sp8 import sp8_plan
 from tests.tenancy.conftest import World, app_session
-from tests.tenancy.routes import People, ws_slug
+from tests.tenancy.routes import People, project_slug, ws_slug
 
 _VARYING = {"instance", "request_id"}
 
@@ -1019,6 +1027,115 @@ def test_bs_executor_leases_none_of_as_snowflake_plan_jobs(
     assert job_row(owner_db, plan.job_id) == before
     r = lease(client, a.token, kinds=["plan"])
     assert r.status_code == 200 and r.json()["job"]["id"] == str(plan.job_id), r.text
+
+
+# ------------------------------------------------------------------ Fabric, Palantir, Docker (SP8-1)
+def _two_sp8(client: TestClient, world: World, people: People, kind: str) -> Two:
+    """A target of `kind` in each organization."""
+    sides = []
+    for c, email in ((world.b, people.owner_b), (world.a, people.owner_a)):
+        body = sp8_body(kind, ws_slug(c), sp8_address(kind))
+        made = register(client, as_user(client, email), c.slug, body)
+        assert made["platform_kind"] == kind
+        sides.append(Side(c.slug, email, made["id"]))
+    return Two(sides[1], sides[0])
+
+
+@pytest.mark.parametrize("kind", SP8_KINDS)
+def test_a_cannot_reach_bs_sp8_target(
+    client: TestClient, world: World, people: People, owner_db: Database, kind: str
+) -> None:
+    two = _two_sp8(client, world, people, kind)
+    A, h = targets(two.a.slug), as_user(client, two.a.email)
+    before = _b_state(owner_db, two)
+    nobody = str(uuid7())
+    for method, suffix, ok in (("GET", "", 200), ("POST", "/archive", 200)):
+        r = client.request(method, f"{A}/{two.a.target}{suffix}", headers=h)
+        assert r.status_code == ok, (method, suffix, r.text)  # own object first
+        _same_404(
+            client.request(method, f"{A}/{two.b.target}{suffix}", headers=h),
+            client.request(method, f"{A}/{nobody}{suffix}", headers=h),
+        )
+    assert _b_state(owner_db, two) == before
+
+
+@pytest.mark.parametrize("kind", SP8_KINDS)
+def test_each_side_lists_only_its_own_sp8_targets(
+    client: TestClient, world: World, people: People, kind: str
+) -> None:
+    two = _two_sp8(client, world, people, kind)
+    for me, other in ((two.a, two.b), (two.b, two.a)):
+        h = as_user(client, me.email)
+        listed = client.get(f"{targets(me.slug)}?limit=200", headers=h)
+        assert listed.status_code == 200, listed.text
+        ids = [t["id"] for t in listed.json()["items"]]
+        assert ids == [me.target] and other.target not in ids
+
+
+@pytest.mark.parametrize("kind", SP8_KINDS)
+def test_bs_executor_leases_none_of_as_sp8_plan_jobs(
+    client: TestClient,
+    world: World,
+    people: People,
+    app_db: Database,
+    owner_db: Database,
+    kind: str,
+) -> None:
+    two = _two_sp8(client, world, people, kind)
+    a = make_executor(client, world.a, people.owner_a)
+    b = make_executor(client, world.b, people.owner_b)
+    plan = sp8_plan(app_db, world.a.tenant, two.a.target)
+    before = job_row(owner_db, plan.job_id)
+    r = lease(client, b.token, kinds=["plan"])
+    assert r.status_code == 204, r.text
+    assert job_row(owner_db, plan.job_id) == before
+    r = lease(client, a.token, kinds=["plan"])
+    assert r.status_code == 200 and r.json()["job"]["id"] == str(plan.job_id), r.text
+
+
+@pytest.mark.parametrize("kind", SP8_KINDS)
+def test_a_p1_only_member_cannot_reach_p2s_sp8_target(
+    client: TestClient, world: World, people: People, owner_db: Database, kind: str
+) -> None:
+    """Within one organization: a member bound only to project P1 gets on P2's target the 404 an
+    unknown id gets (GET and archive), and P2's target is absent from the member's list."""
+    a = world.a
+    p2 = add_project(owner_db, a.tenant, a.ws)
+    ha = as_user(client, people.owner_a)
+    t1 = register(
+        client,
+        ha,
+        a.slug,
+        sp8_body(kind, ws_slug(a), sp8_address(kind), project=project_slug(a)),
+    )
+    t2 = register(
+        client, ha, a.slug, sp8_body(kind, ws_slug(a), sp8_address(kind), project=f"p-{p2.hex}")
+    )
+    assert t1["project"] == project_slug(a) and t2["project"] == f"p-{p2.hex}"
+    p2_state = _b_state(owner_db, Two(Side(a.slug, "", t1["id"]), Side(a.slug, "", t2["id"])))
+    email = member(
+        owner_db,
+        a.tenant,
+        ["delivery:target:read", "delivery:target:write"],
+        scope_type="project",
+        scope_id=a.project,
+    )
+    h = as_user(client, email)
+    A, nobody = targets(a.slug), str(uuid7())
+    listed = client.get(f"{A}?limit=200", headers=h)
+    assert listed.status_code == 200, listed.text
+    assert [t["id"] for t in listed.json()["items"]] == [t1["id"]]
+    for method, suffix in (("GET", ""), ("POST", "/archive")):
+        _same_404(
+            client.request(method, f"{A}/{t2['id']}{suffix}", headers=h),
+            client.request(method, f"{A}/{nobody}{suffix}", headers=h),
+        )
+    assert (
+        _b_state(owner_db, Two(Side(a.slug, "", t1["id"]), Side(a.slug, "", t2["id"]))) == p2_state
+    )
+    # the member's own project's target answers (and archives) normally
+    assert client.get(f"{A}/{t1['id']}", headers=h).status_code == 200
+    assert client.post(f"{A}/{t1['id']}/archive", headers=h).status_code == 200
 
 
 # ------------------------------------------------------------------ generated Snowflake apps (SP6-6)

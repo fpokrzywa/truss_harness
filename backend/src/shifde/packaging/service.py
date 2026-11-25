@@ -31,10 +31,16 @@ sealer can read: Databricks for `databricks.app/v1`, Snowflake for `snowflake.na
 (`schemas.TARGET_ADAPTERS`), as each bound connection must be too. A Snowflake solution is only
 ever a generated app (Call S6-H): its versions always get the `/2` rules, a version without screens
 is refused (`release_incompatible`) with a failing `screens` diagnostic, and its manifest's
-`app.generator_version` is `shifde.appgen.snowflake/1.0` (`APP_GENERATOR_VERSIONS`). The screens
-check sees only the pinned tools the sealer can see: a screen naming the key of a hidden tool gets
-the answer a screen naming a tool that is not pinned gets, so neither the key nor the parameters of
-a hidden tool can be probed (issue #316).
+`app.generator_version` is `shifde.appgen.snowflake/1.0` (`APP_GENERATOR_VERSIONS`). A Docker
+solution (`docker.compose/v1`) is the same under the Databricks `/2` rules, with generator
+`shifde.appgen.docker/1.0`. A Fabric (`fabric.solution/v1`) or Palantir Marketplace
+(`palantir.marketplace/v1`) solution is compiled by `/1` only: a version with screens gets a
+failing `screens` diagnostic and every pinned connection a failing `connections.<pin>` (no data
+connection of those platforms exists). `palantir.superrepo/v1` and `fabric.iq/v1` are refused at
+solution create with a one-diagnostic `release_incompatible` report, and nothing is written.
+The screens check sees only the pinned tools the sealer can see: a screen naming the key of a
+hidden tool gets the answer a screen naming a tool that is not pinned gets, so neither the key nor
+the parameters of a hidden tool can be probed (issue #316).
 
 A model or connection is hidden from the caller when only versions the caller cannot see name it
 (a version's own data reads always count as seen), and a connection also when the caller cannot
@@ -102,6 +108,7 @@ APP_GENERATOR_VERSION = "shifde.appgen/1.0"  # equal to `appgen.render.GENERATOR
 APP_GENERATOR_VERSIONS = {
     s.TARGET_KIND: APP_GENERATOR_VERSION,
     s.SNOWFLAKE_TARGET_KIND: "shifde.appgen.snowflake/1.0",
+    s.DOCKER_TARGET_KIND: "shifde.appgen.docker/1.0",
 }
 SCREEN_KINDS = frozenset({"chat", "table"})
 READ_ONLY_TOOL_EXECUTORS = frozenset({"connection.sql"})
@@ -125,7 +132,11 @@ NOT_SNOWFLAKE = (
     "the bound connection is not a Snowflake connection of this organization in the solution's "
     "scope"
 )
-NOT_PLATFORM = {s.TARGET_KIND: NOT_DATABRICKS, s.SNOWFLAKE_TARGET_KIND: NOT_SNOWFLAKE}
+NOT_PLATFORM = {
+    s.TARGET_KIND: NOT_DATABRICKS,
+    s.SNOWFLAKE_TARGET_KIND: NOT_SNOWFLAKE,
+    s.DOCKER_TARGET_KIND: NOT_DATABRICKS,
+}
 NO_EVALUATION = "a release needs an evaluation dataset"
 DATASET_REFUSED = "the evaluation dataset is not a dataset of this project you can read"
 DATASET_READ = "evaluation:dataset:read"
@@ -133,8 +144,26 @@ ONE_AGENT = "a generated app runs one agent"
 ONE_MODEL = "a generated app uses exactly one model"
 APP_TOOLS = "a generated app's tools are SQL tools over a Databricks connection"
 APP_TOOLS_SNOWFLAKE = "a generated app's tools are SQL tools over a Snowflake connection"
-APP_TOOLS_BY_KIND = {s.TARGET_KIND: APP_TOOLS, s.SNOWFLAKE_TARGET_KIND: APP_TOOLS_SNOWFLAKE}
+APP_TOOLS_BY_KIND = {
+    s.TARGET_KIND: APP_TOOLS,
+    s.SNOWFLAKE_TARGET_KIND: APP_TOOLS_SNOWFLAKE,
+    s.DOCKER_TARGET_KIND: APP_TOOLS,
+}
 NEEDS_SCREENS = "a Snowflake Native App needs screens"
+# kinds that are only ever a generated app (`/2`): a version without screens is refused
+APP_ONLY = {
+    s.SNOWFLAKE_TARGET_KIND: NEEDS_SCREENS,
+    s.DOCKER_TARGET_KIND: "a Docker app needs screens",
+}
+# kinds compiled by `/1` only: a version with screens is refused, and so is any pinned connection
+NO_SCREENS = {
+    s.FABRIC_TARGET_KIND: "a Fabric solution has no screens",
+    s.PALANTIR_TARGET_KIND: "a Palantir Marketplace solution has no screens",
+}
+NO_CONNECTION = {
+    s.FABRIC_TARGET_KIND: "a Fabric release binds no data connection",
+    s.PALANTIR_TARGET_KIND: "a Palantir Marketplace release binds no data connection",
+}
 HIDDEN_TOOL = "tools.hidden"
 HIDDEN_MODEL = "models.hidden"
 HIDDEN_CONNECTION = "connections.hidden"
@@ -549,6 +578,19 @@ class SolutionService:
         self.sc.pdp.require(WRITE, project)
         self._active_scope(ws, proj)
         assert project.project_id is not None
+        if body.target_kind in s.UNSUPPORTED_TARGET_KINDS:
+            diagnostic = _diagnostic("target_kind", s.UNSUPPORTED_TARGET_KINDS[body.target_kind])
+            raise ReleaseIncompatible(
+                "The target kind is not supported.",
+                errors=[
+                    {
+                        "loc": ["compatibility", "target_kind"],
+                        "msg": diagnostic["reason"],
+                        "type": diagnostic["status"],
+                        **diagnostic,
+                    }
+                ],
+            )
         session = self.sc.session
         if repository.name_taken(
             session, project.project_id, body.name, tenant_id=self.sc.tenant_id
@@ -793,9 +835,11 @@ class SolutionService:
         return None
 
     def _connection_reason(self, solution: Mapping[str, Any], bound: UUID | None) -> str | None:
+        kind = solution["target_kind"]
+        if kind in NO_CONNECTION:
+            return NO_CONNECTION[kind]
         if bound is None:
             return NO_CONNECTION_BINDING
-        kind = solution["target_kind"]
         placement = self.conns.placement(bound)
         if (
             placement is None
@@ -851,11 +895,12 @@ class SolutionService:
         """One diagnostic per feature: entrypoint, tools, models, connections (each group by pin
         name), evaluation; a version with screens (`/2`) also gets `models` and one `screens.<i>`
         per screen, and stricter entrypoint and tool rules. A Snowflake solution's version always
-        gets the `/2` rules, and without screens a failing `screens` (S6-H). Every one is
-        mandatory (no accepted deviations, B-2699)."""
+        gets the `/2` rules, and without screens a failing `screens` (S6-H); so does a Docker
+        solution's. A Fabric or Palantir solution's version gets only the `/1` rules, and with
+        screens a failing `screens`. Every one is mandatory (no accepted deviations, B-2699)."""
+        kind = solution["target_kind"]
         screens = version["spec"].get("screens") or []
-        snowflake = solution["target_kind"] == s.SNOWFLAKE_TARGET_KIND
-        app = bool(screens) or snowflake
+        app = (bool(screens) and kind not in NO_SCREENS) or kind in APP_ONLY
         published = (
             entry.state == "published"
             and entry.kind == ENTRYPOINT_KINDS[version["entrypoint_kind"]]
@@ -888,7 +933,10 @@ class SolutionService:
             )
             for name in sorted(found.connections)
         ]
-        if screens:
+        if kind in NO_SCREENS:
+            if screens:
+                report.append(_diagnostic("screens", NO_SCREENS[kind]))
+        elif screens:
             tools = {
                 self.artifacts.artifact_row("tools", access.artifact_id)["key"]: (
                     found.tool_specs[name]
@@ -900,8 +948,8 @@ class SolutionService:
                 _diagnostic(f"screens.{i}", self._screen_reason(screen, tools))
                 for i, screen in enumerate(screens)
             ]
-        elif snowflake:
-            report.append(_diagnostic("screens", NEEDS_SCREENS))
+        elif kind in APP_ONLY:
+            report.append(_diagnostic("screens", APP_ONLY[kind]))
         report.append(_diagnostic("evaluation", self._evaluation_reason(solution, version)))
         return report
 

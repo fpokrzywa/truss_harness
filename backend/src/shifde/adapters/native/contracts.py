@@ -580,7 +580,7 @@ class JobContext(Model):
 
     job: LeasedJob
     target: Target
-    platform_kind: Literal["databricks", "snowflake"] = "databricks"
+    platform_kind: Literal["databricks", "snowflake", "fabric", "palantir", "docker"] = "databricks"
     plan: ContextPlan | None
     deployment: ContextDeployment | None
     owned_resources: list[OwnedResource]

@@ -781,9 +781,9 @@ def _body(create: str) -> str:
 def test_the_downgrade_restores_the_runtime_0006_guard(
     run_id: str, admin_url: str, owner_url: str, app_url: str
 ) -> None:
-    """On a scratch copy: runtime_0009 down gives runtime_0008's body and runtime_0008 down gives
-    runtime_0006's, each with the same owner, settings, invoker rights, no PUBLIC execute and the
-    nine triggers; up again restores runtime_0009's."""
+    """On a scratch copy: runtime_0010 down gives runtime_0009's body, runtime_0009 down gives
+    runtime_0008's and runtime_0008 down gives runtime_0006's, each with the same owner, settings,
+    invoker rights, no PUBLIC execute and the nine triggers; up again restores runtime_0010's."""
     name = f"{DB_PREFIX}{run_id}_rtguard"
     owner = make_url(owner_url).username or "shifde_owner"
     app_role = make_url(app_url).username or "shifde_app"
@@ -799,7 +799,16 @@ def test_the_downgrade_restores_the_runtime_0006_guard(
         try:
             with engine.connect() as c:
                 upgraded = c.execute(text(_GUARD_STATE)).one()
-            assert upgraded[0] == _body(_migration("runtime_0009").GUARD)
+            assert upgraded[0] == _body(_migration("runtime_0010").GUARD)
+            command.downgrade(cfg, "runtime_0009")
+            with engine.connect() as c:
+                previous = c.execute(text(_GUARD_STATE)).one()
+                versions = set(
+                    c.execute(text("SELECT version_num FROM shifde.alembic_version")).scalars()
+                )
+            assert "runtime_0010" not in versions
+            assert previous[0] == _body(_migration("runtime_0009").GUARD)
+            assert previous[1:] == upgraded[1:]
             command.downgrade(cfg, "runtime_0008")
             with engine.connect() as c:
                 previous = c.execute(text(_GUARD_STATE)).one()
@@ -1002,8 +1011,9 @@ def test_the_assist_0002_downgrade_body_is_assist_0001s_guard() -> None:
 def test_the_downgrade_restores_the_assist_0001_guard(
     run_id: str, admin_url: str, owner_url: str, app_url: str
 ) -> None:
-    """On a scratch copy: assist_0002 down gives assist_0001's body, with the same owner, settings,
-    invoker rights, no PUBLIC execute and the two triggers; up again restores assist_0002's."""
+    """On a scratch copy: assist_0003 down gives assist_0002's body and assist_0002 down gives
+    assist_0001's, each with the same owner, settings, invoker rights, no PUBLIC execute and the two
+    triggers; up again restores assist_0003's."""
     name = f"{DB_PREFIX}{run_id}_asguard"
     owner = make_url(owner_url).username or "shifde_owner"
     app_role = make_url(app_url).username or "shifde_app"
@@ -1020,7 +1030,16 @@ def test_the_downgrade_restores_the_assist_0001_guard(
         try:
             with engine.connect() as c:
                 upgraded = c.execute(state).one()
-            assert upgraded[0] == _body(_migration("assist_0002").GUARD)
+            assert upgraded[0] == _body(_migration("assist_0003").GUARD)
+            command.downgrade(cfg, "assist_0002")
+            with engine.connect() as c:
+                previous = c.execute(state).one()
+                versions = set(
+                    c.execute(text("SELECT version_num FROM shifde.alembic_version")).scalars()
+                )
+            assert "assist_0003" not in versions and "assist_0002" in versions
+            assert previous[0] == _body(_migration("assist_0002").GUARD)
+            assert previous[1:] == upgraded[1:]
             command.downgrade(cfg, "assist_0001")
             with engine.connect() as c:
                 downgraded = c.execute(state).one()

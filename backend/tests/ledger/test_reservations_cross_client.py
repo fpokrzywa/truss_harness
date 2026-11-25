@@ -21,7 +21,7 @@ from shifde.core.db import Database, set_tenant
 from shifde.core.ids import uuid7
 from shifde.ledger import budgeting, reservations
 from tests._support.tenants import add_tenants
-from tests.ledger.util import add_budget, add_run
+from tests.ledger.util import add_budget, add_run, daily_since
 
 MODES = ["app-role", "schema-owner"]
 
@@ -129,7 +129,7 @@ def test_under_as_context_bs_holds_are_invisible_and_bs_client_id_reaches_nothin
         reservations.expire_unstarted(s, b.tenant)
         # B's budget id never finds B's direct hold (60) for A: only A's own run hold (40)
         rule = {"id": b.budget, "scope_type": "tenant", "scope_id": a.tenant, "period": "daily"}
-        since = budgeting.period_start("daily")
+        since = daily_since(s, a.tenant)
         held = budgeting.used_and_held(s, a.tenant, None, rule, metric="tokens", since=since)
         assert held == (0, 40)
         s.commit()

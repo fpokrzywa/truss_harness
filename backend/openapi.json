@@ -5608,6 +5608,47 @@
         "title": "DiscoveryOut",
         "type": "object"
       },
+      "DockerBindings": {
+        "additionalProperties": false,
+        "description": "A Docker target's bindings: the compose project and published port on the daemon, and the\nDatabricks workspace, warehouse and serving endpoint the generated app queries (SP8 design\nsection 2).",
+        "properties": {
+          "port": {
+            "maximum": 65535.0,
+            "minimum": 1024.0,
+            "title": "Port",
+            "type": "integer"
+          },
+          "project": {
+            "pattern": "^[a-z][a-z0-9-]{0,39}$",
+            "title": "Project",
+            "type": "string"
+          },
+          "serving_endpoint": {
+            "pattern": "^[A-Za-z0-9_-]{1,63}$",
+            "title": "Serving Endpoint",
+            "type": "string"
+          },
+          "warehouse_id": {
+            "pattern": "^[A-Za-z0-9-]{1,64}$",
+            "title": "Warehouse Id",
+            "type": "string"
+          },
+          "workspace_host": {
+            "pattern": "^https://[a-z0-9-]{1,63}(\\.[a-z0-9-]{1,63})+$",
+            "title": "Workspace Host",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "port",
+          "workspace_host",
+          "warehouse_id",
+          "serving_endpoint"
+        ],
+        "title": "DockerBindings",
+        "type": "object"
+      },
       "Draft": {
         "additionalProperties": false,
         "properties": {
@@ -6934,6 +6975,28 @@
           "last_seen_at"
         ],
         "title": "ExecutorWhoami",
+        "type": "object"
+      },
+      "FabricBindings": {
+        "additionalProperties": false,
+        "description": "A Fabric target's bindings: the lakehouse and notebook item names in the workspace\n(SP8 design section 2).",
+        "properties": {
+          "lakehouse_name": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_]{0,99}$",
+            "title": "Lakehouse Name",
+            "type": "string"
+          },
+          "notebook_name": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_]{0,99}$",
+            "title": "Notebook Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "lakehouse_name",
+          "notebook_name"
+        ],
+        "title": "FabricBindings",
         "type": "object"
       },
       "FunctionOut": {
@@ -8481,7 +8544,10 @@
             "default": "databricks",
             "enum": [
               "databricks",
-              "snowflake"
+              "snowflake",
+              "fabric",
+              "palantir",
+              "docker"
             ],
             "title": "Platform Kind",
             "type": "string"
@@ -11856,6 +11922,69 @@
           "items"
         ],
         "title": "Page[WorkspaceOut]",
+        "type": "object"
+      },
+      "PalantirBindings": {
+        "additionalProperties": false,
+        "description": "A Palantir Marketplace target's bindings (Call S8-H): every RID, the product version, the\nobject type and the frontend asset. Each is checked with `palantir.source`'s validators; an\nerror never echoes the value.",
+        "properties": {
+          "allow_preview_apis": {
+            "title": "Allow Preview Apis",
+            "type": "boolean"
+          },
+          "frontend_asset_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Frontend Asset Sha256",
+            "type": "string"
+          },
+          "frontend_origin": {
+            "title": "Frontend Origin",
+            "type": "string"
+          },
+          "marketplace_rid": {
+            "title": "Marketplace Rid",
+            "type": "string"
+          },
+          "namespace_rid": {
+            "title": "Namespace Rid",
+            "type": "string"
+          },
+          "object_type": {
+            "title": "Object Type",
+            "type": "string"
+          },
+          "ontology_rid": {
+            "title": "Ontology Rid",
+            "type": "string"
+          },
+          "parent_folder_rid": {
+            "title": "Parent Folder Rid",
+            "type": "string"
+          },
+          "product_id": {
+            "format": "uuid",
+            "title": "Product Id",
+            "type": "string"
+          },
+          "version_id": {
+            "format": "uuid",
+            "title": "Version Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "marketplace_rid",
+          "product_id",
+          "version_id",
+          "namespace_rid",
+          "parent_folder_rid",
+          "ontology_rid",
+          "object_type",
+          "frontend_origin",
+          "frontend_asset_sha256",
+          "allow_preview_apis"
+        ],
+        "title": "PalantirBindings",
         "type": "object"
       },
       "PendingLinkOut": {
@@ -16664,12 +16793,26 @@
             "type": "string"
           },
           "target_kind": {
-            "enum": [
-              "databricks.app/v1",
-              "snowflake.native-app/v1"
+            "anyOf": [
+              {
+                "enum": [
+                  "databricks.app/v1",
+                  "snowflake.native-app/v1",
+                  "fabric.solution/v1",
+                  "palantir.marketplace/v1",
+                  "docker.compose/v1"
+                ],
+                "type": "string"
+              },
+              {
+                "enum": [
+                  "palantir.superrepo/v1",
+                  "fabric.iq/v1"
+                ],
+                "type": "string"
+              }
             ],
-            "title": "Target Kind",
-            "type": "string"
+            "title": "Target Kind"
           }
         },
         "required": [
@@ -17368,6 +17511,15 @@
               },
               {
                 "$ref": "#/components/schemas/SnowflakeBindings"
+              },
+              {
+                "$ref": "#/components/schemas/FabricBindings"
+              },
+              {
+                "$ref": "#/components/schemas/PalantirBindings"
+              },
+              {
+                "$ref": "#/components/schemas/DockerBindings"
               }
             ],
             "title": "Bindings"
@@ -17396,7 +17548,10 @@
             "default": "databricks",
             "enum": [
               "databricks",
-              "snowflake"
+              "snowflake",
+              "fabric",
+              "palantir",
+              "docker"
             ],
             "title": "Platform Kind",
             "type": "string"
@@ -17441,6 +17596,15 @@
               },
               {
                 "$ref": "#/components/schemas/SnowflakeBindings"
+              },
+              {
+                "$ref": "#/components/schemas/FabricBindings"
+              },
+              {
+                "$ref": "#/components/schemas/PalantirBindings"
+              },
+              {
+                "$ref": "#/components/schemas/DockerBindings"
               }
             ],
             "title": "Bindings"
@@ -17475,7 +17639,10 @@
           "platform_kind": {
             "enum": [
               "databricks",
-              "snowflake"
+              "snowflake",
+              "fabric",
+              "palantir",
+              "docker"
             ],
             "title": "Platform Kind",
             "type": "string"

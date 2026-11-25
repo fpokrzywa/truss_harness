@@ -26,10 +26,10 @@ from shifde.appgen.schemas import Resolved
 from shifde.connections.service import ConnectionService
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
-from shifde.delivery import service
+from shifde.delivery import plans, service
 from shifde.executor.client import GatewayClient
 from shifde.packaging.canonical import canonical, digest
-from tests.appgen.rendered import ENDPOINT
+from tests.appgen.rendered import DOCKER_SEALS, ENDPOINT, on_docker
 from tests.connections.routes import as_user
 from tests.delivery.app_releases import (
     AppRelease,
@@ -54,6 +54,8 @@ from tests.delivery.routes import (
     plan_value,
     register,
     request_plan,
+    sp8_address,
+    sp8_body,
     target_body,
 )
 from tests.executor.support import ask_plan, credentials_file, fake_platform, make_runner
@@ -215,6 +217,33 @@ def test_generator_version_unsupported_writes_nothing(flow: Flow) -> None:
 
     rel = _fake_release(flow, target, edit=other_version)
     _refused(flow, target, rel.id, "generator_version_unsupported")
+
+
+@pytest.mark.parametrize("app", DOCKER_SEALS.values(), ids=DOCKER_SEALS)
+@pytest.mark.parametrize("platform", ["databricks", "docker"])
+def test_a_docker_release_is_planned_on_no_target(flow: Flow, platform: str, app: Any) -> None:
+    """SP8-1: a `docker.compose/v1` release, however it was sealed, is refused before any write."""
+    if platform == "databricks":
+        target = app_target(flow)
+    else:
+        h = as_user(flow.client, flow.requester)
+        body = sp8_body("docker", flow.workspace, sp8_address("docker"))
+        target = register(flow.client, h, flow.slug, body)
+        flow.client.cookies.clear()
+    rel = _fake_release(flow, target, edit=on_docker(app))
+    _refused(flow, target, rel.id, "target_kind_mismatch")
+
+
+def test_a_docker_release_past_the_kind_gate_is_not_rendered(
+    flow: Flow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SP8-1: without the kind gate too, the render refuses a Docker release by name."""
+    monkeypatch.setattr(plans, "check_target_kind", lambda manifest, platform_kind: None)
+    target = app_target(flow)
+    for app in (a for a in DOCKER_SEALS.values() if a):
+        rel = _fake_release(flow, target, edit=on_docker(app))
+        body = _refused(flow, target, rel.id, "generator_version_unsupported")
+        assert body["detail"] == "no app generator renders a Docker release"
 
 
 # ------------------------------------------------------------------ accepted plans

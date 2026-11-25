@@ -1,7 +1,9 @@
 """Deployment targets through the routes, as `shifde_app` (design 3, 9; B-2501): register, list,
 get, archive, address refusal before any request, validation, permissions, audit, the setting
 and the seeded delivery permissions; Snowflake targets (SP6-3): their bindings, their address
-refusal, `binding_in_use` on one claim and the interim plan refusal.
+refusal, `binding_in_use` on one claim and the interim plan refusal; Fabric, Palantir and Docker
+targets (SP8-1): their normalized addresses, their bindings, the Palantir installation suffixes
+and the same plan refusal.
 """
 
 from __future__ import annotations
@@ -21,7 +23,12 @@ from shifde.core.settings import Settings
 from tests.connections.routes import as_user, limited_user, system_role_user
 from tests.delivery.releases import release_for_target
 from tests.delivery.routes import (
+    DOCKER_BINDINGS,
+    FABRIC_BINDINGS,
+    PALANTIR_BINDINGS,
     SNOWFLAKE_BINDINGS,
+    SP8_BINDINGS,
+    SP8_KINDS,
     address,
     counts,
     delivery_client,
@@ -29,6 +36,8 @@ from tests.delivery.routes import (
     request_plan,
     snowflake_address,
     snowflake_body,
+    sp8_address,
+    sp8_body,
     target_body,
     targets,
 )
@@ -504,6 +513,204 @@ def test_a_plan_request_on_a_snowflake_target_is_refused_without_a_write(
     h = as_user(client, people.owner_a)
     body = snowflake_body(ws_slug(world.a), snowflake_address())
     made = register(client, h, world.a.slug, body)
+    release = release_for_target(owner_db, made["id"]).id
+
+    def rows() -> tuple[int, int, int]:
+        with owner_db.session() as o:
+            row = o.execute(
+                text(
+                    "SELECT (SELECT count(*) FROM shifde.delivery_plans WHERE tenant_id = :t), "
+                    "(SELECT count(*) FROM shifde.delivery_artifacts WHERE tenant_id = :t), "
+                    "(SELECT count(*) FROM shifde.delivery_jobs WHERE tenant_id = :t)"
+                ),
+                {"t": world.a.tenant},
+            ).one()
+        return int(row[0]), int(row[1]), int(row[2])
+
+    h = as_user(client, people.owner_a)
+    refused = request_plan(client, h, world.a.slug, made["id"], release, status=409)
+    assert refused["code"] == "target_kind_mismatch"
+    assert rows() == (0, 0, 0)
+
+
+# ------------------------------------------------------------------ Fabric, Palantir, Docker (SP8-1)
+GUID = "0A1B2C3D-0000-4000-8000-00000000ABCD"
+SENT = {
+    "fabric": f"https://app.fabric.microsoft.com/groups/{GUID}/lakehouses",
+    "palantir": "HTTPS://Acme-Stack.PalantirFoundry.com:443/",
+    "docker": "docker://0a1b2c3d-0000-4000-8000-00000000abcd",
+}
+NORMALIZED = {
+    "fabric": "https://api.fabric.microsoft.com/v1/workspaces/0a1b2c3d-0000-4000-8000-00000000abcd",
+    "palantir": "https://acme-stack.palantirfoundry.com",
+    "docker": "docker://0a1b2c3d-0000-4000-8000-00000000abcd",
+}
+BAD_ADDRESSES = {
+    "fabric": [
+        "{" + GUID + "}",
+        f"urn:uuid:{GUID}",
+        f"https://app.fabric.microsoft.com/groups/{GUID}?x",
+        "https://adb-1.cloud.databricks.com",
+    ],
+    "palantir": [
+        "https://acme.palantirfoundry.com:8443",
+        "https://acme.palantirfoundry.com/path",
+        "https://eu.acme.palantirfoundry.com",
+        "https://10.0.0.1",
+        "https://acme.cloud.databricks.com",
+    ],
+    "docker": [
+        "docker://0A1B2C3D-0000-4000-8000-00000000ABCD",
+        "tcp://127.0.0.1:2375",
+        "unix:///var/run/docker.sock",
+        "https://adb-1.cloud.databricks.com",
+    ],
+}
+BAD_BINDINGS: dict[str, list[dict[str, Any]]] = {
+    "fabric": [
+        {**FABRIC_BINDINGS, "lakehouse_name": "1Lake"},
+        {**FABRIC_BINDINGS, "notebook_name": "Sales-Notebook"},
+        {**FABRIC_BINDINGS, "notebook_name": FABRIC_BINDINGS["lakehouse_name"]},
+        {k: v for k, v in FABRIC_BINDINGS.items() if k != "notebook_name"},
+        {**FABRIC_BINDINGS, "extra": "x"},
+    ],
+    "palantir": [
+        {**PALANTIR_BINDINGS, "marketplace_rid": "ri.marketplace.main.folder.0a1b2c3d"},
+        {**PALANTIR_BINDINGS, "ontology_rid": PALANTIR_BINDINGS["namespace_rid"]},
+        {**PALANTIR_BINDINGS, "product_id": "not-a-uuid"},
+        {**PALANTIR_BINDINGS, "object_type": "1Example"},
+        {**PALANTIR_BINDINGS, "frontend_origin": "http://frontend.example.com"},
+        {**PALANTIR_BINDINGS, "frontend_origin": "https://frontend.example.com/app"},
+        {**PALANTIR_BINDINGS, "frontend_origin": "https://[frontend.example.com]"},
+        {**PALANTIR_BINDINGS, "frontend_asset_sha256": "A" * 64},
+        {k: v for k, v in PALANTIR_BINDINGS.items() if k != "allow_preview_apis"},
+        {**PALANTIR_BINDINGS, "extra": "x"},
+    ],
+    "docker": [
+        {**DOCKER_BINDINGS, "project": "Sales"},
+        {**DOCKER_BINDINGS, "port": 80},
+        {**DOCKER_BINDINGS, "port": 65536},
+        {**DOCKER_BINDINGS, "workspace_host": "https://ADB-1.cloud.databricks.com"},
+        {**DOCKER_BINDINGS, "workspace_host": "https://adb-1.cloud.databricks.com/path"},
+        {**DOCKER_BINDINGS, "warehouse_id": "wh; drop"},
+        {k: v for k, v in DOCKER_BINDINGS.items() if k != "serving_endpoint"},
+        {**DOCKER_BINDINGS, "extra": "x"},
+    ],
+}
+
+
+@pytest.mark.parametrize("kind", SP8_KINDS)
+def test_an_sp8_target_is_registered_with_its_normalized_address_and_bindings(
+    client: TestClient, world: World, people: People, owner_db: Database, kind: str
+) -> None:
+    h = as_user(client, people.owner_a)
+    made = register(client, h, world.a.slug, sp8_body(kind, ws_slug(world.a), SENT[kind]))
+    assert made["platform_kind"] == kind
+    assert made["address"] == NORMALIZED[kind]
+    assert made["bindings"] == SP8_BINDINGS[kind]
+    assert made["credential_ref"] == f"{kind}-dev"
+    got = client.get(f"{targets(world.a.slug)}/{made['id']}", headers=h)
+    assert got.status_code == 200 and got.json() == made, got.text
+    assert counts(owner_db, world.a.tenant) == (1, 1)
+    archived = client.post(f"{targets(world.a.slug)}/{made['id']}/archive", headers=h)
+    assert archived.status_code == 200 and archived.json()["status"] == "archived", archived.text
+    assert counts(owner_db, world.a.tenant) == (1, 0)
+
+
+@pytest.mark.parametrize("kind", SP8_KINDS)
+def test_sp8_bindings_are_validated(
+    client: TestClient, world: World, people: People, owner_db: Database, kind: str
+) -> None:
+    h = as_user(client, people.owner_a)
+    for bindings in BAD_BINDINGS[kind]:
+        body = sp8_body(kind, ws_slug(world.a), sp8_address(kind), bindings=bindings)
+        r = client.post(targets(world.a.slug), headers=h, json=body)
+        assert r.status_code == 422, (bindings, r.text)
+        assert all(e["loc"][:2] == ["body", "bindings"] for e in r.json()["errors"]), r.text
+        for value in bindings.values():
+            if isinstance(value, str) and len(value) > 8:
+                assert value not in r.text  # no message echoes a binding
+    assert counts(owner_db, world.a.tenant) == (0, 0)
+
+
+@pytest.mark.parametrize("kind", SP8_KINDS)
+def test_bindings_of_another_platform_are_refused(
+    client: TestClient, world: World, people: People, owner_db: Database, kind: str
+) -> None:
+    h = as_user(client, people.owner_a)
+    others = [
+        dict(SNOWFLAKE_BINDINGS),
+        {"warehouse_id": "abc123def456"},
+        *(dict(SP8_BINDINGS[k]) for k in SP8_KINDS if k != kind),
+    ]
+    for bindings in others:
+        body = sp8_body(kind, ws_slug(world.a), sp8_address(kind), bindings=bindings)
+        r = client.post(targets(world.a.slug), headers=h, json=body)
+        assert r.status_code == 422, (bindings, r.text)
+        assert all(e["loc"][:2] == ["body", "bindings"] for e in r.json()["errors"]), r.text
+    # and the kind's own bindings on a Databricks target
+    body = target_body(ws_slug(world.a), address(), bindings=dict(SP8_BINDINGS[kind]))
+    r = client.post(targets(world.a.slug), headers=h, json=body)
+    assert r.status_code == 422, r.text
+    assert counts(owner_db, world.a.tenant) == (0, 0)
+
+
+@pytest.mark.parametrize("kind", SP8_KINDS)
+def test_a_bad_sp8_address_is_refused_with_the_fixed_message(
+    client: TestClient, world: World, people: People, owner_db: Database, kind: str
+) -> None:
+    h = as_user(client, people.owner_a)
+    for url in BAD_ADDRESSES[kind]:
+        r = client.post(
+            targets(world.a.slug), headers=h, json=sp8_body(kind, ws_slug(world.a), url)
+        )
+        assert r.status_code == 422, r.text
+        assert r.json()["code"] == "validation_error"
+        assert r.json()["errors"][0]["loc"] == ["body", "address"]
+        assert url not in r.text
+    assert counts(owner_db, world.a.tenant) == (0, 0)
+
+
+def test_a_palantir_installation_suffix_is_accepted_only_when_configured(
+    settings: Settings, world: World, people: People
+) -> None:
+    """`SHIFDE_DELIVERY_PALANTIR_HOST_SUFFIXES` admits a Palantir stack only; the Databricks list
+    never does, and the Palantir list never admits a Databricks workspace."""
+    url = "https://stack-1.foundry.corp.example"
+    for update, status in (
+        ({}, 422),
+        ({"delivery_databricks_host_suffixes": ["foundry.corp.example"]}, 422),
+        ({"delivery_palantir_host_suffixes": ["foundry.corp.example"]}, 201),
+    ):
+        with delivery_client(settings.model_copy(update=update)) as c:
+            h = as_user(c, people.owner_a)
+            register(c, h, world.a.slug, sp8_body("palantir", ws_slug(world.a), url), status)
+    dbx = address("foundry.corp.example")
+    cfg = settings.model_copy(update={"delivery_palantir_host_suffixes": ["foundry.corp.example"]})
+    with delivery_client(cfg) as c:
+        h = as_user(c, people.owner_a)
+        register(c, h, world.a.slug, target_body(ws_slug(world.a), dbx), status=422)
+
+
+def test_palantir_installation_suffixes_are_split_and_validated() -> None:
+    base: dict[str, Any] = {
+        "_env_file": None,
+        "database_url": "postgresql+psycopg://x",
+        "env": "test",
+    }
+    s = Settings(**base, delivery_palantir_host_suffixes=" Foundry.Corp.Example , a.b-c.io ")
+    assert s.delivery_palantir_host_suffixes == ["foundry.corp.example", "a.b-c.io"]
+    assert Settings(**base).delivery_palantir_host_suffixes == []
+    with pytest.raises(ValidationError, match="SHIFDE_DELIVERY_PALANTIR_HOST_SUFFIXES"):
+        Settings(**base, delivery_palantir_host_suffixes="*.example.com")
+
+
+@pytest.mark.parametrize("kind", SP8_KINDS)
+def test_a_plan_request_on_an_sp8_target_is_refused_without_a_write(
+    client: TestClient, world: World, people: People, owner_db: Database, kind: str
+) -> None:
+    h = as_user(client, people.owner_a)
+    made = register(client, h, world.a.slug, sp8_body(kind, ws_slug(world.a), sp8_address(kind)))
     release = release_for_target(owner_db, made["id"]).id
 
     def rows() -> tuple[int, int, int]:

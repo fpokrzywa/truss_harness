@@ -10,7 +10,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any  # Any: JSON bodies, TestClient options, rows
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 from fastapi import Depends
@@ -89,6 +89,59 @@ def snowflake_body(workspace: str, url: str, **overrides: Any) -> dict[str, Any]
         platform_kind="snowflake",
         bindings=dict(SNOWFLAKE_BINDINGS),
         credential_ref="snowflake-dev",
+    )
+    body.update(overrides)
+    return body
+
+
+# ------------------------------------------------------------------ Fabric, Palantir, Docker
+SP8_KINDS = ("fabric", "palantir", "docker")
+FABRIC_BINDINGS = {"lakehouse_name": "SalesLake", "notebook_name": "SalesNotebook"}
+PALANTIR_BINDINGS: dict[str, Any] = {
+    "marketplace_rid": "ri.marketplace.main.local.0a1b2c3d-0000-4000-8000-000000000001",
+    "product_id": "0a1b2c3d-0000-4000-8000-000000000002",
+    "version_id": "0a1b2c3d-0000-4000-8000-000000000003",
+    "namespace_rid": "ri.compass.main.namespace.0a1b2c3d-0000-4000-8000-000000000004",
+    "parent_folder_rid": "ri.compass.main.folder.0a1b2c3d-0000-4000-8000-000000000005",
+    "ontology_rid": "ri.ontology.main.ontology.0a1b2c3d-0000-4000-8000-000000000006",
+    "object_type": "Example",
+    "frontend_origin": "https://frontend.example.com",
+    "frontend_asset_sha256": "a" * 64,
+    "allow_preview_apis": False,
+}
+DOCKER_BINDINGS: dict[str, Any] = {
+    "project": "sales-app",
+    "port": 8501,
+    "workspace_host": "https://adb-1.cloud.databricks.com",
+    "warehouse_id": "abc123def456",
+    "serving_endpoint": "agent-endpoint",
+}
+SP8_BINDINGS: dict[str, dict[str, Any]] = {
+    "fabric": FABRIC_BINDINGS,
+    "palantir": PALANTIR_BINDINGS,
+    "docker": DOCKER_BINDINGS,
+}
+
+
+def sp8_address(kind: str) -> str:
+    """A normalized address of `kind` no other test uses: a Fabric workspace, a Palantir Foundry
+    stack or a Docker daemon."""
+    if kind == "fabric":
+        return f"https://api.fabric.microsoft.com/v1/workspaces/{uuid4()}"
+    if kind == "palantir":
+        return f"https://stack-{uuid7().hex[-16:]}.palantirfoundry.com"
+    assert kind == "docker", kind
+    return f"docker://{uuid4()}"
+
+
+def sp8_body(kind: str, workspace: str, url: str, **overrides: Any) -> dict[str, Any]:
+    """A target body of `kind` (default bindings `SP8_BINDINGS[kind]`)."""
+    body = target_body(
+        workspace,
+        url,
+        platform_kind=kind,
+        bindings=dict(SP8_BINDINGS[kind]),
+        credential_ref=f"{kind}-dev",
     )
     body.update(overrides)
     return body

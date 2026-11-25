@@ -1,6 +1,6 @@
-"""Executor test helpers: a credentials file (Databricks, or Snowflake with its key file), the
-Snowflake fake of a key, a runner over the in-process gateway and the fake platform, and the
-requester's plan request."""
+"""Executor test helpers: a credentials file (Databricks, Snowflake with its key file, or Fabric,
+Palantir or Docker with its secret file), the Snowflake fake of a key, a runner over the in-process
+gateway and the fake platform, and the requester's plan request."""
 
 from __future__ import annotations
 
@@ -94,6 +94,36 @@ def snowflake_credentials_file(
         ),
         encoding="utf-8",
     )
+    os.chmod(path, 0o600)
+    return path
+
+
+SP8_ENTRA_TENANT = "0a1b2c3d-0000-4000-8000-0000000000e1"
+SP8_CLIENT_ID = "0a1b2c3d-0000-4000-8000-0000000000c1"
+SP8_SECRET = "client-secret-never-logged"  # noqa: S105 - a test value
+
+
+def sp8_entry(directory: Path, kind: str, host: str, *, tenant: UUID) -> dict[str, Any]:
+    """A `kind` (fabric, palantir or docker) credentials entry; a Fabric or Palantir entry's
+    secret file `<kind>.json.secret` is written too, mode 0600."""
+    entry: dict[str, Any] = {"tenant_id": str(tenant), "host": host, "platform": kind}
+    if kind == "docker":
+        return entry
+    secret_file = directory / f"{kind}.json.secret"
+    secret_file.write_text(SP8_SECRET, encoding="utf-8")
+    os.chmod(secret_file, 0o600)
+    if kind == "fabric":
+        entry["entra_tenant_id"] = SP8_ENTRA_TENANT
+    return {**entry, "client_id": SP8_CLIENT_ID, "client_secret_file": str(secret_file)}
+
+
+def sp8_credentials_file(
+    directory: Path, kind: str, host: str, *, tenant: UUID, ref: str | None = None
+) -> Path:
+    """A credentials file of one `sp8_entry` (reference `<kind>-dev` unless given), mode 0600."""
+    path = directory / f"{kind}.json"
+    entry = sp8_entry(directory, kind, host, tenant=tenant)
+    path.write_text(json.dumps({ref or f"{kind}-dev": entry}), encoding="utf-8")
     os.chmod(path, 0o600)
     return path
 

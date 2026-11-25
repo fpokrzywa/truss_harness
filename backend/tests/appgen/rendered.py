@@ -5,13 +5,15 @@ written to a directory and their modules imported, a real `databricks.sdk.Worksp
 socket is opened), and SETH's own answer of a tool on the same fake (`_answer` of
 `tests/adapters/dataplatforms/test_databricks_appgen_fixtures.py`). SP6-5 adds the
 `snowflake.native-app/v1` release of `SNOWFLAKE_SAMPLE_DRAFT` (`SNOWFLAKE_MANIFEST`, bound to
-Cortex model `CORTEX_MODEL`)."""
+Cortex model `CORTEX_MODEL`). SP8-1 adds the `docker.compose/v1` manifests no generator renders
+(`DOCKER_SEALS`, `on_docker`)."""
 
 from __future__ import annotations
 
 import importlib.util
 import socket
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 from typing import Any  # Any: JSON documents
@@ -118,6 +120,30 @@ def snowflake_manifest_of(draft: dict[str, Any]) -> dict[str, Any]:  # Any: a `/
             }
         ],
     }
+
+
+# the `app` a `docker.compose/v1` manifest may have been sealed with, by how it was sealed (None:
+# no `app` key)
+DOCKER_SEALS: dict[str, dict[str, Any] | None] = {
+    "docker": {"generator_version": "shifde.appgen.docker/1.0"},
+    "other-docker": {"generator_version": "shifde.appgen.docker/9.9"},
+    "databricks": {"generator_version": "shifde.appgen/1.0"},
+    "snowflake": {"generator_version": "shifde.appgen.snowflake/1.0"},
+    "no-version": {},
+    "no-app": None,
+}
+
+
+def on_docker(app: dict[str, Any] | None) -> Callable[[dict[str, Any]], None]:
+    """The edit that makes a manifest a `docker.compose/v1` one sealed with `app`."""
+
+    def edit(manifest: dict[str, Any]) -> None:
+        manifest["target_kind"] = "docker.compose/v1"
+        manifest.pop("app", None)
+        if app is not None:
+            manifest["app"] = dict(app)
+
+    return edit
 
 
 SNOWFLAKE_MANIFEST = snowflake_manifest_of(SNOWFLAKE_SAMPLE_DRAFT)
