@@ -187,23 +187,18 @@ def add_budget(
 
 
 def daily_since(s: Session, *tenant_ids: UUID) -> datetime:
-    """Start of the daily window of the earliest hold of `tenant_ids` that `s` sees (of their
-    earliest usage row when there is no hold).
+    """Start of the daily window of the earliest budget of `tenant_ids` that `s` sees.
 
     A test that asks for the window of the live clock when it asserts sums nothing if UTC midnight
-    passed since its rows were written (issue #366); this window follows the rows. The hold exists
-    before its charge and the charge never changes its `created_at`, so a usage row dated before
-    the hold's day stays outside the window and fails the sum. Where two clients are compared,
-    their rows and the hold must share a transaction (`created_at` is its start)."""
+    passed since its rows were written (issue #366). The window comes from the budget because the
+    test writes it itself and no ledger code does: a hold or a usage row that the code under test
+    dates before the budget's day stays outside the window and fails the sum. The budget must be
+    written no later than the rows it windows (in their transaction or in an earlier one)."""
     first = s.execute(
-        text(
-            "SELECT coalesce("
-            "(SELECT min(created_at) FROM shifde.budget_reservations WHERE tenant_id = ANY (:t)), "
-            "(SELECT min(occurred_at) FROM shifde.usage_events WHERE tenant_id = ANY (:t)))"
-        ),
+        text("SELECT min(created_at) FROM shifde.budgets WHERE tenant_id = ANY (:t)"),
         {"t": list(tenant_ids)},
     ).scalar_one()
-    assert first is not None, "no visible usage row or hold of these clients"
+    assert first is not None, "no visible budget of these clients"
     since = budgeting.period_start("daily", first.astimezone(UTC))
     assert since is not None
     return since

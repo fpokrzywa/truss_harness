@@ -123,18 +123,20 @@ def test_daily_since_is_the_day_of_the_rows_not_of_the_live_clock(
     )
     with pytest.raises(AssertionError):
         daily_since(s, tenant)
-    ledger.record(
-        s,
-        {
-            "tenant_id": tenant,
-            "event_key": "before-midnight",
-            "event_type": "tool_call",
-            "input_tokens": 250,
-            "output_tokens": 0,
-            "occurred_at": written,
-        },
+    budget = add_budget(s, tenant)
+    s.execute(
+        text("UPDATE shifde.budgets SET created_at = :c WHERE id = :b"),
+        {"c": written, "b": budget},
     )
-    rule = {"scope_type": "tenant", "scope_id": tenant, "period": "daily", "currency": None}
+
+    def record(key: str, tokens: int, occurred_at: datetime) -> None:
+        values = {"tenant_id": tenant, "event_key": key, "event_type": "tool_call",
+                  "input_tokens": tokens, "output_tokens": 0,
+                  "occurred_at": occurred_at}  # fmt: skip
+        ledger.record(s, values)
+
+    record("before-midnight", 250, written)
+    rule = {"id": budget, "scope_type": "tenant", "scope_id": tenant, "period": "daily"}
 
     def used(since: datetime | None) -> Decimal:
         return budgeting.used_amount(s, tenant, None, rule, metric="tokens", since=since)
@@ -142,14 +144,27 @@ def test_daily_since_is_the_day_of_the_rows_not_of_the_live_clock(
     assert used(budgeting.period_start("daily")) == 0  # the reported failure
     assert used(daily_since(s, tenant)) == 250
     assert daily_since(s, tenant) == datetime(2026, 3, 1, tzinfo=UTC)
-    # with a hold it is the hold's day, so a charge dated before it is not followed
-    reservations.reserve_invocation(s, tenant, [], 1, Decimal(0), None)
-    s.execute(
-        text("UPDATE shifde.budget_reservations SET created_at = :c WHERE tenant_id = :t"),
-        {"c": datetime(2026, 3, 2, 12, tzinfo=UTC), "t": tenant},
-    )
-    assert daily_since(s, tenant) == datetime(2026, 3, 2, tzinfo=UTC)
-    assert used(daily_since(s, tenant)) == 0
+    # a usage row and a hold dated before the budget's day do not move the window to themselves
+    day_before = datetime(2026, 2, 28, 23, 59, 59, tzinfo=UTC)
+    run = add_run(s, tenant)
+    holds = [
+        reservations.reserve_step(s, tenant, run, "m:1", [budget], 40, Decimal(0), None),
+        reservations.reserve_invocation(s, tenant, [budget], 60, Decimal(0), None),
+    ]
+
+    def used_and_held() -> tuple[Decimal, Decimal]:
+        since = daily_since(s, tenant)
+        return budgeting.used_and_held(s, tenant, None, rule, metric="tokens", since=since)
+
+    assert used_and_held() == (250, 100)
+    record("the-day-before", 7, day_before)
+    for hold, held in zip(holds, (60, 0), strict=True):
+        s.execute(
+            text("UPDATE shifde.budget_reservations SET created_at = :c WHERE id = :h"),
+            {"c": day_before, "h": hold},
+        )
+        assert used_and_held() == (250, held)
+    assert daily_since(s, tenant) == datetime(2026, 3, 1, tzinfo=UTC)
     s.rollback()
 
 
