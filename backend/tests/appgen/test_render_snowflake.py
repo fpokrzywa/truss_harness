@@ -318,6 +318,27 @@ def test_a_plain_table_name_renders_uppercased(table: str) -> None:
             "select 1 ->> execute immediate 'drop table x'",
             "the ->> flow operator is not allowed",
         ),
+        # a mark in an unquoted stage path and the functions refused by name (#375)
+        (
+            "select $1 from @s/it's ->> remove @s/o'x",
+            "a comment or quote mark in an unquoted stage path is not allowed",
+        ),
+        (
+            "select c.id from DEMO_DB.PUBLIC.CUSTOMERS c where c.id = @s'x'",
+            "a comment or quote mark in an unquoted stage path is not allowed",
+        ),
+        (
+            "select get_ddl('table', 't') from DEMO_DB.PUBLIC.CUSTOMERS c",
+            "GET_DDL, GET_PRESIGNED_URL and NEXTVAL are not allowed",
+        ),
+        (
+            "select seq.nextval from DEMO_DB.PUBLIC.CUSTOMERS c",
+            "GET_DDL, GET_PRESIGNED_URL and NEXTVAL are not allowed",
+        ),
+        (
+            "select identifier('sc.seq.nextval') from DEMO_DB.PUBLIC.CUSTOMERS c",
+            "must hold one plain string literal or name",
+        ),
         # a table outside the data reads (#358)
         (
             "select s.id from DEMO_DB.PUBLIC.SECRETS s",
