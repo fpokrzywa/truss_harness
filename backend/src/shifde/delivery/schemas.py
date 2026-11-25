@@ -22,7 +22,8 @@ from pydantic import (
     model_validator,
 )
 
-from shifde.adapters.native.contracts import EnvironmentSnapshot, PlanStep, Target
+from shifde.adapters.native.addresses import public_https_origin
+from shifde.adapters.native.contracts import EnvironmentSnapshot, PlanStep
 from shifde.adapters.native.palantir import source as palantir_source
 
 Strict = ConfigDict(extra="forbid")
@@ -72,8 +73,9 @@ class FabricBindings(BaseModel):
 
 class PalantirBindings(BaseModel):
     """A Palantir Marketplace target's bindings (Call S8-H): every RID, the product version, the
-    object type and the frontend asset. Each is checked with `palantir.source`'s validators; an
-    error never echoes the value."""
+    object type and the frontend asset. Each is checked with `palantir.source`'s validators, and
+    `frontend_origin` is a public HTTPS origin (`addresses.public_https_origin`, stored
+    normalized); an error never echoes the value."""
 
     model_config = Strict
     marketplace_rid: str
@@ -107,9 +109,9 @@ class PalantirBindings(BaseModel):
     @classmethod
     def _origin(cls, value: str) -> str:
         try:
-            return str(Target._validate_host(value))
+            return public_https_origin(value)
         except ValueError:  # `urlsplit` may echo the value
-            raise ValueError("frontend_origin must be an HTTPS origin") from None
+            raise ValueError("frontend_origin must be a public HTTPS origin") from None
 
 
 class DockerBindings(BaseModel):

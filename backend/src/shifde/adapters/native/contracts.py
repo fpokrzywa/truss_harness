@@ -155,7 +155,7 @@ class ValidationReport(Model):
 
 class Check(Model):
     name: Name
-    status: str = Field(pattern="^(passed|failed|skipped)$")
+    status: str = Field(pattern="^(passed|failed|skipped|not_run)$")
     required: bool = True
     evidence: Evidence = ""
 
@@ -510,7 +510,8 @@ class JobResultSubmission(LeaseProof):
     status: Literal["succeeded", "failed"]
     value: dict[str, JsonValue] | None = None
     error_code: (
-        Literal["execution_failed", "credential_unavailable", "snowflake_patch_limit"] | None
+        Literal["execution_failed", "credential_unavailable", "snowflake_patch_limit", "plan_stale"]
+        | None
     ) = None
 
     @model_validator(mode="after")

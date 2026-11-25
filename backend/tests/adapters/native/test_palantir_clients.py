@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import timedelta
 from typing import Any  # Any: httpx.Client keyword arguments
 from urllib.parse import parse_qs
@@ -16,6 +17,7 @@ import shifde.adapters.native.palantir.clients as clients
 from shifde.adapters.native.contracts import FoundryMarketplaceSpec, Target, utcnow
 from shifde.adapters.native.palantir.clients import FoundryCredentials, PalantirClient
 from shifde.adapters.native.palantir.source import bindings
+from tests.adapters.native.origins import NON_PUBLIC_ORIGINS
 
 HOST = "https://enrollment.example.test"
 ORIGIN = "https://native-app.example.test"
@@ -332,3 +334,14 @@ def test_the_token_request_carries_no_json_body() -> None:
     token, api = sent
     assert token.content and not token.content.startswith(b"{")
     assert json.loads(api.content) == {"a": 1}
+
+
+@pytest.mark.parametrize("origin", NON_PUBLIC_ORIGINS)
+def test_the_asset_of_a_non_public_frontend_origin_is_never_fetched(origin: str) -> None:
+    sent: list[httpx.Request] = []
+    target = _target()
+    broken = replace(bindings(target), frontend_origin=origin)
+    spec = FoundryMarketplaceSpec(frontend_asset_path="index.html")
+    with pytest.raises(ValueError, match="^must be a public HTTPS origin$"):
+        _client(_ok, sent, target=target).frontend_asset_sha256(broken, spec)
+    assert sent == []

@@ -2,6 +2,11 @@
 
 The product version, object type, frontend asset digest and every RID are target bindings: a new
 product version is a target change followed by a new plan, never part of the sealed release.
+
+A delivered descriptor (`delivery_files`, SP8-7) also holds the release digest and the digest of
+the target as the executor sees it: it is inside the artifact's digest, so the plan an approver
+quotes covers it, and the executor refuses a plan whose target changed (`plan_stale`). Nothing here
+makes a request; the API imports only this module of the package.
 """
 
 from __future__ import annotations
@@ -13,10 +18,12 @@ from dataclasses import dataclass
 from typing import Final
 from uuid import UUID
 
+from shifde.adapters.native.addresses import public_https_origin
 from shifde.adapters.native.contracts import (
     ApplicationSpec,
     FoundryMarketplaceSpec,
     Target,
+    canonical_bytes,
     digest,
 )
 
@@ -28,6 +35,9 @@ PALANTIR_PROFILE: Final = {
 }
 TOOLCHAIN_DIGEST = digest(PALANTIR_PROFILE)
 TERMINAL = "palantir-finalize"
+# the spec of every delivered release: the bindings name the frontend origin and the asset's digest
+DELIVERY_SPEC: Final = FoundryMarketplaceSpec(frontend_asset_path="index.html")
+DESCRIPTOR: Final = "deployment.json"
 
 OBJECT_TYPE = re.compile(r"^[A-Za-z][A-Za-z0-9_.]{0,127}$")
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
@@ -76,10 +86,6 @@ def _uuid(value: str) -> str:
     return str(UUID(value))
 
 
-def _origin(value: str) -> str:
-    return str(Target._validate_host(value))
-
-
 def _sha256(value: str) -> str:
     if not _SHA256.fullmatch(value):
         raise ValueError("invalid digest")
@@ -113,7 +119,7 @@ def bindings(target: Target) -> Bindings:
         parent_folder_rid=read("parent_folder_rid", lambda v: rid(v, "folder")),
         ontology_rid=read("ontology_rid", lambda v: rid(v, "ontology")),
         object_type=read("object_type", object_type),
-        frontend_origin=read("frontend_origin", _origin),
+        frontend_origin=read("frontend_origin", public_https_origin),
         frontend_asset_sha256=read("frontend_asset_sha256", _sha256),
         allow_preview_apis=read("allow_preview_apis", _flag),
     )
@@ -123,15 +129,63 @@ def files_for(spec: FoundryMarketplaceSpec) -> dict[str, bytes]:
     """The whole source: one immutable descriptor holding the canonical spec JSON."""
     spec = palantir_spec(spec)
     return {
-        "deployment.json": (
+        DESCRIPTOR: (
             json.dumps(spec.model_dump(mode="json"), sort_keys=True, separators=(",", ":")) + "\n"
         ).encode()
     }
 
 
+@dataclass(frozen=True, kw_only=True)
+class Delivery:
+    """What a delivered descriptor binds a plan to."""
+
+    bindings_digest: str
+    release_digest: str
+
+
+def delivery_files(
+    *, bindings_digest: str, release_digest: str, spec: FoundryMarketplaceSpec = DELIVERY_SPEC
+) -> dict[str, bytes]:
+    """The delivered source: one descriptor of exactly the spec, the digest of the target the plan
+    is for and the release's digest, as canonical JSON."""
+    value = {
+        "spec": palantir_spec(spec).model_dump(mode="json"),
+        "bindings_digest": _sha256(bindings_digest),
+        "release_digest": _sha256(release_digest),
+    }
+    return {DESCRIPTOR: canonical_bytes(value) + b"\n"}
+
+
+def read_delivery(
+    files: dict[str, bytes], spec: FoundryMarketplaceSpec = DELIVERY_SPEC
+) -> Delivery:
+    """The digests of a delivered source of `spec`; `ValueError` for any other source (a spec-only
+    descriptor included): the files must be byte for byte what `delivery_files` writes."""
+    try:
+        value = json.loads(files[DESCRIPTOR])
+        found = Delivery(
+            bindings_digest=value["bindings_digest"], release_digest=value["release_digest"]
+        )
+        expected = delivery_files(
+            bindings_digest=found.bindings_digest, release_digest=found.release_digest, spec=spec
+        )
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("Marketplace source is not a delivery descriptor") from None
+    if files != expected:
+        raise ValueError("Marketplace source is not a delivery descriptor")
+    return found
+
+
 def validate_source(files: dict[str, bytes], spec: FoundryMarketplaceSpec) -> None:
-    if files != files_for(spec):
-        raise ValueError("Marketplace source must be the immutable approved-product descriptor")
+    """The source is the spec-only descriptor or a delivered one of `spec`, byte for byte."""
+    if files == files_for(spec):
+        return
+    try:
+        read_delivery(files, spec)
+    except ValueError:
+        raise ValueError(
+            "Marketplace source must be the immutable approved-product descriptor"
+        ) from None
 
 
 def native_id(host: str, installation: str) -> str:

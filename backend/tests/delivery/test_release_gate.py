@@ -201,7 +201,11 @@ def test_the_target_kind_must_be_the_releases() -> None:
         assert refused.value.detail == "The release is for another kind of target."
 
 
-PLANNABLE = {("databricks.app/v1", "databricks"), ("snowflake.native-app/v1", "snowflake")}
+PLANNABLE = {
+    ("databricks.app/v1", "databricks"),
+    ("snowflake.native-app/v1", "snowflake"),
+    ("palantir.marketplace/v1", "palantir"),
+}
 
 
 def test_the_plan_gate_cases_are_five_kinds_by_five_platforms() -> None:
@@ -211,7 +215,7 @@ def test_the_plan_gate_cases_are_five_kinds_by_five_platforms() -> None:
 
 @pytest.mark.parametrize("platform", get_args(PlatformKind))
 @pytest.mark.parametrize("kind", TARGET_KINDS)
-def test_only_a_databricks_or_snowflake_release_is_planned_on_its_own_platform(
+def test_only_a_databricks_snowflake_or_palantir_release_is_planned_on_its_own_platform(
     kind: str, platform: str
 ) -> None:
     """SP8-1: a Docker release is refused everywhere, also on the Databricks target whose data

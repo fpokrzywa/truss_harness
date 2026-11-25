@@ -1,9 +1,10 @@
 """The runner on a Fabric, Palantir or Docker target (SP8-1): the dispatch table has the five
 platform kinds; the fake platform builds each new kind's adapter over one lazily built fake; a
-leased job of each new kind runs its broker check (a mismatch is `credential_unavailable`) and
-then fails closed (`execution_failed`) before any adapter or platform call and any journal intent.
+leased job of each new kind runs its broker check (a mismatch is `credential_unavailable`), and a
+Fabric or Docker one then fails closed (`execution_failed`) before any adapter or platform call and
+any journal intent. Palantir jobs run (SP8-7): `test_runner_palantir.py`.
 
-The gateway cannot yet give these targets' contexts (SP8-5, SP8-7 and SP8-9 map them), so
+The gateway cannot yet give the Fabric and Docker targets' contexts (SP8-5 and SP8-9 map them), so
 `Gateway` answers `context` with the mapped target and everything else through the in-process
 gateway; the plan job rows are `tests.delivery.sp8`'s."""
 
@@ -71,6 +72,7 @@ from tests.executor.support import (
     sp8_credentials_file,
 )
 
+FAIL_CLOSED = ("fabric", "docker")  # until SP8-5 and SP8-9
 GUID = "0a1b2c3d-0000-4000-8000-00000000abcd"
 ADDRESS = {
     "fabric": f"https://api.fabric.microsoft.com/v1/workspaces/{GUID}",
@@ -106,6 +108,7 @@ def _fake_platform(palantir_host: str = ADDRESS["palantir"]) -> FakePlatform:
     return FakePlatform(
         fabric=FakeFabricWorkspace(),
         palantir=FakeFoundryStack(
+            environment="test",
             host=palantir_host,
             frontend_origin=PALANTIR_BINDINGS["frontend_origin"],
             ontology_rid=PALANTIR_BINDINGS["ontology_rid"],
@@ -154,7 +157,8 @@ def test_the_fake_platform_builds_the_palantir_adapter_over_one_fake() -> None:
     fake = platform.palantir
     assert isinstance(adapter, PalantirMarketplaceAdapter)
     assert isinstance(fake, FakeFoundryStack) and fake.host == target.host
-    assert adapter.client_factory == fake.client_factory
+    client = adapter.client_factory(target)
+    assert client.platform == "fake" and client.transport is fake.transport
     platform.palantir_adapter(target, _foundry_ids)
     assert platform.palantir is fake
 
@@ -274,7 +278,7 @@ def _leased(flow: Flow, app_db: Database, owner_db: Database, kind: str) -> Leas
     return Leased(made, plan, Gateway(flow, kind, target, context_plan), platform)
 
 
-@pytest.mark.parametrize("kind", SP8_KINDS)
+@pytest.mark.parametrize("kind", FAIL_CLOSED)
 def test_a_leased_job_of_a_new_kind_fails_closed(
     flow: Flow,
     tmp_path: Path,
@@ -342,7 +346,7 @@ class NoPlatform(FakePlatform):
 
 
 @pytest.mark.parametrize("job_kind", ["plan", "apply", "observe", "verify", "reconcile"])
-@pytest.mark.parametrize("kind", SP8_KINDS)
+@pytest.mark.parametrize("kind", FAIL_CLOSED)
 def test_every_job_kind_fails_closed_before_any_adapter_or_checkpoint(
     tmp_path: Path, kind: str, job_kind: str
 ) -> None:

@@ -21,9 +21,10 @@ names a release the caller can read (else `release not found`), not withdrawn (4
 `release_withdrawn`), in the target's workspace and project (409 `release_target_mismatch`), with a
 passing evaluation of its digests (409 `evaluation_required`) and of the target's kind (409
 `target_kind_mismatch`: the manifest's `target_kind` is not of the target's `platform_kind`; only
-`databricks.app/v1` and `snowflake.native-app/v1` have a platform). The plan stores the release,
-its digest and the passing run; the artifact carries `release.json` and the plan digest the release
-digest. Approval checks the release again after the plan row lock; reject does not.
+`databricks.app/v1`, `snowflake.native-app/v1` and `palantir.marketplace/v1` have a platform). The
+plan stores the release, its digest and the passing run; the artifact carries `release.json` and the
+plan digest the release digest. Approval checks the release again after the plan row lock; reject
+does not.
 
 A `/2` release (compiler `packaging.service.COMPILER_VERSION_APP`, SP5 design 6.6) on a Databricks
 target deploys the generated app instead of the SDK template. After the checks above it is refused
@@ -47,6 +48,12 @@ account address, read from `Resolved.model.provider`; `Resolved` is gathered fir
 pin's `release_source_changed` may come before it). The render then refuses with
 `generator_version_unsupported` or `release_not_renderable` (a fixed detail: a pinned version may
 be one the requester cannot see).
+
+A Palantir target deploys a release's descriptor (SP8-7): `deployment.json` with the constant spec,
+the digest of the target as the executor will see it and the release's digest, plus
+`release.json`. Nothing is built for the platform and nothing is requested. After the checks above
+it is refused with 409, before any write: `palantir_preview_not_allowed` (the target's
+`allow_preview_apis` is not true) and `generator_version_unsupported` (a generated-app release).
 
 A plan is scoped by its target's workspace/project; a plan or target the caller cannot read gets
 the answer an unknown id gets. Every plan route first settles the organization's plans (the lost
@@ -76,6 +83,8 @@ from shifde.adapters.native.addresses import (
 from shifde.adapters.native.base import create_archive
 from shifde.adapters.native.contracts import DatabricksApplicationSpec
 from shifde.adapters.native.databricks.source import scaffold_files
+from shifde.adapters.native.palantir import source as palantir_source
+from shifde.adapters.native.planning import bindings_digest
 from shifde.adapters.runtime import IntegrationRuntime
 from shifde.appgen.render import GeneratorVersionUnsupported, ResolvedProvider, render
 from shifde.appgen.render_snowflake import ReleaseNotRenderable
@@ -104,6 +113,7 @@ APPROVAL_CONSTRAINT = "uq_delivery_approvals__tenant_plan"
 PLATFORM_OF_KIND = {
     "databricks.app/v1": "databricks",
     "snowflake.native-app/v1": "snowflake",
+    "palantir.marketplace/v1": "palantir",
 }
 
 
@@ -157,6 +167,10 @@ class CortexModelMismatch(AppError):
 
 class ModelNotInTargetAccount(AppError):
     status, code, title = 409, "model_not_in_target_account", "Conflict"
+
+
+class PalantirPreviewNotAllowed(AppError):
+    status, code, title = 409, "palantir_preview_not_allowed", "Conflict"
 
 
 def check_target_kind(manifest: Mapping[str, Any], platform_kind: str) -> None:
@@ -365,6 +379,8 @@ class PlanService:
         generator_version = service.app_generator_version(release["manifest"])
         if target["platform_kind"] == "snowflake":
             content, artifact_digest = self._snowflake_artifact(target, release)
+        elif target["platform_kind"] == "palantir":
+            content, artifact_digest = self._palantir_artifact(target, release)
         elif generator_version is None:
             content, artifact_digest = template_artifact(release["manifest"], release["digest"])
         else:
@@ -510,6 +526,23 @@ class PlanService:
         except (AddressRefused, ValueError):
             return False
         return origin == address
+
+    def _palantir_artifact(
+        self, target: Mapping[str, Any], release: Mapping[str, Any]
+    ) -> tuple[bytes, str]:
+        """The Marketplace descriptor's archive and digest (SP8-7): the preview opt-in, then a `/1`
+        release only."""
+        if target["bindings"].get("allow_preview_apis") is not True:
+            raise PalantirPreviewNotAllowed("The target does not allow Foundry preview APIs.")
+        manifest = release["manifest"]
+        if service.app_generator_version(manifest) is not None:
+            raise GeneratorVersionUnsupported("the release is a generated app release")
+        files = palantir_source.delivery_files(
+            bindings_digest=bindings_digest(service.adapter_target(target)),
+            release_digest=release["digest"],
+        )
+        files["release.json"] = canonical({"manifest": manifest, "digest": release["digest"]})
+        return archive(files)
 
     def _gate(
         self, target: Mapping[str, Any], release_id: UUID

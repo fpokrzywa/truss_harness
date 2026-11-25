@@ -1,6 +1,9 @@
 """Deployment targets and the one-platform-per-organization rule (design sections 3 and 9,
 DECISIONS B-2501, lead ruling B-2524; SP6 design 6.4).
 
+`adapter_target` is the one mapping of a target row to the adapter's `Target`: the job context and
+a Palantir plan's descriptor both use it, so both give the same bindings digest.
+
 A target is a Databricks workspace, a Snowflake account, a Fabric workspace, a Palantir Foundry
 stack or a Docker daemon (`platform_kind`). Its address is
 normalized and allow-listed by that platform's normalizer in `adapters.native.addresses` before
@@ -25,7 +28,8 @@ lost and expires sealed plans past `expires_at`. The plan routes are `delivery.p
 
 Deployments (design 4, section 9 items 5, 6, 8, 10, 11 and 18; B-2681..B-2687): the `apply`,
 `observe`, `verify` and `reconcile` result hooks drive a deployment from `leased` to `verified`,
-`failed` or `unknown_outcome` in the result's transaction, and `settle_deployments` applies the
+`failed` or `unknown_outcome` in the result's transaction (an apply refused `plan_stale` before
+any journal step is `failed` with that reason), and `settle_deployments` applies the
 settle rules after the lost-job sweep. Every move to `unknown_outcome` (a failed apply after a
 journal step, a succeeded apply with an open intent, settle rule (a) for a lost apply) writes one
 `delivery.deployment.unknown_outcome` audit row in the same transaction, under the fixed system
@@ -61,6 +65,7 @@ from shifde.adapters.native.contracts import (
     NativeObservation,
     PlanJobResult,
     ReconciliationResult,
+    Target,
     VerificationReport,
     digest,
 )
@@ -129,6 +134,23 @@ def claim_key(platform_kind: str, address: str) -> str:
     if platform_kind == "snowflake":
         return address_key(snowflake_claim_identity(address))
     return address_key(address)
+
+
+def adapter_target(row: Mapping[str, Any]) -> Target:
+    """The target `row` as its adapter takes it. Adapter bindings are strings: a Palantir target's
+    `allow_preview_apis` becomes `"true"` or `"false"`; any other kind's bindings are unchanged."""
+    bindings = row["bindings"]
+    if row["platform_kind"] == "palantir":
+        allowed = bindings.get("allow_preview_apis") is True
+        bindings = {**bindings, "allow_preview_apis": "true" if allowed else "false"}
+    return Target(
+        tenant_id=row["tenant_id"],
+        id=row["id"],
+        revision=row["revision"],
+        environment=row["environment"],
+        host=row["address"],
+        bindings=bindings,
+    )
 
 
 class TargetService:
@@ -892,10 +914,12 @@ POLL_DELAY = timedelta(seconds=15)  # settled call 5: the next observe/verify jo
 REQUIRED_CHECKS = ("native-runtime", "runtime-warehouse")
 APP_REQUIRED_CHECKS = (*REQUIRED_CHECKS, "app-deep-health")  # a generated app (SP5 6.6)
 SNOWFLAKE_REQUIRED_CHECKS = ("native-version", "runtime-health", "app-deep-health")  # SP6 6.4
+PALANTIR_REQUIRED_CHECKS = ("native-version", "ontology-read", "frontend-asset")  # SP8-7
 # target platform -> the checks of (a plan without, a plan with a generated app); None: no such plan
-REQUIRED_BY_PLATFORM: dict[str, tuple[tuple[str, ...] | None, tuple[str, ...]]] = {
+REQUIRED_BY_PLATFORM: dict[str, tuple[tuple[str, ...] | None, tuple[str, ...] | None]] = {
     "databricks": (REQUIRED_CHECKS, APP_REQUIRED_CHECKS),
     "snowflake": (None, SNOWFLAKE_REQUIRED_CHECKS),
+    "palantir": (PALANTIR_REQUIRED_CHECKS, None),
 }
 
 
@@ -1054,7 +1078,7 @@ def on_apply_result(session: Session, job: Mapping[str, Any], body: JobResultSub
     """The `apply` kind's result hook (B-2684). A receipt for another organization, target or
     artifact is refused (422, nothing changes). A succeeded apply with an unfinished step is an
     unknown outcome; otherwise ownership is recorded and observing starts. A failed apply after
-    any journal step is an unknown outcome, else `failed`."""
+    any journal step is an unknown outcome, else `failed` (its reason names a `plan_stale`)."""
     tenant_id = job["tenant_id"]
     receipt = None
     if body.status == "succeeded":
@@ -1084,6 +1108,8 @@ def on_apply_result(session: Session, job: Mapping[str, Any], body: JobResultSub
                 row,
                 f"apply failed after a platform write may have happened: {body.error_code}",
             )
+        elif body.error_code == "plan_stale":
+            _fail(session, row, "apply refused: plan_stale")
         else:
             _fail(session, row, "no platform write was attempted")
         return
@@ -1152,8 +1178,10 @@ def on_verify_result(session: Session, job: Mapping[str, Any], body: JobResultSu
     `native-runtime` and `runtime-warehouse` both passed, and for a generated app (the plan's
     release is `/2`, SP5 6.6) `app-deep-health` too, even when the report omits it. On a Snowflake
     target (SP6 6.4): only when `native-version`, `runtime-health` and `app-deep-health` all
-    passed. Otherwise `failed`. It fails closed: a target, plan or plan release that cannot be
-    read, or a Snowflake deployment whose plan has no generated-app release, is `failed`."""
+    passed. On a Palantir target (SP8-7): only when `native-version`, `ontology-read` and
+    `frontend-asset` all passed (`content-check` is never enough). Otherwise `failed`. It fails
+    closed: a target, plan or plan release that cannot be read, a Snowflake deployment whose plan
+    has no generated-app release, or a Palantir one whose plan has one, is `failed`."""
     row = _deployment(session, job, ("verifying",))
     if row is None:
         return
@@ -1181,8 +1209,8 @@ def on_verify_result(session: Session, job: Mapping[str, Any], body: JobResultSu
 
 def _required_checks(session: Session, row: Mapping[str, Any]) -> tuple[str, ...] | None:
     """The checks the deployment's verification needs, read in its organization only; None
-    (never verified) when its target, plan or the plan's release cannot be read, or a Snowflake
-    target's plan has no generated-app release."""
+    (never verified) when its target, plan or the plan's release cannot be read, a Snowflake
+    target's plan has no generated-app release or a Palantir target's plan has one."""
     target = repository.get_target(session, row["target_id"], tenant_id=row["tenant_id"])
     plan = repository.get_plan(session, row["plan_id"], tenant_id=row["tenant_id"])
     if target is None or plan is None or target["platform_kind"] not in REQUIRED_BY_PLATFORM:

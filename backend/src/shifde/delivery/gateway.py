@@ -56,7 +56,6 @@ from shifde.adapters.native.contracts import (
     OwnedResource,
     PlanJobResult,
     ReconciliationResult,
-    Target,
     VerificationReport,
 )
 from shifde.core.errors import AppError, NotFound, ValidationFailed
@@ -276,14 +275,7 @@ def job_context(
     session.commit()
     return JobContext(
         job=_leased_job(row),
-        target=Target(
-            tenant_id=tenant_id,
-            id=target["id"],
-            revision=target["revision"],
-            environment=target["environment"],
-            host=target["address"],
-            bindings=target["bindings"],
-        ),
+        target=service.adapter_target(target),
         platform_kind=target["platform_kind"],
         plan=None
         if plan is None

@@ -8633,7 +8633,8 @@
                 "enum": [
                   "execution_failed",
                   "credential_unavailable",
-                  "snowflake_patch_limit"
+                  "snowflake_patch_limit",
+                  "plan_stale"
                 ],
                 "type": "string"
               },
@@ -11926,7 +11927,7 @@
       },
       "PalantirBindings": {
         "additionalProperties": false,
-        "description": "A Palantir Marketplace target's bindings (Call S8-H): every RID, the product version, the\nobject type and the frontend asset. Each is checked with `palantir.source`'s validators; an\nerror never echoes the value.",
+        "description": "A Palantir Marketplace target's bindings (Call S8-H): every RID, the product version, the\nobject type and the frontend asset. Each is checked with `palantir.source`'s validators, and\n`frontend_origin` is a public HTTPS origin (`addresses.public_https_origin`, stored\nnormalized); an error never echoes the value.",
         "properties": {
           "allow_preview_apis": {
             "title": "Allow Preview Apis",

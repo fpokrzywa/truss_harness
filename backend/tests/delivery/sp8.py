@@ -1,8 +1,9 @@
 """Fabric, Palantir and Docker delivery test helpers (SP8-1): a test-only artifact of each target
 kind, its plan and its plan job.
 
-No release of these kinds can be planned before SP8-5, SP8-7 and SP8-9 (the plan route refuses
-their targets with `target_kind_mismatch`), so these rows are written here, as `shifde_app` in
+No Fabric or Docker release can be planned before SP8-5 and SP8-9 (the plan route refuses their
+targets with `target_kind_mismatch`), and a Palantir release is planned through the route
+(`tests.delivery.palantir`), so these rows are written here, as `shifde_app` in
 the organization's context, through the same repository and `gateway.enqueue_job` calls the plan
 route uses (the pattern of `tests.delivery.snowflake`).
 """
