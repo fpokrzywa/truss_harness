@@ -224,6 +224,42 @@ def test_a_failing_token_endpoint_is_a_credential_error(response: httpx.Response
     assert [request.url.path for request in sent] == ["/multipass/api/oauth2/token"]
 
 
+@pytest.mark.parametrize(
+    "answer",
+    [
+        ({"content-encoding": "gzip"}, b"not gzip " + SECRET.encode()),
+        *(
+            ({}, json.dumps({"access_token": token}, ensure_ascii=False).encode())
+            for token in (
+                "fixture-töken",
+                "fixture-token\n",
+                "fixture\ntoken",
+                "fixture-token ",
+                "\tfixture-token",
+                "fixture-token\x7f",
+            )
+        ),
+    ],
+    ids=["encoding", "non-ascii", "final-newline", "newline", "final-space", "tab", "del"],
+)
+def test_a_token_answer_that_cannot_be_decoded_or_sent_as_a_header_is_a_refusal(
+    answer: tuple[dict[str, str], bytes],
+) -> None:
+    headers, content = answer
+    sent: list[httpx.Request] = []
+
+    def token(request: httpx.Request) -> httpx.Response:
+        # `stream`: decoded when the client reads it, as a real answer is.
+        return httpx.Response(200, headers=headers, stream=httpx.ByteStream(content))
+
+    client = _client(_ok, sent, token=token)
+    with pytest.raises(PermissionError) as error:
+        client.request("GET", "/api/v2/x", preview=False)
+    assert str(error.value) == "Foundry native credential unavailable"
+    assert error.value.__cause__ is None and client.refused
+    assert [request.url.path for request in sent] == ["/multipass/api/oauth2/token"]
+
+
 def test_the_secret_and_token_stay_out_of_reprs() -> None:
     assert SECRET not in repr(CREDENTIALS)
     assert "fixture-client" in repr(CREDENTIALS)
@@ -402,6 +438,30 @@ def test_a_check_that_fails_while_the_token_is_minted_sends_no_request_with_it()
     with pytest.raises(Refused):
         client.request("GET", "/api/v2/x", preview=False)
     assert [request.url.path for request in sent] == ["/multipass/api/oauth2/token"]
+
+
+@pytest.mark.parametrize("other", [False, True], ids=["refused", "other-credentials"])
+def test_a_token_whose_check_failed_in_mid_mint_is_not_used_by_a_later_request(
+    other: bool,
+) -> None:
+    sent: list[httpx.Request] = []
+    checks = 0
+
+    def authorize() -> FoundryCredentials:
+        nonlocal checks
+        checks += 1
+        if checks != 2:  # the second is the one after the first mint
+            return CREDENTIALS
+        if other:
+            return replace(CREDENTIALS, client_secret="rotated-fixture")
+        raise Refused
+
+    client = _client(_ok, sent, authorize=authorize)
+    with pytest.raises(PermissionError if other else Refused):
+        client.request("GET", "/api/v2/x", preview=False)
+    client.request("GET", "/api/v2/y", preview=False)
+    token = "/multipass/api/oauth2/token"
+    assert [request.url.path for request in sent] == [token, token, "/api/v2/y"]
 
 
 def test_a_token_of_other_credentials_is_not_used() -> None:

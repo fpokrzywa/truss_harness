@@ -655,12 +655,22 @@ def test_a_palantir_secret_rotated_inside_verifys_second_mint_is_the_jobs_failur
     assert mid.sent == []
 
 
-NO_TOKEN = {
-    "4xx": (401, b""),
-    "5xx": (503, b""),
-    "not-json": (200, b"not json"),
-    "no-access-token": (200, b'{"token_type": "bearer"}'),
+NO_TOKEN: dict[str, tuple[int, dict[str, str], bytes]] = {
+    "4xx": (401, {}, b""),
+    "5xx": (503, {}, b""),
+    "not-json": (200, {}, b"not json"),
+    "no-access-token": (200, {}, b'{"token_type": "bearer"}'),
+    "broken-encoding": (200, {"content-encoding": "gzip"}, b"not gzip"),
+    "non-ascii-token": (200, {}, '{"access_token": "fixture-töken"}'.encode()),
 }
+
+
+def _no_token(answer: str) -> Callable[[httpx.Request], httpx.Response]:
+    status, headers, content = NO_TOKEN[answer]
+    # `stream`: decoded when the client reads it, as a real answer is.
+    return lambda _request: httpx.Response(
+        status, headers=headers, stream=httpx.ByteStream(content)
+    )
 
 
 @pytest.mark.parametrize("answer", NO_TOKEN)
@@ -668,17 +678,15 @@ def test_a_token_endpoint_refusing_verifys_second_mint_is_the_jobs_failure(
     mid: Mid, owner_db: Database, monkeypatch: pytest.MonkeyPatch, answer: str
 ) -> None:
     """Not a failed `ontology-read`; nothing is sent after the refused token request."""
-    status, content = NO_TOKEN[answer]
 
     def refuse(mid: Mid) -> None:
-        monkeypatch.setattr(
-            mid.stack, "_token", lambda _request: httpx.Response(status, content=content)
-        )
+        monkeypatch.setattr(mid.stack, "_token", _no_token(answer))
 
     _verify_refused(mid, owner_db, refuse, ONTOLOGIES, 2)  # the first client's last read
     assert mid.sent == [TOKEN_PATH]
 
 
+@pytest.mark.parametrize("answer", ["4xx", "non-ascii-token"])
 @pytest.mark.parametrize(
     ("path", "nth", "posts", "steps"),
     [
@@ -694,12 +702,14 @@ def test_a_palantir_token_refused_before_a_write_leaves_no_open_intent(
     nth: int,
     posts: list[str],
     steps: tuple[str, ...],
+    answer: str,
 ) -> None:
-    """The secret is rotated between two steps and the stack refuses the new one."""
+    """The secret is rotated between two steps and the stack refuses the new one or gives a token
+    that cannot be a header value."""
 
     def change(mid: Mid) -> None:
         _rotate(tmp_path)
-        monkeypatch.setattr(mid.stack, "_token", lambda _request: httpx.Response(401))
+        monkeypatch.setattr(mid.stack, "_token", _no_token(answer))
 
     deployment = _approved(mid.flow, mid.target, mid.runner)
     mid.after(path, change, nth)
