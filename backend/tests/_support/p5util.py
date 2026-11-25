@@ -4,6 +4,7 @@ published agent stacks and API shortcuts."""
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import os
 import signal
@@ -49,7 +50,11 @@ def thread_worker(
     """A real Worker running on a thread of the test process (fast iteration). It gets the
     composition root's internal tool registry (`worker_main.internal_tools()`), as the
     `shifde-worker` process does: this is the in-process agent-run worker of `tests/_support`
-    (`SubprocessWorker`, `python -m shifde.runtime.worker`, runs without one)."""
+    (`SubprocessWorker`, `python -m shifde.runtime.worker`, runs without one).
+
+    On exit it stops the worker and waits for its run thread and then for its heartbeat loop, 30
+    seconds for both together. `Worker.run` does not wait for the loop, and a heartbeat still in
+    progress can renew a lease after the caller has expired it."""
     worker = Worker(
         fast(settings),
         worker_id=f"test-{time.monotonic_ns()}",
@@ -59,13 +64,25 @@ def thread_worker(
         reap_seconds=reap,
         internal_tools=worker_main.internal_tools(),
     )
+    beating: list[threading.Thread] = []  # this worker's heartbeat thread, once its loop started
+    loop = worker._heartbeat_loop
+
+    @functools.wraps(loop)
+    def heartbeat_loop() -> None:
+        beating.append(threading.current_thread())
+        loop()
+
+    worker._heartbeat_loop = heartbeat_loop  # type: ignore[method-assign]
     thread = threading.Thread(target=worker.run, daemon=True)
     thread.start()
     try:
         yield worker
     finally:
         worker.request_stop()
+        end = time.monotonic() + 30
         thread.join(timeout=30)
+        for heartbeat in beating:
+            heartbeat.join(timeout=max(0.0, end - time.monotonic()))
 
 
 class SubprocessWorker:

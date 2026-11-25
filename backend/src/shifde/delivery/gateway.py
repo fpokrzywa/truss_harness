@@ -13,8 +13,9 @@ moves its deployment to `leased`; its first accepted `intent` moves it to `apply
 Every per-job call proves the current lease (`lease_id` and `fence`). A job of another
 organization, or one that does not exist, answers the same 404; a lease that is not the caller's
 current one answers 409 `lease_lost`, and nothing revives an expired lease. The journal mirrors
-the SDK journal: intent before write, no changed input digest, no conflicting receipt. A refusal
-changes nothing (the transaction is rolled back). Times are the database clock's.
+the SDK journal: intent before write, no changed input digest, no conflicting receipt. A new
+intent needs an active target; receipts, existing intents and results do not. A refusal changes
+nothing (the transaction is rolled back). Times are the database clock's.
 
 `JOB_KINDS` maps a job kind to its result model and an `on_result` hook run in the result's
 transaction (settled call 5): `plan` (`service.on_plan_result` seals or fails the plan), `apply`
@@ -349,7 +350,8 @@ def _entry(row: Row) -> JournalEntry:
 def checkpoint(
     session: Session, executor: AuthenticatedExecutor, job_id: UUID, body: CheckpointSubmission
 ) -> JournalEntry:
-    """Record a journal step: the intent before the platform write, the receipt after it."""
+    """Record a journal step: the intent before the platform write, the receipt after it. A new
+    intent needs the job's target active; a receipt and an intent already recorded do not."""
     tenant_id = executor.tenant_id
     row = _leased(session, executor, job_id, body)
     if body.sequence <= row["checkpoint_seq"]:
@@ -364,6 +366,13 @@ def checkpoint(
         raise InputDigestChanged("the step's input digest changed")
     if body.state == "intent":
         if current is None:
+            target = (
+                repository.get_target(session, row["target_id"], tenant_id=tenant_id)
+                if row["target_id"] is not None
+                else None
+            )
+            if target is None or target["status"] != "active":
+                raise TargetUnavailable("the job's target is not available")
             current = repository.insert_intent(
                 session,
                 {

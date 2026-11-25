@@ -96,6 +96,39 @@ def test_projects_follow_the_visibility_sets(world: World, app_db: Database) -> 
         assert listed(None, []) == {a.project}
 
 
+def test_more_visible_projects_than_bind_parameters_are_counted_and_listed(
+    world: World, app_db: Database
+) -> None:
+    """One array parameter (B-4135); PostgreSQL takes at most 65,535 parameters."""
+    a, b = world.a, world.b
+    unknown = [uuid7() for _ in range(69_999)]
+    with app_session(app_db, a.tenant) as s:
+
+        def count(visible_projects: list[UUID]) -> int:
+            return repository.count_projects(
+                s,
+                tenant_id=a.tenant,
+                workspace_id=None,
+                visible_workspace_ids=[],
+                visible_project_ids=visible_projects,
+            )
+
+        assert count([*unknown, a.project]) == 1
+        assert count([*unknown, b.project]) == 0
+        assert count([b.project]) == count([]) == 0
+        listed = repository.list_projects(
+            s,
+            tenant_id=a.tenant,
+            workspace_id=a.ws,
+            visible_workspace_ids=[],
+            visible_project_ids=[*unknown, a.project, b.project],
+            include_archived=False,
+            after=None,
+            limit=LIMIT,
+        )
+        assert [p.id for p in listed] == [a.project]
+
+
 def test_tenants_are_created_in_the_platform_administrator_context_only(
     world: World, app_db: Database
 ) -> None:

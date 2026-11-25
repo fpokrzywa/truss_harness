@@ -164,6 +164,10 @@ def test_a_read_sql_tool_on_an_active_snowflake_read_connection_publishes(
         ("select $1 from @s/it's ->> remove @s/o'x", "sql_stage_path"),
         ("select get_ddl('table', 't')", "sql_refused_function"),
         ("select seq.nextval", "sql_refused_function"),
+        # (#398)
+        ("select $1 from @s/a\\ 'b'", "sql_stage_path"),
+        ("select * from table(result_scan(last_query_id()))", "sql_refused_function"),
+        ("select getnextval(s)", "sql_refused_function"),
         (
             "select o.id from DEMO_DB.PUBLIC.ORDERS o where o.id = %(customer_id)s_x",
             "invalid_template",
@@ -218,7 +222,7 @@ RAW_WORDS = [
     (
         "select :nextval",
         "sql_refused_function",
-        "GET_DDL, GET_PRESIGNED_URL and NEXTVAL are not allowed",
+        "GET_DDL, GET_PRESIGNED_URL, NEXTVAL, GETNEXTVAL, RESULT_SCAN and LAST_QUERY_ID are not allowed",
     ),
     (
         "select :identifier(%(customer_id)s||'x')",

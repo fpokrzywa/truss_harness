@@ -8,7 +8,8 @@ from datetime import datetime
 from typing import Any  # Any: audit `details` is a redacted free-form JSON document
 from uuid import UUID
 
-from sqlalchemy import and_, insert, or_, select, text
+from sqlalchemy import Uuid, and_, any_, insert, literal, or_, select, text
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session
 
 from shifde.audit.models import AuditEvent
@@ -54,8 +55,8 @@ def recent_activity(
                     AuditEvent.project_id.is_(None),
                     AuditEvent.workspace_id.in_(list(visible_workspace_ids)),
                 ),
-                and_(
-                    AuditEvent.project_id.in_(list(readable_project_ids)),
+                and_(  # one array parameter, however many projects there are (B-4135)
+                    AuditEvent.project_id == any_(literal(list(readable_project_ids), ARRAY(Uuid))),
                     AuditEvent.workspace_id.in_(list(project_workspace_ids)),
                 ),
             )
