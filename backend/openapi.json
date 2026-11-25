@@ -8632,7 +8632,8 @@
               {
                 "enum": [
                   "execution_failed",
-                  "credential_unavailable"
+                  "credential_unavailable",
+                  "snowflake_patch_limit"
                 ],
                 "type": "string"
               },

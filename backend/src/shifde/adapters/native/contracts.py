@@ -509,7 +509,9 @@ class CheckpointSubmission(LeaseProof):
 class JobResultSubmission(LeaseProof):
     status: Literal["succeeded", "failed"]
     value: dict[str, JsonValue] | None = None
-    error_code: Literal["execution_failed", "credential_unavailable"] | None = None
+    error_code: (
+        Literal["execution_failed", "credential_unavailable", "snowflake_patch_limit"] | None
+    ) = None
 
     @model_validator(mode="after")
     def _value_or_error(self) -> Self:

@@ -21,7 +21,9 @@ command applies; the downgrade restores the runtime_0006 body exactly. Since `ru
 (its stored `retain_days` of either run class, or the 90-day default, pinned equal to the rule of
 `effective_days`); the downgrade restores the runtime_0008 body exactly. The command takes its
 cutoff from the database clock (B-3994). A case run of an evaluation that has not ended pins its
-family.
+family. `assist_0002` (issue #351, B-4010) gives the assist delete guard the same floor, hold and
+retention statements, its literals pinned to the command's; its downgrade restores the assist_0001
+body exactly (its behaviour is tested in `tests/assist/test_retention.py`).
 
 Isolation: with A deleted and B on legal hold (or with a longer stored `retain_days`), every row of
 B in the nine tables, `usage_events` and `audit_events` is byte-for-byte unchanged apart from B's
@@ -768,6 +770,10 @@ _GUARD_STATE = (
 )
 
 
+def _guard_state(function: str) -> str:
+    return _GUARD_STATE.replace("shifde.retention_delete_guard()", f"shifde.{function}()")
+
+
 def _body(create: str) -> str:
     return create.split("$$", 2)[1]
 
@@ -970,3 +976,73 @@ def test_a_privileged_role_is_refused(
     assert result.exit_code == 1
     assert "refusing to delete" in result.output
     assert _present(owner_db, run) == FULL
+
+
+# ------------------------------------------------------------------ the assist guard (#351, B-4010)
+def test_the_assist_0002_floor_and_defaults_are_the_ones_the_command_applies() -> None:
+    """assist_0002 mirrors `effective_days` in SQL; its literals must equal the command's."""
+    module = _migration("assist_0002")
+    assert max(RETENTION_FLOORS[c] for c in RUN_CLASSES) == module.FLOOR_DAYS
+    assert {c: RETENTION_DEFAULTS[c] for c in RUN_CLASSES} == module.RUN_DEFAULT_DAYS
+
+
+def test_the_assist_0002_floor_hold_and_retention_statements_are_runtime_0009s() -> None:
+    def statements(guard: str, after: str) -> str:
+        start = guard.index("  IF v_cutoff > pg_catalog.now()")
+        return guard[start : guard.index(after, start)]
+
+    mine = statements(_migration("assist_0002").GUARD, "  IF OLD.created_at IS NULL")
+    assert mine == statements(_migration("runtime_0009").GUARD, "  IF TG_TABLE_NAME = 'runs'")
+
+
+def test_the_assist_0002_downgrade_body_is_assist_0001s_guard() -> None:
+    assert _migration("assist_0002").PREVIOUS_GUARD == _migration("assist_0001").GUARD
+
+
+def test_the_downgrade_restores_the_assist_0001_guard(
+    run_id: str, admin_url: str, owner_url: str, app_url: str
+) -> None:
+    """On a scratch copy: assist_0002 down gives assist_0001's body, with the same owner, settings,
+    invoker rights, no PUBLIC execute and the two triggers; up again restores assist_0002's."""
+    name = f"{DB_PREFIX}{run_id}_asguard"
+    owner = make_url(owner_url).username or "shifde_owner"
+    app_role = make_url(app_url).username or "shifde_app"
+    admin = create_engine(admin_url, isolation_level="AUTOCOMMIT", poolclass=NullPool)
+    state = text(_guard_state("assist_retention_delete_guard"))
+    try:
+        with admin.connect() as c:
+            if c.execute(text("SELECT 1 FROM pg_database WHERE datname = :n"), {"n": name}).first():
+                _drop_database(c, name)
+            _create_database(c, name, owner, app_role, f"{DB_PREFIX}{run_id}_tmpl")
+        url = _with_db(owner_url, name)
+        cfg = alembic_config(url)
+        engine = create_engine(url, poolclass=NullPool)
+        try:
+            with engine.connect() as c:
+                upgraded = c.execute(state).one()
+            assert upgraded[0] == _body(_migration("assist_0002").GUARD)
+            command.downgrade(cfg, "assist_0001")
+            with engine.connect() as c:
+                downgraded = c.execute(state).one()
+                versions = set(
+                    c.execute(text("SELECT version_num FROM shifde.alembic_version")).scalars()
+                )
+            assert "assist_0002" not in versions and "assist_0001" in versions
+            assert downgraded[0] == _body(_migration("assist_0001").GUARD)
+            assert downgraded[1:] == upgraded[1:]
+            assert tuple(downgraded[1:]) == (
+                ["search_path=pg_catalog, pg_temp"],
+                False,
+                False,
+                owner,
+                2,
+            )
+            command.upgrade(cfg, "heads")
+            with engine.connect() as c:
+                assert c.execute(state).one() == upgraded
+        finally:
+            engine.dispose()
+    finally:
+        with contextlib.suppress(Exception), admin.connect() as c:
+            _drop_database(c, name)
+        admin.dispose()

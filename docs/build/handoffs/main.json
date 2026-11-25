@@ -1,8 +1,8 @@
 {
-  "session_id": "cd676343-c962-433a-a6d5-27e2ea15187e",
-  "head_sha": "4c08590e3235321688f538443680a7f678b9f344",
+  "session_id": "fa50758a-e990-4e5d-a659-7e40ade9970e",
+  "head_sha": "b8111bb2c4068247547812760d64d5a78111c1d9",
   "branch": "main",
-  "unit_in_progress": "none",
-  "next_step": "Per docs/build/HANDOFF.md: job queue; resume 180, 184, 176 (build round 2 with feedback-1.md), 177 (reviews), 181 (gate), 182 (isolation review, approver); 173 and 183 wait for rulings",
-  "written_at": "2026-11-25T01:41:55Z"
+  "unit_in_progress": "charter 7 factory run",
+  "next_step": "Per docs/build/HANDOFF.md: job queue; 185 and 188 approvers, 187 reviewers, 184 and 186 gates; hosted DB setup due",
+  "written_at": "2026-11-25T05:06:25Z"
 }

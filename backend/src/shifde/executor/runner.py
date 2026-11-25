@@ -16,8 +16,9 @@ While a job runs it is heartbeated in the background; a 409 marks the lease lost
 
 `apply` writes at most once: before each platform write the adapter's journal posts an `intent`
 checkpoint and writes only once the gateway acknowledged it; afterwards it posts `complete`.
-Any exception ends the job with one failed result `execution_failed` (none once the lease is
-lost: the server's sweep decides `unknown_outcome` or `failed`). Nothing is retried here; the
+Any exception ends the job with one failed result `execution_failed` (none once the lease is lost:
+the server's sweep decides `unknown_outcome` or `failed`), except a `plan` job that finds no free
+patch in the Snowflake package, which fails `snowflake_patch_limit`. Nothing is retried here; the
 server re-queues read-only jobs after a lost lease. A failed result never carries error text.
 
 The platform is real (`RealPlatform`: the pinned Databricks CLI and workspace REST reads with
@@ -110,7 +111,11 @@ from shifde.adapters.native.palantir.clients import FoundryCredentials, Palantir
 from shifde.adapters.native.palantir.fake import FakeFoundryStack
 from shifde.adapters.native.planning import bindings_digest, seal_plan
 from shifde.adapters.native.snowflake import source as snowflake_source
-from shifde.adapters.native.snowflake.adapter import RESOURCE_KEY_OF_TYPE, SnowflakeNativeAdapter
+from shifde.adapters.native.snowflake.adapter import (
+    RESOURCE_KEY_OF_TYPE,
+    SnowflakeNativeAdapter,
+    SnowflakePatchLimit,
+)
 from shifde.adapters.native.snowflake.clients import (
     CredentialProvider,
     SnowflakeKeyPair,
@@ -132,12 +137,13 @@ HEARTBEAT_SECONDS = 15.0  # against the gateway's 45 s lease
 POLL_SECONDS = 2.0
 # application_id = uuid5(namespace, "<target_id>/<application_key>") (B-2690)
 APPLICATION_NAMESPACE = UUID("6f1c2a4e-8d3b-5e7f-9a10-b2c3d4e5f607")
+CORTEX_MODEL_BINDING = "cortex_model"
 RELEASE_ENTRY = "release.json"  # the release a plan deploys, at the artifact's root (SP3-4)
 
 TokenProvider = Callable[[str], str]
 FabricCredentialProvider = Callable[[], FabricCredentials]
 FoundryCredentialProvider = Callable[[str], FoundryCredentials]
-ErrorCode = Literal["execution_failed", "credential_unavailable"]
+ErrorCode = Literal["execution_failed", "credential_unavailable", "snowflake_patch_limit"]
 TargetKind = Literal["databricks", "snowflake", "fabric", "palantir", "docker"]
 Adapter = DatabricksAdapter | SnowflakeNativeAdapter
 
@@ -248,7 +254,8 @@ class FakePlatform:
     what apply deployed. The Databricks fake accepts writes by the job's service principal and
     treats the target's bound warehouse as existing. The Snowflake fake is built on first use with
     `environment` (the executor's `SHIFDE_ENV`; it refuses anything but development and test) and
-    the public key of the job's key pair, so it accepts the JWTs signed with the entry's key.
+    the public key of the job's key pair, so it accepts the JWTs signed with the entry's key; it
+    treats the target's bound Cortex model as available in the target host's sample account.
     The Fabric workspace, Foundry stack (for the first target's host, frontend origin and
     ontology) and Docker daemon (for the first target's daemon id; it refuses outside development
     and test) fakes are each built on first use and kept for the process."""
@@ -294,13 +301,20 @@ class FakePlatform:
             )
         return self.snowflake
 
+    def _snowflake_gateway(
+        self, target: Target, credential_provider: CredentialProvider
+    ) -> SnowflakeSqlApi:
+        fake = self.snowflake_fake(credential_provider())
+        model = target.bindings.get(CORTEX_MODEL_BINDING)
+        if model:
+            fake.data(target.host).cortex.setdefault(model, [])
+        return fake.gateway(target, credential_provider)
+
     def snowflake_adapter(
         self, target: Target, credential_provider: CredentialProvider
     ) -> SnowflakeNativeAdapter:
         return SnowflakeNativeAdapter(
-            gateway_factory=lambda t: self.snowflake_fake(credential_provider()).gateway(
-                t, credential_provider
-            ),
+            gateway_factory=lambda t: self._snowflake_gateway(t, credential_provider),
             copier_factory=lambda t: self.snowflake_fake(credential_provider()).copier(t),
         )
 
@@ -638,7 +652,10 @@ class Runner:
         if job.kind == "plan":
             store = ReleaseArtifactStore()
             artifact = self._artifact(state, ctx.plan, target, store, app_id, build)
-            planned = adapter.plan(PlanRequest(artifact=artifact), read)
+            try:
+                planned = adapter.plan(PlanRequest(artifact=artifact), read)
+            except SnowflakePatchLimit:
+                raise JobFailure("snowflake_patch_limit") from None
             return PlanJobResult(
                 steps=planned.steps,
                 snapshot=planned.snapshot,

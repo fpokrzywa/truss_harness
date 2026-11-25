@@ -123,8 +123,8 @@ All keys exist in the catalog today except `appgen:request:write`, which SP5-2 (
 | `solution` | `packaging.service.SolutionService.get(ws, proj, id)` |
 | `release` | `packaging.service.scoped_release(scope, id)`; its `project_id` must equal the request's |
 | `target` | `delivery.service.TargetService.get(id)`; in this project or its workspace |
-| `plan` | `delivery.plans.PlanService.get(id)`; its target in this project or workspace |
-| `deployment` | `delivery.deployments.DeploymentService.get(id)`; same rule |
+| `plan` | `delivery.plans.PlanService.get(id)`; its target in this project or workspace and its release in this project (a plan without a release is refused) |
+| `deployment` | `delivery.deployments.DeploymentService.get(id)`; same rule, its plan's release in this project |
 | `evaluation_run` | `evaluation.service.EvaluationService.get_run(id)`; its release in this project |
 
   Not visible or not in this project gives 404 `context not found`, and nothing is stored. (These getters may commit their settle step before the insert; this is the API path, not a run step.)
@@ -205,8 +205,10 @@ Routes `POST /orgs/{org}/assist/proposals/{id}/accept` (body `{}`) and `/dismiss
 - The accepter must be able to read `result_ref` (it was created by them in their scope); the detail route shows `result_ref` only to callers who can read the referenced object.
 - No catalog entry holds `delivery:plan:approve`; a test scans `INTERNAL_FUNCTIONS` and `assist/tools.py` and fails on any call to an approve, reject, accept-draft, apply, cancel, reconcile or mark-failed function. The accepting person becomes the plan's requester, so SP2's self-approval refusal (`SelfApprovalForbidden`) applies to them.
 - Accept is idempotent: a second accept of an `accepted` proposal returns it unchanged; `dismissed` or `failed` gives 409 `proposal_not_open`.
+- A proposal dismissed while an accept holds its claim stays `dismissed` with `result_ref` null, and the accepter gets 409 `proposal_not_open`. If the owning service had created the object, `assist.proposal.accept_superseded` naming it (`result_ref {kind, id}`, no payload) is committed before the 409, so the object's record is never lost; if the service refused, nothing was created and no such event is written (issue #351, B-4011).
+- Every answer carrying a proposal shows its `payload` only to a caller who holds the kind's read permissions on the request's project and can read the connection (`appgen_request`) or target (`delivery_plan`) it names; otherwise, and for a missing or malformed id, it is null (issue #351, B-4012).
 
-Audit: `assist.proposal.created|accepted|failed|dismissed` with kind and `result_ref`.
+Audit: `assist.proposal.created|accepted|failed|dismissed|accept_superseded` with kind and `result_ref`.
 
 ## 7. The board (Calls S7-F, S7-G)
 
@@ -262,7 +264,7 @@ Migration branch `assist`, one file `assist_0001_assist`: `revision="assist_0001
 
 **Retention (Call S7-J).** Same pattern as `runtime_0006` (grants plus a guard trigger, no SQL function):
 - `maintenance purge --older-than` sets `text = ''`, `context = NULL` on requests older than the cutoff whose run has ended (or is gone); the run's own payload (`input`, `variables.context`) is scrubbed by the existing run purge.
-- `maintenance delete --older-than` deletes requests whose `run_id` no longer exists or is NULL, older than the cutoff. `assist_0001` grants DELETE on `assist_requests` and `assist_proposals` to `shifde_app` and adds `BEFORE DELETE` triggers that call `shifde.retention_delete_guard()`'s rule for these tables (refuse unless `shifde.retention_delete_cutoff` is set and the row's `created_at` is before it). Both run as the app role, client by client.
+- `maintenance delete --older-than` deletes requests whose `run_id` no longer exists or is NULL, older than the cutoff. `assist_0001` grants DELETE on `assist_requests` and `assist_proposals` to `shifde_app` and adds `BEFORE DELETE` triggers that call `shifde.retention_delete_guard()`'s rule for these tables (refuse unless `shifde.retention_delete_cutoff` is set and the row's `created_at` is before it). Since `assist_0002` (issue #351, B-4010) the guard also refuses, with the statements of `runtime_0009`, a cutoff later than `now()` minus the run retention floor, a client with a legal hold on any data class and a cutoff later than `now()` minus the client's effective run retention. Both run as the app role, client by client.
 
 **Permissions** (`is_privileged` false except `assist:admin` and `assist:install`): `assist:request:read`, `assist:request:write`, `assist:proposal:accept`, `assist:install` (project scope), `assist:admin` (tenant scope). Role grants (`authz_0001` role ids): `tenant_administrator` all five; `workspace_administrator` and `project_administrator` `assist:request:read|write`, `assist:proposal:accept`, `assist:install`; `developer` `assist:request:read|write`, `assist:proposal:accept`; `viewer`, `operator`, `auditor` `assist:request:read`. None goes to `platform_administrator` (authz_0002's constraint). The board adds no permission.
 

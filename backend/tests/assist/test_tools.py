@@ -7,8 +7,8 @@ with their versions' entrypoint and screens, releases with status, digest and di
 evaluation runs with each threshold's result, costs, budgets with what is left, the project's
 board and the targets of the project and its workspace without any `credential_ref`. Results are
 capped at 64 KiB (`truncated`). Every function succeeds on a session whose `commit` and
-`rollback` raise. An id of client B, of project P2 or unknown answers `not_found` and a propose
-naming one stores nothing; a proposal's tables are checked against the latest discovery; a replay
+`rollback` raise. An id of client B, of project P2 or unknown answers `not_found` (so does an
+evaluation run of theirs with P1's release) and a propose naming one stores nothing; a proposal's tables are checked against the latest discovery; a replay
 of a propose step answers the same proposal; a run that serves no assist request is
 `not_an_assist_run`. A scan finds no approve, reject, accept-draft, apply, cancel, reconcile or
 mark-failed call in `assist/tools.py` or the declarations. Each test has a database of its own.
@@ -348,6 +348,29 @@ def test_ids_of_another_client_or_project_are_not_found(
         out = _run(w, owner_session, key, args, run=w.runs[specialist], commit=True)
         assert out == not_found, (key, args)
     assert _proposals(owner_session) == []
+
+
+@pytest.mark.parametrize("where", ["b", "p2", "unknown"])
+def test_an_evaluation_run_of_another_client_or_project_is_not_found(
+    w: W, owner_session: Session, where: str
+) -> None:
+    """P1's release with B's, P2's or an unknown `evaluation_run_id` (issue #351)."""
+
+    def run_of(release: str) -> str:
+        [(run_id,)] = rows(
+            owner_session, "SELECT id::text FROM shifde.evaluation_runs WHERE release_id = :r",
+            r=w.release[release],
+        )  # fmt: skip
+        return str(run_id)
+
+    foreign = str(uuid7()) if where == "unknown" else run_of(where)
+    args = {"release_id": w.release["p1"], "evaluation_run_id": foreign}
+    out = _run(w, owner_session, "seth.evaluations.read", args)
+    assert out == {"error": "not_found", "truncated": False}
+    own = run_of("p1")
+    mine = _run(w, owner_session, "seth.evaluations.read", {**args, "evaluation_run_id": own})
+    assert mine["release_id"] == w.release["p1"]
+    assert [r["id"] for r in mine["runs"]] == [own]
 
 
 def test_an_id_that_is_not_a_uuid_is_not_found_or_an_invalid_payload(

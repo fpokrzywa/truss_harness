@@ -13,12 +13,15 @@ row and no log record.
 from __future__ import annotations
 
 import logging
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from shifde.core.db import Database
 from shifde.core.ids import uuid7
+from shifde.delivery.service import plan_project
 from tests._support.assist_fixtures import (
     PICKS_COST,
     assist_model,
@@ -31,11 +34,23 @@ from tests._support.assist_fixtures import (
     sent,
 )
 from tests._support.fullapp import World
-from tests._support.p2util import post
+from tests._support.p2util import post, tenant_id
 from tests._support.p3util import ADMIN, ADMIN_B, A, B
-from tests._support.p5util import Hdr, user_session
-from tests.assist.helpers import P2, PROJECT, add_project, enable, installed, project_member, rows
+from tests._support.p5util import Hdr, limited_user, user_session
+from tests.assist.helpers import (
+    P2,
+    PROJECT,
+    add_project,
+    enable,
+    installed,
+    project_member,
+    project_of,
+    rows,
+    user_of,
+)
 from tests.assist.helpers import set_settings as settings_of
+from tests.board.conftest import bound_target, deployment, plan, solution
+from tests.tenancy.conftest import app_session
 
 VIEWER_ROLE = "01900000-0000-7000-8000-000000000005"
 SECRET = "zebra-quokka-7731"  # a marker of the request text, searched in audit rows and logs
@@ -166,6 +181,101 @@ def test_a_context_outside_the_project_is_404(
     out = sent(c, admin, {"text": "what is this", "context": {"kind": "solution", "id": mine}})
     assert out["context"] == {"kind": "solution", "id": mine}
     assert request_row(owner_session, out["id"])["context"] == {"kind": "solution", "id": mine}
+
+
+def _stored(owner: Session) -> list[tuple[object, ...]]:
+    """What an assist request writes: requests, jobs, runs and its audit events."""
+    return rows(
+        owner, "SELECT (SELECT count(*) FROM shifde.assist_requests), "
+        "(SELECT count(*) FROM shifde.jobs), (SELECT count(*) FROM shifde.runs), "
+        "(SELECT count(*) FROM shifde.audit_events WHERE action LIKE 'assist.request.%')",
+    )  # fmt: skip
+
+
+def test_a_plan_or_deployment_of_another_projects_release_is_404(
+    admin: Hdr, owner_session: Session, owner_db: Database
+) -> None:
+    c = admin.client
+    add_project(admin, "other")
+    a = tenant_id(owner_session, "demo-a")
+    ws, p1 = (UUID(i) for i in project_of(owner_session, "demo-a"))
+    _, p2 = (UUID(i) for i in project_of(owner_session, "demo-a", "other"))
+    shared = bound_target(owner_db, a, ws)  # workspace-level: it takes releases of P1 and of P2
+
+    def contexts(release: UUID | None, on: UUID = shared) -> list[dict[str, str]]:
+        plan_id = plan(owner_db, a, on, release)
+        made = deployment(owner_db, a, plan_id, on, "verified")
+        return [{"kind": "plan", "id": str(plan_id)}, {"kind": "deployment", "id": str(made)}]
+
+    of_p1 = contexts(solution(owner_db, a, ws, p1).first)
+    of_p2 = contexts(solution(owner_db, a, ws, p2).first)
+    no_release = contexts(None) + contexts(None, bound_target(owner_db, a, ws, p1))
+    before = _stored(owner_session)
+    for context in of_p2 + no_release:
+        hidden = send(c, admin, {"text": "what is this", "context": context})
+        unknown = send(c, admin, {"text": "what is this",
+                                  "context": {**context, "id": str(uuid7())}})  # fmt: skip
+        assert hidden.status_code == unknown.status_code == 404, (context, hidden.text)
+        bodies = [{k: v for k, v in r.json().items() if k != "request_id"}
+                  for r in (hidden, unknown)]  # fmt: skip
+        assert bodies[0] == bodies[1] and bodies[0]["detail"] == "context not found"
+    assert _stored(owner_session) == before
+    # the controls: each in its own release's project, on the same target
+    for project, accepted in ((PROJECT, of_p1), (P2, of_p2)):
+        for context in accepted:
+            out = sent(c, admin, {"text": "what is this", "context": context}, project=project)
+            assert out["context"] == context
+
+
+def test_the_release_project_check_asks_no_permission_on_the_release(
+    client: TestClient,
+    world: World,
+    admin: Hdr,
+    owner_session: Session,
+    owner_db: Database,
+    app_db: Database,
+) -> None:
+    add_project(admin, "other")
+    a, b = tenant_id(owner_session, "demo-a"), tenant_id(owner_session, "demo-b")
+    ws, p1 = (UUID(i) for i in project_of(owner_session, "demo-a"))
+    _, p2 = (UUID(i) for i in project_of(owner_session, "demo-a", "other"))
+    shared = bound_target(owner_db, a, ws)
+    release = solution(owner_db, a, ws, p1).first
+    mine = plan(owner_db, a, shared, release)
+    theirs = plan(owner_db, a, shared, solution(owner_db, a, ws, p2).first)
+    email = "plan-reader@demo-a.local"
+    perms = ["workspace:read", "project:read", "assist:request:read", "assist:request:write",
+             "delivery:target:read", "delivery:plan:read"]  # fmt: skip
+    limited_user(admin.client, owner_session, admin, world.passwords, email, perms)
+    member = user_session(client, world.passwords, email)
+    # the plan is readable, its release is not
+    shown = member.client.get(f"{A}/delivery/plans/{mine}", headers=member)
+    assert shown.status_code == 200 and shown.json()["release_id"] is None, shown.text
+    context = {"kind": "plan", "id": str(mine)}
+    out = sent(member.client, member, {"text": "what is this", "context": context})
+    assert out["context"] == context and str(release) not in str(out)
+    r = send(member.client, member, {"text": "what is this",
+                                     "context": {"kind": "plan", "id": str(theirs)}})  # fmt: skip
+    assert r.status_code == 404 and r.json()["detail"] == "context not found", r.text
+    # the release is read in the given client only
+    for tenant, person, expected in ((a, ADMIN, p1), (b, ADMIN_B, None)):
+        with app_session(app_db, tenant, UUID(user_of(owner_session, person))) as s:
+            assert plan_project(s, mine, tenant_id=tenant) == expected
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"text": f"{SECRET}\x00b"}, {"text": SECRET, "specialist": f"{SECRET}\x00"}],
+    ids=["text", "specialist"],
+)
+def test_a_nul_is_422_and_nothing_is_stored(
+    admin: Hdr, owner_session: Session, body: dict[str, str]
+) -> None:
+    before = _stored(owner_session)
+    r = send(admin.client, admin, body)
+    assert r.status_code == 422 and r.json()["code"] == "validation_error", r.text
+    assert SECRET not in r.text
+    assert _stored(owner_session) == before
 
 
 def test_the_text_is_1_to_4000_characters_after_strip(admin: Hdr, owner_session: Session) -> None:

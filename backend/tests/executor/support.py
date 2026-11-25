@@ -1,6 +1,6 @@
 """Executor test helpers: a credentials file (Databricks, Snowflake with its key file, or Fabric,
-Palantir or Docker with its secret file), a runner over the in-process gateway and the fake
-platform, and the requester's plan request."""
+Palantir or Docker with its secret file), the Snowflake fake of a key, a runner over the in-process
+gateway and the fake platform, and the requester's plan request."""
 
 from __future__ import annotations
 
@@ -15,8 +15,9 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
 from shifde.adapters.native.databricks.fake import FakeDatabricksPlatform
+from shifde.adapters.native.snowflake.fake import FakeSnowflakeNativePlatform
 from shifde.executor.client import GatewayClient
-from shifde.executor.credentials import CredentialBroker
+from shifde.executor.credentials import CredentialBroker, snowflake_account
 from shifde.executor.runner import FakePlatform, Runner
 from tests.connections.routes import as_user
 from tests.delivery.routes import Flow, request_plan
@@ -127,21 +128,38 @@ def sp8_credentials_file(
     return path
 
 
+def snowflake_fake(address: str, pem: str) -> FakeSnowflakeNativePlatform:
+    """A Snowflake fake that accepts `pem`'s JWTs for the target's account."""
+    key = serialization.load_pem_private_key(pem.encode(), password=None)
+    assert isinstance(key, rsa.RSAPrivateKey)
+    return FakeSnowflakeNativePlatform(
+        environment="test",
+        public_key=key.public_key(),
+        account=snowflake_account(address),
+        user=SNOWFLAKE_USER,
+    )
+
+
 def fake_platform() -> FakeDatabricksPlatform:
     return FakeDatabricksPlatform(service_principal=DEPLOYER)
 
 
 def make_runner(
-    client: TestClient, token: str, credentials: Path, fake: FakeDatabricksPlatform
+    client: TestClient,
+    token: str,
+    credentials: Path,
+    fake: FakeDatabricksPlatform,
+    snowflake: FakeSnowflakeNativePlatform | None = None,
 ) -> Runner:
-    """A runner of the executor holding `token`, against `fake`, over the in-process gateway."""
+    """A runner of the executor holding `token`, against `fake` (and the Snowflake fake), over the
+    in-process gateway."""
     gateway = GatewayClient("https://testserver", token, http=client)
     me = gateway.whoami()
     return Runner(
         gateway,
         CredentialBroker.from_file(credentials),
         me.executor_id,
-        FakePlatform(fake),
+        FakePlatform(fake, snowflake=snowflake, environment="test"),
         tenant_id=me.tenant_id,
     )
 
