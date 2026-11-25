@@ -225,6 +225,35 @@ def test_a_hidden_workspace_keeps_the_success_and_the_403_of_a_readable_project(
     )
 
 
+def test_a_project_read_under_a_hidden_workspace_answers_as_under_an_unknown_one(
+    client: TestClient, world: World, owner_db: Database
+) -> None:
+    """Issue #394 (DECISIONS B-4134): the person's only role is at the other workspace."""
+    reads = ["workspace:read", "project:read"]
+    at_ws2: dict[str, Any] = {"scope_type": "workspace", "scope_id": world.a.ws2}
+    login(client, _member(owner_db, world, reads, **at_ws2))
+    ws = _ws(world)
+    hidden, own = f"{ws}/{ws_slug(world.a)}", f"{ws}/{ws2_slug(world.a)}"
+    unknown = client.get(f"{ws}/nope/projects/nope")
+    assert unknown.json()["detail"] == "workspace not found"
+    for slug in (project_slug(world.a), "nope"):
+        same_404(client.get(f"{hidden}/projects/{slug}"), unknown)
+    missing = client.get(f"{own}/projects/nope")
+    assert (missing.status_code, missing.json()["detail"]) == (404, "project not found")
+
+
+def test_a_readable_project_of_a_hidden_workspace_stays_readable(
+    client: TestClient, world: World, owner_db: Database
+) -> None:
+    ws = _ws(world)
+    hidden = f"{ws}/{ws_slug(world.a)}"
+    login(client, _member(owner_db, world, ["project:read"]))
+    assert client.get(hidden).status_code == 404  # no `workspace:read`
+    shown = client.get(f"{hidden}/projects/{project_slug(world.a)}")
+    assert (shown.status_code, shown.json()["id"]) == (200, str(world.a.project))
+    same_404(client.get(f"{hidden}/projects/nope"), client.get(f"{ws}/nope/projects/nope"))
+
+
 def test_org_creation_and_scope_all_are_platform_admin_only(
     client: TestClient, people: People
 ) -> None:
