@@ -11,7 +11,12 @@ import random
 import pytest
 
 from shifde.adapters.base import AdapterFailure, ErrorClass
-from shifde.adapters.dataplatforms.sqlapi import _NOT_READ, check_read_only
+from shifde.adapters.dataplatforms.sqlapi import (
+    _COLON_COMMENT,
+    _NOT_READ,
+    _REFUSED_CHARACTER,
+    check_read_only,
+)
 from shifde.build.tools import named_sql, positional_sql
 from shifde.core.sqlrules import (
     SNOWFLAKE_REFUSED_FUNCTIONS,
@@ -83,6 +88,20 @@ STAGE_MARKS = [
     'select $1 from @s/a"b',
     "select $1 from @s/$$a",
     "select $1 from @s/*x",
+    # a path end directly after a backslash does not end the path (#398)
+    "select $1 from @s/a\\ //x ->> remove @y",
+    "select $1 from @s/a\\\t//x ->> remove @y",
+    "select $1 from @s/a\\\r//x ->> remove @y",
+    "select $1 from @s/a\\\n//x ->> remove @y",
+    "select $1 from @\\ //x",
+    "select $1 from @s/a\\\\ //x",  # two backslashes
+    "select $1 from @s/a\\ 'b'",
+    "select $1 from @s/a\\ $$b$$",
+    "select $1 from @s/a\\ --x",
+    "select $1 from @s/a\\ /*x*/",
+    'select $1 from @s/a\\ "b"',
+    "select $1 from @s/a\\ 'b",
+    "select $1 from @s/a\\ b\\\t//x",
 ]
 
 
@@ -132,6 +151,31 @@ def test_a_stage_path_without_a_mark_has_no_statement_issue() -> None:
     assert _codes("select $1 from @~/x, @%t, @s/x/y.csv") == []
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "select $1 from @s/a\\  //x",  # an escaped space, then a plain one
+        "select $1 from @s/a\\b //x",
+        "select $1 from @s/a\\ \t//x",
+        "select $1 from @s/a\\\r\n//x",  # only the one character is affected
+        "select $1 from @s/a\\ b 'c'",
+        "select a\\ //x",  # no stage path
+        "select 1 -- @s/a\\ \n, 'x'",
+    ],
+)
+def test_only_the_character_after_the_backslash_stays_in_the_path(sql: str) -> None:
+    assert _refused(sql) is None
+    assert "sql_stage_path" not in _codes(sql)
+
+
+def test_both_readers_take_a_long_escaped_stage_path_in_one_pass() -> None:
+    path = "select $1 from @" + "a\\ " * 100000
+    assert _refused(path) is None
+    assert "sql_stage_path" not in _codes(path)
+    assert _refused(path + "//") == STAGE_PATH_MESSAGE
+    assert "sql_stage_path" in _codes(path + "//")
+
+
 def test_the_stage_path_rule_is_snowflakes_only() -> None:
     sql = "select '1' from x@s'a'"
     check_read_only(sql)
@@ -166,7 +210,63 @@ def test_the_two_checks_agree_on_random_stage_paths() -> None:
     assert outcomes == {True, False}
 
 
+# ------------------------------------------------------------------ `//` directly after a `:` (#398)
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "select $1 from snow://a/b ->> remove @s/y",
+        "select a://x",
+        "select x:://c",
+        "select :n, a:///x",
+        "select 'a' ://x",
+        "select :://",
+        "select 1 /* c */ a://x\n, 2",
+    ],
+)
+def test_slashes_directly_after_a_colon_are_refused_at_run_time(sql: str) -> None:
+    assert _refused(sql) == _COLON_COMMENT
+    assert sql not in _COLON_COMMENT
+    assert _codes(sql).count("sql_comment") == 1
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "select a: //x",
+        "select a:\n//x",
+        "select 'a://b'",
+        "select $$a://b$$",
+        'select "a://b" from t',
+        "select 1 -- a://b",
+        "select 1 // a://b",
+        "select 1 /* a://b */",
+        "select 1 /* a: *///c",
+        "select 1 -- a:\n//c",
+        "select 'a:'//c",
+        "select :id//c",
+        "select x::int // c",
+        "select a:/b/c",
+    ],
+)
+def test_other_slashes_and_colons_are_read_as_before(sql: str) -> None:
+    assert _refused(sql) is None
+
+
+def test_a_stage_path_mark_keeps_its_message_after_a_colon() -> None:
+    sql = "select $1 from @s/a://x"
+    assert _refused(sql) == STAGE_PATH_MESSAGE
+    assert "sql_stage_path" in _codes(sql)
+
+
+def test_publish_refuses_the_colon_comment_as_a_comment() -> None:
+    sql = "select $1 from snow://a/b ->> remove @s/y"
+    assert _codes(sql) == ["sql_comment"]
+
+
 # ------------------------------------------------------------------ functions refused by name
+REFUSED_FUNCTIONS_MESSAGE = (
+    "GET_DDL, GET_PRESIGNED_URL, NEXTVAL, GETNEXTVAL, RESULT_SCAN and LAST_QUERY_ID are not allowed"
+)
 REFUSED_FUNCTIONS = [
     "select get_ddl('table', 't')",
     "select GET_DDL ('table', 't')",
@@ -185,6 +285,15 @@ REFUSED_FUNCTIONS = [
     "select a::nextval",
     "select get_ddl, nextval, get_ddl from t",
     "with a as (select seq.nextval as n) select n from a",
+    # (#398)
+    "select getnextval(s)",
+    "select * from table(GetNextVal(s))",
+    "select * from result_scan('x')",
+    "select * from table(result_scan(last_query_id()))",
+    "select last_query_id()",
+    'select "LAST_QUERY_ID"()',
+    "select \"result_scan\"('x')",
+    "select getnextval, result_scan, last_query_id from t",
 ]
 
 
@@ -194,6 +303,7 @@ def test_a_function_refused_by_name_is_refused_by_both_checks(sql: str) -> None:
     issues = statement_rules(sql, dialect="snowflake")
     (issue,) = [i for i in issues if i.code == "sql_refused_function"]
     assert all(name.upper() in issue.message for name in SNOWFLAKE_REFUSED_FUNCTIONS)
+    assert issue.message == REFUSED_FUNCTIONS_MESSAGE
     assert sql not in issue.message
 
 
@@ -203,7 +313,9 @@ def test_a_function_refused_by_name_is_refused_by_both_checks(sql: str) -> None:
         "select my_get_ddl, nextval_at from t",
         "select 'get_ddl', $$nextval$$",
         "select $nextval",
-        "select getnextval, get_ddl$x, x$get_ddl, nextval1 from t",
+        "select my_getnextval, get_ddl$x, x$get_ddl, nextval1 from t",
+        "select my_getnextval, result_scan_at, last_query_ids from t",
+        "select 'result_scan', $$last_query_id$$",
     ],
 )
 def test_a_name_that_only_holds_a_refused_function_is_accepted(sql: str) -> None:
@@ -211,8 +323,15 @@ def test_a_name_that_only_holds_a_refused_function_is_accepted(sql: str) -> None
     assert _codes(sql) == []
 
 
-def test_the_refused_functions_are_three_and_snowflakes_only() -> None:
-    assert {"get_ddl", "get_presigned_url", "nextval"} == SNOWFLAKE_REFUSED_FUNCTIONS
+def test_the_refused_functions_are_six_and_snowflakes_only() -> None:
+    assert {
+        "get_ddl",
+        "get_presigned_url",
+        "nextval",
+        "getnextval",
+        "result_scan",
+        "last_query_id",
+    } == SNOWFLAKE_REFUSED_FUNCTIONS
     for name in SNOWFLAKE_REFUSED_FUNCTIONS:
         sql = f"select {name}(1) from t"
         check_read_only(sql)
@@ -226,6 +345,8 @@ def test_the_refused_functions_are_three_and_snowflakes_only() -> None:
         "select identifier('sc.seq.nextval')",
         "select identifier( ' Get_Presigned_Url ' )(1)",
         "select identifier('\"GET_DDL\"')(1)",
+        "select identifier('LAST_QUERY_ID')()",
+        "select identifier('Result_Scan')('x')",
     ],
 )
 def test_an_identifier_literal_with_a_refused_function_is_refused(sql: str) -> None:
@@ -240,6 +361,8 @@ def test_an_identifier_literal_with_a_refused_function_is_refused(sql: str) -> N
         ("select identifier(?)", ["SEQ.NEXTVAL"]),
         ("select identifier(?)('table', ?)", ["ordinary", "Get_Ddl"]),
         ("select identifier(:f)(1)", {"f": "get_presigned_url"}),
+        ("select identifier(?)", ["Result_Scan"]),
+        ("select identifier(?)()", ["Last_Query_Id"]),
     ],
 )
 def test_a_bound_refused_function_is_refused_at_run_time(sql: str, params: object) -> None:
@@ -265,11 +388,12 @@ RAW_WORDS = [
         ],
     ),
     ("select :system$x, :SYSTEM$y", ["system functions are not allowed"]),
-    ("select :nextval, :GET_DDL", ["GET_DDL, GET_PRESIGNED_URL and NEXTVAL are not allowed"]),
+    ("select :nextval, :GET_DDL", [REFUSED_FUNCTIONS_MESSAGE]),
+    ("select :last_query_id", [REFUSED_FUNCTIONS_MESSAGE]),
 ]
 CODES = {
     "system functions are not allowed": "sql_system_function",
-    "GET_DDL, GET_PRESIGNED_URL and NEXTVAL are not allowed": "sql_refused_function",
+    REFUSED_FUNCTIONS_MESSAGE: "sql_refused_function",
 }
 
 
@@ -313,6 +437,7 @@ def test_a_called_raw_identifier_keeps_publishs_rule_of_a_bound_argument() -> No
     "template",
     [
         "select %(call)s, %(drop)s, %(nextval)s",
+        "select %(last_query_id)s",
         "select * from t where a = %(procedure)s and b = %(get_ddl)s",
         "select :id, src:customer, :called, :drop_at, :call$x, :my_system$x from t",
         "select ':call', $$:drop$$, x::int from t",
@@ -344,3 +469,82 @@ def test_the_raw_word_rules_never_raise_on_odd_input() -> None:
     parts += [" ", "​", "é", "$", "@", "--", "//", "/*", "\\", "1", ";"]
     for _ in range(2000):
         raw_word_rules("".join(rng.choice(parts) for _ in range(rng.randint(0, 10))))
+
+
+# ------------------------------------------------------------------ non-ASCII in code (#398, run time)
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "select get_ddl\u3164('a')",
+        "select get_ddl\u115f('a')",
+        "select get_ddl\u1160('a')",
+        "select get_ddl\uffa0('a')",
+        "select get_\u3164ddl('a')",
+        "select get_d\u200bdl('a')",
+        "select\u00a0a from t",
+        "select a\u0301 from t",
+        "select :\u3164call",
+        "select 1\u2003",
+        "select \u20ac",
+        "select a -- c\n, b\u2060 from t",
+        "select \ud800",
+    ],
+)
+def test_a_non_ascii_character_that_is_no_visible_letter_is_refused_at_run_time(sql: str) -> None:
+    assert _refused(sql) == _REFUSED_CHARACTER
+    assert sql not in _REFUSED_CHARACTER
+    # publish has no such issue: such a tool publishes and never runs
+    assert raw_word_rules(sql) == []
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "select :call\u00e9",
+        "select gr\u00f6\u00dfe from t",
+        "select \u0430 from t",
+        "select '\u3164', '\u200b'",
+        'select "\u3164", "\u200b" from t',
+        "select $$\u3164\u200b$$",
+        "select 1 -- \u3164\u200b",
+        "select 1 // \u3164\u200b",
+        "select 1 /* \u3164\u200b */",
+    ],
+)
+def test_a_visible_letter_in_code_and_any_character_in_quotes_is_accepted(sql: str) -> None:
+    assert _refused(sql) is None
+
+
+@pytest.mark.parametrize(
+    ("sql", "message"),
+    [
+        ("select get_ddl('a'), x\u3164", _NOT_READ),
+        ("select identifier\u200b('t')", _NOT_READ),
+        ("drop table t\u3164", _NOT_READ),
+        ("select a\u00a0://x", _COLON_COMMENT),
+        ("select $1 from @s\u00a0//x", STAGE_PATH_MESSAGE),
+    ],
+)
+def test_the_non_ascii_refusal_is_the_last_one(sql: str, message: str) -> None:
+    assert _refused(sql) == message
+
+
+# ------------------------------------------------------------------ Databricks (#398)
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "select get_ddl(1) from t",
+        "select get_presigned_url(1) from t",
+        "select nextval(1) from t",
+        "select getnextval(1) from t",
+        "select result_scan(1) from t",
+        "select last_query_id() from t",
+        "select a://x",
+        "select $1 from @s/a\\ 'b'",
+        "select a\u3164",
+        "select a\u200b from t",
+    ],
+)
+def test_databricks_reads_the_texts_of_398_as_before(sql: str) -> None:
+    check_read_only(sql)
+    assert statement_rules(sql) == []
