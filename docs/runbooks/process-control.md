@@ -54,11 +54,14 @@ Only one worker sweeps at a time (a PostgreSQL session advisory lock). A worker 
 due meanwhile skips it, logs nothing and tries again at its next reap. A sweeping worker uses one
 extra database connection, outside its pool, while it sweeps (another worker opens one for a moment
 to try the lock); like LISTEN, it needs `SHIFDE_DATABASE_URL` to be a direct or session-pooled
-connection. A `worker.sweep_lock_lost` warning (`worker_id`) means the server ended that connection
-during the sweep: it was idle for the bound above because a client's step was stuck, it was
-terminated, or the database restarted. The worker ends its sweep after the step in progress; another
-worker, or its own next reap, sweeps again. When the connection cannot be opened, nothing is swept,
-`worker.sweep_failed` is logged and the next reap tries again.
+connection. A `worker.sweep_lock_lost` warning (`worker_id`, `tenant_id`) means the server ended that
+connection during the sweep: it was idle for the bound above because the step of that client took
+too long, it was terminated, or the database restarted. The worker ends its pass after that step;
+its next pass starts with the other of the two sweeps and goes on in the lost one after that client,
+which comes last. So a client that is slow every time delays the others and logs one such warning
+per pass of each worker that reaches it, but the others are swept; look into the named client when
+the warning repeats. A restarted worker starts at the first client again. When the connection cannot
+be opened, nothing is swept, `worker.sweep_failed` is logged and the next reap tries again.
 
 ## Restart policy
 
