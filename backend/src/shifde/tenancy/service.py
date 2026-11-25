@@ -579,10 +579,16 @@ def update_workspace(scope: TenantScope, slug: str, body: WorkspacePatch) -> Wor
 
 
 # ------------------------------------------------------------------ projects
+def _project_not_found(scope: TenantScope, ws: Workspace) -> NotFound:
+    """The one refusal of an unknown and of a hidden project (no oracle); under a workspace the
+    caller cannot see, the answer of an unknown workspace slug (B-4134)."""
+    return NotFound("project not found" if _workspace_visible(scope, ws) else "workspace not found")
+
+
 def _get_project_row(scope: TenantScope, ws: Workspace, slug: str) -> Project:
     project = repository.get_project_by_slug(scope.session, scope.tenant_id, ws.id, slug)
     if project is None:
-        raise NotFound("project not found")
+        raise _project_not_found(scope, ws)
     return project
 
 
@@ -594,7 +600,7 @@ def _readable_project(scope: TenantScope, ws_slug: str, slug: str) -> tuple[Work
     ws = _get_workspace_row(scope, ws_slug)
     project = _get_project_row(scope, ws, slug)
     if not scope.pdp.authorize("project:read", _project_ref(scope, ws, project)).allowed:
-        raise NotFound("project not found")
+        raise _project_not_found(scope, ws)
     return ws, project
 
 
@@ -707,15 +713,13 @@ def create_project(scope: TenantScope, ws_slug: str, body: ProjectCreate) -> Pro
 
 def update_project(scope: TenantScope, ws_slug: str, slug: str, body: ProjectPatch) -> ProjectOut:
     ws = _get_workspace_row(scope, ws_slug)
+    project = _get_project_row(scope, ws, slug)
     try:
-        project = _get_project_row(scope, ws, slug)
         scope.pdp.require(
             "project:manage", _project_ref(scope, ws, project), hide_unless="project:read"
         )
-    except NotFound as exc:
-        if _workspace_visible(scope, ws):
-            raise
-        raise NotFound("workspace not found") from exc  # hidden, as in `_require_hiding`
+    except NotFound as exc:  # hidden: the same answer as an unknown project slug (B-4134)
+        raise _project_not_found(scope, ws) from exc
     _assert_tenant_active(scope)
     _assert_workspace_active(ws)
     values = _patch_values(body, project.status)

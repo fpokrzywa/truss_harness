@@ -374,3 +374,28 @@ def test_recent_activity_shows_rows_of_readable_projects_only(owner_session: Ses
     assert shown(**in_w1, readable_project_ids={p1, p2}, project_id=p2) == ["p2"]
     assert shown(**in_w1, readable_project_ids={p1}, project_id=p2) == []
     assert shown(**in_w1, readable_project_ids={p1}, workspace_id=w2) == []
+
+
+def test_recent_activity_takes_more_readable_projects_than_bind_parameters(
+    owner_session: Session,
+) -> None:
+    """One array parameter (B-4135); PostgreSQL takes at most 65,535 parameters."""
+    t, other, w, p1, p2, theirs = (uuid7() for _ in range(6))
+    _record(owner_session, t, workspace_id=w, project_id=p1, actor_label="p1")
+    _record(owner_session, t, workspace_id=w, project_id=p2, actor_label="p2")
+    _record(owner_session, other, workspace_id=w, project_id=theirs, actor_label="theirs")
+    unknown = [uuid7() for _ in range(69_999)]
+
+    def shown(project: UUID) -> list[str | None]:
+        items = audit.recent_activity(
+            owner_session,
+            tenant_id=t,
+            tenant_wide=False,
+            visible_workspace_ids=[],
+            project_workspace_ids=[w],
+            readable_project_ids=[*unknown, project],
+        )
+        return [i.actor for i in items]
+
+    assert shown(p1) == ["p1"]
+    assert shown(theirs) == []

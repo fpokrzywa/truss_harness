@@ -524,6 +524,164 @@ def test_the_dashboards_statement_count_does_not_grow_with_the_projects(
     assert statements() == before
 
 
+@pytest.mark.parametrize("at", ["workspace", "project"])
+def test_the_dashboards_bind_parameters_do_not_grow_with_the_projects(
+    member: Callable[..., Hdr],
+    admin: Hdr,
+    layout: Layout,
+    owner_session: Session,
+    owner_db: Database,
+    at: str,
+) -> None:
+    """B-4135, for a caller with one workspace grant and for one with a grant at each project."""
+    reads, readable = ["project:read"], [layout.p1, layout.p2]
+
+    def grant_projects(*projects: UUID) -> None:
+        [(uid,)] = rows(
+            owner_session,
+            "SELECT id FROM shifde.users WHERE primary_email LIKE 'member-%@demo-a.local'",
+        )
+        for p in projects:
+            grant(owner_db, layout.tenant, uid, reads, scope_type="project", scope_id=p)
+
+    if at == "workspace":
+        c = member("workspace:read", *reads, scope_type="workspace", scope_id=layout.ws)
+    else:
+        c = member(*reads, scope_type="project", scope_id=layout.p1)
+        grant_projects(layout.p2)
+
+    def largest(**params: str) -> int:
+        """The most bind parameters of one statement of the request."""
+        with statement_log("shifde_app") as log:
+            shown = _json(c, f"{A}/dashboard", **params)
+        assert shown["counts"]["projects"] == len(readable)
+        return max(s.count("%(") for s in log.statements)
+
+    largest()  # the first request of the session may do more
+    before = (largest(), largest(workspace="main"))
+    more = [UUID(add_project(admin, f"more-{i}")) for i in range(12)]
+    if at == "project":
+        grant_projects(*more)
+    readable += more
+    assert (largest(), largest(workspace="main")) == before
+
+
+# ------------------------------------------------------------------ hidden projects (B-4134)
+NO_PROJECT, NO_WORKSPACE = f"{MAIN}/projects/nope", f"{A}/workspaces/nope/projects/nope"
+
+
+@pytest.fixture(params=["member", "key"])
+def p1_only(request: pytest.FixtureRequest, layout: Layout) -> Hdr:
+    """A member with only `project:read` at P1, then the key masked to P1."""
+    made: Any = request.getfixturevalue(request.param)
+    caller: Hdr = (
+        made
+        if request.param == "key"
+        else made("project:read", scope_type="project", scope_id=layout.p1)
+    )
+    return caller
+
+
+def _get(c: Hdr, url: str) -> httpx.Response:
+    r: httpx.Response = c.client.get(url, headers=c)
+    return r
+
+
+def _patch(c: Hdr, url: str, body: dict[str, Any]) -> httpx.Response:
+    r: httpx.Response = c.client.patch(url, headers=c, json=body)
+    return r
+
+
+def _denials(owner: Session, layout: Layout) -> list[tuple[Any, ...]]:
+    """The recorded denials of project actions in demo-a, oldest first."""
+    return rows(
+        owner,
+        "SELECT action, resource_id, reason_codes FROM shifde.policy_decisions "
+        "WHERE tenant_id = :t AND action LIKE 'project:%' AND decision = 'deny' ORDER BY at, id",
+        t=layout.tenant,
+    )
+
+
+def test_a_project_read_under_a_hidden_workspace_answers_as_under_an_unknown_one(
+    p1_only: Hdr, layout: Layout, owner_session: Session
+) -> None:
+    before = _denials(owner_session, layout)
+    unknown = _get(p1_only, NO_WORKSPACE)
+    assert unknown.json()["detail"] == "workspace not found"
+    for url in (FAR, f"{SECOND}/projects/nope"):
+        same_404(_get(p1_only, url), unknown)
+    missing = _get(p1_only, NO_PROJECT)
+    assert missing.json()["detail"] == "project not found"
+    same_404(_get(p1_only, P2), missing)
+    assert _json(p1_only, P1)["id"] == str(layout.p1)
+    assert _denials(owner_session, layout) == before  # reads record no denial
+
+
+def test_a_project_update_of_a_hidden_sibling_answers_as_of_an_unknown_project(
+    p1_only: Hdr, layout: Layout, owner_session: Session
+) -> None:
+    def state() -> list[tuple[Any, ...]]:
+        return rows(
+            owner_session,
+            "SELECT id::text, name, status, row_version FROM shifde.projects ORDER BY id",
+        )
+
+    before = state()
+    [(version,)] = rows(
+        owner_session, "SELECT row_version FROM shifde.projects WHERE id = :p", p=layout.p2
+    )
+    change = {"name": "renamed", "row_version": version}
+    missing = _patch(p1_only, NO_PROJECT, change)
+    assert missing.json()["detail"] == "project not found"
+    same_404(_patch(p1_only, P2, change), missing)
+    unknown = _patch(p1_only, NO_WORKSPACE, change)
+    assert unknown.json()["detail"] == "workspace not found"
+    for url in (FAR, f"{SECOND}/projects/nope"):
+        same_404(_patch(p1_only, url, change), unknown)
+    assert state() == before
+
+
+def test_a_hidden_sibling_of_an_archived_workspace_answers_as_an_unknown_project(
+    p1_only: Hdr, admin: Hdr, layout: Layout
+) -> None:
+    main = _json(admin, MAIN)
+    archive = {"status": "archived", "row_version": main["row_version"]}
+    assert _patch(admin, MAIN, archive).json()["status"] == "archived"
+    change = {"name": "renamed", "row_version": _json(admin, P2)["row_version"]}
+    assert _patch(admin, P2, change).json()["code"] == "scope_archived"
+    missing = _patch(p1_only, NO_PROJECT, change)
+    assert missing.json()["detail"] == "project not found"
+    same_404(_patch(p1_only, P2, change), missing)
+
+
+def test_a_refused_update_of_a_hidden_sibling_is_still_recorded_as_denied(
+    p1_only: Hdr, layout: Layout, owner_session: Session
+) -> None:
+    before = _denials(owner_session, layout)
+    assert str(layout.p2) not in {resource for _, resource, _ in before}
+    assert _patch(p1_only, P2, {"name": "renamed", "row_version": 1}).status_code == 404
+    reason = "resource_scope" if "Authorization" in p1_only else "no_binding"
+    added = [("project:manage", str(layout.p2), [reason])]
+    assert _denials(owner_session, layout) == [*before, *added]
+
+
+def test_an_update_of_a_readable_project_keeps_its_403_and_its_success(
+    member: Callable[..., Hdr], key: Hdr, layout: Layout, owner_session: Session
+) -> None:
+    def change() -> dict[str, Any]:
+        [(version,)] = rows(
+            owner_session, "SELECT row_version FROM shifde.projects WHERE id = :p", p=layout.p1
+        )
+        return {"name": f"renamed {version}", "row_version": version}
+
+    at_p1: dict[str, Any] = {"scope_type": "project", "scope_id": layout.p1}
+    assert _patch(member("project:read", **at_p1), P1, change()).status_code == 403
+    for c in (member("project:read", "project:manage", **at_p1), key):
+        body = change()
+        r = _patch(c, P1, body)
+        assert (r.status_code, r.json()["name"]) == (200, body["name"])
+
+
 # ------------------------------------------------------------------ another client
 def test_every_path_of_another_client_answers_as_an_unknown_client(key: Hdr) -> None:
     for path in (

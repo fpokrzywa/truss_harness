@@ -27,6 +27,7 @@ from tests.delivery.conftest import ExecutorSide, JobKinds, ProbeResult, make_ex
 from tests.delivery.routes import (
     address,
     enqueue,
+    enqueue_on_target,
     expire,
     job_row,
     job_url,
@@ -416,11 +417,8 @@ def test_an_expired_apply_job_without_an_intent_is_lost_and_failed(
 def test_an_expired_apply_job_with_an_intent_has_an_unknown_outcome(
     client: TestClient, executor_a: ExecutorSide, app_db: Database, owner_db: Database
 ) -> None:
-    job = enqueue(
-        app_db,
-        executor_a.tenant,
-        "apply",
-        deployment_id=make_deployment(owner_db, executor_a.tenant),
+    job = enqueue_on_target(
+        app_db, executor_a.tenant, "apply", make_deployment(owner_db, executor_a.tenant)
     )
     leased = _leased(lease(client, executor_a.token, kinds=["apply"]))
     intent = {
@@ -445,11 +443,8 @@ def test_an_expired_apply_job_with_only_complete_steps_has_an_unknown_outcome(
 ) -> None:
     """A finished step is a platform write: losing the lease before the next intent is still an
     unknown outcome, never `failed` (isolation review 1 of SP2-4, finding 1)."""
-    job = enqueue(
-        app_db,
-        executor_a.tenant,
-        "apply",
-        deployment_id=make_deployment(owner_db, executor_a.tenant),
+    job = enqueue_on_target(
+        app_db, executor_a.tenant, "apply", make_deployment(owner_db, executor_a.tenant)
     )
     leased = _leased(lease(client, executor_a.token, kinds=["apply"]))
     step = {**proof(leased), "step_key": "bundle_deploy", "input_digest": DIGEST}
@@ -513,7 +508,7 @@ def test_shifde_app_cannot_forge_a_lease_or_delete_queue_rows(
     owner_db: Database,
 ) -> None:
     deployment = make_deployment(owner_db, executor_a.tenant)
-    job = enqueue(app_db, executor_a.tenant, "observe", deployment_id=deployment)
+    job = enqueue_on_target(app_db, executor_a.tenant, "observe", deployment)
     leased = _leased(lease(client, executor_a.token))
     intent = {
         **proof(leased),

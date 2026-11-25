@@ -99,8 +99,8 @@ def _tool_sql(tool: ResolvedTool, tables: list[str]) -> tuple[str, list[str]]:
     parameters (SETH binds `%(name)s`, so another `:name` is SQL text there, not a parameter) and
     keeps `table_rules` over `tables`, the data reads the plan's approver sees. Those rules fail
     closed on FROM clauses but read no object a function names (`table_rules`): the statement rules
-    refuse `get_ddl`, `get_presigned_url` and `nextval` by name, and the installed app's grants
-    limit the rest."""
+    refuse the functions of `SNOWFLAKE_REFUSED_FUNCTIONS` by name, and the installed app's
+    grants limit the rest."""
     refused = f"the SQL of tool {tool.name!r} is refused"
     if len(tool.sql) > MAX_TOOL_SQL_CHARS:
         raise ReleaseNotRenderable(f"{refused}: it is longer than {MAX_TOOL_SQL_CHARS} characters")

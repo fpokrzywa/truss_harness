@@ -5,9 +5,11 @@
   `procedure`/`call` word, no `SYSTEM$` function, #285, an `IDENTIFIER(...)` call only
   with one simple argument, #312, with a bound `IDENTIFIER(?)`/`IDENTIFIER(:name)` call no
   string param containing a refused function's name, #339, no `->>` flow operator, #358, no comment
-  or quote mark in an unquoted stage path and no `get_ddl`, `get_presigned_url` or `nextval`,
-  #375). These three are refused by name; the function deny-list as a whole is best-effort defense
-  in depth, and the least-privileged read credential (B-1507) is the real control.
+  or quote mark in an unquoted stage path and no function of `SNOWFLAKE_REFUSED_FUNCTIONS`, #375,
+  no `//` directly after a `:` and no non-ASCII character in the code that is no letter or digit or
+  is an invisible letter, #398). These functions are refused by name; the function deny-list as a
+  whole is best-effort defense in depth, and the least-privileged read credential (B-1507) is the
+  real control.
 * `classify_status`: HTTP status -> `ErrorClass`, with fixed messages (never a body).
 * `send`: one request through an egress-guarded client, with one `Retry-After` retry on 429.
 * `run_statement`: submit, poll, cancel at the deadline.
@@ -59,6 +61,11 @@ _UNTERMINATED = "the statement has an unterminated quote or comment"
 _NESTED = "nested block comments are not allowed"
 _AMBIGUOUS_DOLLARS = "a $$ directly after a name is not allowed"
 _POSITIONAL_BIND = "positional :n bind references are not allowed; use named parameters"
+_COLON_COMMENT = "a // directly after a : is not allowed"
+_REFUSED_CHARACTER = (
+    "invisible letters and other non-ASCII characters that are no letter or digit are not allowed"
+    " outside quoted text"
+)
 
 Dialect = Literal["databricks", "snowflake"]
 # Snowflake dialect: a word is a maximal run of letters, digits, `_` and `$`
@@ -69,6 +76,9 @@ _DATABRICKS_WORD = re.compile(r"[A-Za-z0-9_]+")
 _SNOWFLAKE_REFUSED_WORDS = SNOWFLAKE_REFUSED_WORDS | {"call"}
 # Snowflake reads `:1` as a positional bind reference; the runtime binds only `?` in order (#319)
 _SNOWFLAKE_POSITIONAL_BIND = re.compile(r":[0-9]")
+# Snowflake dialect: a non-ASCII character that is no letter or digit (no `\w`), or one of the four
+# invisible letters that are `\w` (with one, `get_ddl` is another word), #398
+_SNOWFLAKE_REFUSED_CHARACTER = re.compile(r"[^\w\x00-\x7f]|[\u115f\u1160\u3164\uffa0]")
 # Snowflake dialect tokens of `_code_of`'s `code` (comments already blanked): a `'...'` literal
 # (backslash escapes), a `"..."` identifier, a `$$...$$` string, a word, whitespace, one character
 _SNOWFLAKE_TOKEN = re.compile(r"""'(?:\\.|[^'\\])*'|"[^"]*"|\$\$.*?\$\$|[\w$]+|\s+|.""", re.S)
@@ -105,7 +115,9 @@ def _code_of(sql: str, dialect: Dialect = "databricks") -> tuple[str, list[int],
     part of an identifier (B-3211). In it only `'...'` honours backslash escapes, a backtick is
     an ordinary character, nothing is a raw literal, and a line comment also ends at a lone
     carriage return (B-3212). In it a comment or quote mark in an unquoted stage path is refused,
-    as Snowflake may read the mark as part of the path (unconfirmed, #375)."""
+    as Snowflake may read the mark as part of the path (unconfirmed, #375); a path end directly
+    after a backslash does not end the path (#398). In it a `//` directly after a `:` is refused
+    too, as Snowflake may read `snow://...` as one address (unconfirmed, #398)."""
     snowflake = dialect == "snowflake"
     path = False  # inside an unquoted Snowflake stage path
     out: list[str] = []
@@ -147,6 +159,8 @@ def _code_of(sql: str, dialect: Dialect = "databricks") -> tuple[str, list[int],
             size += end + 2 - i
             i = end + 2
         elif sql.startswith("--", i) or (snowflake and sql.startswith("//", i)):
+            if ch == "/" and i and sql[i - 1] == ":":
+                raise AdapterFailure(ErrorClass.CAPABILITY, _COLON_COMMENT)
             found = (_SNOWFLAKE_LINE_END if snowflake else _LINE_END).search(sql, i)
             i = n if found is None else found.start()
             out.append(" ")
@@ -165,7 +179,8 @@ def _code_of(sql: str, dialect: Dialect = "databricks") -> tuple[str, list[int],
         else:
             if ch == ";":
                 semicolons.append(size)
-            path = snowflake and (ch == "@" or (path and ch not in STAGE_PATH_ENDS))
+            ends = ch in STAGE_PATH_ENDS and sql[i - 1] != "\\"
+            path = snowflake and (ch == "@" or (path and not ends))
             out.append(ch)
             bare.append(ch)
             size += 1
@@ -180,16 +195,18 @@ def check_read_only(sql: str, *, dialect: Dialect = "databricks", params: object
     Snowflake dialect also refuses the `->>` flow operator in the code (it chains a second
     statement, #358; the message is publish's), a `procedure` or `call` word anywhere in the code
     (anonymous procedures), a word or a whole `"..."` identifier that starts with `SYSTEM$` (system
-    functions, #285) or is `get_ddl`, `get_presigned_url` or `nextval` (#375), a comment or quote
-    mark in an unquoted stage path (#375; the message is publish's), a `:` directly followed by a
-    digit (a positional bind reference, #319) and an `IDENTIFIER(...)` call whose argument is not
-    exactly one `'...'` literal without a backslash and without `system$` or one of the three names
-    anywhere, one `?`, one `:name` or one plain name (#312); `'...'`, `$$...$$` and comments stay
-    unread otherwise. When the Snowflake code has a bound `IDENTIFIER(?)` or `IDENTIFIER(:name)`
-    call, any string in `params` (list or tuple items, dict values) containing `system$` or one of
-    the three names in any case is refused too (#339); the Databricks dialect ignores `params`.
-    The function deny-list as a whole is best-effort; the least-privileged read credential (B-1507)
-    is the limiting control."""
+    functions, #285) or is a function of `SNOWFLAKE_REFUSED_FUNCTIONS` (#375, #398), a comment or
+    quote mark in an unquoted stage path (#375; the message is publish's), a `//` directly after a
+    `:` (#398), a `:` directly followed by a digit (a positional bind reference, #319) and an
+    `IDENTIFIER(...)` call whose argument is not exactly one `'...'` literal without a backslash and
+    without `system$` or one of those functions' names anywhere, one `?`, one `:name` or one plain
+    name (#312); `'...'`, `$$...$$` and comments stay unread otherwise. When the Snowflake code has
+    a bound `IDENTIFIER(?)` or `IDENTIFIER(:name)` call, any string in `params` (list or tuple
+    items, dict values) containing `system$` or one of those names in any case is refused too
+    (#339); the Databricks dialect ignores `params`. Last, the Snowflake dialect refuses a non-ASCII
+    character in the code that is no letter or digit, or that is an invisible letter (#398); visible
+    letters pass, look-alikes included. The function deny-list as a whole is best-effort; the
+    least-privileged read credential (B-1507) is the limiting control."""
     code, semicolons, bare, identifiers = _code_of(sql, dialect)
     if dialect == "snowflake" and FLOW_OPERATOR in bare:
         raise AdapterFailure(ErrorClass.CAPABILITY, FLOW_OPERATOR_MESSAGE)
@@ -216,6 +233,8 @@ def check_read_only(sql: str, *, dialect: Dialect = "databricks", params: object
         raise AdapterFailure(ErrorClass.CAPABILITY, _POSITIONAL_BIND)
     if dialect == "snowflake" and _check_identifier_calls(code) and _refused_param(params):
         raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
+    if dialect == "snowflake" and _SNOWFLAKE_REFUSED_CHARACTER.search(bare):
+        raise AdapterFailure(ErrorClass.CAPABILITY, _REFUSED_CHARACTER)
 
 
 def _refused_param(params: object) -> bool:

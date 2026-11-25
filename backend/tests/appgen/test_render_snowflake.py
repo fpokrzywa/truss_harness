@@ -329,11 +329,20 @@ def test_a_plain_table_name_renders_uppercased(table: str) -> None:
         ),
         (
             "select get_ddl('table', 't') from DEMO_DB.PUBLIC.CUSTOMERS c",
-            "GET_DDL, GET_PRESIGNED_URL and NEXTVAL are not allowed",
+            "GET_DDL, GET_PRESIGNED_URL, NEXTVAL, GETNEXTVAL, RESULT_SCAN and LAST_QUERY_ID are not allowed",
         ),
         (
             "select seq.nextval from DEMO_DB.PUBLIC.CUSTOMERS c",
-            "GET_DDL, GET_PRESIGNED_URL and NEXTVAL are not allowed",
+            "GET_DDL, GET_PRESIGNED_URL, NEXTVAL, GETNEXTVAL, RESULT_SCAN and LAST_QUERY_ID are not allowed",
+        ),
+        # (#398)
+        (
+            "select c.id from DEMO_DB.PUBLIC.CUSTOMERS c where c.id = @s/a\\ 'b'",
+            "a comment or quote mark in an unquoted stage path is not allowed",
+        ),
+        (
+            "select last_query_id() from DEMO_DB.PUBLIC.CUSTOMERS c",
+            "GET_DDL, GET_PRESIGNED_URL, NEXTVAL, GETNEXTVAL, RESULT_SCAN and LAST_QUERY_ID are not allowed",
         ),
         (
             "select identifier('sc.seq.nextval') from DEMO_DB.PUBLIC.CUSTOMERS c",

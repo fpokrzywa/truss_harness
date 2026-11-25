@@ -83,6 +83,9 @@ def test_a_snowflake_only_refusal_shows_only_in_the_snowflake_dialect(sql: str, 
         ("select get_ddl('table', 't') from DEMO_DB.PUBLIC.ORDERS", "sql_refused_function"),
         ("select get_presigned_url('s', 'f') from DEMO_DB.PUBLIC.ORDERS", "sql_refused_function"),
         ("select seq.nextval from DEMO_DB.PUBLIC.ORDERS", "sql_refused_function"),
+        # (#398)
+        ("select id from DEMO_DB.PUBLIC.ORDERS where id = @s/a\\ 'b'", "sql_stage_path"),
+        ("select last_query_id() from DEMO_DB.PUBLIC.ORDERS", "sql_refused_function"),
     ],
 )
 def test_the_shared_read_rules_are_forwarded_in_the_snowflake_dialect(sql: str, code: str) -> None:
