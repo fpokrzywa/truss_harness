@@ -2,7 +2,8 @@
 rendered app on the sample-data workspace fake (no daemon, no network): one deployment to
 `verified`, a second release replacing its container, a failing deep health, a fault after an
 accepted write, the plan refusal codes, and everything a Docker job refuses: a plan of another
-generator, a bundle of another release, a resource of another type. Also the toolchain digests and
+generator, a bundle of another release, a resource of another type, a target or an entry gone
+mid-job. Also the toolchain digests and
 the real platform's CLI plugin directories."""
 
 from __future__ import annotations
@@ -18,7 +19,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from shifde.adapters.native.base import ArtifactStore, InMemoryArtifactStore
-from shifde.adapters.native.contracts import JobContext, JobLease, OwnedResource, Target
+from shifde.adapters.native.contracts import (
+    CredentialGrant,
+    JobContext,
+    JobLease,
+    OwnedResource,
+    Target,
+    utcnow,
+)
 from shifde.adapters.native.docker import LIVE_VALIDATED, MATURITY
 from shifde.adapters.native.docker.adapter import (
     RESOURCE_KEY,
@@ -34,9 +42,10 @@ from shifde.adapters.native.docker.runtime import DockerCliRuntime
 from shifde.adapters.native.docker.source import TARGET_LABEL, compose_project, image_tag
 from shifde.core.db import Database
 from shifde.executor import runner as runner_module
-from shifde.executor.client import GatewayClient
+from shifde.executor.client import GatewayClient, GatewayError
 from shifde.executor.credentials import CredentialBroker
 from shifde.executor.runner import FakePlatform, RealPlatform, Runner, toolchain_digest
+from tests.connections.routes import as_user
 from tests.delivery.conftest import make_executor
 from tests.delivery.docker import docker_release, docker_target, rows, workspace
 from tests.delivery.routes import (
@@ -48,6 +57,7 @@ from tests.delivery.routes import (
     make_due,
     owner_sql,
     plan_row,
+    targets,
 )
 from tests.executor.support import ask_plan, credentials_file, sp8_credentials_file
 from tests.tenancy.conftest import World
@@ -304,9 +314,11 @@ class Watched(FakePlatform):
         super().__init__(environment="test")
         self.built: list[UUID] = []
 
-    def docker_adapter(self, target: Target, artifacts: ArtifactStore) -> DockerComposeAdapter:
+    def docker_adapter(
+        self, target: Target, artifacts: ArtifactStore, authorize: Callable[[], None]
+    ) -> DockerComposeAdapter:
         self.built.append(target.id)
-        return super().docker_adapter(target, artifacts)
+        return super().docker_adapter(target, artifacts, authorize)
 
 
 @pytest.mark.parametrize(
@@ -392,9 +404,11 @@ def test_the_docker_store_keeps_the_release_record_and_is_the_jobs_own(
     stores: list[ArtifactStore] = []
 
     class Stores(Watched):
-        def docker_adapter(self, target: Target, artifacts: ArtifactStore) -> DockerComposeAdapter:
+        def docker_adapter(
+            self, target: Target, artifacts: ArtifactStore, authorize: Callable[[], None]
+        ) -> DockerComposeAdapter:
             stores.append(artifacts)
-            return super().docker_adapter(target, artifacts)
+            return super().docker_adapter(target, artifacts, authorize)
 
     docker = Docker(flow, tmp_path, Stores())
     docker.approved()
@@ -416,6 +430,206 @@ def test_an_artifact_that_is_not_the_bundle_is_refused(docker: Docker, owner_db:
     )
     assert docker.runner.run_once()
     assert docker.reason(made) == "plan job failed: execution_failed"
+
+
+# ------------------------------------------------------------------ the target or entry gone mid-job
+def _expire_grant(docker: Docker) -> None:
+    """The job in flight's grant has run out (30 seconds), as during a long build."""
+    state = docker.runner._state
+    assert state is not None and state.grant is not None
+    state.grant = state.grant.model_copy(update={"expires_at": utcnow()})
+
+
+def _archive(docker: Docker) -> None:
+    """An administrator archives the target; the grant runs out."""
+    flow = docker.flow
+    headers = as_user(flow.client, flow.requester)
+    url = f"{targets(flow.slug)}/{docker.target['id']}/archive"
+    assert flow.client.post(url, headers=headers).status_code == 200
+    flow.client.cookies.clear()
+    _expire_grant(docker)
+
+
+def _remove_entry(docker: Docker) -> None:
+    docker.runner.broker._entries.clear()
+
+
+def _other_tenants_entry(docker: Docker) -> None:
+    entries = docker.runner.broker._entries
+    for ref, entry in list(entries.items()):
+        entries[ref] = entry.model_copy(update={"tenant_id": uuid4()})
+
+
+# how the job ends; an archived target is the gateway's `target_unavailable`
+GONE: dict[str, tuple[Callable[[Docker], None], str]] = {
+    "target-archived": (_archive, "execution_failed"),
+    "entry-removed": (_remove_entry, "credential_unavailable"),
+    "entry-of-another-tenant": (_other_tenants_entry, "credential_unavailable"),
+}
+
+
+def _after(
+    docker: Docker, monkeypatch: pytest.MonkeyPatch, call: str, change: Callable[[Docker], None]
+) -> list[str]:
+    """`change` happens once, right after the runtime's next `call`; the runtime calls made from
+    then on."""
+    made: list[str] = []
+    changed: list[bool] = []
+
+    def watch(name: str) -> None:
+        original = getattr(docker.fake, name)
+
+        def called(*args: Any, **options: Any) -> Any:  # Any: the runtime call's own
+            if changed:
+                made.append(name)
+            answer = original(*args, **options)
+            if name == call and not changed:
+                change(docker)
+                changed.append(True)
+            return answer
+
+        monkeypatch.setattr(docker.fake, name, called)
+
+    for name in ("daemon_id", "compose_ps", "build", "image_labels", "compose_up"):
+        watch(name)
+    monkeypatch.setattr(docker.fake, "http_get_local", _health(docker, made, changed, call, change))
+    return made
+
+
+def _health(
+    docker: Docker,
+    made: list[str],
+    changed: list[bool],
+    call: str,
+    change: Callable[[Docker], None],
+) -> Callable[[str, int, str], tuple[int, bytes]]:
+    """The fake's health request, named after its path."""
+    original = docker.fake.http_get_local
+
+    def called(project: str, port: int, path: str) -> tuple[int, bytes]:
+        if changed:
+            made.append(path)
+        answer = original(project, port, path)
+        if path == call and not changed:
+            change(docker)
+            changed.append(True)
+        return answer
+
+    return called
+
+
+def _refusals(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The code of every credential grant the gateway refuses."""
+    codes: list[str] = []
+    grant = GatewayClient.credential_grant
+
+    def recorded(self: GatewayClient, lease: JobLease) -> CredentialGrant:
+        try:
+            return grant(self, lease)
+        except GatewayError as exc:
+            codes.append(exc.code)
+            raise
+
+    monkeypatch.setattr(GatewayClient, "credential_grant", recorded)
+    return codes
+
+
+@pytest.mark.parametrize(
+    ("call", "actions", "steps"),
+    [
+        ("compose_ps", [], []),
+        ("build", ["build"], ["image-build"]),
+        ("image_labels", ["build"], ["image-build", "image-verify"]),
+    ],
+)
+@pytest.mark.parametrize("gone", GONE)
+def test_an_apply_stops_before_the_next_intent_once_its_target_or_entry_is_gone(
+    docker: Docker,
+    owner_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    gone: str,
+    call: str,
+    actions: list[str],
+    steps: list[str],
+) -> None:
+    """Between the plan check and the build, or the build and compose-up: no later runtime call,
+    no later intent, never a `compose-up`, and the job's named refusal."""
+    change, code = GONE[gone]
+    deployment = docker.approved()
+    codes = _refusals(monkeypatch)
+    made = _after(docker, monkeypatch, call, change)
+    row = docker.run(deployment, "apply")
+    assert made == []
+    assert [action for action, _ in docker.fake.actions] == actions
+    assert docker.fake.projects == {}
+    journal = {s["step_key"]: s["state"] for s in docker.flow.get(deployment)["journal"]}
+    assert journal == dict.fromkeys(steps, "complete")
+    (apply,) = deployment_jobs(owner_db, deployment, "apply")
+    assert apply["result"] == {"status": "failed", "error_code": code}
+    assert codes == (["target_unavailable"] if gone == "target-archived" else [])
+    reason = f"apply failed after a platform write may have happened: {code}"
+    assert (row["status"], row["status_reason"]) == (
+        ("unknown_outcome", reason) if steps else ("failed", "no platform write was attempted")
+    )
+
+
+@pytest.mark.parametrize("gone", GONE)
+def test_a_plan_job_stops_once_its_target_or_entry_is_gone(
+    docker: Docker, monkeypatch: pytest.MonkeyPatch, gone: str
+) -> None:
+    change, code = GONE[gone]
+    codes = _refusals(monkeypatch)
+    made = _after(docker, monkeypatch, "daemon_id", change)
+    plan = docker.plan()
+    assert made == []
+    assert plan["status"] == "plan_failed"
+    assert plan["status_reason"] == f"plan job failed: {code}"
+    assert codes == (["target_unavailable"] if gone == "target-archived" else [])
+
+
+@pytest.mark.parametrize(
+    ("kind", "call"),
+    [
+        ("observe", "daemon_id"),
+        ("observe", "compose_ps"),
+        ("verify", "daemon_id"),
+        ("verify", "image_labels"),
+        ("verify", "/health"),
+    ],
+)
+@pytest.mark.parametrize("gone", GONE)
+def test_an_observe_or_verify_job_stops_once_its_target_or_entry_is_gone(
+    docker: Docker,
+    owner_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    gone: str,
+    kind: str,
+    call: str,
+) -> None:
+    """A refusal is the job's own failure, never a check that failed."""
+    change, code = GONE[gone]
+    deployment = docker.approved()
+    docker.run(deployment, *(["apply"] if kind == "observe" else ["apply", "observe"]))
+    actions = list(docker.fake.actions)
+    codes = _refusals(monkeypatch)
+    made = _after(docker, monkeypatch, call, change)
+    row = docker.run(deployment, kind)
+    assert made == [] and docker.fake.actions == actions
+    job = deployment_jobs(owner_db, deployment, kind)[0]
+    assert job["result"] == {"status": "failed", "error_code": code}
+    assert row["status"] != "verified" and row["verification"] is None
+    assert codes == (["target_unavailable"] if gone == "target-archived" else [])
+
+
+def test_a_grant_that_ran_out_is_refreshed_and_the_apply_goes_on(
+    docker: Docker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deployment = docker.approved()
+    codes = _refusals(monkeypatch)
+    _after(docker, monkeypatch, "build", _expire_grant)
+    assert docker.run(deployment, "apply")["status"] == "observing"
+    assert [action for action, _ in docker.fake.actions] == ["build", "compose-up"]
+    assert codes == []
 
 
 # ------------------------------------------------------------------ client A against client B
@@ -503,7 +717,7 @@ def test_the_real_docker_adapter_gets_the_users_cli_plugins_on_windows_only(
     """Built only: no command runs (B-3946)."""
     monkeypatch.setattr(runner_module, "os", SimpleNamespace(name=system))
     target = Target(tenant_id=uuid4(), host=f"docker://{uuid4()}", bindings={"port": "8501"})
-    adapter = RealPlatform().docker_adapter(target, InMemoryArtifactStore())
+    adapter = RealPlatform().docker_adapter(target, InMemoryArtifactStore(), lambda: None)
     assert isinstance(adapter.runtime, DockerCliRuntime)
     plugins = Path.home() / ".docker" / "cli-plugins"
     assert adapter.runtime.plugin_dirs == ((plugins,) if system == "nt" else ())

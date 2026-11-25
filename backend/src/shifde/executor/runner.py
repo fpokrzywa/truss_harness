@@ -8,11 +8,12 @@ adapter call. The deploying service principal comes from the credential entry, n
 The job context's `platform_kind` picks the adapter through `DISPATCH`: `databricks`
 (`DatabricksAdapter`, tokens from the broker), `snowflake` (`SnowflakeNativeAdapter`, a key pair
 the broker re-checks and reads on every statement) or `docker` (`DockerComposeAdapter` over the
-job's own artifact store, only for a plan of the Docker generator's version and a bundle of the
-plan's release). An entry of another platform is refused like any other mismatch. A `fabric` or
-`palantir` job runs its platform's broker check and then fails closed (`execution_failed`) before
-any adapter or platform call and before any journal intent, until SP8-5 and SP8-7 wire its call
-path; the platforms already build those adapters (`fabric_adapter`, `palantir_adapter`).
+job's own artifact store, the grant and entry checked again before every runtime call, only for a
+plan of the Docker generator's version and a bundle of the plan's release). An entry of another
+platform is refused like any other mismatch. A `fabric` or `palantir` job runs its platform's
+broker check and then fails closed (`execution_failed`) before any adapter or platform call and
+before any journal intent, until SP8-5 and SP8-7 wire its call path; the platforms already build
+those adapters (`fabric_adapter`, `palantir_adapter`).
 While a job runs it is heartbeated in the background; a 409 marks the lease lost.
 
 `apply` writes at most once: before each platform write the adapter's journal posts an `intent`
@@ -230,7 +231,9 @@ class Platform(Protocol):
         self, target: Target, credential_provider: FoundryCredentialProvider
     ) -> PalantirMarketplaceAdapter: ...
 
-    def docker_adapter(self, target: Target, artifacts: ArtifactStore) -> DockerComposeAdapter: ...
+    def docker_adapter(
+        self, target: Target, artifacts: ArtifactStore, authorize: Callable[[], None]
+    ) -> DockerComposeAdapter: ...
 
 
 class RealPlatform:
@@ -276,10 +279,14 @@ class RealPlatform:
             client_factory=lambda t: PalantirClient(t, credential_provider=credential_provider)
         )
 
-    def docker_adapter(self, target: Target, artifacts: ArtifactStore) -> DockerComposeAdapter:
+    def docker_adapter(
+        self, target: Target, artifacts: ArtifactStore, authorize: Callable[[], None]
+    ) -> DockerComposeAdapter:
         # Docker Desktop on Windows installs compose and buildx per user only (B-3946)
         plugins = [Path.home() / ".docker" / "cli-plugins"] if os.name == "nt" else []
-        return DockerComposeAdapter(DockerCliRuntime(plugin_dirs=plugins), artifacts=artifacts)
+        return DockerComposeAdapter(
+            DockerCliRuntime(plugin_dirs=plugins), artifacts=artifacts, authorize=authorize
+        )
 
 
 class FakePlatform:
@@ -373,13 +380,15 @@ class FakePlatform:
             )
         return PalantirMarketplaceAdapter(client_factory=self.palantir.client_factory)
 
-    def docker_adapter(self, target: Target, artifacts: ArtifactStore) -> DockerComposeAdapter:
+    def docker_adapter(
+        self, target: Target, artifacts: ArtifactStore, authorize: Callable[[], None]
+    ) -> DockerComposeAdapter:
         if self.docker is None:
             daemon = DOCKER_HOST.fullmatch(target.host)
             if daemon is None:
                 raise ValueError("the target is not a Docker daemon")
             self.docker = FakeContainerRuntime(daemon.group(1), prepare_app=prepare_rendered_app)
-        return DockerComposeAdapter(self.docker, artifacts=artifacts)
+        return DockerComposeAdapter(self.docker, artifacts=artifacts, authorize=authorize)
 
 
 class JobFailure(Exception):
@@ -618,24 +627,32 @@ class Runner:
             "succeeded" if value is not None else f"failed ({code})",
         )
 
+    def _recheck[T](self, state: LeaseState, target: Target, check: Callable[..., T]) -> T:
+        """The broker's `check` of the job's grant and identities, made again on every use; an
+        expired grant is refreshed first. Any refusal propagates."""
+        grant = state.grant
+        if grant is None or grant.expires_at <= utcnow():
+            grant = state.grant = self.client.credential_grant(state.lease)
+        return check(
+            grant,
+            job_id=state.lease.job.id,
+            executor_id=self.executor_id,
+            target_id=target.id,
+            tenant_id=target.tenant_id,
+        )
+
     def _token_provider(self, state: LeaseState, target: Target) -> TokenProvider:
         def token(host: str) -> str:
-            grant = state.grant
-            if grant is None or grant.expires_at <= utcnow():
-                grant = state.grant = self.client.credential_grant(state.lease)
-            try:
-                audience = normalize_databricks_address(host)
-            except AddressRefused:
-                raise CredentialUnavailable from None
-            if audience != grant.audience:
-                raise CredentialUnavailable
-            return self.broker.token_for(
-                grant,
-                job_id=state.lease.job.id,
-                executor_id=self.executor_id,
-                target_id=target.id,
-                tenant_id=target.tenant_id,
-            )
+            def checked(grant: CredentialGrant, **ids: UUID) -> str:
+                try:
+                    audience = normalize_databricks_address(host)
+                except AddressRefused:
+                    raise CredentialUnavailable from None
+                if audience != grant.audience:
+                    raise CredentialUnavailable
+                return self.broker.token_for(grant, **ids)
+
+            return self._recheck(state, target, checked)
 
         return token
 
@@ -644,16 +661,7 @@ class Runner:
         an expired grant is refreshed first."""
 
         def key_pair() -> SnowflakeKeyPair:
-            grant = state.grant
-            if grant is None or grant.expires_at <= utcnow():
-                grant = state.grant = self.client.credential_grant(state.lease)
-            return self.broker.key_pair_for(
-                grant,
-                job_id=state.lease.job.id,
-                executor_id=self.executor_id,
-                target_id=target.id,
-                tenant_id=target.tenant_id,
-            )
+            return self._recheck(state, target, self.broker.key_pair_for)
 
         return key_pair
 
@@ -845,11 +853,15 @@ class Runner:
         if any(r.resource_type != docker_adapter.RESOURCE_TYPE for r in ctx.owned_resources):
             raise ValueError("the target owns a resource the Docker adapter does not bind")
         store = InMemoryArtifactStore()
+
+        def authorize() -> None:
+            self._recheck(state, target, self.broker.docker_entry_for)
+
         return Prepared(
             target=target,
             spec=DockerComposeSpec(),
             adapter_version=docker_source.ADAPTER_VERSION,
-            adapter=self.platform.docker_adapter(target, store),
+            adapter=self.platform.docker_adapter(target, store, authorize),
             owned=tuple(
                 ResourceBinding(
                     key=docker_adapter.RESOURCE_KEY,

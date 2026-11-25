@@ -691,6 +691,102 @@ def test_docker_verify_of_another_release_fails_without_a_runtime_call(
     ]
 
 
+class Refused(PermissionError):
+    pass
+
+
+RUNTIME_CALLS = (
+    "daemon_id",
+    "build",
+    "image_labels",
+    "compose_up",
+    "compose_ps",
+    "http_get_local",
+)
+
+
+def _recorded(docker: DockerSetup, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The authorizations and runtime calls the adapter makes, in order."""
+    events: list[str] = []
+    runtime = docker.adapter.runtime
+
+    class Recording:
+        def __getattr__(self, name: str) -> Any:  # Any: a runtime method
+            if name in RUNTIME_CALLS:
+                events.append(name)
+            return getattr(runtime, name)
+
+    monkeypatch.setattr(docker.adapter, "runtime", Recording())
+    monkeypatch.setattr(docker.adapter, "authorize", lambda: events.append("authorize"))
+    return events
+
+
+def test_docker_every_runtime_call_and_every_steps_intent_follows_its_own_authorization(
+    docker: DockerSetup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events = _recorded(docker, monkeypatch)
+    artifact = docker.artifact()
+    inspect = InspectRequest(application_id=artifact.application_id, app_name=docker.project)
+    docker.adapter.capabilities(docker.read)
+    docker.adapter.inspect(inspect, docker.read)
+    plan = docker.adapter.plan(PlanRequest(artifact=artifact), docker.read)
+    deploy = docker.deploy_context()
+    intent = deploy.journal.intent
+    monkeypatch.setattr(
+        deploy.journal, "intent", lambda key, inputs: events.append(key) or intent(key, inputs)
+    )
+    del events[:]
+    receipt = docker.adapter.apply(ApplyRequest(artifact=artifact, plan=plan), deploy)
+    assert events == [
+        *("authorize", "daemon_id", "authorize", "compose_ps"),
+        *("authorize", "image-build", "build"),
+        *("authorize", "image-verify", "image_labels"),
+        *("authorize", "compose-up", "compose_up"),
+        "container-ready",
+    ]
+    del events[:]
+    docker.adapter.verify(VerifyRequest(receipt=receipt, release_digest=RELEASE), docker.read)
+    assert events == [
+        *("authorize", "daemon_id", "authorize", "compose_ps", "authorize", "image_labels"),
+        *("authorize", "http_get_local", "authorize", "http_get_local"),
+    ]
+
+
+@pytest.mark.parametrize("operation", ["capabilities", "inspect", "plan", "observe", "verify"])
+def test_docker_a_refused_authorization_ends_every_read_before_its_next_runtime_call(
+    docker: DockerSetup, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    """Refused at each of its authorizations in turn: the refusal itself is raised, and no runtime
+    call follows it."""
+    artifact, plan, deploy = docker.prepare()
+    receipt = docker.adapter.apply(ApplyRequest(artifact=artifact, plan=plan), deploy)
+    inspect = InspectRequest(application_id=artifact.application_id, app_name=docker.project)
+    run: dict[str, Callable[[], object]] = {
+        "capabilities": lambda: docker.adapter.capabilities(docker.read),
+        "inspect": lambda: docker.adapter.inspect(inspect, docker.read),
+        "plan": lambda: docker.adapter.plan(PlanRequest(artifact=artifact), docker.read),
+        "observe": lambda: docker.adapter.observe(ObserveRequest(receipt=receipt), docker.read),
+        "verify": lambda: docker.adapter.verify(VerifyRequest(receipt=receipt), docker.read),
+    }
+    events = _recorded(docker, monkeypatch)
+    run[operation]()
+    allowed = events.count("authorize")
+    assert allowed == len(events) / 2
+    for last in range(allowed):
+        del events[:]
+
+        def authorize(last: int = last) -> None:
+            if events.count("authorize") == last:
+                events.append("refused")
+                raise Refused
+            events.append("authorize")
+
+        monkeypatch.setattr(docker.adapter, "authorize", authorize)
+        with pytest.raises(Refused):
+            run[operation]()
+        assert events[-1] == "refused" and len(events) == 2 * last + 1
+
+
 def test_docker_fake_loads_each_staged_apps_own_siblings_and_restores_sys_modules(
     tmp_path: Path,
 ) -> None:
