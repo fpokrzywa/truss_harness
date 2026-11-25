@@ -1,5 +1,5 @@
 """Scripted assist demo of sub-project 7's "done when" against the fake model provider and the
-native fake platform (design SP7 section 12, steps 1 to 7; step 8, the board, is SP7-8).
+native fake platform (design SP7 section 12, all eight steps).
 
 Runs in-process: the API (`shifde.app.create_app`) in a TestClient, a worker on a thread with
 `shifde.worker_main.job_handlers()` and `shifde.worker_main.internal_tools()`, and the
@@ -28,7 +28,11 @@ schema owner and drops it at the end, also on failure; it never uses the checkou
    approval is refused (403); a second administrator approves; the deployment is `verified`.
 6. A viewer's deployment request is refused `specialist_not_permitted`.
 7. A's specialist run scripted to read B's release id gets `not_found`.
-`--through N` (1..7) stops after step N. The test helpers under `backend/tests/` drive each step.
+8. B's evaluation specialist proposes an evaluation run. A's board, read by a member bound to P1
+   only, lists P1 only (the release's version current, `verified`); B's lists Q1 only (a `failed`
+   last attempt, an `approved` open plan). A's administrator gets 404 on B's board, requests and
+   proposal, and the reverse.
+`--through N` (1..8) stops after step N. The test helpers under `backend/tests/` drive each step.
 
 Prints one line per step and ends with `ASSIST DEMO PASSED` (exit 0) or `ASSIST DEMO FAILED:
 <step>` (exit 1). Exit 2: the demo could not run. It never prints a token, password, cookie,
@@ -66,7 +70,7 @@ URL_KEYS = (
     "SHIFDE_TEST_MIGRATION_DATABASE_URL",
 )
 API_ORIGIN = "https://testserver"
-STEPS = 7  # design section 12 steps 1-7; step 8 is SP7-8
+STEPS = 8  # design section 12 steps 1-8
 
 
 class DemoError(Exception):
@@ -165,11 +169,12 @@ def drive(app_url: str, owner_url: str, workdir: Path, through: int) -> None:
     from fastapi.testclient import TestClient
     from sqlalchemy import text
     from tests._support.assist_fixtures import PICKS_EVALUATION, specialist_model, tool_results
-    from tests._support.p3util import fake_model_stack
     from tests._support.p5util import Hdr, fast, wait_for
     from tests.board.conftest import deployment as board_deployment
+    from tests.board.conftest import member as board_member
     from tests.board.conftest import plan as board_plan
     from tests.board.conftest import target as board_target
+    from tests.board.test_board import ALL as BOARD_PERMISSIONS
     from tests.conftest import ORIGIN
     from tests.connections.routes import as_user, grant, system_role_user
     from tests.delivery.conftest import make_executor
@@ -179,6 +184,7 @@ def drive(app_url: str, owner_url: str, workdir: Path, through: int) -> None:
     from tests.executor.support import ask_plan, credentials_file, fake_platform, make_runner
     from tests.identity import harness
     from tests.tenancy.conftest import _client
+    from tests.tenancy.routes import project_slug, ws_slug
 
     from shifde import worker_main
     from shifde.app import create_app
@@ -387,6 +393,7 @@ def drive(app_url: str, owner_url: str, workdir: Path, through: int) -> None:
 
             # ------------------------------------------------------------------ step 2
             board_marker, plan_marker, foreign_marker = "[[demo-k1]]", "[[demo-k2]]", "[[demo-k3]]"
+            evaluation_marker = "[[demo-k4]]"
             plan_payload = {
                 "target_id": target["id"],
                 "release_id": rel.id,
@@ -398,17 +405,21 @@ def drive(app_url: str, owner_url: str, workdir: Path, through: int) -> None:
                 plan_marker: [("seth.propose.delivery_plan", plan_payload)],
                 foreign_marker: [("seth.releases.read", {"release_id": str(b_side["release"])})],
             }
+            b_script = {
+                evaluation_marker: [
+                    ("seth.propose.evaluation_run", {"release_id": str(b_side["release"])})
+                ],
+            }
 
             def ok(r: Any, status: int = 200) -> Any:
                 need(r.status_code == status)
                 return r.json()
 
             def enable_and_install() -> dict[str, str]:
-                models = {"a": specialist_model(fde.client, fde, script, org=base_a)}
-                b_stack = fake_model_stack(
-                    b_admin.client, b_admin, org=base_b, config={"script": []}, conn_name="assist-b"
-                )
-                models["b"] = b_stack["model"]
+                models = {
+                    "a": specialist_model(fde.client, fde, script, org=base_a),
+                    "b": specialist_model(b_admin.client, b_admin, b_script, org=base_b),
+                }
                 for h, base in ((fde, base_a), (b_admin, base_b)):
                     ok(h.client.post(f"{base}/assist/enable", headers=h))
                 projects = [(fde, base_a, "sample", "a"), (fde, base_a, "other", "a"),
@@ -427,19 +438,23 @@ def drive(app_url: str, owner_url: str, workdir: Path, through: int) -> None:
             done_with(2)
 
             # ------------------------------------------------------------------ step 3
-            requests_url = f"{base_a}/workspaces/main/projects/sample/assist/requests"
-
-            def ask(h: Hdr, body: dict[str, Any], status: int = 201) -> dict[str, Any]:
-                out: dict[str, Any] = ok(h.client.post(requests_url, headers=h, json=body), status)
+            def ask(h: Hdr, body: dict[str, Any], status: int = 201,
+                    base: str = base_a) -> dict[str, Any]:  # fmt: skip
+                url = f"{base}/workspaces/main/projects/sample/assist/requests"
+                out: dict[str, Any] = ok(h.client.post(url, headers=h, json=body), status)
                 return out
 
-            def run_of(out: dict[str, Any]) -> dict[str, Any]:
+            def completed(out: dict[str, Any], h: Hdr, base: str) -> dict[str, Any]:
                 def ended() -> dict[str, Any] | None:
-                    got = ok(fde.client.get(f"{base_a}/runs/{out['run_id']}", headers=fde))
+                    got = ok(h.client.get(f"{base}/runs/{out['run_id']}", headers=h))
                     return got if got["status"] in ("completed", "failed", "cancelled") else None
 
                 run: dict[str, Any] = wait_for(ended, 60.0)
                 need(run["status"] == "completed")
+                return run
+
+            def run_of(out: dict[str, Any]) -> dict[str, Any]:
+                run = completed(out, fde, base_a)
                 answer = ok(fde.client.get(f"{base_a}/runs/{out['run_id']}/result", headers=fde))
                 need(bool(answer["output"]))
                 return run
@@ -531,7 +546,7 @@ def drive(app_url: str, owner_url: str, workdir: Path, through: int) -> None:
                 [proposal] = detail["proposals"]
                 need((proposal["kind"], proposal["status"]) == ("delivery_plan", "open"))
                 need(proposal["payload"] == plan_payload)
-                return dict(proposal)
+                return {**proposal, "request_id": out["id"]}
 
             proposal = step("5. the deployment specialist proposes a delivery plan", proposed)
 
@@ -598,6 +613,127 @@ def drive(app_url: str, owner_url: str, workdir: Path, through: int) -> None:
             step("7. A's specialist run scripted to read B's release id gets not_found",
                  foreign_not_found)  # fmt: skip
             done_with(7)
+
+            # ------------------------------------------------------------------ step 8
+            def proposals_of(h: Hdr, base: str, request_id: str) -> list[dict[str, Any]]:
+                detail = ok(h.client.get(f"{base}/assist/requests/{request_id}", headers=h))
+                return list(detail["proposals"])
+
+            def b_proposed() -> dict[str, Any]:
+                body = {"text": f"evaluate the accuracy {evaluation_marker}"}
+                out = ask(b_admin, body, base=base_b)
+                need((out["status"], out["route_method"]) == ("routed", "rule"))
+                need(out["specialist_key"] == "evaluation")
+                completed(out, b_admin, base_b)
+                [made] = proposals_of(b_admin, base_b, out["id"])
+                need((made["kind"], made["status"]) == ("evaluation_run", "open"))
+                return {**made, "request_id": out["id"]}
+
+            b_proposal = step(
+                "8. B's request in Q1 is routed by rule to evaluation and the specialist proposes "
+                "an evaluation run",
+                b_proposed,
+            )
+            # `_client` gives each organization one more project, in its own workspace
+            ids_a = [str(i) for i in (a["org"].project, a["sample"], a["other"], rel.id,
+                                      target["id"])]  # fmt: skip
+            ids_b = [str(i) for i in (b["sample"], b_side["release"], b_side["target"])]
+
+            def only_project(h: Hdr, base: str, project_id: Any, foreign: list[str]) -> Any:
+                r = h.client.get(f"{base}/board", headers=h)
+                board = ok(r)
+                [entry] = board["projects"]
+                need(entry["project"]["id"] == str(project_id))
+                need(entry["project"]["slug"] == "sample")
+                need(board["next_cursor"] is None)
+                need(not any(i in r.text for i in foreign))
+                return entry
+
+            def release_and_cell(entry: Any, release_id: Any, target_id: Any) -> Any:
+                [found] = [
+                    (r, t)
+                    for s in entry["solutions"]
+                    for r in s["releases"]
+                    if r["id"] == str(release_id)
+                    for t in s["targets"]
+                    if t["target_id"] == str(target_id)
+                ]
+                return found
+
+            def board_of_a() -> None:
+                email = board_member(owner_db, a["org"].tenant, BOARD_PERMISSIONS,
+                                     scope_type="project", scope_id=a["sample"])  # fmt: skip
+                entry = only_project(session(email), base_a, a["sample"], ids_b)
+                need(len(entry["solutions"]) == 1)
+                released, cell = release_and_cell(entry, rel.id, target["id"])
+                need(cell["current"]["release_id"] == rel.id)
+                need(cell["current"]["version_no"] == released["version_no"])
+                need(cell["last_attempt"]["status"] == "verified")
+                need(cell["open_plan"] is None)
+
+            step("8. A's board, read by a member bound to P1 only, lists P1 only: A's release is "
+                 "current and verified", board_of_a)  # fmt: skip
+
+            def archive_extra_project() -> None:
+                url = f"{base_b}/workspaces/{ws_slug(b['org'])}/projects/{project_slug(b['org'])}"
+                extra = ok(b_admin.client.get(url, headers=b_admin))
+                need(extra["id"] == str(b["org"].project))
+                body = {"status": "archived", "row_version": extra["row_version"]}
+                out = ok(b_admin.client.patch(url, headers=b_admin, json=body))
+                need(out["status"] == "archived")
+
+            step("8. B's administrator archives the test organization's extra project, so Q1 is "
+                 "B's only active project", archive_extra_project)  # fmt: skip
+
+            def board_of_b() -> None:
+                entry = only_project(b_admin, base_b, b["sample"], ids_a)
+                _, cell = release_and_cell(entry, b_side["release"], b_side["target"])
+                need(cell["current"] is None)
+                need(cell["last_attempt"]["status"] == "failed")
+                need(cell["open_plan"]["status"] == "approved")
+                need(cell["open_plan"]["release_id"] == str(b_side["release"]))
+
+            step("8. B's board lists Q1 only: the last attempt failed, the open plan is approved",
+                 board_of_b)  # fmt: skip
+
+            def all_404(h: Hdr, own: str, other: str, theirs: dict[str, Any]) -> None:
+                """`h` of organization `own` gets 404 on `other`'s boards, requests and proposal
+                (`theirs`), each id under both organizations' paths."""
+
+                def refused(method: str, url: str, body: Any = None) -> None:
+                    need(h.client.request(method, url, headers=h, json=body).status_code == 404)
+
+                in_project = f"{other}/workspaces/main/projects/sample"
+                refused("GET", f"{other}/board")
+                refused("GET", f"{in_project}/board")
+                refused("GET", f"{in_project}/assist/requests")
+                refused("POST", f"{in_project}/assist/requests", {"text": "evaluate the accuracy"})
+                for base in (other, own):
+                    refused("GET", f"{base}/assist/requests/{theirs['request_id']}")
+                    for verb in ("accept", "dismiss"):
+                        refused("POST", f"{base}/assist/proposals/{theirs['id']}/{verb}", {})
+
+            def a_against_b() -> None:
+                all_404(fde, base_a, base_b, b_proposal)
+                [after] = proposals_of(b_admin, base_b, b_proposal["request_id"])
+                need((after["id"], after["status"]) == (b_proposal["id"], "open"))
+                need(after["decided_by"] is None and after["decided_at"] is None)
+
+            step("8. A's administrator gets 404 on B's board, requests and proposal; the proposal "
+                 "stays open", a_against_b)  # fmt: skip
+
+            def b_against_a() -> None:
+                [before] = proposals_of(fde, base_a, proposal["request_id"])
+                need((before["id"], before["status"]) == (proposal["id"], "accepted"))
+                need(before["result_ref"] is not None and before["decided_at"] is not None)
+                all_404(b_admin, base_b, base_a, proposal)
+                [after] = proposals_of(fde, base_a, proposal["request_id"])
+                need(after["id"] == before["id"])
+                need(all(after[k] == before[k] for k in ("status", "result_ref", "decided_at")))
+
+            step("8. B's administrator gets 404 on A's board, requests and proposal; the proposal "
+                 "is unchanged", b_against_a)  # fmt: skip
+            done_with(8)
     finally:
         owner_db.dispose()
 

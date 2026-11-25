@@ -36,8 +36,10 @@ CROSS_CLIENT = tuple(
         "admin/test_cross_client.py",
         "app/test_cross_client.py",
         "app/test_oidc_cross_client.py",
+        "assist/test_routes_cross_client.py",
         "audit/test_cross_client.py",
         "authz/test_cross_client.py",
+        "board/test_routes_cross_client.py",
         "build/test_cross_client.py",
         "build/test_routes_cross_client.py",
         "connections/test_cross_client.py",
@@ -141,6 +143,7 @@ ENTRIES: tuple[Entry, ...] = (
             _T + "runtime/test_lifecycle.py",
             _T + "governance/test_cross_client.py",
             _T + "app/test_r1_round2.py",
+            _T + "assist/test_isolation_in_run.py",
         ),
     ),
     Entry(
