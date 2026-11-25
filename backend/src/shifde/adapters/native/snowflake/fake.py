@@ -7,16 +7,24 @@ only key-pair JWTs of the request host's account that verify against `public_key
 every statement and copy in order (`log`). Development and test only: any other `environment`
 refuses to construct it. Fault switches are off by default (`faults`, see `FAULTS`).
 
-`DEEP_HEALTH()` is a stubbed answer until SP6-6, which will run the staged `ui/deep_health.py`
-instead: it returns SP5 6.4's shape with both checks passed (`deep_health_bad` fails one).
+`CALL ...DEEP_HEALTH()` runs the staged handler of the installed application's patch: the files the
+`IMPORTS` clause of that patch's `setup.sql` names are laid out flat in a temporary directory and
+`deep_health.run` is called with a minimal session over the host's sample-data account
+(`data(host)`: one `FakeSnowflakeAccount(sample_data=True)` per account host, whose
+`table_denied:<D.S.T>` and `cortex_denied` switches and `cortex` models apply). A missing clause or
+file, a handler that raises or an answer that is not a JSON object is a SQL API error without the
+exception text. `deep_health_bad` makes the handler's Cortex statement fail.
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
+import importlib.util
 import json
 import re
+import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -30,6 +38,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from shifde.adapters import snowflake_jwt
+from shifde.adapters.dataplatforms.fakes import SNOWFLAKE_STATEMENTS, FakeSnowflakeAccount
 from shifde.adapters.native.contracts import Target
 from shifde.adapters.native.snowflake.clients import (
     STATEMENTS,
@@ -39,7 +48,6 @@ from shifde.adapters.native.snowflake.clients import (
 from shifde.adapters.native.snowflake.source import CLI_VERSION, identifier
 
 ENVIRONMENTS = ("development", "test")
-GENERATOR_VERSION = "shifde.appgen.snowflake/1.0"
 STEPS = (
     "package-create",
     "schema-create",
@@ -105,6 +113,15 @@ _WRITES = {
     "grant": "application-access",
 }
 
+# The staged deep-health handler: its procedure's `IMPORTS` clause in `setup.sql`, the imported file
+# the handler is in, and the interpreter option it finds its import directory under.
+_IMPORTS = re.compile(
+    r"PROCEDURE\s+APP_PUBLIC\.DEEP_HEALTH\(\)[^;]*?\bIMPORTS\s*=\s*\(([^)]*)\)", re.IGNORECASE
+)
+_HANDLER_FILE = "deep_health.py"
+_IMPORT_DIRECTORY = "snowflake_import_directory"
+_handler_lock = threading.Lock()  # `sys._xoptions` is the process's
+
 
 class SqlError(Exception):
     """A statement the account refuses: answered as a SQL API error (422)."""
@@ -132,6 +149,79 @@ class Account:
     versions: dict[str, list[JSON]] = field(default_factory=dict)  # package -> patches
     applications: dict[str, JSON] = field(default_factory=dict)
     grants: set[tuple[str, str]] = field(default_factory=set)  # (application, role)
+
+
+class _HandlerFrame:
+    def __init__(self, session: _HandlerSession, query: str, params: list[Any]) -> None:
+        self.session, self.query, self.params = session, query, params
+
+    def collect(self) -> list[Any]:  # Any: rows of SQL API text cells
+        return self.session.execute(self.query, self.params)
+
+
+class _HandlerSession:
+    """What the staged handler gets for a Snowpark session: `sql(query, params=...).collect()` over
+    the host's data account, in process. A refused statement raises."""
+
+    def __init__(self, data: FakeSnowflakeAccount, *, deny_cortex: bool) -> None:
+        self._data, self._deny_cortex = data, deny_cortex
+
+    def sql(self, query: str, params: list[Any] | None = None) -> _HandlerFrame:  # Any: values
+        return _HandlerFrame(self, query, list(params or []))
+
+    def execute(self, query: str, params: list[Any]) -> list[Any]:  # Any: values, rows
+        if self._deny_cortex and "SNOWFLAKE.CORTEX." in query.upper():
+            raise RuntimeError("the statement was refused")
+        bindings = {
+            str(i): {"type": "TEXT", "value": str(v)} for i, v in enumerate(params, start=1)
+        }
+        response = self._data.handle(
+            httpx.Request(
+                "POST",
+                f"https://{self._data.host}{SNOWFLAKE_STATEMENTS}",
+                headers={
+                    "Authorization": "Bearer in-process",
+                    "X-Snowflake-Authorization-Token-Type": "PROGRAMMATIC_ACCESS_TOKEN",
+                },
+                json={
+                    "statement": query,
+                    "bindings": bindings,
+                    "parameters": {"MULTI_STATEMENT_COUNT": "1"},
+                },
+            )
+        )
+        if response.status_code != 200:
+            raise RuntimeError("the statement was refused")
+        rows: list[Any] = response.json()["data"]
+        return rows
+
+
+def _run_handler(files: dict[str, bytes], session: _HandlerSession) -> str:
+    """The JSON text of `deep_health.run(session)`, from `files` laid out in a temporary import
+    directory; raises what the handler raises. The module is never put into `sys.modules`."""
+    with tempfile.TemporaryDirectory() as temporary, _handler_lock:
+        directory = Path(temporary)
+        for name, data in files.items():
+            (directory / name).write_bytes(data)
+        spec = importlib.util.spec_from_file_location(
+            "shifde_staged_deep_health", directory / _HANDLER_FILE
+        )
+        if spec is None or spec.loader is None:
+            raise ValueError("the handler cannot be loaded")
+        module = importlib.util.module_from_spec(spec)
+        before = sys._xoptions.get(_IMPORT_DIRECTORY)
+        sys._xoptions[_IMPORT_DIRECTORY] = temporary
+        try:
+            spec.loader.exec_module(module)
+            report = module.run(session)
+        finally:
+            if before is None:
+                del sys._xoptions[_IMPORT_DIRECTORY]
+            else:
+                sys._xoptions[_IMPORT_DIRECTORY] = before
+    if not isinstance(report, dict):
+        raise ValueError("the handler's answer is not an object")
+    return json.dumps(report)
 
 
 class FakeStageCopier:
@@ -169,6 +259,7 @@ class FakeSnowflakeNativePlatform:
             raise ValueError(f"unknown fault switches: {sorted(unknown)}")
         self.hang_timeout = hang_timeout
         self.accounts: dict[str, Account] = {}
+        self._data: dict[str, FakeSnowflakeAccount] = {}  # by account host, like `accounts`
         self.log: list[str] = []  # every statement and copy, in order
         self._released = threading.Event()
         self._lock = threading.RLock()
@@ -195,6 +286,20 @@ class FakeSnowflakeNativePlatform:
     def state(self, host: str) -> Account:
         """The objects of `host` (`<account>.snowflakecomputing.com`)."""
         return self.accounts.setdefault(host.removeprefix("https://").lower(), Account())
+
+    def data(self, host: str) -> FakeSnowflakeAccount:
+        """The sample-data account the staged deep health of `host` reads. Its models are the
+        `cortex` scripts a caller adds (none at first)."""
+        host = host.removeprefix("https://").lower()
+        with self._lock:
+            if host not in self._data:
+                self._data[host] = FakeSnowflakeAccount(
+                    account=host.removesuffix(".snowflakecomputing.com"),
+                    accept_any_token=True,
+                    record=False,
+                    sample_data=True,
+                )
+            return self._data[host]
 
     def release(self) -> None:
         """Unblock a `hang`ing write (it still raises `TimeoutError`: accepted, unconfirmed)."""
@@ -329,6 +434,8 @@ class FakeSnowflakeNativePlatform:
         for kind, pattern in _PATTERNS.items():
             match = pattern.fullmatch(statement)
             if match:
+                if kind == "deep_health":
+                    return self._deep_health(host, account, warehouse, *match.groups())
                 answer: tuple[list[str], list[list[Any]]] = getattr(self, f"_{kind}")(
                     account, role, warehouse, *match.groups()
                 )
@@ -543,26 +650,39 @@ class FakeSnowflakeNativePlatform:
         self._installed(account, name, warehouse)
         return ["STATUS"], [["OK"]]
 
-    def _deep_health(self, account: Account, role: str, warehouse: object, name: str) -> Any:
-        # A stub until SP6-6 runs the staged `ui/deep_health.py` here.
-        app = self._installed(account, name, warehouse)
-        release = self._release(account, str(app["source"]), int(app["patch"]))
-        bad = "deep_health_bad" in self.faults
-        reason = "the app cannot use Cortex model mistral-large2" if bad else None
-        report = {
-            "status": "failed" if bad else "ok",
-            "generator_version": GENERATOR_VERSION,
-            "release_digest": release["digest"],
-            "checks": [
-                {"name": "warehouse", "status": "passed", "reason": None},
-                {
-                    "name": "serving_endpoint",
-                    "status": "failed" if bad else "passed",
-                    "reason": reason,
-                },
-            ],
-        }
-        return ["DEEP_HEALTH"], [[json.dumps(report)]]
+    def _staged_imports(self, account: Account, app: JSON) -> dict[str, bytes]:
+        """The installed patch's handler files by flat name: what its `setup.sql` imports, from its
+        own stage directory."""
+        package = str(app["source"])
+        release = self._release(account, package, int(app["patch"]))
+        stage = account.stages.get(package) or {"files": {}}
+        staged: dict[str, JSON] = stage["files"]
+        directory = str(release["digest"])
+        setup = staged.get(f"{directory}/setup.sql")
+        clause = _IMPORTS.search(setup["data"].decode("utf-8", "replace")) if setup else None
+        if clause is None:
+            raise SqlError("002139", "The procedure imports no files.")
+        paths = re.findall(r"'/([A-Za-z0-9_./-]+)'", clause.group(1))
+        files: dict[str, bytes] = {}
+        for path in paths:
+            item = staged.get(f"{directory}/{path}")
+            if item is None:
+                raise SqlError("391546", "An imported file does not exist on the stage.")
+            files[path.rsplit("/", 1)[-1]] = item["data"]
+        if _HANDLER_FILE not in files:
+            raise SqlError("002139", "The procedure does not import its handler.")
+        return files
+
+    def _deep_health(
+        self, host: str, account: Account, warehouse: object, name: str
+    ) -> tuple[list[str], list[list[Any]]]:  # Any: row values
+        files = self._staged_imports(account, self._installed(account, name, warehouse))
+        session = _HandlerSession(self.data(host), deny_cortex="deep_health_bad" in self.faults)
+        try:
+            report = _run_handler(files, session)
+        except (Exception, SystemExit):
+            raise SqlError("100357", "Python Interpreter Error.") from None
+        return ["DEEP_HEALTH"], [[report]]
 
     @staticmethod
     def _done() -> tuple[list[str], list[list[Any]]]:

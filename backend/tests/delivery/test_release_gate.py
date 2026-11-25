@@ -181,11 +181,21 @@ def test_a_release_outside_the_targets_workspace_or_project_is_refused(
 
 
 def test_the_target_kind_must_be_the_releases() -> None:
-    plan_service.check_target_kind({"target_kind": "databricks.app/v1"})
-    for manifest in ({"target_kind": "databricks.job/v1"}, {}):
-        with pytest.raises(plan_service.ReleaseTargetMismatch) as refused:
-            plan_service.check_target_kind(manifest)
-        assert (refused.value.status, refused.value.code) == (409, "release_target_mismatch")
+    kinds = {"databricks.app/v1": "databricks", "snowflake.native-app/v1": "snowflake"}
+    for kind, platform in kinds.items():
+        plan_service.check_target_kind({"target_kind": kind}, platform)
+    refusals: list[tuple[dict[str, Any], str]] = [
+        ({"target_kind": kind}, other)
+        for kind, platform in kinds.items()
+        for other in ("databricks", "snowflake", "fabric")
+        if other != platform
+    ]
+    for manifest in ({"target_kind": "databricks.job/v1"}, {"target_kind": ["x"]}, {}):
+        refusals += [(manifest, platform) for platform in ("databricks", "snowflake")]
+    for manifest, platform in refusals:
+        with pytest.raises(plan_service.TargetKindMismatch) as refused:
+            plan_service.check_target_kind(manifest, platform)
+        assert (refused.value.status, refused.value.code) == (409, "target_kind_mismatch")
         assert refused.value.detail == "The release is for another kind of target."
 
 
