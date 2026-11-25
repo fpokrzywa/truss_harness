@@ -73,8 +73,9 @@ EPILOG = f"""environment:
                                     client_id, client_secret_file}}
                                     Docker {{tenant_id, host, platform: "docker"}}
                                     (a secret file holds one value; on POSIX mode 0600;
-                                    Palantir jobs run on the fake platform; Fabric and
-                                    Docker jobs fail closed until SP8-5/9)
+                                    Palantir jobs run (experimental, not live
+                                    validated; on the fake with --fake-platform);
+                                    Fabric jobs fail closed until SP8-5)
   SHIFDE_ENV                        development | test | production (default production)
   {PALANTIR_SUFFIXES}
                                     extra Palantir stack host suffixes, comma-separated (the
@@ -112,8 +113,7 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "run against the in-memory fake Databricks, Snowflake, Fabric, Palantir and Docker "
-            "platforms (development and test only; Fabric and Docker jobs fail closed until "
-            "SP8-5/9)"
+            "platforms (development and test only; Fabric jobs fail closed until SP8-5)"
         ),
     )
     return parser

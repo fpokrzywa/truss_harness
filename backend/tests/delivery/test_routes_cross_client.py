@@ -28,7 +28,11 @@ they never change. Palantir deliveries (SP8-7) the same in both directions, the 
 target with preview off included (404, never the 409), and its executor leases none of my Palantir
 jobs and reads no context, artifact or grant of a leased one; within one organization an
 administrator of project P1 only gets the unknown-id 404 on P2's Palantir target, plan and
-deployment, and finds them in no list.
+deployment, and finds them in no list. Generated Docker apps (SP8-9): the same 404s in both
+directions and for a member bound only to project P1; a plan on a workspace the other organization
+claims is `workspace_not_claimed`, byte for byte an unclaimed or released one's answer apart from
+the request id, also at approval; two organizations may bind one project and port on their own
+daemons; and B's executor leases none of A's Docker jobs.
 """
 
 from __future__ import annotations
@@ -43,6 +47,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
+from shifde.adapters.native.addresses import address_key
 from shifde.core.db import Database
 from shifde.core.errors import NotFound
 from shifde.core.ids import uuid7
@@ -54,6 +59,7 @@ from tests.board.conftest import add_project, member
 from tests.connections.routes import as_user, org, system_role_user
 from tests.delivery.app_releases import AppRelease, add_provider
 from tests.delivery.conftest import make_executor
+from tests.delivery.docker import docker_release, docker_target, rows, workspace, workspace_target
 from tests.delivery.palantir import (
     DEPLOYABLE,
     palantir_release,
@@ -62,6 +68,7 @@ from tests.delivery.palantir import (
 )
 from tests.delivery.releases import release_for_target
 from tests.delivery.routes import (
+    DOCKER_BINDINGS,
     SP8_KINDS,
     WHOAMI,
     Flow,
@@ -1660,3 +1667,299 @@ def _in_p2(row: tuple[Any, ...], side: PalantirSide) -> bool:
         side.approved["id"],
     }
     return any(str(value) in named for value in row)
+
+
+# ------------------------------------------------------------------ generated Docker apps (SP8-9)
+@dataclass(frozen=True)
+class DockerSide:
+    flow: Flow
+    workspace: dict[str, Any]  # the Databricks target whose claim the Docker target needs
+    target: str
+    release: AppRelease
+    sealed: dict[str, Any]  # a sealed plan
+    approved: dict[str, Any]  # another plan, approved
+    deployment: str  # its queued deployment
+
+
+@pytest.fixture
+def two_docker_apps(
+    client: TestClient, world: World, people: People, owner_db: Database
+) -> dict[str, DockerSide]:
+    """In each organization: a claimed workspace, a Docker target of it (the same project and port
+    on each one's own daemon), a release, a sealed plan and an approved one with its queued
+    deployment, all through the routes."""
+    sides = {}
+    for name, c, email in (("b", world.b, people.owner_b), ("a", world.a, people.owner_a)):
+        flow = Flow(
+            client,
+            c.slug,
+            ws_slug(c),
+            c.tenant,
+            email,
+            system_role_user(owner_db, c.tenant, "tenant_administrator"),
+            make_executor(client, c, email).token,
+            owner_db,
+        )
+        held = workspace_target(flow)
+        target = docker_target(flow, workspace_host=held["address"])
+        release = docker_release(flow, target)
+        approved = flow.approve(flow.sealed(target["id"], "live-app", release_id=release.id))
+        sealed = flow.sealed(target["id"], release_id=release.id)
+        assert sealed["status"] == "sealed" and approved["deployment_id"]
+        sides[name] = DockerSide(
+            flow, held, target["id"], release, sealed, approved, approved["deployment_id"]
+        )
+    bound = [s.flow for s in sides.values()]
+    assert bound[0].slug != bound[1].slug
+    return sides
+
+
+def _both(owner_db: Database, sides: dict[str, DockerSide]) -> list[Any]:
+    return [rows(owner_db, side.flow.tenant) for side in sides.values()]
+
+
+@pytest.mark.parametrize(("me", "other"), [("a", "b"), ("b", "a")])
+def test_a_cannot_reach_bs_docker_target_or_plan_it_or_bs_release(
+    client: TestClient,
+    owner_db: Database,
+    two_docker_apps: dict[str, DockerSide],
+    me: str,
+    other: str,
+) -> None:
+    mine, theirs = two_docker_apps[me], two_docker_apps[other]
+    flow, release = mine.flow, str(mine.release.id)
+    h = as_user(client, flow.requester)
+    request_plan(client, h, flow.slug, mine.target, release, application_key="own")  # own first
+    before = _both(owner_db, two_docker_apps)
+    nobody, T = str(uuid7()), targets(flow.slug)
+    for method, suffix in (("GET", ""), ("POST", "/archive")):
+        _same_404(
+            client.request(method, f"{T}/{theirs.target}{suffix}", headers=h),
+            client.request(method, f"{T}/{nobody}{suffix}", headers=h),
+        )
+    for named, unknown in (
+        (_plan_body(theirs.target, release), _plan_body(nobody, release)),
+        (_plan_body(theirs.target, str(theirs.release.id)), _plan_body(nobody, release)),
+        (_plan_body(mine.target, str(theirs.release.id)), _plan_body(mine.target, nobody)),
+    ):
+        _same_404(
+            client.post(plans(flow.slug), json=named, headers=h),
+            client.post(plans(flow.slug), json=unknown, headers=h),
+        )
+    assert _both(owner_db, two_docker_apps) == before
+
+
+@pytest.mark.parametrize(("me", "other"), [("a", "b"), ("b", "a")])
+def test_a_cannot_reach_bs_docker_plan_or_deployment(
+    client: TestClient,
+    owner_db: Database,
+    two_docker_apps: dict[str, DockerSide],
+    me: str,
+    other: str,
+) -> None:
+    mine, theirs = two_docker_apps[me], two_docker_apps[other]
+    slug = mine.flow.slug
+    h = as_user(client, mine.flow.requester)
+    for url in (f"{plans(slug)}/{mine.sealed['id']}", f"{deployments(slug)}/{mine.deployment}"):
+        assert client.get(url, headers=h).status_code == 200  # own objects first
+    before = _both(owner_db, two_docker_apps)
+    nobody = str(uuid7())
+    calls: tuple[tuple[str, str, str, Any], ...] = (
+        (plans(slug), theirs.sealed["id"], "", None),
+        (plans(slug), theirs.sealed["id"], "/approve", {"plan_digest": theirs.sealed["digest"]}),
+        (plans(slug), theirs.sealed["id"], "/reject", {}),
+        (deployments(slug), theirs.deployment, "", None),
+        (deployments(slug), theirs.deployment, "/reconcile", None),
+        (deployments(slug), theirs.deployment, "/mark-failed", {"note": "intruder"}),
+        (deployments(slug), theirs.deployment, "/cancel", None),
+    )
+    for base, their_id, suffix, payload in calls:
+        method = "POST" if suffix else "GET"
+        _same_404(
+            client.request(method, f"{base}/{their_id}{suffix}", headers=h, json=payload),
+            client.request(method, f"{base}/{nobody}{suffix}", headers=h, json=payload),
+        )
+    assert _both(owner_db, two_docker_apps) == before
+
+
+def test_a_p1_only_member_cannot_reach_p2s_docker_objects(
+    client: TestClient, world: World, people: People, owner_db: Database
+) -> None:
+    """Within one organization: a member bound only to P1, with every delivery permission there,
+    gets on P2's Docker target, plan, deployment and release the 404 an unknown id gets."""
+    a = world.a
+    flow = Flow(
+        client,
+        a.slug,
+        ws_slug(a),
+        a.tenant,
+        people.owner_a,
+        system_role_user(owner_db, a.tenant, "tenant_administrator"),
+        make_executor(client, a, people.owner_a).token,
+        owner_db,
+    )
+    host = workspace(flow)
+    p1 = docker_target(flow, workspace_host=host, project_scope=project_slug(a))
+    release = docker_release(flow, p1)  # in a project of its own: P2
+    with owner_db.session() as o:
+        p2_slug = o.execute(
+            text(
+                "SELECT p.slug FROM shifde.projects p JOIN shifde.solutions s "
+                "ON s.project_id = p.id WHERE s.id = :s"
+            ),
+            {"s": release.release.manifest["solution_id"]},
+        ).scalar_one()
+    p2 = docker_target(flow, workspace_host=host, project_scope=p2_slug)
+    assert (p1["project"], p2["project"]) == (project_slug(a), p2_slug)
+    approved = flow.approve(flow.sealed(p2["id"], "live-app", release_id=release.id))
+    sealed = flow.sealed(p2["id"], release_id=release.id)
+    email = member(
+        owner_db,
+        a.tenant,
+        [
+            "workspace:read",
+            "project:read",
+            "packaging:solution:read",
+            "delivery:target:read",
+            "delivery:target:write",
+            "delivery:plan:read",
+            "delivery:plan:request",
+            "delivery:plan:approve",
+            "delivery:deployment:read",
+            "delivery:deployment:resolve",
+        ],
+        scope_type="project",
+        scope_id=a.project,
+    )
+    h = as_user(client, email)
+    assert client.get(f"{targets(a.slug)}/{p1['id']}", headers=h).status_code == 200
+    before = rows(owner_db, a.tenant)
+    nobody, D = str(uuid7()), deployments(a.slug)
+    plan, T, P = sealed["id"], targets(a.slug), plans(a.slug)
+    deployment = approved["deployment_id"]
+    calls: tuple[tuple[str, str, Any], ...] = (
+        ("GET", f"{T}/{{}}", p2["id"]),
+        ("POST", f"{T}/{{}}/archive", p2["id"]),
+        ("GET", f"{P}/{{}}", plan),
+        ("POST", f"{P}/{{}}/reject", plan),
+        ("GET", f"{D}/{{}}", deployment),
+        ("POST", f"{D}/{{}}/reconcile", deployment),
+        ("POST", f"{D}/{{}}/cancel", deployment),
+    )
+    for method, url, their_id in calls:
+        sent = {} if url.endswith("/reject") else None
+        _same_404(
+            client.request(method, url.format(their_id), headers=h, json=sent),
+            client.request(method, url.format(nobody), headers=h, json=sent),
+        )
+    digest = {"plan_digest": sealed["digest"]}
+    _same_404(
+        client.post(f"{P}/{plan}/approve", headers=h, json=digest),
+        client.post(f"{P}/{nobody}/approve", headers=h, json=digest),
+    )
+    for named, unknown in (
+        (_plan_body(p2["id"], str(release.id)), _plan_body(nobody, str(release.id))),
+        (_plan_body(p1["id"], str(release.id)), _plan_body(p1["id"], nobody)),
+    ):
+        _same_404(client.post(P, json=named, headers=h), client.post(P, json=unknown, headers=h))
+    assert rows(owner_db, a.tenant) == before
+
+
+def _docker_body(flow: Flow, host: str) -> dict[str, Any]:
+    bindings = {**DOCKER_BINDINGS, "workspace_host": host}
+    return sp8_body("docker", flow.workspace, sp8_address("docker"), bindings=bindings)
+
+
+@pytest.mark.parametrize(("me", "other"), [("a", "b"), ("b", "a")])
+def test_a_workspace_another_organization_claims_answers_as_an_unclaimed_one(
+    client: TestClient,
+    owner_db: Database,
+    two_docker_apps: dict[str, DockerSide],
+    me: str,
+    other: str,
+) -> None:
+    mine, theirs = two_docker_apps[me], two_docker_apps[other]
+    flow, release = mine.flow, str(mine.release.id)
+    theirs_before = rows(owner_db, theirs.flow.tenant)
+    h = as_user(client, flow.requester)  # one sign-in: the per-address login limit
+    released = register(client, h, flow.slug, target_body(flow.workspace, address()))
+    assert client.post(f"{targets(flow.slug)}/{released['id']}/archive", headers=h).is_success
+    answers = []
+    for host in (theirs.workspace["address"], address(), released["address"]):
+        target = register(client, h, flow.slug, _docker_body(flow, host))["id"]
+        before = rows(owner_db, flow.tenant)
+        body = request_plan(client, h, flow.slug, target, release, status=409)
+        assert body["code"] == "workspace_not_claimed"
+        assert rows(owner_db, flow.tenant) == before  # no artifact, plan or job row
+        answers.append({k: v for k, v in body.items() if k not in _VARYING})
+    assert answers[0] == answers[1] == answers[2]
+    assert rows(owner_db, theirs.flow.tenant) == theirs_before
+    # the control: this organization's own claimed workspace
+    own = register(client, h, flow.slug, _docker_body(flow, mine.workspace["address"]))
+    request_plan(client, h, flow.slug, own["id"], release)
+
+
+@pytest.mark.parametrize("taken", [False, True], ids=["released", "claimed-by-b"])
+def test_approval_refuses_a_workspace_released_or_claimed_by_b_since_the_seal(
+    client: TestClient,
+    owner_db: Database,
+    two_docker_apps: dict[str, DockerSide],
+    taken: bool,
+) -> None:
+    a, b = two_docker_apps["a"], two_docker_apps["b"]
+    h = as_user(client, a.flow.requester)
+    held = f"{targets(a.flow.slug)}/{a.workspace['id']}"
+    assert client.post(f"{held}/archive", headers=h).is_success
+    client.cookies.clear()
+    if taken:
+        assert workspace_target(b.flow, a.workspace["address"])["status"] == "active"
+    before = _both(owner_db, two_docker_apps)
+    h = as_user(client, a.flow.approver)
+    r = client.post(
+        f"{plans(a.flow.slug)}/{a.sealed['id']}/approve",
+        json={"plan_digest": a.sealed["digest"]},
+        headers=h,
+    )
+    client.cookies.clear()
+    assert r.status_code == 409, r.text
+    assert r.json()["code"] == "workspace_not_claimed"
+    assert _both(owner_db, two_docker_apps) == before  # no approval, deployment or job
+    assert plan_row(owner_db, a.sealed["id"])["status"] == "sealed"
+
+
+def test_holds_claim_in_as_context_is_false_for_bs_claim(
+    app_db: Database, owner_db: Database, two_docker_apps: dict[str, DockerSide]
+) -> None:
+    sides = two_docker_apps
+    for me, other in (("a", "b"), ("b", "a")):
+        own, theirs = (address_key(sides[who].workspace["address"]) for who in (me, other))
+        tenant = sides[me].flow.tenant
+        with app_session(app_db, tenant) as s:
+            assert repository.holds_claim(s, "databricks", own, tenant_id=tenant)
+            assert not repository.holds_claim(s, "databricks", theirs, tenant_id=tenant)
+        # the explicit filter too: the schema owner's session sees both organizations' rows
+        with owner_db.session() as o:
+            assert repository.holds_claim(o, "databricks", own, tenant_id=tenant)
+            assert not repository.holds_claim(o, "databricks", theirs, tenant_id=tenant)
+
+
+def test_bs_executor_leases_none_of_as_docker_jobs(
+    client: TestClient, owner_db: Database, two_docker_apps: dict[str, DockerSide]
+) -> None:
+    a, b = two_docker_apps["a"], two_docker_apps["b"]
+    h = as_user(client, a.flow.requester)
+    request_plan(client, h, a.flow.slug, a.target, a.release.id, application_key="next")
+    client.cookies.clear()
+    (b_apply,) = deployment_jobs(owner_db, b.deployment, "apply")
+    r = lease(client, b.flow.token)
+    assert r.status_code == 200 and r.json()["job"]["id"] == str(b_apply["id"]), r.text
+    before = rows(owner_db, a.flow.tenant)
+    assert lease(client, b.flow.token).status_code == 204
+    assert rows(owner_db, a.flow.tenant) == before
+    kinds = set()
+    for _ in range(2):
+        r = lease(client, a.flow.token)
+        assert r.status_code == 200, r.text
+        assert r.json()["job"]["target_id"] == a.target
+        kinds.add(r.json()["job"]["kind"])
+    assert kinds == {"plan", "apply"}

@@ -1,11 +1,12 @@
 """Fabric, Palantir and Docker delivery test helpers (SP8-1): a test-only artifact of each target
 kind, its plan and its plan job.
 
-No Fabric or Docker release can be planned before SP8-5 and SP8-9 (the plan route refuses their
-targets with `target_kind_mismatch`), and a Palantir release is planned through the route
-(`tests.delivery.palantir`), so these rows are written here, as `shifde_app` in
-the organization's context, through the same repository and `gateway.enqueue_job` calls the plan
-route uses (the pattern of `tests.delivery.snowflake`).
+No Fabric release can be planned before SP8-5 (the plan route refuses its target with
+`target_kind_mismatch`), a Palantir release is planned through the route (`tests.delivery.palantir`)
+and a plan here names no release, so these rows are written here, as `shifde_app` in the
+organization's context, through the same repository and `gateway.enqueue_job` calls the plan route
+uses (the pattern of `tests.delivery.snowflake`). Plans of Docker releases are
+`tests.delivery.docker`'s (SP8-9).
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ TARGET_KINDS = {
     "palantir": "palantir.marketplace/v1",
     "docker": "docker.compose/v1",
 }
-# One test-only archive per kind: the rough shape of a rendered one, no renderer exists yet.
+# One test-only archive per kind: the rough shape of a rendered one.
 FILES = {
     "fabric": {
         "fabric/lakehouse.json": b'{"description": "SHIFDE"}\n',
@@ -90,6 +91,7 @@ def sp8_plan(
                 "application_key": application_key,
                 "display_name": "Sales app",
                 "requested_by": requester,
+                "requested_api_key_id": None,
                 "release_id": None,
                 "release_digest": None,
                 "evaluation_run_id": None,

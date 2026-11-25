@@ -9,8 +9,9 @@ stack or a Docker daemon (`platform_kind`). Its address is
 normalized and allow-listed by that platform's normalizer in `adapters.native.addresses` before
 anything is written (this module makes no outbound request). On one Snowflake claim, each package
 and each application is bound by at most one active target (`409 binding_in_use`, checked under
-the claim's advisory lock). The organization's claim on the address (for Snowflake, on the
-account's claim identity; a locator-form address is refused) comes from the
+the claim's advisory lock); on one Docker claim, each project and each port. A Docker target's
+`workspace_host` is normalized as a Databricks address. The organization's claim on the address
+(for Snowflake, on the account's claim identity; a locator-form address is refused) comes from the
 `shifde.delivery_claim_platform` definer; when another organization holds the address the caller
 gets the fixed `409 platform_already_registered`, which names no organization, row,
 constraint or key. Archiving the last active target on a claim deletes the claim, so another
@@ -57,6 +58,7 @@ from shifde.adapters.native.addresses import (
     AddressRefused,
     address_key,
     normalize_address,
+    normalize_databricks_address,
     snowflake_claim_identity,
 )
 from shifde.adapters.native.contracts import (
@@ -119,6 +121,17 @@ class BindingInUse(AppError):
         )
 
 
+class DockerBindingInUse(AppError):
+    """Another active target on the claim binds the same Docker project or port."""
+
+    status, code, title = 409, "binding_in_use", "Conflict"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Another active target on this Docker daemon already binds this project or port."
+        )
+
+
 class PlanJobTargetMismatch(AppError):
     """A `plan` job's `target_id` is not its plan's target (B-2732)."""
 
@@ -138,11 +151,14 @@ def claim_key(platform_kind: str, address: str) -> str:
 
 def adapter_target(row: Mapping[str, Any]) -> Target:
     """The target `row` as its adapter takes it. Adapter bindings are strings: a Palantir target's
-    `allow_preview_apis` becomes `"true"` or `"false"`; any other kind's bindings are unchanged."""
+    `allow_preview_apis` becomes `"true"` or `"false"` and a Docker target's `port` its digits; any
+    other kind's bindings are unchanged."""
     bindings = row["bindings"]
     if row["platform_kind"] == "palantir":
         allowed = bindings.get("allow_preview_apis") is True
         bindings = {**bindings, "allow_preview_apis": "true" if allowed else "false"}
+    elif row["platform_kind"] == "docker":
+        bindings = {k: str(v) if k == "port" else v for k, v in bindings.items()}
     return Target(
         tenant_id=row["tenant_id"],
         id=row["id"],
@@ -318,6 +334,16 @@ class TargetService:
                 str(exc),
                 errors=[{"loc": ["body", "address"], "msg": str(exc), "type": "address"}],
             ) from exc
+        bindings = body.bindings
+        if isinstance(bindings, s.DockerBindings):
+            try:
+                host = normalize_databricks_address(bindings.workspace_host, self.host_suffixes)
+            except AddressRefused as exc:
+                loc = ["body", "bindings", "workspace_host"]
+                raise ValidationFailed(
+                    str(exc), errors=[{"loc": loc, "msg": str(exc), "type": "address"}]
+                ) from exc
+            bindings = bindings.model_copy(update={"workspace_host": host})
         session = self.sc.session
         # B-2524: the definer answers None, naming nobody, when another organization holds it
         claim_id = repository.claim_platform(session, body.platform_kind, key)
@@ -336,6 +362,13 @@ class TargetService:
             ):
                 session.rollback()
                 raise BindingInUse
+        if isinstance(bindings, s.DockerBindings):
+            repository.lock_claim(session, claim_id, tenant_id=self.sc.tenant_id)
+            if repository.docker_binding_in_use(
+                session, claim_id, bindings.project, bindings.port, tenant_id=self.sc.tenant_id
+            ):
+                session.rollback()
+                raise DockerBindingInUse
         target_id = uuid7()
         repository.insert_target(
             session,
@@ -349,7 +382,7 @@ class TargetService:
                 "address": address,
                 "claim_id": claim_id,
                 "environment": body.environment,
-                "bindings": body.bindings.model_dump(mode="json", exclude_none=True),
+                "bindings": bindings.model_dump(mode="json", exclude_none=True),
                 "credential_ref": body.credential_ref,
                 "created_by": self.sc.principal.principal_id,
             },
@@ -358,6 +391,22 @@ class TargetService:
         self._audit("delivery.target.registered", row)
         session.commit()
         return self._out(row)
+
+    def holds_claim(self, platform_kind: str, address: str) -> bool:
+        """Whether this organization holds the claim on `address` with an active target of
+        `platform_kind` (False for an address the platform refuses, an unclaimed one and another
+        organization's alike). Reads this organization's rows only (SP8 design section 10 item
+        40)."""
+        suffixes = (
+            self.palantir_host_suffixes if platform_kind == "palantir" else self.host_suffixes
+        )
+        try:
+            key = claim_key(platform_kind, normalize_address(platform_kind, address, suffixes))
+        except AddressRefused:
+            return False
+        return repository.holds_claim(
+            self.sc.session, platform_kind, key, tenant_id=self.sc.tenant_id
+        )
 
     def plannable(self, target_id: UUID) -> Mapping[str, Any]:
         """The target, if the caller may request a plan on it and its organization, workspace
@@ -915,11 +964,13 @@ REQUIRED_CHECKS = ("native-runtime", "runtime-warehouse")
 APP_REQUIRED_CHECKS = (*REQUIRED_CHECKS, "app-deep-health")  # a generated app (SP5 6.6)
 SNOWFLAKE_REQUIRED_CHECKS = ("native-version", "runtime-health", "app-deep-health")  # SP6 6.4
 PALANTIR_REQUIRED_CHECKS = ("native-version", "ontology-read", "frontend-asset")  # SP8-7
+DOCKER_REQUIRED_CHECKS = ("native-version", "runtime-health", "app-deep-health")  # SP8 section 6
 # target platform -> the checks of (a plan without, a plan with a generated app); None: no such plan
 REQUIRED_BY_PLATFORM: dict[str, tuple[tuple[str, ...] | None, tuple[str, ...] | None]] = {
     "databricks": (REQUIRED_CHECKS, APP_REQUIRED_CHECKS),
     "snowflake": (None, SNOWFLAKE_REQUIRED_CHECKS),
     "palantir": (PALANTIR_REQUIRED_CHECKS, None),
+    "docker": (None, DOCKER_REQUIRED_CHECKS),
 }
 
 
@@ -1177,11 +1228,12 @@ def on_verify_result(session: Session, job: Mapping[str, Any], body: JobResultSu
     """The `verify` kind's result hook. On a Databricks target: `verified` only when
     `native-runtime` and `runtime-warehouse` both passed, and for a generated app (the plan's
     release is `/2`, SP5 6.6) `app-deep-health` too, even when the report omits it. On a Snowflake
-    target (SP6 6.4): only when `native-version`, `runtime-health` and `app-deep-health` all
-    passed. On a Palantir target (SP8-7): only when `native-version`, `ontology-read` and
-    `frontend-asset` all passed (`content-check` is never enough). Otherwise `failed`. It fails
-    closed: a target, plan or plan release that cannot be read, a Snowflake deployment whose plan
-    has no generated-app release, or a Palantir one whose plan has one, is `failed`."""
+    target (SP6 6.4) or a Docker target (SP8 section 6): only when `native-version`,
+    `runtime-health` and `app-deep-health` all passed. On a Palantir target (SP8-7): only when
+    `native-version`, `ontology-read` and `frontend-asset` all passed (`content-check` is never
+    enough). Otherwise `failed`. It fails closed: a target, plan or plan release that cannot be
+    read, a Snowflake or Docker deployment whose plan has no generated-app release, or a Palantir
+    one whose plan has one, is `failed`."""
     row = _deployment(session, job, ("verifying",))
     if row is None:
         return
@@ -1209,8 +1261,8 @@ def on_verify_result(session: Session, job: Mapping[str, Any], body: JobResultSu
 
 def _required_checks(session: Session, row: Mapping[str, Any]) -> tuple[str, ...] | None:
     """The checks the deployment's verification needs, read in its organization only; None
-    (never verified) when its target, plan or the plan's release cannot be read, a Snowflake
-    target's plan has no generated-app release or a Palantir target's plan has one."""
+    (never verified) when its target, plan or the plan's release cannot be read, a Snowflake or
+    Docker target's plan has no generated-app release or a Palantir target's plan has one."""
     target = repository.get_target(session, row["target_id"], tenant_id=row["tenant_id"])
     plan = repository.get_plan(session, row["plan_id"], tenant_id=row["tenant_id"])
     if target is None or plan is None or target["platform_kind"] not in REQUIRED_BY_PLATFORM:

@@ -144,16 +144,27 @@ def test_a_snowflake_release_with_a_bad_table_name_is_not_renderable(
 
 
 @pytest.mark.parametrize("app", DOCKER_SEALS.values(), ids=DOCKER_SEALS)
-def test_a_docker_release_is_refused_by_name_however_it_was_sealed(
+def test_a_docker_release_previews_only_when_the_docker_generator_sealed_it(
     client: TestClient, world: World, owner_db: Database, owner_session: Session, app: Any
 ) -> None:
-    """SP8-1: no generator renders a `docker.compose/v1` release until SP8-9."""
+    """SP8-9: a correctly sealed `docker.compose/v1` release lists its bundle without the
+    per-target `compose.yaml`; any other seal is refused."""
     rel = _app_release(owner_db, owner_session, edit=on_docker(app))
     r = _preview(user_session(client, world.passwords, ADMIN), rel.id)
-    assert r.status_code == 409, r.text
-    assert r.json()["code"] == "generator_version_unsupported"
-    assert r.json()["detail"] == "no app generator renders a Docker release"
-    assert "files" not in r.json()
+    if app == DOCKER_SEALS["docker"]:
+        assert r.status_code == 200, r.text
+        rendered = render(rel.release.manifest, rel.release.digest, rel.resolved())
+        assert [f["path"] for f in r.json()["files"]] == sorted(rendered)
+        assert {"Dockerfile", "app/requirements-docker.txt", "release.json"} <= set(rendered)
+        assert "compose.yaml" not in rendered and "databricks.yml" not in rendered
+        assert r.json()["generator_version"] == "shifde.appgen.docker/1.0"
+    else:
+        assert r.status_code == 409, r.text
+        assert r.json()["code"] == "generator_version_unsupported"
+        assert r.json()["detail"] == (
+            "the release was sealed for another app generator version; seal it again"
+        )
+        assert "files" not in r.json()
     _same_as_missing(user_session(client, world.passwords, ADMIN_B), rel.id, B)
 
 
@@ -214,10 +225,11 @@ def test_b_cannot_preview_as_release(
     _same_as_missing(admin_b, rel.id, A.replace("demo-a", "no-such-org"))
 
 
+@pytest.mark.parametrize("edit", [None, on_docker(DOCKER_SEALS["docker"])], ids=["dbx", "docker"])
 def test_a_p1_only_member_gets_404_on_a_p2_release(
-    client: TestClient, world: World, owner_db: Database, owner_session: Session
+    client: TestClient, world: World, owner_db: Database, owner_session: Session, edit: Any
 ) -> None:
-    rel = _app_release(owner_db, owner_session)  # in a project of its own (P2)
+    rel = _app_release(owner_db, owner_session, edit=edit)  # in a project of its own (P2)
     admin = user_session(client, world.passwords, ADMIN)
     c = admin.client
     p1 = c.get(f"{A}{PROJECT}", headers=admin).json()["id"]

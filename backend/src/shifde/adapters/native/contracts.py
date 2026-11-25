@@ -510,7 +510,14 @@ class JobResultSubmission(LeaseProof):
     status: Literal["succeeded", "failed"]
     value: dict[str, JsonValue] | None = None
     error_code: (
-        Literal["execution_failed", "credential_unavailable", "snowflake_patch_limit", "plan_stale"]
+        Literal[
+            "execution_failed",
+            "credential_unavailable",
+            "snowflake_patch_limit",
+            "plan_stale",
+            "docker_host_mismatch",
+            "foreign_project",
+        ]
         | None
     ) = None
 

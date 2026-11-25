@@ -2,9 +2,11 @@
 platform kinds; the fake platform builds each new kind's adapter over one lazily built fake; a
 leased job of each new kind runs its broker check (a mismatch is `credential_unavailable`), and a
 Fabric or Docker one then fails closed (`execution_failed`) before any adapter or platform call and
-any journal intent. Palantir jobs run (SP8-7): `test_runner_palantir.py`.
+any journal intent: a Docker job because its plan has no generator version (SP8-9;
+`test_runner_docker.py` has the rest), a Fabric job until SP8-5. Palantir jobs run (SP8-7):
+`test_runner_palantir.py`.
 
-The gateway cannot yet give the Fabric and Docker targets' contexts (SP8-5 and SP8-9 map them), so
+The gateway cannot yet give a Fabric target's context (SP8-5 maps it), so
 `Gateway` answers `context` with the mapped target and everything else through the in-process
 gateway; the plan job rows are `tests.delivery.sp8`'s."""
 
@@ -72,7 +74,7 @@ from tests.executor.support import (
     sp8_credentials_file,
 )
 
-FAIL_CLOSED = ("fabric", "docker")  # until SP8-5 and SP8-9
+FAIL_CLOSED = ("fabric", "docker")  # Fabric until SP8-5; a Docker plan of no generator version
 GUID = "0a1b2c3d-0000-4000-8000-00000000abcd"
 ADDRESS = {
     "fabric": f"https://api.fabric.microsoft.com/v1/workspaces/{GUID}",
@@ -132,6 +134,10 @@ def _foundry_ids(_host: str) -> FoundryCredentials:
     return FoundryCredentials(SP8_CLIENT_ID, SP8_SECRET)
 
 
+def _allowed() -> None:
+    """A Docker job that may use its daemon."""
+
+
 # ------------------------------------------------------------------ dispatch and platforms
 def test_the_dispatch_table_has_the_five_kinds() -> None:
     kinds = {"databricks", "snowflake", "fabric", "palantir", "docker"}
@@ -166,11 +172,11 @@ def test_the_fake_platform_builds_the_palantir_adapter_over_one_fake() -> None:
 def test_the_fake_platform_builds_the_docker_adapter_over_one_fake() -> None:
     platform, target = FakePlatform(environment="test"), _unit_target("docker")
     assert platform.docker is None
-    adapter = platform.docker_adapter(target, InMemoryArtifactStore())
+    adapter = platform.docker_adapter(target, InMemoryArtifactStore(), _allowed)
     fake = platform.docker
     assert isinstance(adapter, DockerComposeAdapter) and isinstance(fake, FakeContainerRuntime)
     assert adapter.runtime is fake and fake.daemon_id() == GUID
-    platform.docker_adapter(target, InMemoryArtifactStore())
+    platform.docker_adapter(target, InMemoryArtifactStore(), _allowed)
     assert platform.docker is fake
 
 
@@ -179,7 +185,7 @@ def test_the_docker_fake_refuses_outside_development_and_test(
 ) -> None:
     monkeypatch.setenv("SHIFDE_ENV", "production")
     with pytest.raises(RuntimeError):
-        FakePlatform().docker_adapter(_unit_target("docker"), InMemoryArtifactStore())
+        FakePlatform().docker_adapter(_unit_target("docker"), InMemoryArtifactStore(), _allowed)
 
 
 def test_the_real_platform_builds_each_new_adapter_over_its_client() -> None:
@@ -193,7 +199,7 @@ def test_the_real_platform_builds_each_new_adapter_over_its_client() -> None:
     palantir = real.palantir_adapter(target, _foundry_ids)
     assert isinstance(palantir, PalantirMarketplaceAdapter)
     assert type(palantir.client_factory(target)) is PalantirClient
-    docker = real.docker_adapter(_unit_target("docker"), InMemoryArtifactStore())
+    docker = real.docker_adapter(_unit_target("docker"), InMemoryArtifactStore(), _allowed)
     assert isinstance(docker, DockerComposeAdapter)
     assert type(docker.runtime) is DockerCliRuntime
 

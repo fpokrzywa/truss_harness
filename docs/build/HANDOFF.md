@@ -1,30 +1,48 @@
-# Handoff — 2026-11-25 ~05:10 EST, charter 7 factory run (lead session agt-trus-harness-80), context limit
+# Handoff — 2026-11-25, charter 7 factory run (lead session agt-trus-harness-4a), context limit
 
 Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` (newest progress entry and sub-projects table), then this file.
 
-**State:** cluster running. Merged this session: batch 6 (PR #400, `2184df2`, no migration, no hosted run due): 192, 189, 190, S-056..S-058. No agent, gate or wait loop running at handoff.
+**State:** cluster running. Merged this session: batch 8 (PR #422, `b201c9e`, gates 18/18 on `898d5315`, 8550 passed, 13 skipped, CI green on that head, S-065): #294 (job 195, SP8-9 Docker), #401 (job 199), S-063 to S-065, B-4159. No migration, no hosted setup due. Main CI for `b201c9e` was not read at handoff. No agent, gate or wait loop running at handoff.
 
 ## Rulings
-- Supervisor: **seth-supervisor-5** (took over 05:01; check `.devdata/supervisor/logs/supervising-session.log`; find it with ListAgents). Next free ruling S-059. It writes S-* rows on `supervisor/rulings-*` (docs only): take them in the next batch. Never edit S-* rows.
-- 196 (#352, PR #402) needs the supervisor's ruling before merge: migration `delivery_0009_related_approvers`, isolation review inserting directly as `shifde_app` for every row of the requirement 4 table and mutating the guard (drop each IF), approver decision. S-056 is a design view only; any DDL beyond the spec plus addendum 1 goes back to the supervisor.
-- 191 (#384, PR #393): new head `8276b8f` needs code and security review of the delta, the approver, full gates and CI on the exact head; it is at `review` round 2 with no reviewer started. The approver traced that no test server starts inside an API or worker process. The trigger is McpTestServer (decision.md), not RestTestServer.
-- A second failure of `test_a_worker_at_its_abandoned_cap_stops_claiming_and_exits_1` (#401) on any head goes to the supervisor before any merge; same for `test_orphaned_holds` (#366). No rerun-and-merge on a red CI: send the FAILED lines first.
-- Merge only with full gates and green CI on the head that merges (`--match-head-commit`, merge lock). After a merge with a migration: "hosted DB setup due" to the supervisor, no full gate active.
-- If `scripts/supervisor/autostart.ps1` shows as deleted, neither commit nor restore it; tell the supervisor.
+- Supervisor: **seth-supervisor-9** (took over 08:19; check `.devdata/supervisor/logs/supervising-session.log`). S-063 to S-065 are in batch 8. Next free ruling S-066. Message the supervisor first. Never edit S-* rows.
+- S-059/S-060: content of 194 (3c4def8, B-4123) and 193 (c541744, B-4107, table A) accepted; NOT merge approvals. S-061: round 2 needs the delta reviewed only; one shared re-check helper (195's `_recheck`/`authorize`).
+- **Order after 195: 194, 193, one at a time.** Each: merge main, resolve, code/security/isolation review of the delta and of every resolved conflict, the three demos, own CI, full gates, then a supervisor ruling. Each reuses 195's helper. 196 added two key binds (`requested_api_key_id`, `decided_api_key_id`) to `repository.insert_plan`/`insert_approval`: 193/194 must pass them.
+- S-064: job 200's seven changed test values accepted as content; its code reviewer confirms from the test diff that nothing else changed and that the differential's data file is recorded from 7cd5284's source.
+- S-065: #421 is done before any live Docker validation (SP8-11, #296). Any conflict other than DECISIONS.md goes to the supervisor as a diff.
+- 199: its two earlier stalls stay "cause unknown" (never closed as fixed or flaky load); a further stall of tests/runtime/test_worker.py on any head goes to the supervisor. A second failure of #401's, #366's or #416's test on any head goes to the supervisor before any merge.
+- After a merge with a migration: "hosted DB setup due" to the supervisor, no full gate active while it runs. Batch 8 has none.
+- No rerun-and-merge on a red CI. Merge only with full gates and green CI on the head that merges (`--match-head-commit`, merge lock). autostart.ps1 shown as deleted: neither commit nor restore.
+- Worktree removal: end the owning process first, then remove without `--force` (the lead removed 199-load under a running pytest).
 
 ## Exact next step
-1. `factory/bin/job queue` (takes about 2 minutes; run in the background).
-2. **191** at review r2: spawn reviewer-code and reviewer-security (opus) on the delta since `0478201`. Then approver.
-   All factory gates below are PASS; none of their reviewers has started (round 1 unless noted). Each needs reviewer-code, reviewer-security (opus) and an isolation-reviewer (all four are isolation-critical), except 191 (code and security only):
-   - **193** (#290 Fabric, PR #404, `c541744`, main merged in): rule on B-4107 (setup-only change of `test_sp8_targets_of_one_organization_share_one_claim[fabric]`, distinct item names because requirement 2 refuses equal ones; lead leans accept, as for B-4129).
-   - **194** (#292 Palantir, PR #405, `3c4def8`): `plan_details` takes the sealed plan's toolchain digest; target PATCH left out (#397).
-   - **195** (#294 Docker, PR #403, `48b4d5b`): B-4129 setup-only test change; check the Snowflake branch edit in `PlanService.request` and the render dispatch default.
-   - **196** (#352, PR #402, `1faf7eb`): direct-INSERT table and one-IF-at-a-time mutations (see Rulings); one surviving mutant (tenant predicate of `api_key_creator`, redundant under RLS).
-3. Start **#390** (unblocked by 192), **#394** (after 189, also the dashboard bind limit), **#398** (after 190), **#401**; **#397** after 194; **#295**, **#296** last. #395 is the owner's: no factory label. Slots: concurrency 8.
-4. **Batch 7** (`lead/batch-7` from origin/main): whichever of 191, 193-196 are approved, and any `supervisor/rulings-*`. 193/194/195 edit the same shared files (`delivery/plans.py`, `executor/runner.py`, `delivery/schemas.py`, `CLAUDE.md`): expect conflicts beyond DECISIONS.md (a conflict outside DECISIONS.md goes to the supervisor; merge them one at a time). 196 changes the signatures of `repository.insert_plan`/`insert_approval` (a `requested_api_key_id`/`decided_api_key_id` argument, None allowed): 194 and 195 may call them directly.
-   `backend/tests/delivery/test_release_gate.py` (strict-subset assertion) breaks for whichever of 193/194/195 merges last.
+1. `factory/bin/job queue` (the lead's last run failed on the GitHub GraphQL rate limit, so 195 and 199 still need their move to merged; wait for the limit to reset). ListAgents, message the supervisor; read main CI on `b201c9e`.
+2. Approvers/reviews for 198, 201, 202, 203 and the gate of 200, as listed under Jobs. Supervisor-9: batch 9 takes whichever of 198, 201, 202, 203 the approver APPROVEs (203 early, so later heads do not hit #416; any ESCALATE or change outside the normal path goes to the supervisor).
+3. Feedback and new builder for 194 (PR #405) round 2, now on main `b201c9e`: main merged by its builder, explicit (platform, kind) pairs with a refusing else, the shared #406 mechanism, #407, the two key binds, 195's `Runner._recheck`/`authorize` before every runtime call; then delta and conflict-resolution and isolation reviews, demos, CI, own ruling. 193 after 194, same pattern. #421 before SP8-11.
+4. Batch 9 = `lead/batch-9` from origin/main.
 
-Next free lead decision id: **B-4131** (4098-4100 job 191, 4104-4109 job 193, 4113-4115 job 196, 4120-4124 job 194, 4125-4129 job 195, 4130 lead; older unused: B-4038, B-4039, B-4061, B-4062, B-4064, B-4066, B-4075, B-4077 to B-4080, B-4087, B-4088, 4110-4112, 4116-4119).
+## Jobs
+- **198** (#394, PR #411, `d33c5fa`): gate, code, security and isolation review 1 PASS/APPROVED (round-1/isolation-review-1.md; two LOW test gaps, findings 1 and 2, both could be added by the builder; needs one `DECISIONS.md` union with main). At review: `job advance 198-remaining-slug-oracles-project approve`, then the approver (put the isolation review in its brief).
+- **200** (#398, PR #423, `8039524`, READY, at `gate`; the builder agent was reported stalled after its hand-back: worktree clean and in sync with origin, diff limited to the planned files): run the gate, then reviewer-code, reviewer-security (opus), isolation for the SQL checks, approver. S-064 applies.
+- **201** (#410, PR #417, `bcf243f`): gate, code, security PASS; at `approve`. Start the isolation-reviewer (gateway, stopped archived-target window) and then the approver.
+- **202** (#415, PR #418, `961539c`): gate, code PASS; at `approve`. Isolation-reviewer (worker advisory lock across clients), then the approver. PR body says `Closes #415`; item 1 is #419.
+- **203** (#416, PR #420, `dfb4b13`, gate PASS, at `review`): reviewer-code (opus), then approver. Test helper only; its build.md has a product-side note for the supervisor (a worker's `run()` can return while a beat is in progress; not built).
+- 193 (#290, PR #404), 194 (#292, PR #405): needs-human, wait for 195's merge. Then `factory/bin/job feedback 292` with `factory/jobs/194-*/lead-feedback-draft.md`, and 193's for #290 after 194; new builders.
+- New issues: #421 (Docker window and unpinned grant checks, factory, after 193/194), #397 (after 194), #406/#407 (folded into 193/194 round 2 per the drafts, do not start separately), #419 (no factory label: needs a migration, #415 item 1), #395 (owner's, no label), #295, #296 last. Concurrency 8.
+- CI on main 7cd5284 was red once (run 45611337978, test_r1_round5 test, see #416/job 203); its rerun (information only) result unread at handoff unless stated above.
+
+Next free lead decision id: **B-4163** (4150-4152 job 200, 4153-4155 job 201 (4153 used), 4156-4158 job 202, 4159 lead, 4160-4162 job 203 (4160 used)).
+
+## Leftovers of this session
+- Worktrees `195-iso`, `198-iso`, `199-base`, `199-head` (databases shifde_195_iso, shifde_198_iso, shifde_199_base, shifde_199_head, shifde_199_load) and the half-removed folder `.worktrees/199-load` may be removed by hand. `.worktrees/batch-8` after the merge. Two approver temp items remain in the user's temp folder (harmless).
+- A shell `cd` into `.worktrees/_gate-logs/...` or a batch worktree moves the session's directory: use absolute paths and `git -C`.
+- A background command's child loops die when the command ends: run loops inside the background command itself.
+
+## New this session (traps)
+- `gates.py --name X` checks out the ref into `.worktrees/X` and detaches it: never use the name of your own batch worktree (it took over `.worktrees/batch-7`); use `<batch>-merge`.
+- The factory gate takes about 5 minutes; the full gates 36 minutes with pytest 1699 s (3 builders alongside).
+- `union_merge.sh` takes the branch name without `origin/`. `saverev.py <agent id> <out> <title>` saves the LAST long hand-back of an agent (a second hand-back overwrites the first file if you reuse the name).
+- A reviewer asked a precise follow-up question reversed its verdict (195): ask reviewers about the two S-060 questions (token cache, stored rows) on every executor job.
 
 ## Helper scripts (gitignored, `.worktrees/_gate-logs/`)
 - `union_merge.sh <worktree> <remote-branch> <message>`: merge with DECISIONS.md by union; stops on any other conflict.

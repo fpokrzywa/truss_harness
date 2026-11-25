@@ -190,7 +190,12 @@ class GatewayClient:
         value: dict[str, JsonValue] | None = None,
         error_code: (
             Literal[
-                "execution_failed", "credential_unavailable", "snowflake_patch_limit", "plan_stale"
+                "execution_failed",
+                "credential_unavailable",
+                "snowflake_patch_limit",
+                "plan_stale",
+                "docker_host_mismatch",
+                "foreign_project",
             ]
             | None
         ) = None,

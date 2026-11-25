@@ -1,21 +1,23 @@
 """The deterministic app source of a sealed release (SP5 design 6.3, SP6 design 3 and 4).
 
-`render(manifest, release_digest, resolved) -> dict[str, bytes]` is pure: no clock, randomness,
-environment, network or database, and it reads only the package data under
+`render(manifest, release_digest, resolved, values=None) -> dict[str, bytes]` is pure: no clock,
+randomness, environment, network or database, and it reads only the package data under
 `shifde.appgen/templates` (the "appgen.render is pure" import contract). It dispatches on the
-manifest's `target_kind`: `GENERATOR_VERSIONS` maps each kind to the generator version its
-release must carry in `app.generator_version` (`generator_version_for`), and a missing or unknown
-kind or another version is refused with `GeneratorVersionUnsupported`. `GENERATOR_VERSION` is the
-Databricks alias. Every version matches `GENERATOR_VERSION_PATTERN`,
+manifest's `target_kind` through `RENDERERS`, which has no default: `GENERATOR_VERSIONS` maps each
+kind to the generator version its release must carry in `app.generator_version`
+(`generator_version_for`), and a missing or unknown kind, a kind without a renderer or another
+version is refused with `GeneratorVersionUnsupported`. `GENERATOR_VERSION` is the Databricks
+alias. Every version matches `GENERATOR_VERSION_PATTERN`,
 `shifde.appgen(.<kind>)?/<major>.<minor>`.
 
 `databricks.app/v1` renders the Databricks App bundle: the managed `databricks.yml`,
 `app/app.yaml`, the generated service (`app/app.py`, the platform-neutral `app/agent_loop.py` and
 `app/backend_databricks.py`) and its hashed lock, the four config files, the committed React
 bundle under `app/static/` and `release.json`. `snowflake.native-app/v1` renders the Native App
-package of `appgen.render_snowflake`. A `docker.compose/v1` release has a generator version but no
-renderer until SP8-9: `render` refuses it whatever its manifest carries. `Resolved` lives here,
-not in `appgen.schemas` (which re-exports it), because `appgen.schemas` imports `evaluation` and
+package of `appgen.render_snowflake`. `docker.compose/v1` renders the Docker bundle of
+`appgen.render_docker`: the Databricks app, a `Dockerfile` and, given the target's `values` (which
+only that renderer uses; a preview has none), a `compose.yaml`. `Resolved` lives here, not in
+`appgen.schemas` (which re-exports it), because `appgen.schemas` imports `evaluation` and
 `packaging`, which render may not reach. `Resolved.model.provider` is only compared by the delivery
 plan gates: no renderer reads it, so the provider's `base_url` never reaches an app.
 """
@@ -24,7 +26,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from importlib.resources import files
 from importlib.resources.abc import Traversable
 from typing import Any  # Any: JSON documents
@@ -32,17 +34,17 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from shifde.appgen import render_snowflake
+from shifde.appgen import render_docker, render_snowflake
+from shifde.appgen.render_docker import DockerTargetValues
 from shifde.core.errors import AppError
 
 GENERATOR_VERSION = "shifde.appgen/1.0"
 DATABRICKS_KIND = "databricks.app/v1"
-DOCKER_KIND = "docker.compose/v1"
 # the generator version a `/2` release of each target kind carries (SP6 design section 4)
 GENERATOR_VERSIONS = {
     DATABRICKS_KIND: GENERATOR_VERSION,
     render_snowflake.TARGET_KIND: render_snowflake.GENERATOR_VERSION,
-    DOCKER_KIND: "shifde.appgen.docker/1.0",  # sealed only: `render` refuses it until SP8-9
+    render_docker.TARGET_KIND: render_docker.GENERATOR_VERSION,
 }
 # `shifde.appgen(.<kind>)?/<major>.<minor>`: a lowercase kind segment, integer major and minor
 GENERATOR_VERSION_PATTERN = re.compile(
@@ -154,26 +156,10 @@ def _tree(node: Traversable, prefix: str) -> dict[str, bytes]:
     return out
 
 
-def render(
-    manifest: Mapping[str, Any], release_digest: str, resolved: Resolved | Mapping[str, Any]
+def _databricks(
+    manifest: Mapping[str, Any], release_digest: str, spec: Resolved
 ) -> dict[str, bytes]:  # Any: the release manifest
-    """The app source files of a `/2` release, keyed by relative POSIX path."""
-    kind = manifest.get("target_kind")
-    app = manifest.get("app")
-    if kind == DOCKER_KIND:  # first: nothing else in the manifest lets a Docker release through
-        raise GeneratorVersionUnsupported("no app generator renders a Docker release")
-    if (
-        not isinstance(kind, str)
-        or kind not in GENERATOR_VERSIONS
-        or not isinstance(app, Mapping)
-        or app.get("generator_version") != GENERATOR_VERSIONS[kind]
-    ):
-        raise GeneratorVersionUnsupported(
-            "the release was sealed for another app generator version; seal it again"
-        )
-    spec = resolved if isinstance(resolved, Resolved) else Resolved.model_validate(resolved)
-    if kind == render_snowflake.TARGET_KIND:
-        return render_snowflake.render_snowflake(manifest, release_digest, spec)
+    """The Databricks App bundle of a release (its `app/**` is the Docker bundle's too)."""
     templates = files("shifde.appgen").joinpath("templates")
     tables = sorted(
         {
@@ -223,3 +209,42 @@ def render(
     }
     result |= _tree(templates.joinpath("web"), "app/static/")
     return result
+
+
+Renderer = Callable[
+    [Mapping[str, Any], str, Resolved, DockerTargetValues | None], dict[str, bytes]
+]  # Any: the release manifest
+# the renderer of each target kind: a kind that is not here is refused, and none is a default
+RENDERERS: dict[str, Renderer] = {
+    DATABRICKS_KIND: lambda manifest, digest, spec, _: _databricks(manifest, digest, spec),
+    render_snowflake.TARGET_KIND: lambda manifest, digest, spec, _: (
+        render_snowflake.render_snowflake(manifest, digest, spec)
+    ),
+    render_docker.TARGET_KIND: lambda manifest, digest, spec, values: render_docker.render_docker(
+        digest, spec, _databricks(manifest, digest, spec), values
+    ),
+}
+
+
+def render(
+    manifest: Mapping[str, Any],
+    release_digest: str,
+    resolved: Resolved | Mapping[str, Any],
+    values: DockerTargetValues | None = None,
+) -> dict[str, bytes]:  # Any: the release manifest
+    """The app source files of a `/2` release, keyed by relative POSIX path; `values` are the
+    target's, for a `docker.compose/v1` release only."""
+    kind = manifest.get("target_kind")
+    app = manifest.get("app")
+    renderer = RENDERERS.get(kind) if isinstance(kind, str) else None
+    if (
+        renderer is None
+        or kind not in GENERATOR_VERSIONS
+        or not isinstance(app, Mapping)
+        or app.get("generator_version") != GENERATOR_VERSIONS[kind]
+    ):
+        raise GeneratorVersionUnsupported(
+            "the release was sealed for another app generator version; seal it again"
+        )
+    spec = resolved if isinstance(resolved, Resolved) else Resolved.model_validate(resolved)
+    return renderer(manifest, release_digest, spec, values)
