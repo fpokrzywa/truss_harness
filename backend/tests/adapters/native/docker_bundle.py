@@ -250,5 +250,5 @@ def make_docker_setup(
     )
     artifacts = InMemoryArtifactStore()
     build = BuildContext(tenant_id=tenant, artifacts=artifacts, toolchain_digest="a" * 64)
-    adapter = DockerComposeAdapter(runtime, artifacts=artifacts)
+    adapter = DockerComposeAdapter(runtime, artifacts=artifacts, authorize=lambda: None)
     return DockerSetup(runtime, adapter, build, ReadContext(tenant_id=tenant, target=target))

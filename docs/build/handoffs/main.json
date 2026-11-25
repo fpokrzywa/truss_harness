@@ -1,8 +1,8 @@
 {
-  "session_id": "09e0eb46-7683-4c78-966e-8761169737d5",
-  "head_sha": "1df483252f617660feef91766527acfd4c395ae2",
+  "session_id": "10cb4f91-252f-4ed0-996e-269d74ba6505",
+  "head_sha": "a77d90a80533e38a00bcd8f376c4138916b4cc30",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "Per docs/build/HANDOFF.md: reviewers for 195 (r2) and 198, gate 199 and its comparison series, then batch 8; 194 and 193 round 2 after 195 merges",
-  "written_at": "2026-11-25T12:11:02Z"
+  "next_step": "Per docs/build/HANDOFF.md: job queue, approvers for 198 and 201-203 (isolation for 201, 202), gate 200, 194 round 2 builder on b201c9e, batch 9",
+  "written_at": "2026-11-25T14:06:04Z"
 }
