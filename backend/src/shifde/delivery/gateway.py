@@ -274,6 +274,9 @@ def job_context(
         else []
     )
     session.commit()
+    bindings = target["bindings"]
+    if target["platform_kind"] == "docker":  # `Target.bindings` are strings
+        bindings = {**bindings, "port": str(bindings["port"])}
     return JobContext(
         job=_leased_job(row),
         target=Target(
@@ -282,7 +285,7 @@ def job_context(
             revision=target["revision"],
             environment=target["environment"],
             host=target["address"],
-            bindings=target["bindings"],
+            bindings=bindings,
         ),
         platform_kind=target["platform_kind"],
         plan=None

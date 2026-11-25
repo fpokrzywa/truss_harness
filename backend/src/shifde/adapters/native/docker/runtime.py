@@ -25,6 +25,9 @@ import httpx
 from shifde.adapters.native.contracts import DAEMON_ID
 from shifde.adapters.native.docker.source import PORT_MAX, PORT_MIN, PROJECT
 
+# Before Engine 28.0 a container with NET_RAW on the bridge can reach ports another project
+# publishes on 127.0.0.1 (`route_localnet`).
+MIN_ENGINE = (28, 0)
 HEALTH_PATHS = frozenset({"/health", "/health?deep=1"})
 MAX_BODY = 256 * 1024
 STAGING_PREFIX = "shifde-docker-"
@@ -206,9 +209,8 @@ class DockerCliRuntime:
             raise ValueError("Docker 24 or later is required")
         server = self._run(["version", "--format", "{{.Server.Version}}"]).decode().strip()
         match = re.match(r"(\d+)\.(\d+)", server)
-        # Before Engine 28.0 a container with NET_RAW on the bridge can reach ports another
-        # project publishes on 127.0.0.1 (`route_localnet`); an unreadable version is refused too.
-        if not match or (int(match.group(1)), int(match.group(2))) < (28, 0):
+        # An unreadable version is refused too.
+        if not match or (int(match.group(1)), int(match.group(2))) < MIN_ENGINE:
             raise DockerRefused("docker_engine_too_old")
         compose = self._run(["compose", "version", "--short"]).decode().strip()
         match = re.match(r"v?(\d+)\.", compose)

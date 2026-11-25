@@ -7,26 +7,31 @@ in-process.
 creates or replaces the project's single container from that image; `http_get_local` serves the
 container by loading the staged `app/app.py` and calling its `app` WSGI callable, which is what
 Flask's test client does. `prepare_app` gets the loaded module and the compose `environment` and
-is where a workspace fake is injected. Fault switches are off by default.
+is where a workspace fake is injected: `prepare_rendered_app` makes a rendered app's `app` on
+`FakeWorkspaceClient`. Fault switches are off by default.
 """
 
 from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import os
 import sys
 import tempfile
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any  # Any: WSGI environ values
 from uuid import uuid4
 
+import httpx
 import yaml
 
+from shifde.adapters.dataplatforms.fakes import SERVING_STATE, FakeDatabricksWorkspace
 from shifde.adapters.native.docker.runtime import ContainerState, check_local_request, check_staged
 from shifde.adapters.native.docker.source import (
     CONTAINER_PORT,
@@ -42,6 +47,70 @@ DEEP_HEALTH_BAD = (
     b'{"status": "failed", "generator_version": "fake", "release_digest": null, '
     b'"checks": [{"name": "warehouse", "status": "failed", "reason": "warehouse unreachable"}]}'
 )
+
+
+class FakeWorkspaceClient:
+    """What a rendered app's health checks call of a Databricks `WorkspaceClient`, answered by the
+    data-platform fake over its sample tables, on which the bound warehouse and serving endpoint
+    exist. The app's own module gives the statement states, so `databricks` is not imported."""
+
+    def __init__(self, module: ModuleType, environment: Mapping[str, str]) -> None:
+        self._states = module.StatementState
+        self._workspace = FakeDatabricksWorkspace(
+            warehouse_id=environment["DATABRICKS_WAREHOUSE_ID"],
+            serving={environment["SERVING_ENDPOINT"]: []},
+            sample_data=True,
+            record=False,
+        )
+        self.statement_execution = SimpleNamespace(execute_statement=self._execute_statement)
+        self.serving_endpoints = SimpleNamespace(get=self._endpoint)
+
+    def _request(self, method: str, path: str, body: object = None) -> Any:
+        answer = self._workspace.handle(
+            httpx.Request(
+                method,
+                f"https://{self._workspace.host}{path}",
+                headers={"Authorization": "Bearer fake"},
+                json=body,
+            )
+        )
+        if answer.status_code != 200:
+            raise RuntimeError("the fake workspace refused the request")
+        return json.loads(answer.content)
+
+    def _execute_statement(self, *, warehouse_id: str, statement: str, **_: object) -> Any:
+        body = {"warehouse_id": warehouse_id, "statement": statement}
+        document = self._request("POST", "/api/2.0/sql/statements", body)
+        return SimpleNamespace(
+            status=SimpleNamespace(state=self._states(document["status"]["state"]))
+        )
+
+    def _endpoint(self, name: str) -> Any:
+        document = self._request("GET", SERVING_STATE + name)
+        ready = SimpleNamespace(value=document["state"]["ready"])
+        return SimpleNamespace(state=SimpleNamespace(ready=ready))
+
+
+@contextmanager
+def _environment(values: Mapping[str, str]) -> Iterator[None]:
+    saved = {name: os.environ.get(name) for name in values}
+    os.environ.update(values)
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def prepare_rendered_app(module: ModuleType, environment: Mapping[str, str]) -> None:
+    """Makes a rendered app's `app` on `FakeWorkspaceClient`, with the compose `environment` in
+    place only while the app is created."""
+    client = FakeWorkspaceClient(module, environment)
+    with _environment(environment):
+        vars(module)["app"] = module.create_app(client)
 
 
 @dataclass
@@ -235,9 +304,16 @@ class FakeContainerRuntime:
         if spec is None or spec.loader is None:
             raise RuntimeError("the staged app cannot be loaded")
         module = importlib.util.module_from_spec(spec)
+        # The staged app imports its own sibling modules, never ones an earlier app left loaded.
+        siblings = [path.stem for path in directory.glob("*.py")]
+        saved = {sibling: sys.modules.pop(sibling, None) for sibling in siblings}
         sys.path.insert(0, str(directory))
         try:
             spec.loader.exec_module(module)
         finally:
             sys.path.remove(str(directory))
+            for sibling, loaded in saved.items():
+                sys.modules.pop(sibling, None)
+                if loaded is not None:
+                    sys.modules[sibling] = loaded
         return module

@@ -189,7 +189,14 @@ class GatewayClient:
         *,
         value: dict[str, JsonValue] | None = None,
         error_code: (
-            Literal["execution_failed", "credential_unavailable", "snowflake_patch_limit"] | None
+            Literal[
+                "execution_failed",
+                "credential_unavailable",
+                "snowflake_patch_limit",
+                "docker_host_mismatch",
+                "foreign_project",
+            ]
+            | None
         ) = None,
     ) -> JobResultAck:
         """Post `succeeded` with `value`, or `failed` with `error_code` (never error text)."""
