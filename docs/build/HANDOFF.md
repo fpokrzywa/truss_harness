@@ -1,34 +1,37 @@
-# Handoff — 2026-11-24 23:15 EST, charter 7 factory run (lead session 8dc8e81b), context limit
+# Handoff — 2026-11-25 ~00:00 EST, charter 7 factory run (lead session fa50758a), context limit
 
 Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` (newest progress entry and sub-projects table), then this file.
 
-**State:** cluster running; no agent, gate or wait loop running at handoff. Merged this session: 182, 183 and 180 as batch PR #376 (`0b7d7bb`, 18/18 and CI green on `6644fd6`). SP7's done-when demo passed on `0b7d7bb` (STATUS).
+**State:** cluster running; no agent, gate or wait loop running at handoff. Merged this session: 176 (#351, PR #356, `44027c6`) under S-048: `gates.py --name 176-merge-r2` 18/18 on `4d854bf` (7125 passed, 10 skipped in 1597 s), CI green on that head, patch-equal to `776f63b` except DECISIONS.md, `--match-head-commit`.
 
 ## Rulings
-- Supervisor cee9405c (`agt-trus-harness-e6`; confirmed by the former one) ruled S-044..S-048 (DECISIONS) and then stopped at its own context limit. Its rulings stand. Its successor will introduce itself: hold for it 173's ruling (S-049 is its next free id), any conflict outside DECISIONS.md, 181 and the hosted database step.
-- **176** (#351, PR #356, accepted `776f63b`, S-048, migration assist_0002): sync onto main, full gates and CI on the synced head, then merge; then "hosted DB setup due" to the supervisor and no full gate until it answers. It edits `assist/service.py` and `test_sp7_tools.py` like 182: expect a conflict outside DECISIONS.md, which goes to the supervisor with the resolution before merging.
-- **177** (#359, PR #372, accepted `25e0d9c`, S-046): conflicts with 182 (now on main) in `backend/tests/mcp_access/test_sp7_tools.py`: each side adds its own test at the same place (182's `test_a_context_of_p2_is_not_found_in_p1_though_the_key_reads_both`, 177's `test_a_p1_key_gets_not_found_for_another_workspace_and_a_workspace_level_target`; the hunks interleave because their signatures match). Proposed resolution: keep both tests whole. Needs the supervisor's agreement before merging.
-- **173** (#286, PR #354, `f83be49`, needs-human): gate, code, security PASS; isolation review 3 APPROVED on that head with a hazard now real (180 is on main): the merge is text-clean in `delivery/plans.py` but gives a wrong-platform kind gate, and conflicts in render.py, runner.py, executor/support.py, test_routes_cross_client.py. decision.md lists the round 4 changes (its own deploy map; the branch's own 12 + 3 cases change their expected code to `target_kind_mismatch`, which needs a ruling first; a 5x5 gate test; a new decision id). Ask for that ruling, then `job feedback 286`.
-- Escalations are ruled on by the supervisor, not the lead. The lead may send a job back with `job feedback`.
-- After 173 and after 176 merge: "hosted DB setup due". Tell the supervisor; go on with the next gate only as it says.
+- **Hosted database setup is due** (176 carries migration assist_0002). Start no full `gates.py` run until a supervisor has answered that. Factory gates (`factory/bin/gate`) ran under this rule before the merge only.
+- No supervisor is up. agt-trus-harness-e6 (cee9405c) said at 23:16 that it handed off and does not rule; its successor has not introduced itself. Its words are in `new_session_handoff.md` and its journal. S-049 is the next free S id; never edit S-* rows (it noted the S-044 row overstates what it read; the successor corrects it).
+- **181** (#358, PR #369, `101c0e4`), needs-human: gate, code, security PASS, isolation review 3 APPROVED (`docs/build/reviews/181-isolation-review-3.md`), CI green on `101c0e4`. The approver found no defect and escalates only because `sqlapi.check_read_only` refuses more reads (adapter outbound behaviour). Needs a ruling, then sync onto main, full gates and CI. Follow-up posted on #375.
+- **177** (#359, PR #372, `25e0d9c`), needs-human: packet in `factory/jobs/177-a-project-scoped-api/ruling-packet/` (README, the keep-both file, both diffs; made against main f49addf, 176 also edits that test file: re-make it on today's main). Not run, not applied, not pushed.
+- **173** (#286, PR #354, `f83be49`), needs-human: packet in `factory/jobs/173-sp8-1-kinds-claims/ruling-packet/README.md` (the 12 + 3 cases, conflicts; CLAUDE.md is a new one). Isolation review 3 covers `f83be49` only. Then `job feedback 286`.
+- Escalations are ruled on by the supervisor. The lead may send a job back with `job feedback`. Conflict outside DECISIONS.md goes back to the supervisor before merging.
 - Merge only with green CI on the head that merges: sync and push first, wait for CI, then `job merge` (or the hand merge with `--match-head-commit`).
 - A second `test_orphaned_holds` failure away from 00:00 UTC: stop and tell the supervisor (#366).
 - Never skip, loosen or add retries to a test. Isolation review APPROVED does not settle that.
 - If `scripts/supervisor/autostart.ps1` shows as deleted, neither commit the deletion nor restore it; tell the supervisor.
 
-
 ## Exact next step
 1. `PYTHONUTF8=1 factory/bin/job queue`, then:
-   - **184** (#366, PR #367, `8074343`) at approve: isolation review 2 BLOCKED (`docs/build/reviews/184-isolation-review-2.md`; mutations re-run by the reviewer: build.md's claim is true, but `daily_since` takes its window from `budget_reservations.created_at`, so 5 tests accept a hold dated 3 days back that main refuses). Approver with that file, then needs-human, then `job feedback 366`: the reviewer's tests-only fix (window from `budgets.created_at`) and finding 2.
-   - **181** (#358, PR #369, `101c0e4`) round 3 gate PASS, at review: spawn code and security (opus) and isolation review 3 (the `1.e5from` family, `_ends_from`; builder fuzz 600,000 texts with nothing lost against main), then the approver. CI `backend` was red on `2e47825` from #377's chance marker, not from the diff: green CI needed on the head that merges.
-2. Sync 176, and 177 after a ruling; gate them (one run may hold both, S-044). 173 as above.
-3. New, unblocked by 273's merge: #274, #275 (its two lead comments), and #373 (360 merged). #377 (flaky cross-client export marker, tests only, isolation review) is free too. `job queue` offers #290, #292, #294, #295 as `new`: not yet (see Dependencies).
+   - **185** (#274 SP6-7, PR #378, `6b4b8a3`) at approve: gate, code, ux, ui PASS (no reviewer saw a rendered page). Approver, then `job merge` if APPROVE (its sync conflicts in DECISIONS.md are likely).
+   - **187** (#373, PR #380, `c0226a9`) at review: gate PASS. Spawn code and security (opus).
+   - **188** (#377, PR #379, `5845399`) at approve: gate, code, security PASS, isolation review 1 APPROVED (`docs/build/reviews/188-isolation-review-1.md`: catches all base catches plus an A-into-B export leak base missed). Approver with that file, then `job merge` if APPROVE. Not yet filed: its observation that summary and reconciliation are read only as A (pre-existing).
+   - **184** (#366, PR #367, `e714b60`) at gate, round 3 (feedback-2.md: window from the test's own budget). Run the gate, code (sonnet), then isolation review 3: repeat the review 2 mutations on base and head. The builder measured 12/13 failures for "unknown charge to another client" where review 2 measured 5: its explanation (its plugin also moves run-hold charges) is inferred, so have the reviewer check it.
+   - **186** (#275 SP6-8, PR #381, `a313f49`) at gate, round 1: builder reports `SNOWFLAKE DEMO PASSED`, `SOLUTION DEMO PASSED`, checks.sh exit 0; live test skipped. Run the gate and code review. Run demos with the main checkout's `backend/.venv` off PATH (else they import its `shifde`). After the merge run the SP6 done-when demo on main and record it.
+2. Blocked by rulings: 173, 177, 181, the hosted database step. After 176, #364 is unblocked (new migrations); #374 needs #359; #375 needs #358.
 
-Next free lead decision id: **B-4073** (B-4038, B-4039, B-4061, B-4062, B-4064, B-4066 also free). Given out: 184 B-4065..4066, 181 B-4067..4069, 173 B-4070..4072.
-Isolation reviews saved this session: `173-isolation-review-3.md`, `181-isolation-review-2.md` (BLOCKED), `184-isolation-review-2.md` (BLOCKED). Filed: #377; noted on #375.
+Next free lead decision id: **B-4085** (B-4075, B-4077, B-4078, B-4079, B-4080 unused; B-4073 was already taken on main before this session; also free: B-4038, B-4039, B-4061, B-4062, B-4064, B-4066). Given out: 184 B-4065..4066, 181 B-4067..4069, 173 B-4070..4072, 185 B-4074, 187 B-4076, 186 B-4081..4084.
+
+## Incident to know about
+The 188 builder ran `rm -f /tmp/*188*` in the shared user temp folder at about 23:35 EST (`C:/Users/FreddiePokrzywa/AppData/Local/Temp`). Top-level files with "188" in the name are gone and unlisted; directories were kept. The 176 gates that were running finished 18/18. If any other program reports a missing temp file from then, this is the likely cause. It also left `checks.sh` children running until 23:36. Brief agents: delete only your own files, by exact path.
 
 ## Dependencies (job queue does not know them)
-#290, #292, #294, #352 need #286; #294 also takes 173 review 3 finding 2 (render must dispatch by kind with a refusing default) and note 3; #364 needs #351 (new migrations); #374 needs #359; #375 needs #358; #295, #296 last. #358 before any live Snowflake app. When SP6 and SP8 finish, run each done-when demo and record it in STATUS.md. `job queue` lists blocked issues as `new`: start only those whose dependency is merged.
+#290, #292, #294, #352 need #286; #294 also takes 173 review 3 finding 2 (render must dispatch by kind with a refusing default) and note 3; #374 needs #359; #375 needs #358; #295, #296 last. #358 before any live Snowflake app. When SP6 and SP8 finish, run each done-when demo and record it in STATUS.md. `job queue` lists blocked issues as `new`: start only those whose dependency is merged.
 
 ## Traps learned
 - Do not `cd` into a job worktree: while a shell's directory is inside it the factory cannot remove it, and a bare `git` in the emptied folder acts on the main checkout. Use `git -C <path>` and absolute script paths.

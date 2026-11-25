@@ -1,36 +1,36 @@
 {
-  "generated": "2026-11-25T04:11:07+00:00",
+  "generated": "2026-11-25T05:05:57+00:00",
   "note": "est_usd is an estimate at list price, not a bill",
   "totals": {
     "all": "all",
-    "input": 84826,
-    "output": 27986294,
-    "cache_write_5m": 180224190,
-    "cache_write_1h": 23590598,
-    "cache_read": 4172871633,
-    "requests": 41472,
-    "est_usd": 2350.3553
+    "input": 85494,
+    "output": 28434760,
+    "cache_write_5m": 183577409,
+    "cache_write_1h": 23990217,
+    "cache_read": 4203381191,
+    "requests": 41799,
+    "est_usd": 2384.9697
   },
   "by_model": [
     {
       "model": "claude-opus-5-5",
-      "input": 74440,
-      "output": 24901484,
-      "cache_write_5m": 151356273,
-      "cache_write_1h": 22818076,
-      "cache_read": 3857508106,
-      "requests": 36437,
-      "est_usd": 2209.155
+      "input": 75058,
+      "output": 25340957,
+      "cache_write_5m": 154589089,
+      "cache_write_1h": 23217695,
+      "cache_read": 3887702674,
+      "requests": 36739,
+      "est_usd": 2243.3469
     },
     {
       "model": "claude-sonnet-5-5",
-      "input": 9620,
-      "output": 2389639,
-      "cache_write_5m": 26863056,
+      "input": 9670,
+      "output": 2398632,
+      "cache_write_5m": 26983459,
       "cache_write_1h": 354601,
-      "cache_read": 285765436,
-      "requests": 4654,
-      "est_usd": 121.0682
+      "cache_read": 286080426,
+      "requests": 4679,
+      "est_usd": 121.4908
     },
     {
       "model": "claude-fable-5-2",
@@ -56,23 +56,23 @@
   "by_agent_type": [
     {
       "agent_type": "builder",
-      "input": 23420,
-      "output": 9262884,
-      "cache_write_5m": 78246970,
+      "input": 23638,
+      "output": 9490444,
+      "cache_write_5m": 79771848,
       "cache_write_1h": 0,
-      "cache_read": 1273149367,
-      "requests": 11491,
-      "est_usd": 831.2161
+      "cache_read": 1284285097,
+      "requests": 11597,
+      "est_usd": 845.6197
     },
     {
       "agent_type": "lead",
-      "input": 21500,
-      "output": 4596979,
+      "input": 21678,
+      "output": 4649237,
       "cache_write_5m": 0,
-      "cache_write_1h": 23590598,
-      "cache_read": 1557388896,
-      "requests": 10375,
-      "est_usd": 595.7953
+      "cache_write_1h": 23990217,
+      "cache_read": 1570433907,
+      "requests": 10463,
+      "est_usd": 602.6471
     },
     {
       "agent_type": "module-builder-critical",
@@ -86,43 +86,43 @@
     },
     {
       "agent_type": "spec-writer",
-      "input": 6738,
-      "output": 2945513,
-      "cache_write_5m": 13658646,
+      "input": 6820,
+      "output": 3030400,
+      "cache_write_5m": 14267769,
       "cache_write_1h": 0,
-      "cache_read": 166672835,
-      "requests": 3342,
-      "est_usd": 160.565
+      "cache_read": 169665084,
+      "requests": 3383,
+      "est_usd": 165.9071
     },
     {
       "agent_type": "isolation-reviewer",
-      "input": 5322,
-      "output": 2035701,
-      "cache_write_5m": 15124188,
+      "input": 5362,
+      "output": 2064878,
+      "cache_write_5m": 15537762,
       "cache_write_1h": 0,
-      "cache_read": 135045858,
-      "requests": 2632,
-      "est_usd": 143.3654
+      "cache_read": 136041787,
+      "requests": 2651,
+      "est_usd": 146.2162
     },
     {
       "agent_type": "reviewer-code",
-      "input": 3326,
-      "output": 829779,
-      "cache_write_5m": 10366204,
+      "input": 3364,
+      "output": 845085,
+      "cache_write_5m": 10593060,
       "cache_write_1h": 0,
-      "cache_read": 50069197,
-      "requests": 1619,
-      "est_usd": 64.6436
+      "cache_read": 50864063,
+      "requests": 1637,
+      "est_usd": 66.1605
     },
     {
       "agent_type": "approver",
-      "input": 2596,
-      "output": 716343,
-      "cache_write_5m": 8274899,
+      "input": 2626,
+      "output": 730559,
+      "cache_write_5m": 8560958,
       "cache_write_1h": 0,
-      "cache_read": 33751282,
-      "requests": 1296,
-      "est_usd": 62.462
+      "cache_read": 34359598,
+      "requests": 1311,
+      "est_usd": 64.2984
     },
     {
       "agent_type": "module-builder",
@@ -146,33 +146,33 @@
     },
     {
       "agent_type": "reviewer-security",
-      "input": 2432,
-      "output": 609133,
-      "cache_write_5m": 7297244,
+      "input": 2456,
+      "output": 620022,
+      "cache_write_5m": 7425984,
       "cache_write_1h": 0,
-      "cache_read": 33634604,
-      "requests": 1209,
-      "est_usd": 55.4055
+      "cache_read": 34036556,
+      "requests": 1220,
+      "est_usd": 56.3475
     },
     {
       "agent_type": "intake",
-      "input": 2154,
-      "output": 394780,
-      "cache_write_5m": 3329795,
+      "input": 2192,
+      "output": 401893,
+      "cache_write_5m": 3404674,
       "cache_write_1h": 0,
-      "cache_read": 12559035,
-      "requests": 1076,
-      "est_usd": 13.5325
+      "cache_read": 12799700,
+      "requests": 1095,
+      "est_usd": 13.815
     },
     {
       "agent_type": "reviewer-ux",
-      "input": 444,
-      "output": 90406,
-      "cache_write_5m": 1131386,
+      "input": 458,
+      "output": 96637,
+      "cache_write_5m": 1202213,
       "cache_write_1h": 0,
-      "cache_read": 5545110,
-      "requests": 214,
-      "est_usd": 8.109
+      "cache_read": 5806478,
+      "requests": 221,
+      "est_usd": 8.64
     },
     {
       "agent_type": "frontend-builder",
@@ -196,13 +196,13 @@
     },
     {
       "agent_type": "reviewer-ui",
-      "input": 318,
-      "output": 61761,
-      "cache_write_5m": 686364,
+      "input": 324,
+      "output": 62590,
+      "cache_write_5m": 704647,
       "cache_write_1h": 0,
-      "cache_read": 2248909,
-      "requests": 150,
-      "est_usd": 1.5951
+      "cache_read": 2282381,
+      "requests": 153,
+      "est_usd": 1.6524
     },
     {
       "agent_type": "verifier",
@@ -258,13 +258,13 @@
     },
     {
       "unit": "lead",
-      "input": 21500,
-      "output": 4596979,
+      "input": 21678,
+      "output": 4649237,
       "cache_write_5m": 0,
-      "cache_write_1h": 23590598,
-      "cache_read": 1557388896,
-      "requests": 10375,
-      "est_usd": 595.7953
+      "cache_write_1h": 23990217,
+      "cache_read": 1570433907,
+      "requests": 10463,
+      "est_usd": 602.6471
     },
     {
       "unit": "runtime",
@@ -757,6 +757,16 @@
       "est_usd": 7.0318
     },
     {
+      "unit": "186-sp6-8-done-when",
+      "input": 90,
+      "output": 120011,
+      "cache_write_5m": 709746,
+      "cache_write_1h": 0,
+      "cache_read": 5604293,
+      "requests": 44,
+      "est_usd": 6.9919
+    },
+    {
       "unit": "177",
       "input": 84,
       "output": 66716,
@@ -927,6 +937,26 @@
       "est_usd": 4.73
     },
     {
+      "unit": "185-sp6-7-front-end",
+      "input": 90,
+      "output": 73851,
+      "cache_write_5m": 557429,
+      "cache_write_1h": 0,
+      "cache_read": 2854200,
+      "requests": 43,
+      "est_usd": 4.7027
+    },
+    {
+      "unit": "187-database-errors-must-not",
+      "input": 66,
+      "output": 57647,
+      "cache_write_5m": 627877,
+      "cache_write_1h": 0,
+      "cache_read": 2210325,
+      "requests": 32,
+      "est_usd": 4.663
+    },
+    {
       "unit": "077",
       "input": 162,
       "output": 66222,
@@ -975,6 +1005,16 @@
       "cache_read": 3742535,
       "requests": 88,
       "est_usd": 4.2796
+    },
+    {
+      "unit": "188-cross-client-usage-export",
+      "input": 118,
+      "output": 65639,
+      "cache_write_5m": 495150,
+      "cache_write_1h": 0,
+      "cache_read": 3145207,
+      "requests": 58,
+      "est_usd": 4.278
     },
     {
       "unit": "146",
@@ -1087,6 +1127,16 @@
       "est_usd": 3.8549
     },
     {
+      "unit": "181-snowflake-sql-checks-refuse",
+      "input": 74,
+      "output": 46132,
+      "cache_write_5m": 489455,
+      "cache_write_1h": 0,
+      "cache_read": 2100472,
+      "requests": 36,
+      "est_usd": 3.7903
+    },
+    {
       "unit": "142",
       "input": 186,
       "output": 55901,
@@ -1165,6 +1215,16 @@
       "cache_read": 2849398,
       "requests": 74,
       "est_usd": 3.3815
+    },
+    {
+      "unit": "184-tests-that-sum-usage",
+      "input": 52,
+      "output": 32928,
+      "cache_write_5m": 473562,
+      "cache_write_1h": 0,
+      "cache_read": 1550050,
+      "requests": 26,
+      "est_usd": 3.3366
     },
     {
       "unit": "audit",
@@ -1890,23 +1950,23 @@
   "by_sub_project": [
     {
       "sub_project": "sp1",
-      "input": 63326,
-      "output": 23389315,
-      "cache_write_5m": 180224190,
+      "input": 63816,
+      "output": 23785523,
+      "cache_write_5m": 183577409,
       "cache_write_1h": 0,
-      "cache_read": 2615482737,
-      "requests": 31097,
-      "est_usd": 1754.5599
+      "cache_read": 2632947284,
+      "requests": 31336,
+      "est_usd": 1782.3225
     },
     {
       "sub_project": "lead",
-      "input": 21500,
-      "output": 4596979,
+      "input": 21678,
+      "output": 4649237,
       "cache_write_5m": 0,
-      "cache_write_1h": 23590598,
-      "cache_read": 1557388896,
-      "requests": 10375,
-      "est_usd": 595.7953
+      "cache_write_1h": 23990217,
+      "cache_read": 1570433907,
+      "requests": 10463,
+      "est_usd": 602.6471
     }
   ],
   "by_day": [
@@ -1971,6 +2031,16 @@
       "est_usd": 168.3709
     },
     {
+      "day": "2026-11-25",
+      "input": 2512,
+      "output": 1494765,
+      "cache_write_5m": 13737840,
+      "cache_write_1h": 1540368,
+      "cache_read": 120809935,
+      "requests": 1231,
+      "est_usd": 134.0111
+    },
+    {
       "day": "2026-11-16",
       "input": 4738,
       "output": 1576442,
@@ -2019,16 +2089,6 @@
       "cache_read": 167831436,
       "requests": 2205,
       "est_usd": 107.3042
-    },
-    {
-      "day": "2026-11-25",
-      "input": 1844,
-      "output": 1046299,
-      "cache_write_5m": 10384621,
-      "cache_write_1h": 1140749,
-      "cache_read": 90300377,
-      "requests": 904,
-      "est_usd": 99.3967
     },
     {
       "day": "2026-11-13",
@@ -2898,6 +2958,15 @@
       "other": 6
     },
     {
+      "unit": "181-snowflake-sql-checks-refuse",
+      "build": 0,
+      "verify": 0,
+      "fix": 0,
+      "review": 2,
+      "inventory": 0,
+      "other": 2
+    },
+    {
       "unit": "181-sql-checks",
       "build": 1,
       "verify": 0,
@@ -2943,6 +3012,15 @@
       "other": 5
     },
     {
+      "unit": "184-tests-that-sum-usage",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 1
+    },
+    {
       "unit": "184-usage-tests",
       "build": 1,
       "verify": 0,
@@ -2950,6 +3028,42 @@
       "review": 1,
       "inventory": 0,
       "other": 0
+    },
+    {
+      "unit": "185-sp6-7-front-end",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 3,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "186-sp6-8-done-when",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "187-database-errors-must-not",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "188-cross-client-usage-export",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 2,
+      "inventory": 0,
+      "other": 3
     },
     {
       "unit": "SP2-5",
