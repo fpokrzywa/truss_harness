@@ -475,6 +475,8 @@ def test_usage_reads_and_exports_hold_only_as_own(
     before = owner_session.execute(text(sql), {"t": world.b.tenant}).scalar_one()
     rebuilt = client.post(f"{base}/usage/rollups/rebuild", headers=h)
     assert rebuilt.status_code == 200 and rebuilt.json()["consistent"] is True
+    # `consistent` stays true when B's events reach both sides, so the sums are checked too
+    assert rebuilt.json()["events_sum"] == 100 and rebuilt.json()["rollup_sum"] == 100
     owner_session.rollback()
     after = owner_session.execute(text(sql), {"t": world.b.tenant}).scalar_one()
     assert before == after == 200
@@ -495,6 +497,9 @@ def test_usage_reads_and_exports_hold_only_as_own(
     # the raw `b-run` row has no rollup yet: B rebuilds its own before its summary is read
     b_rebuilt = client.post(f"{two.b.base}/usage/rollups/rebuild", headers=hb)
     assert b_rebuilt.status_code == 200, b_rebuilt.text
+    b_answer = b_rebuilt.json()
+    assert b_answer["consistent"] is True
+    assert b_answer["events_sum"] == 200 and b_answer["rollup_sum"] == 200
     read = client.get(f"{two.b.base}/usage/summary?group_by=workspace", headers=hb)
     assert read.status_code == 200, read.text
     b_summary = read.json()
