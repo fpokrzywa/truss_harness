@@ -131,6 +131,7 @@ def approve(app_db: Database, tenant: UUID, plan_id: UUID) -> UUID:
                 "plan_id": plan_id,
                 "plan_digest": row["digest"],
                 "decided_by": approver,
+                "decided_api_key_id": None,
                 "decision": "approve",
                 "note": None,
             },
