@@ -2,9 +2,10 @@
 
 `FakeFoundryStack.transport` is an `httpx.MockTransport` answering the token endpoint, the
 Marketplace v3 preview paths, the Ontology v2 reads and the frontend asset, so the real
-`PalantirClient` runs against it; `stack.client_factory` is the adapter's `client_factory`.
-Installations and jobs are kept per stack: a new adapter over the same stack models a restart.
-Fault switches are off by default.
+`PalantirClient` runs against it; `stack.client` is a client of the caller's credential provider,
+and `stack.client_factory` the adapter's `client_factory` with fixture credentials. Development and
+test only: any other `environment` refuses to construct. Installations and jobs are kept per
+stack: a new adapter over the same stack models a restart. Fault switches are off by default.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import copy
 import hashlib
 import json
 import threading
+from collections.abc import Callable
 from typing import Any, Literal  # Any: Foundry JSON
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
@@ -30,24 +32,29 @@ from shifde.adapters.native.palantir.clients import (
 
 FIXTURE_CREDENTIALS = FoundryCredentials("fixture-client", "fixture-not-a-secret")
 PUBLISHED_ASSET = b"published frontend asset"
+ENVIRONMENTS = ("development", "test")
 
 
 class FakeFoundryStack:
     def __init__(
         self,
         *,
+        environment: str,
         host: str,
         frontend_origin: str,
         ontology_rid: str,
+        namespace_rid: str | None = None,
         object_type: str = "Example",
         asset: bytes = PUBLISHED_ASSET,
         hang_timeout: float = 60.0,
     ) -> None:
+        if environment not in ENVIRONMENTS:
+            raise RuntimeError("the fake Foundry stack runs only in development or test")
         self.host = Target._validate_host(host)
         self.frontend_origin = Target._validate_host(frontend_origin)
         self.ontology_rid, self.object_type = ontology_rid, object_type
         # Foundry places an installation in its parent folder's namespace.
-        self.namespace_rid = f"ri.compass.main.namespace.{uuid4()}"
+        self.namespace_rid = namespace_rid or f"ri.compass.main.namespace.{uuid4()}"
         self.asset, self.hang_timeout = asset, hang_timeout
         self.ontology: dict[str, Any] = {"rid": ontology_rid, "apiName": "example"}
         self.object_type_schema: dict[str, Any] = {
@@ -77,13 +84,19 @@ class FakeFoundryStack:
         """The SHA-256 of the published asset (what the `frontend_asset_sha256` binding pins)."""
         return hashlib.sha256(self.asset).hexdigest()
 
-    def client_factory(self, target: Target) -> PalantirClient:
+    def client(
+        self, target: Target, credential_provider: Callable[[str], FoundryCredentials]
+    ) -> PalantirClient:
         return PalantirClient(
             target,
-            credential_provider=lambda host: FIXTURE_CREDENTIALS,
+            credential_provider=credential_provider,
+            authorize=lambda: credential_provider(target.host),
             transport=self.transport,
             platform="fake",
         )
+
+    def client_factory(self, target: Target) -> PalantirClient:
+        return self.client(target, lambda host: FIXTURE_CREDENTIALS)
 
     def release(self) -> None:
         """Unblock a `hang`ing write (it still raises `ReadTimeout`: accepted, unconfirmed)."""

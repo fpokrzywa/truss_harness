@@ -18,9 +18,13 @@ never of the egress host.
 Fabric, Palantir and Docker (SP8 design section 2): a Fabric workspace normalizes to its REST
 collection URL `https://api.fabric.microsoft.com/v1/workspaces/<lowercase guid>`; a Palantir
 Foundry stack to `https://<label>.palantirfoundry.com` or `https://<label>.<installation suffix>`
-(one label, so a sub-host of a stack is no second claim key); a Docker daemon to
-`docker://<daemon id>` (`contracts.DOCKER_HOST`), unchanged. Each claim keys on `address_key` of
-the normalized address.
+(one label, so a sub-host of a stack is no second claim key; a suffix below another listed one or
+below `palantirfoundry.com` is refused where the list is read, `core.hostsuffixes`); a Docker
+daemon to `docker://<daemon id>` (`contracts.DOCKER_HOST`), unchanged. Each claim keys on
+`address_key` of the normalized address.
+
+`public_https_origin` is the rule of a Palantir target's `frontend_origin` (SP8-7): a public HTTPS
+host by name, with no DNS lookup.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ from collections.abc import Iterable
 from urllib.parse import urlsplit
 
 from shifde.adapters.native.contracts import DOCKER_HOST
+from shifde.core.hostsuffixes import PALANTIR_HOST_SUFFIX
 
 DATABRICKS_HOST_SUFFIXES = ("cloud.databricks.com", "azuredatabricks.net", "gcp.databricks.com")
 
@@ -47,7 +52,8 @@ _FABRIC_APP_ORIGIN = "https://app.fabric.microsoft.com"
 FABRIC_API_WORKSPACES = f"{_FABRIC_API_ORIGIN}/v1/workspaces/"
 _GUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
-PALANTIR_HOST_SUFFIX = "palantirfoundry.com"
+# the names `public_https_origin` refuses, each itself and every name below it
+_PRIVATE_SUFFIXES = ("localhost", "localdomain", "local", "internal", "home.arpa")
 
 
 class AddressRefused(ValueError):
@@ -87,6 +93,13 @@ class PalantirAddressRefused(AddressRefused):
             self,
             "the address is not a Palantir Foundry stack URL (https://<stack>.palantirfoundry.com)",
         )
+
+
+class PublicOriginRefused(AddressRefused):
+    """The value is not a public HTTPS origin (one fixed reason, never the input)."""
+
+    def __init__(self) -> None:
+        ValueError.__init__(self, "must be a public HTTPS origin")
 
 
 class DockerAddressRefused(AddressRefused):
@@ -216,8 +229,9 @@ def normalize_palantir_address(url: str, extra_suffixes: Iterable[str] = ()) -> 
     (the host lowercased, `:443` dropped), else `PalantirAddressRefused`. Refused as the Databricks
     normalizer refuses: any other port, a path other than `/`, a query or fragment, IP literals,
     malformed labels and any other suffix (a bare suffix included). Also refused: two or
-    more labels before the suffix, so a sub-host of a stack never gets a claim key of its own; a
-    deeper site domain is listed as an extra suffix."""
+    more labels before the suffix, so a sub-host of a stack never gets a claim key of its own. The
+    extra suffixes hold no entry below another one or below `palantirfoundry.com`: such a list is
+    refused when read (`core.hostsuffixes`), as one stack would get two claim keys."""
     host = _https_host(url, PalantirAddressRefused)
     try:
         _host_labels(host)
@@ -226,6 +240,26 @@ def normalize_palantir_address(url: str, extra_suffixes: Iterable[str] = ()) -> 
     suffixes = (PALANTIR_HOST_SUFFIX, *(s.lower() for s in extra_suffixes))
     if host.partition(".")[2] not in suffixes:  # `_host_labels` refused an empty first label
         raise PalantirAddressRefused
+    return f"https://{host}"
+
+
+def public_https_origin(value: str) -> str:
+    """`https://<host>` (lowercase host, `:443` and a trailing `/` dropped) for a public HTTPS
+    origin, else `PublicOriginRefused`. Refused as `_https_host` refuses (any other scheme, port,
+    user info, path, query, fragment, whitespace, control or non-ASCII character), and: IP literals
+    in any form a resolver reads (the last label must start with a letter, so `127.1`,
+    `2130706433` and `0x7f.0.0.1` too), single-label hosts, an empty label or a trailing dot, and
+    `localhost`, `localdomain`, `local`, `internal` and `home.arpa` with every name below them. By
+    name only: no DNS."""
+    host = _https_host(value, PublicOriginRefused)
+    try:
+        labels = _host_labels(host)
+    except AddressRefused:
+        raise PublicOriginRefused from None
+    if len(labels) < 2 or not labels[-1][0].isalpha():
+        raise PublicOriginRefused
+    if any(("." + host).endswith("." + suffix) for suffix in _PRIVATE_SUFFIXES):
+        raise PublicOriginRefused
     return f"https://{host}"
 
 

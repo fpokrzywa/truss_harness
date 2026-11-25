@@ -96,10 +96,13 @@ def make_release(
     *,
     evaluation: str | None = "passed",
     withdrawn: bool = False,
+    target_kind: str = "databricks.app/v1",
+    extra: dict[str, Any] | None = None,
 ) -> SealedRelease:
     """A sealed release of `tenant` in `workspace_id` (`project_id`, or the workspace's first
     project), its manifest naming a dataset of that project; with an evaluation run of
-    `evaluation` status on the manifest's digests (none if None), withdrawn if asked."""
+    `evaluation` status on the manifest's digests (none if None), withdrawn if asked. `extra`
+    entries are added to the manifest."""
     agent, agent_v1, solution, version = uuid7(), uuid7(), uuid7(), uuid7()
     dataset_id, release_id, by = uuid7(), uuid7(), uuid7()
     cases = [{"case_id": "c1", "input": {"message": "hello"}, "assertions": []}]
@@ -136,9 +139,9 @@ def make_release(
         o.execute(
             text(
                 "INSERT INTO shifde.solutions (tenant_id, id, workspace_id, project_id, name, "
-                "target_kind, created_by) VALUES (:t, :s, :w, :p, :n, 'databricks.app/v1', :u)"
+                "target_kind, created_by) VALUES (:t, :s, :w, :p, :n, :k, :u)"
             ),
-            {**values, "n": f"solution-{solution.hex[-12:]}"},
+            {**values, "n": f"solution-{solution.hex[-12:]}", "k": target_kind},
         )
         o.execute(
             text(
@@ -163,7 +166,7 @@ def make_release(
         )
         manifest: dict[str, Any] = {
             "release_schema": 1,
-            "target_kind": "databricks.app/v1",
+            "target_kind": target_kind,
             "solution": {"id": str(solution), "version_id": str(version)},
             "entrypoint": {"kind": "agent", "version_id": str(agent_v1)},
             "evaluation": {
@@ -172,6 +175,7 @@ def make_release(
                 "min_accuracy": "0.9",
             },
             "nonce": str(release_id),
+            **(extra or {}),
         }
         release_digest = digest(manifest)
         o.execute(

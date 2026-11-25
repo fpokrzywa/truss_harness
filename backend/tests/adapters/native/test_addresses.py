@@ -1,6 +1,7 @@
 """The Databricks address normalizer (design 3, 9 item 14; B-2501): pure string handling. SP8-1:
 the Fabric, Palantir and Docker normalizers, each idempotent, each refusal one fixed text that
-never echoes the input, and `normalize_address` dispatching on all five kinds."""
+never echoes the input, and `normalize_address` dispatching on all five kinds. SP8-7: the public
+HTTPS origin of a Palantir target's frontend."""
 
 from __future__ import annotations
 
@@ -14,13 +15,16 @@ from shifde.adapters.native.addresses import (
     DockerAddressRefused,
     FabricAddressRefused,
     PalantirAddressRefused,
+    PublicOriginRefused,
     address_key,
     normalize_address,
     normalize_databricks_address,
     normalize_docker_address,
     normalize_fabric_address,
     normalize_palantir_address,
+    public_https_origin,
 )
+from tests.adapters.native.origins import NON_PUBLIC_ORIGINS
 
 
 @pytest.mark.parametrize("suffix", DATABRICKS_HOST_SUFFIXES)
@@ -287,3 +291,29 @@ def test_normalize_address_dispatches_on_all_five_kinds() -> None:
         normalize_address("docker", "https://adb-1.cloud.databricks.com")
     with pytest.raises(ValueError, match="unknown platform kind"):
         normalize_address("oracle", "https://x.example")
+
+
+# ------------------------------------------------------------------ public origin (Palantir, SP8-7)
+@pytest.mark.parametrize("value", NON_PUBLIC_ORIGINS)
+def test_a_non_public_palantir_origin_is_refused_with_one_fixed_message(value: str) -> None:
+    with pytest.raises(PublicOriginRefused) as raised:
+        public_https_origin(value)
+    assert str(raised.value) == "must be a public HTTPS origin"
+    assert raised.value.__cause__ is None
+
+
+@pytest.mark.parametrize(
+    ("value", "normalized"),
+    [
+        ("https://frontend.example.com", "https://frontend.example.com"),
+        ("HTTPS://Frontend.Example.COM:443/", "https://frontend.example.com"),
+        ("https://app-1.example.co", "https://app-1.example.co"),
+        ("https://1.2.example.com", "https://1.2.example.com"),
+        ("https://notlocalhost.example.com", "https://notlocalhost.example.com"),
+        ("https://mylocal.example", "https://mylocal.example"),
+        ("https://localhost.example.com", "https://localhost.example.com"),
+        ("https://example.arpa", "https://example.arpa"),
+    ],
+)
+def test_a_public_palantir_origin_is_normalized(value: str, normalized: str) -> None:
+    assert public_https_origin(value) == normalized

@@ -1,6 +1,15 @@
 """Deployment targets and the one-platform-per-organization rule (design sections 3 and 9,
 DECISIONS B-2501, lead ruling B-2524; SP6 design 6.4).
 
+`adapter_target` is the one mapping of a target row to the adapter's `Target`: the job context and
+a Palantir plan's descriptor both use it, so both give the same bindings digest.
+
+A stored row whose bindings no longer validate against its platform's model (a rule or a required
+binding added after it was registered, #406) breaks no read: `stored_bindings` logs its id (no
+binding value) and `TargetOut` shows `UnusableBindings`. `require_bindings` refuses it
+(409 `target_bindings_invalid`) at the plan request, the approval and the job context; archive
+works.
+
 A target is a Databricks workspace, a Snowflake account, a Fabric workspace, a Palantir Foundry
 stack or a Docker daemon (`platform_kind`). Its address is
 normalized and allow-listed by that platform's normalizer in `adapters.native.addresses` before
@@ -26,7 +35,8 @@ lost and expires sealed plans past `expires_at`. The plan routes are `delivery.p
 
 Deployments (design 4, section 9 items 5, 6, 8, 10, 11 and 18; B-2681..B-2687): the `apply`,
 `observe`, `verify` and `reconcile` result hooks drive a deployment from `leased` to `verified`,
-`failed` or `unknown_outcome` in the result's transaction, and `settle_deployments` applies the
+`failed` or `unknown_outcome` in the result's transaction (an apply refused `plan_stale` before
+any journal step is `failed` with that reason), and `settle_deployments` applies the
 settle rules after the lost-job sweep. Every move to `unknown_outcome` (a failed apply after a
 journal step, a succeeded apply with an open intent, settle rule (a) for a lost apply) writes one
 `delivery.deployment.unknown_outcome` audit row in the same transaction, under the fixed system
@@ -38,6 +48,7 @@ Every row is read and written for the caller's resolved client only (`TenantScop
 
 from __future__ import annotations
 
+import logging
 import re
 import secrets
 from collections.abc import Iterable, Mapping, Sequence
@@ -46,6 +57,7 @@ from datetime import datetime, timedelta
 from typing import Any, Literal  # Any: target, executor and credential rows
 from uuid import UUID
 
+from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -63,6 +75,7 @@ from shifde.adapters.native.contracts import (
     NativeObservation,
     PlanJobResult,
     ReconciliationResult,
+    Target,
     VerificationReport,
     digest,
 )
@@ -88,6 +101,8 @@ from shifde.identity import apikeys
 from shifde.packaging.service import COMPILER_VERSION_APP, release_record
 from shifde.tenancy import service as tenancy
 from shifde.tenancy.scope import TenantScope
+
+log = logging.getLogger(__name__)
 
 EXECUTOR_TOKEN_REJECTED = "delivery.executor.token.rejected"
 DEPLOYMENT_UNKNOWN_OUTCOME = "delivery.deployment.unknown_outcome"
@@ -127,6 +142,17 @@ class DockerBindingInUse(AppError):
         )
 
 
+class TargetBindingsInvalid(AppError):
+    """The target's stored bindings no longer validate (#406); the detail names no binding."""
+
+    status, code, title = 409, "target_bindings_invalid", "Conflict"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "The target's stored bindings are no longer valid. Archive it and register it again."
+        )
+
+
 class PlanJobTargetMismatch(AppError):
     """A `plan` job's `target_id` is not its plan's target (B-2732)."""
 
@@ -142,6 +168,43 @@ def claim_key(platform_kind: str, address: str) -> str:
     if platform_kind == "snowflake":
         return address_key(snowflake_claim_identity(address))
     return address_key(address)
+
+
+def stored_bindings(row: Mapping[str, Any]) -> s.Bindings | None:
+    """The target row's bindings as its platform's model; None (and a warning that names the target
+    id and no binding value) when they no longer validate. The one reader of stored bindings, for
+    every platform."""
+    try:
+        return s.BINDINGS[row["platform_kind"]].model_validate(row["bindings"])
+    except ValidationError:
+        log.warning("delivery target %s: its stored bindings no longer validate", row["id"])
+        return None
+
+
+def require_bindings(row: Mapping[str, Any]) -> None:
+    """Refuse a target whose stored bindings no longer validate."""
+    if stored_bindings(row) is None:
+        raise TargetBindingsInvalid
+
+
+def adapter_target(row: Mapping[str, Any]) -> Target:
+    """The target `row` as its adapter takes it. Adapter bindings are strings: a Palantir target's
+    `allow_preview_apis` becomes `"true"` or `"false"` and a Docker target's `port` its digits; any
+    other kind's bindings are unchanged."""
+    bindings = row["bindings"]
+    if row["platform_kind"] == "palantir":
+        allowed = bindings.get("allow_preview_apis") is True
+        bindings = {**bindings, "allow_preview_apis": "true" if allowed else "false"}
+    elif row["platform_kind"] == "docker":
+        bindings = {k: str(v) if k == "port" else v for k, v in bindings.items()}
+    return Target(
+        tenant_id=row["tenant_id"],
+        id=row["id"],
+        revision=row["revision"],
+        environment=row["environment"],
+        host=row["address"],
+        bindings=bindings,
+    )
 
 
 class TargetService:
@@ -235,7 +298,7 @@ class TargetService:
             platform_kind=row["platform_kind"],
             address=row["address"],
             environment=row["environment"],
-            bindings=s.BINDINGS[row["platform_kind"]].model_validate(row["bindings"]),
+            bindings=stored_bindings(row) or s.UnusableBindings(),
             credential_ref=row["credential_ref"],
             status=row["status"],
             revision=row["revision"],
@@ -938,11 +1001,13 @@ POLL_DELAY = timedelta(seconds=15)  # settled call 5: the next observe/verify jo
 REQUIRED_CHECKS = ("native-runtime", "runtime-warehouse")
 APP_REQUIRED_CHECKS = (*REQUIRED_CHECKS, "app-deep-health")  # a generated app (SP5 6.6)
 SNOWFLAKE_REQUIRED_CHECKS = ("native-version", "runtime-health", "app-deep-health")  # SP6 6.4
+PALANTIR_REQUIRED_CHECKS = ("native-version", "ontology-read", "frontend-asset")  # SP8-7
 DOCKER_REQUIRED_CHECKS = ("native-version", "runtime-health", "app-deep-health")  # SP8 section 6
 # target platform -> the checks of (a plan without, a plan with a generated app); None: no such plan
-REQUIRED_BY_PLATFORM: dict[str, tuple[tuple[str, ...] | None, tuple[str, ...]]] = {
+REQUIRED_BY_PLATFORM: dict[str, tuple[tuple[str, ...] | None, tuple[str, ...] | None]] = {
     "databricks": (REQUIRED_CHECKS, APP_REQUIRED_CHECKS),
     "snowflake": (None, SNOWFLAKE_REQUIRED_CHECKS),
+    "palantir": (PALANTIR_REQUIRED_CHECKS, None),
     "docker": (None, DOCKER_REQUIRED_CHECKS),
 }
 
@@ -1102,7 +1167,7 @@ def on_apply_result(session: Session, job: Mapping[str, Any], body: JobResultSub
     """The `apply` kind's result hook (B-2684). A receipt for another organization, target or
     artifact is refused (422, nothing changes). A succeeded apply with an unfinished step is an
     unknown outcome; otherwise ownership is recorded and observing starts. A failed apply after
-    any journal step is an unknown outcome, else `failed`."""
+    any journal step is an unknown outcome, else `failed` (its reason names a `plan_stale`)."""
     tenant_id = job["tenant_id"]
     receipt = None
     if body.status == "succeeded":
@@ -1132,6 +1197,8 @@ def on_apply_result(session: Session, job: Mapping[str, Any], body: JobResultSub
                 row,
                 f"apply failed after a platform write may have happened: {body.error_code}",
             )
+        elif body.error_code == "plan_stale":
+            _fail(session, row, "apply refused: plan_stale")
         else:
             _fail(session, row, "no platform write was attempted")
         return
@@ -1200,9 +1267,11 @@ def on_verify_result(session: Session, job: Mapping[str, Any], body: JobResultSu
     `native-runtime` and `runtime-warehouse` both passed, and for a generated app (the plan's
     release is `/2`, SP5 6.6) `app-deep-health` too, even when the report omits it. On a Snowflake
     target (SP6 6.4) or a Docker target (SP8 section 6): only when `native-version`,
-    `runtime-health` and `app-deep-health` all passed. Otherwise `failed`. It fails closed: a
-    target, plan or plan release that cannot be read, or a Snowflake or Docker deployment whose
-    plan has no generated-app release, is `failed`."""
+    `runtime-health` and `app-deep-health` all passed. On a Palantir target (SP8-7): only when
+    `native-version`, `ontology-read` and `frontend-asset` all passed (`content-check` is never
+    enough). Otherwise `failed`. It fails closed: a target, plan or plan release that cannot be
+    read, a Snowflake or Docker deployment whose plan has no generated-app release, or a Palantir
+    one whose plan has one, is `failed`."""
     row = _deployment(session, job, ("verifying",))
     if row is None:
         return
@@ -1230,8 +1299,8 @@ def on_verify_result(session: Session, job: Mapping[str, Any], body: JobResultSu
 
 def _required_checks(session: Session, row: Mapping[str, Any]) -> tuple[str, ...] | None:
     """The checks the deployment's verification needs, read in its organization only; None
-    (never verified) when its target, plan or the plan's release cannot be read, or a Snowflake or
-    Docker target's plan has no generated-app release."""
+    (never verified) when its target, plan or the plan's release cannot be read, a Snowflake or
+    Docker target's plan has no generated-app release or a Palantir target's plan has one."""
     target = repository.get_target(session, row["target_id"], tenant_id=row["tenant_id"])
     plan = repository.get_plan(session, row["plan_id"], tenant_id=row["tenant_id"])
     if target is None or plan is None or target["platform_kind"] not in REQUIRED_BY_PLATFORM:
