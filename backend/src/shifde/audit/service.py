@@ -490,15 +490,22 @@ def recent_activity(
     tenant_id: UUID,
     tenant_wide: bool,
     visible_workspace_ids: Collection[UUID],
+    project_workspace_ids: Collection[UUID] = (),
+    readable_project_ids: Collection[UUID] = (),
     workspace_id: UUID | None = None,
     project_id: UUID | None = None,
     limit: int = 20,
 ) -> list[ActivityItem]:
+    """The newest events of the client. Unless `tenant_wide`: an event without a project only in
+    `visible_workspace_ids`, an event of a project only when the project is in
+    `readable_project_ids` and the event's workspace in `project_workspace_ids` (B-4092)."""
     rows = repository.recent_activity(
         session,
         tenant_id=tenant_id,
         tenant_wide=tenant_wide,
         visible_workspace_ids=visible_workspace_ids,
+        project_workspace_ids=project_workspace_ids,
+        readable_project_ids=readable_project_ids,
         workspace_id=workspace_id,
         project_id=project_id,
         limit=limit,

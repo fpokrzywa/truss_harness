@@ -1,27 +1,30 @@
-# Handoff — 2026-11-25 ~03:15 EST, charter 7 factory run (lead session agt-trus-harness-e5), context limit
+# Handoff — 2026-11-25 ~05:10 EST, charter 7 factory run (lead session agt-trus-harness-80), context limit
 
 Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` (newest progress entry and sub-projects table), then this file.
 
-**State:** cluster running; no agent, gate or wait loop running at handoff. Merged this session: batch 5 (PR #388, `cac3711`): 173, 184, 186, #364, S-054, S-055. Hosted DB setup done by the supervisor at `d35d815` (97 tables, 96 forced RLS). SP6 done-when demo passed on main and is recorded in STATUS.md.
+**State:** cluster running. Merged this session: batch 6 (PR #400, `2184df2`, no migration, no hosted run due): 192, 189, 190, S-056..S-058. No agent, gate or wait loop running at handoff.
 
 ## Rulings
-- Supervisor: **seth-supervisor-3** (journaled 01:47:11). Find it with ListAgents; check `.devdata/supervisor/logs/supervising-session.log` before trusting a takeover. It writes S-* rows on docs-only PR branches `supervisor/rulings-*`: check that they change only DECISIONS.md, then take them in the next batch. Next free ruling: S-056. Never edit S-* rows.
-- 192 needs no ruling (supervisor, 02:34): merge it with CI backend green on the exact head that merges.
-- Escalations are ruled on by the supervisor. A conflict outside DECISIONS.md goes back to the supervisor before merging. Merge only with full gates and green CI on the head that merges (`--match-head-commit`, merge lock).
-- After any merge with a migration: send "hosted DB setup due" with no full gate active, and start no full gate until the supervisor answers.
-- A second `test_orphaned_holds` failure away from 00:00 UTC: stop and tell the supervisor (#366).
-- If `scripts/supervisor/autostart.ps1` shows as deleted, neither commit the deletion nor restore it; tell the supervisor.
+- Supervisor: **seth-supervisor-5** (took over 05:01; check `.devdata/supervisor/logs/supervising-session.log`; find it with ListAgents). Next free ruling S-059. It writes S-* rows on `supervisor/rulings-*` (docs only): take them in the next batch. Never edit S-* rows.
+- 196 (#352, PR #402) needs the supervisor's ruling before merge: migration `delivery_0009_related_approvers`, isolation review inserting directly as `shifde_app` for every row of the requirement 4 table and mutating the guard (drop each IF), approver decision. S-056 is a design view only; any DDL beyond the spec plus addendum 1 goes back to the supervisor.
+- 191 (#384, PR #393): new head `8276b8f` needs code and security review of the delta, the approver, full gates and CI on the exact head; it is at `review` round 2 with no reviewer started. The approver traced that no test server starts inside an API or worker process. The trigger is McpTestServer (decision.md), not RestTestServer.
+- A second failure of `test_a_worker_at_its_abandoned_cap_stops_claiming_and_exits_1` (#401) on any head goes to the supervisor before any merge; same for `test_orphaned_holds` (#366). No rerun-and-merge on a red CI: send the FAILED lines first.
+- Merge only with full gates and green CI on the head that merges (`--match-head-commit`, merge lock). After a merge with a migration: "hosted DB setup due" to the supervisor, no full gate active.
+- If `scripts/supervisor/autostart.ps1` shows as deleted, neither commit nor restore it; tell the supervisor.
 
 ## Exact next step
-1. `factory/bin/job queue` (background), then:
-   - **189** (#374, PR #392, `80aebab4`, isolation-critical: authz, tenancy): gate PASS, at `review` round 1, no reviewer started. Spawn reviewer-code (opus), reviewer-security (opus) and isolation-reviewer. One existing assertion changes (stricter; `tests/mcp_access/test_project_key.py`): point the isolation reviewer and approver at it.
-   - **190** (#375, PR #391, `394501c`): gate PASS, at `review` round 1, no reviewer started. reviewer-code and reviewer-security (opus), isolation-reviewer (read-only SQL checks). `:identifier(%(a)s)` is refused at publish although the run-time check accepts it (B-4097).
-   - **191** (#384, PR #393, `0478201`): gate PASS, at `review` round 1, no reviewer started. Reviewers code and security (opus). Lead decision: allowlist only SQLSTATE 22012 with the exact constant text, existing assertions byte-identical (B-4098, B-4103).
-   - **192** (#385, PR #389, `1498100`): approver APPROVE, at `approve`. Take it into batch 6.
-2. Start **#290, #292, #294, #352** (unblocked by 173) and **#390** (after #385 merges); #295, #296 last. Slots: concurrency 8.
-3. **Batch 6** (`lead/batch-6` from origin/main): 192 and whichever of 189, 190, 191 are approved (and any `supervisor/rulings-*`); expect DECISIONS.md conflicts only. One full gate and CI on its head.
+1. `factory/bin/job queue` (takes about 2 minutes; run in the background).
+2. **191** at review r2: spawn reviewer-code and reviewer-security (opus) on the delta since `0478201`. Then approver.
+   All factory gates below are PASS; none of their reviewers has started (round 1 unless noted). Each needs reviewer-code, reviewer-security (opus) and an isolation-reviewer (all four are isolation-critical), except 191 (code and security only):
+   - **193** (#290 Fabric, PR #404, `c541744`, main merged in): rule on B-4107 (setup-only change of `test_sp8_targets_of_one_organization_share_one_claim[fabric]`, distinct item names because requirement 2 refuses equal ones; lead leans accept, as for B-4129).
+   - **194** (#292 Palantir, PR #405, `3c4def8`): `plan_details` takes the sealed plan's toolchain digest; target PATCH left out (#397).
+   - **195** (#294 Docker, PR #403, `48b4d5b`): B-4129 setup-only test change; check the Snowflake branch edit in `PlanService.request` and the render dispatch default.
+   - **196** (#352, PR #402, `1faf7eb`): direct-INSERT table and one-IF-at-a-time mutations (see Rulings); one surviving mutant (tenant predicate of `api_key_creator`, redundant under RLS).
+3. Start **#390** (unblocked by 192), **#394** (after 189, also the dashboard bind limit), **#398** (after 190), **#401**; **#397** after 194; **#295**, **#296** last. #395 is the owner's: no factory label. Slots: concurrency 8.
+4. **Batch 7** (`lead/batch-7` from origin/main): whichever of 191, 193-196 are approved, and any `supervisor/rulings-*`. 193/194/195 edit the same shared files (`delivery/plans.py`, `executor/runner.py`, `delivery/schemas.py`, `CLAUDE.md`): expect conflicts beyond DECISIONS.md (a conflict outside DECISIONS.md goes to the supervisor; merge them one at a time). 196 changes the signatures of `repository.insert_plan`/`insert_approval` (a `requested_api_key_id`/`decided_api_key_id` argument, None allowed): 194 and 195 may call them directly.
+   `backend/tests/delivery/test_release_gate.py` (strict-subset assertion) breaks for whichever of 193/194/195 merges last.
 
-Next free lead decision id: **B-4104** (B-4092..4094 job 189, 4095..4097 job 190, 4098..4100 job 191, 4101..4102 job 192, 4103 lead; older unused: B-4038, B-4039, B-4061, B-4062, B-4064, B-4066, B-4075, B-4077 to B-4080, B-4087, B-4088).
+Next free lead decision id: **B-4131** (4098-4100 job 191, 4104-4109 job 193, 4113-4115 job 196, 4120-4124 job 194, 4125-4129 job 195, 4130 lead; older unused: B-4038, B-4039, B-4061, B-4062, B-4064, B-4066, B-4075, B-4077 to B-4080, B-4087, B-4088, 4110-4112, 4116-4119).
 
 ## Helper scripts (gitignored, `.worktrees/_gate-logs/`)
 - `union_merge.sh <worktree> <remote-branch> <message>`: merge with DECISIONS.md by union; stops on any other conflict.
@@ -31,6 +34,10 @@ Next free lead decision id: **B-4104** (B-4092..4094 job 189, 4095..4097 job 190
 #295, #296 last. #294 also takes 173 review 3 finding 2 (render must dispatch by kind with a refusing default, commented on #294), the `DockerBindings.workspace_host` claim check; #292 takes nested Palantir suffixes and `frontend_origin` before any fetch; #295 takes the five kinds in `TargetsView.tsx:52-61`. `select .e5from secrets` stays open for the live test: no live Snowflake app before it is answered (S-043, S-049). When SP8 finishes, run its done-when demo and record it in STATUS.md.
 
 ## Leftovers
+- `.worktrees/batch-6` (branch `lead/batch-6`, PR #399 closed, superseded) and the half-removed folders `.worktrees/batch-3-merge`, `batch-4-merge`, `batch-5-merge` may be removed by hand (long paths; git no longer lists them).
+- `lead-feedback-draft.md` in 191's job folder was sent as feedback-1. `.worktrees/_gate-logs/uvplug.py` is a one-off reproduction plugin.
+- `factory/bin/job queue` took more than 2 minutes. A builder of SP8 size took 100 minutes and 500k tokens: split further slices.
+- Demos from a worktree: `uv run --frozen --project backend python scripts/<demo>.py --fake` (plain `python` is the main checkout's venv).
 - Branches `lead/batch-4`, `lead/batch-5` and worktrees `.worktrees/batch-3`, `batch-4`, `batch-4-merge`, `batch-5`, `batch-5-merge` are merged and may be removed. Scratch databases `shifde_184_iso3`, `shifde_364_iso1` were left by reviewers.
 - The Agent tool's `isolation: worktree` puts worktrees in `.claude/worktrees/`, which is not gitignored and makes main dirty: do not use it; create `.worktrees/<name>` by hand instead.
 - `gates.py ... | tail` hides its exit code: read its lines.

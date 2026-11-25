@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any  # Any: audit `details` is a redacted free-form JSON document
 from uuid import UUID
 
-from sqlalchemy import insert, or_, select, text
+from sqlalchemy import and_, insert, or_, select, text
 from sqlalchemy.orm import Session
 
 from shifde.audit.models import AuditEvent
@@ -36,6 +36,8 @@ def recent_activity(
     tenant_id: UUID,
     tenant_wide: bool,
     visible_workspace_ids: Collection[UUID],
+    project_workspace_ids: Collection[UUID],
+    readable_project_ids: Collection[UUID],
     workspace_id: UUID | None,
     project_id: UUID | None,
     limit: int,
@@ -46,7 +48,18 @@ def recent_activity(
     if project_id is not None:
         stmt = stmt.where(AuditEvent.project_id == project_id)
     if not tenant_wide:
-        stmt = stmt.where(AuditEvent.workspace_id.in_(list(visible_workspace_ids)))
+        stmt = stmt.where(
+            or_(
+                and_(
+                    AuditEvent.project_id.is_(None),
+                    AuditEvent.workspace_id.in_(list(visible_workspace_ids)),
+                ),
+                and_(
+                    AuditEvent.project_id.in_(list(readable_project_ids)),
+                    AuditEvent.workspace_id.in_(list(project_workspace_ids)),
+                ),
+            )
+        )
     stmt = stmt.order_by(AuditEvent.occurred_at.desc(), AuditEvent.id.desc()).limit(limit)
     rows = session.scalars(stmt).all()
     return [

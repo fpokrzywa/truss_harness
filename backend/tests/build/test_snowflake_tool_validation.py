@@ -18,11 +18,13 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from shifde.adapters.base import AdapterFailure
 from shifde.adapters.dataplatforms.snowflake import SnowflakeAdapter
+from shifde.adapters.dataplatforms.sqlapi import check_read_only
 from shifde.build.env import Env
 from shifde.build.executors import DATA_PLATFORM_ADAPTER_OF
 from shifde.build.issues import Report
-from shifde.build.tools import validate_tool
+from shifde.build.tools import positional_sql, validate_tool
 from shifde.connections import repository as conn_repo
 from shifde.core.db import Database
 from tests.build.conftest import EnvFactory, World
@@ -158,6 +160,10 @@ def test_a_read_sql_tool_on_an_active_snowflake_read_connection_publishes(
             "sql_write_statement",
         ),
         ("select 1 ->> execute immediate 'drop table x'", "sql_flow_operator"),
+        # (#375)
+        ("select $1 from @s/it's ->> remove @s/o'x", "sql_stage_path"),
+        ("select get_ddl('table', 't')", "sql_refused_function"),
+        ("select seq.nextval", "sql_refused_function"),
         (
             "select o.id from DEMO_DB.PUBLIC.ORDERS o where o.id = %(customer_id)s_x",
             "invalid_template",
@@ -200,6 +206,69 @@ def test_snowflake_only_text_publishes_on_snowflake(
         env = make_env(s, world.a.tenant)
         errors = _errors(env, _sql_tool(conns.snowflake, sql))
         assert not any(path == "binding.sql_template" for path, _ in errors), errors
+        s.rollback()
+
+
+# (template, code, message) of a raw `:word` the run-time check reads as code (#375)
+RAW_WORDS = [
+    ("select :call", "sql_write_statement", "CALL is not allowed in a read statement"),
+    ("select src:drop from t", "sql_write_statement", "DROP is not allowed in a read statement"),
+    ("select :Delete", "sql_write_statement", "DELETE is not allowed in a read statement"),
+    ("select :system$x", "sql_system_function", "system functions are not allowed"),
+    (
+        "select :nextval",
+        "sql_refused_function",
+        "GET_DDL, GET_PRESIGNED_URL and NEXTVAL are not allowed",
+    ),
+    (
+        "select :identifier(%(customer_id)s||'x')",
+        "sql_dynamic_name",
+        "IDENTIFIER(...) and TABLE(...) must hold one plain string literal or name",
+    ),
+    # reported once: the statement rules already give the same issue
+    ("select call, :call", "sql_write_statement", "CALL is not allowed in a read statement"),
+    ("select :nextval, nextval", "sql_refused_function", None),
+]
+
+
+@pytest.mark.parametrize(("sql", "code", "message"), RAW_WORDS)
+def test_a_raw_word_the_run_time_check_refuses_is_refused_at_publish(
+    sql: str,
+    code: str,
+    message: str | None,
+    conns: Conns,
+    world: World,
+    open_session: Callable[[UUID], AbstractContextManager[Session]],
+    make_env: EnvFactory,
+) -> None:
+    with pytest.raises(AdapterFailure):
+        check_read_only(positional_sql(sql)[0], dialect="snowflake")
+    with open_session(world.a.tenant) as s:
+        report = Report()
+        validate_tool(_sql_tool(conns.snowflake, sql), make_env(s, world.a.tenant), report)
+        found = [e for e in report.errors if e.path == "binding.sql_template"]
+        assert [e.code for e in found] == [code]
+        assert message is None or found[0].message == message
+        s.rollback()
+
+
+def test_a_parameter_named_as_a_refused_word_publishes(
+    conns: Conns, world: World, owner_db: Database, make_env: EnvFactory
+) -> None:
+    sql = "select %(call)s, %(drop)s, %(nextval)s"
+    spec = _sql_tool(conns.snowflake, sql)
+    spec["input_schema"] = {
+        "type": "object",
+        "properties": {name: {"type": "string"} for name in ("call", "drop", "nextval")},
+    }
+    check_read_only(positional_sql(sql)[0], dialect="snowflake")
+    with owner_db.session() as s:
+        env = make_env(s, world.a.tenant)
+        assert _errors(env, spec) == []
+        for other in ("select :id", "select src:customer from t"):
+            assert _errors(env, _sql_tool(conns.snowflake, other)) == []
+        # the Databricks dialect has no raw word rule
+        assert _errors(env, _sql_tool(conns.databricks, "select :call")) == []
         s.rollback()
 
 
