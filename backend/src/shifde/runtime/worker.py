@@ -51,7 +51,12 @@ does not get the lock skips the sweep until its next due one, and nothing is swe
 connection runs one `SELECT 1` after each finished client and has an idle bound of `max(2 * lease,
 60)` seconds (`idle_session_timeout`): when a step is stuck or the holder's host is gone, the server
 ends the session and another worker can sweep. A holder that goes on after that logs
-`worker.sweep_lock_lost` and visits no further client.
+`worker.sweep_lock_lost` (with the client whose step it was) and visits no further client in that
+pass. Its next run of that sweep starts after that client and goes round to it, and its next pass
+starts with the other sweep (B-4166): a client that is slow every time delays the others and stops
+none, whichever worker sweeps. An exception that escapes a step moves the same two on. Both are the
+worker's own, in memory: a sweep that visited every client starts at the first one again, and so
+does a restarted worker.
 
 A sweep is stuck when no client has finished for `max(2 * lease, 60)` seconds (since its start,
 until the first one has; issues #363, #415), however long the whole sweep takes: each due sweep it
@@ -102,7 +107,7 @@ import threading
 import time
 import traceback
 from collections import Counter
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -144,6 +149,9 @@ log = structlog.get_logger("shifde.worker")
 REAPER_LOCK = "shifde:reaper"
 SWEEP_LOCK = "shifde:client-sweep"  # session-level, held over both client sweeps
 CAPTURE_SWEEP_LOCK = "shifde:capture-sweep:{}"  # per client
+# the two client sweeps, by the event their failed listing is logged as
+CAPTURE_SWEEP = "worker.capture_sweep_failed"
+HOLDS_SWEEP = "worker.invocation_sweep_failed"
 _CLIENTS = text("SELECT id FROM shifde.tenants ORDER BY id")
 EXIT_CONFIG = 2  # as `settings_or_exit`: a configuration a restart cannot fix
 EXIT_UNSAFE_ROLE = 3  # as `shifde-api` (shifde.main)
@@ -176,7 +184,11 @@ class _Job:
 
 
 class _SweepLockLost(Exception):
-    """The session that held `SWEEP_LOCK` ended while this worker swept."""
+    """The session that held `SWEEP_LOCK` ended while this worker swept `tenant_id`."""
+
+    def __init__(self, tenant_id: UUID) -> None:
+        super().__init__()
+        self.tenant_id = tenant_id
 
 
 class Worker:
@@ -251,6 +263,11 @@ class Worker:
         self._sweep_started: float | None = None
         # monotonic end of the last client's step in that sweep; None until the first one ends
         self._sweep_progressed: float | None = None
+        # where the next pass goes on when one was cut short (B-4166): the client each sweep (by its
+        # listing event) was cut short at, and whether the invocation-hold sweep goes first; changed
+        # only with `_sweeping` held
+        self._sweep_cut_at: dict[str, UUID] = {}
+        self._holds_first = False
 
     # ------------------------------------------------------------------ lifecycle
     def run(self) -> int:
@@ -676,17 +693,23 @@ class Worker:
 
     def _sweep(self) -> None:
         """Both client sweeps, in order (the second only when the sweep is not over), under
-        `SWEEP_LOCK`; none while another worker holds it. Releases `_sweeping`, which the caller
-        took."""
+        `SWEEP_LOCK`; none while another worker holds it. The sweep the last pass was cut short in
+        goes last. Releases `_sweeping`, which the caller took."""
         try:
             with self._sweep_lock() as lock:
                 if lock is None or self._sweep_over():
                     return
-                self._sweep_capture_off(lock)
+                sweeps = [self._sweep_capture_off, self._sweep_invocation_holds]
+                if self._holds_first:
+                    sweeps.reverse()
+                sweeps[0](lock)
                 if not self._sweep_over():
-                    self._sweep_invocation_holds(lock)
-        except _SweepLockLost:
-            log.warning("worker.sweep_lock_lost", worker_id=self.worker_id)
+                    sweeps[1](lock)
+                self._holds_first = False
+        except _SweepLockLost as lost:
+            log.warning(
+                "worker.sweep_lock_lost", worker_id=self.worker_id, tenant_id=str(lost.tenant_id)
+            )
         except Exception:  # noqa: BLE001 - the next reap sweeps again
             log.error("worker.sweep_failed", exc_info=True)
         finally:
@@ -725,14 +748,38 @@ class Worker:
             with suppress(Exception):
                 c.close()
 
-    def _client_swept(self, lock: psycopg.Connection) -> None:
+    def _client_swept(self, lock: psycopg.Connection, tenant_id: UUID) -> None:
         """A client's step ended: the sweep progressed, and its lock connection is not idle. Raises
         `_SweepLockLost` when that connection is gone."""
         self._sweep_progressed = time.monotonic()
         try:
             lock.execute("SELECT 1")
         except Exception:  # noqa: BLE001 - without an answer the lock may be another worker's
-            raise _SweepLockLost from None
+            raise _SweepLockLost(tenant_id) from None
+
+    def _sweep_clients(
+        self, lock: psycopg.Connection, event: str, step: Callable[[UUID], None]
+    ) -> None:
+        """`step` for every client, in order of their ids, from the one after the client this sweep
+        was last cut short at (that client need not exist any more). A lost lock or an exception
+        ends it at the client of that step."""
+        clients = self._clients(event)
+        if clients is None:
+            return
+        cut_at = self._sweep_cut_at.get(event)
+        if cut_at is not None:
+            clients = [c for c in clients if c > cut_at] + [c for c in clients if c <= cut_at]
+        for tenant_id in clients:
+            if self._sweep_over():
+                return
+            try:
+                step(tenant_id)
+                self._client_swept(lock, tenant_id)
+            except Exception:
+                self._sweep_cut_at[event] = tenant_id
+                self._holds_first = event == CAPTURE_SWEEP
+                raise
+        self._sweep_cut_at.pop(event, None)
 
     def _sweep_over(self) -> bool:
         """No further client is swept: a stop was requested or the worker is shutting down."""
@@ -799,12 +846,7 @@ class Worker:
         platform-administrator context; each one is then swept in a transaction of its own with
         only that client set, under a per-client advisory lock. Idempotent; writes no audit. Ends
         early on a stop request."""
-        clients = self._clients("worker.capture_sweep_failed")
-        for tenant_id in clients or []:
-            if self._sweep_over():
-                return
-            self._sweep_client(tenant_id)
-            self._client_swept(lock)
+        self._sweep_clients(lock, CAPTURE_SWEEP, self._sweep_client)
 
     def _clients(self, event: str) -> list[UUID] | None:
         """Every client's id, listed under the platform-administrator context; None (logged as
@@ -823,11 +865,7 @@ class Worker:
         """Settle every client's marked direct-invocation holds past their TTL (issue #91), each
         client in a transaction of its own with only that client set. Idempotent. Ends early on a
         stop request."""
-        for tenant_id in self._clients("worker.invocation_sweep_failed") or []:
-            if self._sweep_over():
-                return
-            self._sweep_client_invocations(tenant_id)
-            self._client_swept(lock)
+        self._sweep_clients(lock, HOLDS_SWEEP, self._sweep_client_invocations)
 
     def _sweep_client_invocations(self, tenant_id: UUID) -> None:
         with self.db.session() as s:

@@ -3,8 +3,13 @@
 One sweep at a time across workers: a sweep holds the session-level advisory lock `SWEEP_LOCK` on a
 connection of its own; a worker that does not get it skips the sweep, and one that cannot try it
 sweeps nothing. The lock is free as soon as the sweep ended, also after an exception or a stop, and
-a holder whose step is stuck (or whose session ended) loses it and visits no further client. The
-main loop and lease reaping wait for none of it.
+a holder whose step is stuck (or whose session ended) loses it and visits no further client in that
+pass. The main loop and lease reaping wait for none of it.
+
+A worker that lost the lock goes on after the client it lost it at (B-4166): its next run of that
+sweep starts after that client and its next pass with the other sweep, so a client whose step is
+slower than the bound on every pass keeps no other client from being swept, with any number of
+workers.
 
 Stuck is judged by progress: the bound (`wedged_after`) counts from the last finished client, in
 either sweep, not from the start of the sweep.
@@ -18,7 +23,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import timedelta
 from types import SimpleNamespace
@@ -39,7 +44,7 @@ from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.runtime import worker as worker_mod
-from shifde.runtime.worker import REAPER_LOCK, SWEEP_LOCK, Worker
+from shifde.runtime.worker import CAPTURE_SWEEP_LOCK, REAPER_LOCK, SWEEP_LOCK, Worker
 from tests._support.dberrors import rendered_logs
 from tests.runtime.test_worker_health import (
     _job_state,
@@ -56,6 +61,14 @@ __all__ = ["running", "world"]
 CAPTURE = "worker.capture_sweep_failed"  # what `_clients` is listed for, by sweep
 INVOCATIONS = "worker.invocation_sweep_failed"
 LISTING = "listing"
+
+
+_HOLDERS = (
+    "SELECT l.pid FROM pg_locks l JOIN pg_database d ON d.oid = l.database "
+    "WHERE d.datname = current_database() AND l.locktype = 'advisory' AND l.granted "
+    "AND l.objsubid = 1 AND ((l.classid::bigint << 32) | l.objid::bigint) "
+    "= hashtextextended(%s, 0)"
+)
 
 
 class OtherSession:
@@ -82,6 +95,10 @@ class OtherSession:
             return False
         self.unlock(key)
         return True
+
+    def holders(self) -> list[int]:
+        """The backends that hold `SWEEP_LOCK`."""
+        return [int(pid) for (pid,) in self.connection.execute(_HOLDERS, (SWEEP_LOCK,))]
 
 
 @pytest.fixture
@@ -130,6 +147,19 @@ class Sweeps:
             (worker, sweep, what)
             for sweep in (CAPTURE, INVOCATIONS)
             for what in (LISTING, *self.clients)
+        ]
+
+    def part(self, worker: str, sweep: str, *clients: int) -> list[Event]:
+        """The events of one sweep of `worker` over those clients, in that order."""
+        return [(worker, sweep, w) for w in (LISTING, *(self.clients[n] for n in clients))]
+
+    def resumed(self, worker: str, lost: str, *clients: int) -> list[Event]:
+        """The events of the pass after one that was cut short in `lost`: the other sweep whole,
+        then `lost` over those clients."""
+        first = INVOCATIONS if lost == CAPTURE else CAPTURE
+        return [
+            *self.part(worker, first, *range(len(self.clients))),
+            *self.part(worker, lost, *clients),
         ]
 
 
@@ -592,13 +622,407 @@ def test_a_holder_that_lost_the_lock_visits_no_further_client(
     [lost] = _loud(logs)
     assert lost["event"] == "worker.sweep_lock_lost" and lost["log_level"] == "warning"
     assert lost["worker_id"] == "w-lost" and "exc_info" not in lost
+    assert lost["tenant_id"] == str(sweeps.clients[0])
     assert w._sweep_started is None and w._sweep_progressed is None
     other.unlock()
     sweeps.gates.clear()
     sweeps.events.clear()
     w.wedged_after = timedelta(seconds=60)
     w._reap()
+    assert sweeps.events == sweeps.resumed("w-lost", sweep, 1, 2, 0)
+    sweeps.events.clear()
+    w._reap()
     assert sweeps.events == whole
+
+
+# --------------------------------------------------------------- a client that is slow every time
+SLOW_BOUND = 2.0  # the workers' `wedged_after`
+SLOW_STEP = 3.0  # longer by several reap intervals
+SLOW_REAP = 0.3
+BOTH = (CAPTURE, INVOCATIONS)
+
+
+@dataclass
+class Visit:
+    worker: str
+    sweep: str
+    client: UUID
+    began: float
+    has_lock: bool  # the sweep's own lock session held the lock when the step began
+    ended: float | None = None
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+@pytest.mark.parametrize(
+    ("slow_in", "slow", "outcome"),
+    [
+        ((CAPTURE,), 0, "failed"),
+        ((CAPTURE,), 2, "done"),
+        ((INVOCATIONS,), 0, "done"),
+        ((INVOCATIONS,), 1, "failed"),
+        (BOTH, 0, "failed"),
+        (BOTH, 2, "done"),
+    ],
+)
+def test_a_client_that_is_slow_on_every_pass_stops_no_other_client(
+    slow_in: tuple[str, ...],
+    slow: int,
+    outcome: str,
+    workers: int,
+    settings: Settings,
+    running: Callable[[Worker], threading.Thread],
+    other: OtherSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real steps and the server's own timers: the slow client's query outlasts the idle bound
+    each time, and is cut by the statement timeout ("failed") or returns ("done"). In the capture
+    sweep it comes before the per-client lock, which else lets another worker step past the client
+    while the query runs: here it is slow for both."""
+    clients = [uuid7() for _ in range(3)]
+    visits: list[Visit] = []
+    lock_connections: dict[int, psycopg.Connection] = {}  # by sweep thread
+    querying = threading.Lock()  # `other` is shared by the sweep threads
+    connect = psycopg.connect
+    capture_step, invocation_step = Worker._sweep_client, Worker._sweep_client_invocations
+    set_tenant = worker_mod.db.set_tenant
+    in_capture_step = threading.local()
+
+    def recorded_connect(*args: Any, **kwargs: Any) -> Any:
+        c = connect(*args, **kwargs)
+        if _is_lock_connect(kwargs):
+            lock_connections[threading.get_ident()] = c
+        return c
+
+    def visited(w: Worker, sweep: str, tenant_id: UUID, step: Callable[[], None]) -> None:
+        own = lock_connections[threading.get_ident()].info.backend_pid
+        with querying:
+            holders = other.holders()
+        visit = Visit(w.worker_id, sweep, tenant_id, time.monotonic(), holders == [own])
+        visits.append(visit)
+        step()
+        visit.ended = time.monotonic()
+
+    def query(s: Session, sweep: str, tenant_id: UUID) -> None:
+        if sweep in slow_in and tenant_id == clients[slow]:
+            s.execute(text("SELECT pg_sleep(:s)"), {"s": 60 if outcome == "failed" else SLOW_STEP})
+
+    def capture(w: Worker, tenant_id: UUID) -> None:
+        in_capture_step.now = True
+        try:
+            capture_step(w, tenant_id)
+        finally:
+            in_capture_step.now = False
+
+    def set_tenant_then_query(s: Session, tenant_id: UUID) -> None:
+        set_tenant(s, tenant_id)
+        if getattr(in_capture_step, "now", False):
+            query(s, CAPTURE, tenant_id)
+
+    def settle(s: Session, tenant_id: UUID) -> int:
+        query(s, INVOCATIONS, tenant_id)
+        return 0
+
+    monkeypatch.setattr(psycopg, "connect", recorded_connect)
+    monkeypatch.setattr(Worker, "_clients", lambda self, event: list(clients))
+    monkeypatch.setattr(
+        Worker,
+        "_sweep_client",
+        lambda self, t: visited(self, CAPTURE, t, lambda: capture(self, t)),
+    )
+    monkeypatch.setattr(
+        Worker,
+        "_sweep_client_invocations",
+        lambda self, t: visited(self, INVOCATIONS, t, lambda: invocation_step(self, t)),
+    )
+    monkeypatch.setattr(worker_mod.db, "set_tenant", set_tenant_then_query)
+    monkeypatch.setattr(ledger.reservations, "settle_orphaned_invocations", settle)
+    cut = {"db_statement_timeout_ms": int(SLOW_STEP * 1000)} if outcome == "failed" else {}
+    names = [f"w-slow-{n}" for n in range(workers)]
+    targets = {(sweep, c) for sweep in BOTH for c in clients}
+
+    def is_slow(v: Visit) -> bool:
+        return v.sweep in slow_in and v.client == clients[slow]
+
+    def reached_twice() -> bool:
+        seen = [(v.sweep, v.client) for v in list(visits)]
+        losers = {e["worker_id"] for e in _events(list(logs), "worker.sweep_lock_lost")}
+        return all(seen.count(t) >= 2 for t in targets) and losers == set(names)
+
+    with structlog.testing.capture_logs() as logs:
+        for name in names:
+            w = _worker(settings, name, **cut)
+            w.reap_every = SLOW_REAP
+            w.wedged_after = timedelta(seconds=SLOW_BOUND)
+            running(w)
+        with suppress(AssertionError):  # what was not reached is named below
+            _until(reached_twice, 60)
+        done = list(visits)
+    seen = [(v.sweep, v.client) for v in done]
+    assert {t for t in targets if seen.count(t) < 2} == set()
+    # in bounded time: one worker has lost three passes before it has visited every client
+    first_slow = max(seen.index(t) for t in targets)
+    assert sum(is_slow(v) for v in done[:first_slow]) <= 4 * workers
+    # slow every time, and the lock was lost each time, at that client only
+    ended = [v.ended - v.began for v in done if is_slow(v) and v.ended is not None]
+    assert len(ended) >= 2 and min(ended) > SLOW_BOUND
+    lost = _events(logs, "worker.sweep_lock_lost")
+    assert {e["worker_id"] for e in lost} == set(names)
+    assert {e["tenant_id"] for e in lost} == {str(clients[slow])}
+    failed = {e["tenant_id"] for sweep in BOTH for e in _events(logs, sweep)}
+    assert failed == ({str(clients[slow])} if outcome == "failed" else set())
+    assert _events(logs, "worker.sweep_failed") == []
+    # no step begins without the lock, so no two sweeps go on at a time
+    assert [v for v in done if not v.has_lock] == []
+    if workers == 2:  # the other worker swept while a step that had lost the lock went on
+        assert any(
+            a.ended is not None and a.worker != b.worker and a.began < b.began < a.ended
+            for a in done
+            for b in done
+        )
+
+
+@pytest.mark.parametrize("sweep", BOTH)
+def test_two_workers_that_lose_the_lock_to_each_other_both_go_on_after_the_slow_client(
+    sweep: str, worker: Callable[..., Worker], sweeps: Sweeps, other: OtherSession
+) -> None:
+    """The alternation: A loses the lock at the first client, B takes it and starts there too, A's
+    next try fails, and B loses it in its turn."""
+    a, b = worker("w-a"), worker("w-b")
+    a.wedged_after = b.wedged_after = timedelta(seconds=3)
+    gate_a, gate_b = sweeps.hold("w-a", sweep), sweeps.hold("w-b", sweep)
+    with structlog.testing.capture_logs() as logs, sweeping(a, gate_a):
+        assert gate_a.reached.wait(30), "A's step never started"
+        _until(other.is_free)
+        with sweeping(b, gate_b):
+            assert gate_b.reached.wait(30), "B's step never started"
+            gate_a.release.set()
+            assert a._sweeping.acquire(timeout=60), "A's sweep did not end"
+            a._sweeping.release()
+            sweeps.events.clear()
+            a._reap()
+            assert sweeps.events == []  # B has the lock
+            _until(other.is_free)
+            a._reap()
+            assert sweeps.events == sweeps.resumed("w-a", sweep, 1, 2, 0)
+            sweeps.events.clear()
+        b._reap()
+    assert sweeps.events == sweeps.resumed("w-b", sweep, 1, 2, 0)
+    lost = [(e["worker_id"], e["tenant_id"]) for e in _loud(logs)]
+    assert lost == [("w-a", str(sweeps.clients[0])), ("w-b", str(sweeps.clients[0]))]
+
+
+# --------------------------------------------------------------- where a lost sweep goes on
+LoseAt = Callable[[Worker, str, int], None]
+
+
+@pytest.fixture
+def lose_at(
+    sweeps: Sweeps,
+    other: OtherSession,
+    worker_admin_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[LoseAt]:
+    """A pass whose lock session the server ends during the step of one client."""
+    admin = create_engine(worker_admin_url, poolclass=NullPool)
+    step = sweeps.step
+    losing: list[Event] = []
+
+    def losing_step(event: Event) -> None:
+        step(event)
+        if losing == [event]:
+            with admin.connect() as c:
+                [pid] = other.holders()
+                assert c.execute(text("SELECT pg_terminate_backend(:p)"), {"p": pid}).scalar()
+            _until(other.is_free)
+
+    monkeypatch.setattr(sweeps, "step", losing_step)
+
+    def lose(w: Worker, sweep: str, client: int) -> None:
+        losing[:] = [(w.worker_id, sweep, sweeps.clients[client])]
+        sweeps.events.clear()
+        with structlog.testing.capture_logs() as logs:
+            w._reap()
+        assert [(e["event"], e.get("tenant_id")) for e in _loud(logs)] == [
+            ("worker.sweep_lock_lost", str(sweeps.clients[client]))
+        ]
+        assert sweeps.events[-1] == losing[0]
+        losing.clear()
+
+    yield lose
+    admin.dispose()
+
+
+def _pass(w: Worker, sweeps: Sweeps) -> list[Event]:
+    """The events of one more pass, which logs nothing loud."""
+    sweeps.events.clear()
+    with structlog.testing.capture_logs() as logs:
+        w._reap()
+    assert _loud(logs) == []
+    return list(sweeps.events)
+
+
+@pytest.mark.parametrize("sweep", BOTH)
+@pytest.mark.parametrize(("at", "order"), [(0, (1, 2, 0)), (1, (2, 0, 1)), (2, (0, 1, 2))])
+def test_the_next_pass_goes_on_after_the_client_and_a_whole_pass_starts_over(
+    at: int,
+    order: tuple[int, ...],
+    sweep: str,
+    worker: Callable[..., Worker],
+    sweeps: Sweeps,
+    lose_at: LoseAt,
+) -> None:
+    w = worker("w-resume")
+    lose_at(w, sweep, at)
+    assert _pass(w, sweeps) == sweeps.resumed("w-resume", sweep, *order)
+    assert _pass(w, sweeps) == sweeps.whole("w-resume")
+
+
+def test_each_sweep_has_its_own_place_and_neither_keeps_the_other_from_its_turn(
+    worker: Callable[..., Worker], sweeps: Sweeps, lose_at: LoseAt
+) -> None:
+    w = worker("w-places")
+    lose_at(w, CAPTURE, 0)
+    lose_at(w, INVOCATIONS, 1)  # it went first
+    assert sweeps.events == sweeps.part("w-places", INVOCATIONS, 0, 1)
+    lose_at(w, CAPTURE, 1)  # first again, after the first client
+    assert sweeps.events == sweeps.part("w-places", CAPTURE, 1)
+    assert _pass(w, sweeps) == [
+        *sweeps.part("w-places", INVOCATIONS, 2, 0, 1),
+        *sweeps.part("w-places", CAPTURE, 2, 0, 1),
+    ]
+    assert _pass(w, sweeps) == sweeps.whole("w-places")
+
+
+def test_a_sweep_that_visited_every_client_starts_over_although_the_other_was_lost(
+    worker: Callable[..., Worker], sweeps: Sweeps, lose_at: LoseAt
+) -> None:
+    w = worker("w-over")
+    lose_at(w, CAPTURE, 0)
+    lose_at(w, INVOCATIONS, 1)
+    lose_at(w, INVOCATIONS, 2)  # after the capture sweep, which went on to its end
+    assert sweeps.events == [
+        *sweeps.part("w-over", CAPTURE, 1, 2, 0),
+        *sweeps.part("w-over", INVOCATIONS, 2),
+    ]
+    assert _pass(w, sweeps) == sweeps.whole("w-over")
+
+
+@pytest.mark.parametrize("sweep", BOTH)
+@pytest.mark.parametrize(("at", "order"), [(0, (0, 1)), (1, (1, 0)), (2, (0, 1))])
+def test_the_place_of_a_client_that_is_gone_stays(
+    at: int,
+    order: tuple[int, ...],
+    sweep: str,
+    worker: Callable[..., Worker],
+    sweeps: Sweeps,
+    lose_at: LoseAt,
+) -> None:
+    w = worker("w-gone")
+    lose_at(w, sweep, at)
+    del sweeps.clients[at]
+    assert _pass(w, sweeps) == sweeps.resumed("w-gone", sweep, *order)
+    assert _pass(w, sweeps) == sweeps.whole("w-gone")
+
+
+def test_without_any_client_left_the_place_is_given_up(
+    worker: Callable[..., Worker], sweeps: Sweeps, lose_at: LoseAt
+) -> None:
+    w = worker("w-none-left")
+    clients = list(sweeps.clients)
+    lose_at(w, CAPTURE, 1)
+    sweeps.clients.clear()
+    assert _pass(w, sweeps) == sweeps.resumed("w-none-left", CAPTURE)
+    sweeps.clients[:] = clients
+    assert _pass(w, sweeps) == sweeps.whole("w-none-left")
+
+
+@pytest.mark.parametrize("sweep", BOTH)
+def test_clients_added_and_removed_between_the_passes(
+    sweep: str, worker: Callable[..., Worker], sweeps: Sweeps, lose_at: LoseAt
+) -> None:
+    w = worker("w-changed")
+    first, second, third = sweeps.clients
+    lose_at(w, sweep, 1)
+    before, between, behind = (UUID(int=n) for n in (first.int - 1, second.int + 1, third.int + 1))
+    sweeps.clients[:] = [before, second, between, third, behind]  # the first one is gone
+    assert _pass(w, sweeps) == sweeps.resumed("w-changed", sweep, 2, 3, 4, 0, 1)
+    assert _pass(w, sweeps) == sweeps.whole("w-changed")
+
+
+def test_a_restarted_worker_and_another_worker_start_at_the_first_client(
+    worker: Callable[..., Worker], sweeps: Sweeps, lose_at: LoseAt
+) -> None:
+    w = worker("w-again")
+    lose_at(w, CAPTURE, 1)
+    assert _pass(worker("w-other"), sweeps) == sweeps.whole("w-other")
+    assert _pass(worker("w-again"), sweeps) == sweeps.whole("w-again")
+    assert _pass(w, sweeps) == sweeps.resumed("w-again", CAPTURE, 2, 0, 1)
+
+
+def test_a_pass_that_lists_no_client_keeps_the_place(
+    worker: Callable[..., Worker],
+    sweeps: Sweeps,
+    lose_at: LoseAt,
+    other: OtherSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    w = worker("w-keeps")
+    lose_at(w, CAPTURE, 0)
+    assert other.try_lock()
+    assert _pass(w, sweeps) == []
+    other.unlock()
+    with monkeypatch.context() as m:  # both listings fail, so the pass is not cut short
+        m.setattr(Worker, "_clients", lambda self, event: None)
+        assert _pass(w, sweeps) == []
+    assert _pass(w, sweeps) == [
+        *sweeps.part("w-keeps", CAPTURE, 1, 2, 0),
+        *sweeps.part("w-keeps", INVOCATIONS, 0, 1, 2),
+    ]
+    assert _pass(w, sweeps) == sweeps.whole("w-keeps")
+
+
+@pytest.mark.parametrize("sweep", BOTH)
+def test_an_exception_that_escapes_a_step_on_every_pass_stops_no_other_client(
+    sweep: str, worker: Callable[..., Worker], sweeps: Sweeps
+) -> None:
+    w = worker("w-escaped")
+    sweeps.raising = ("w-escaped", sweep, sweeps.clients[0])
+    seen: set[Event] = set()
+    for _ in range(2):
+        sweeps.events.clear()
+        with structlog.testing.capture_logs() as logs:
+            w._reap()
+        assert [e["event"] for e in _loud(logs)] == ["worker.sweep_failed"]
+        seen |= set(sweeps.events)
+    assert seen == set(sweeps.whole("w-escaped"))
+    sweeps.raising = None
+    assert _pass(w, sweeps) == sweeps.resumed("w-escaped", sweep, 1, 2, 0)
+
+
+def test_the_clients_are_listed_in_the_order_the_place_is_kept_in(
+    world: World, worker: Callable[..., Worker]
+) -> None:
+    listed = worker("w-order")._clients(CAPTURE)
+    assert listed is not None and {world.a.tenant, world.b.tenant} <= set(listed)
+    assert listed == sorted(listed)
+
+
+def test_a_client_whose_capture_lock_is_taken_is_skipped_alone(
+    worker: Callable[..., Worker], other: OtherSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    swept: list[UUID] = []
+
+    def capture_full(s: Session, tenant_id: UUID, settings: Settings) -> bool:
+        swept.append(tenant_id)
+        return True
+
+    monkeypatch.setattr(worker_mod, "capture_full", capture_full)
+    w = worker("w-per-client")
+    held, free = uuid7(), uuid7()
+    assert other.try_lock(CAPTURE_SWEEP_LOCK.format(held))
+    w._sweep_client(held)
+    w._sweep_client(free)
+    assert swept == [free]
 
 
 # --------------------------------------------------------------- progress
