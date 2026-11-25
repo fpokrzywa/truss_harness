@@ -1,7 +1,8 @@
 """SP6-1: the Snowflake dialect of `core/sqlrules.py` (SP6 design 6.1, call S6-D): golden refusing
 and accepting cases for the tokenizer, the statement, table and parameter rules and
 `table_name_supported`; the same texts under the default dialect keep their Databricks outcome;
-and no function raises on odd input."""
+no function raises on odd input; and the rules shared with the runtime check (#358: the flow
+operator, `SYSTEM$`, `procedure`, `IDENTIFIER(...)`) refuse what it refuses."""
 
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ import pytest
 from shifde.adapters.base import AdapterFailure
 from shifde.adapters.dataplatforms.sqlapi import _POSITIONAL_BIND, check_read_only
 from shifde.core.sqlrules import (
+    FLOW_OPERATOR_MESSAGE,
     Token,
     check,
     parameter_rules,
@@ -186,6 +188,259 @@ def test_snowflake_publish_and_the_runtime_check_agree_on_positional_binds(sql: 
     assert published is runtime
 
 
+NEW_CODES = {"sql_flow_operator", "sql_system_function", "sql_dynamic_name"}
+PROCEDURE_SQL = "with p as procedure () returns varchar language sql as $$ select 1 $$ select 1"
+# (sql, Snowflake codes) of the #358 rules
+READ_RULES = [
+    # the flow operator: contiguous characters in code
+    ("select 1 ->> execute immediate 'drop table x'", ["sql_flow_operator"]),
+    ("select 1 ->> remove @s", ["sql_flow_operator"]),
+    ("select 1 ->> undrop table x", ["sql_flow_operator"]),
+    ("select 1->>select 2 ->> select 3", ["sql_flow_operator"]),
+    ("select a ->>> b", ["sql_flow_operator"]),
+    ("select $$a$$->>select 1", ["sql_flow_operator"]),
+    ("select '->>'", []),
+    ("select $$->>$$", []),
+    ('select "->>" from t', ["sql_quoted_identifier_unsupported"]),
+    ("select 1 -- ->> x", ["sql_comment"]),
+    ("select 1 /* ->> */", ["sql_comment"]),
+    ("select filter(a, x -> x > 1) from t", []),
+    ("select a >> b from t", []),
+    ("select a - >> b from t", []),
+    ("select a -> > b from t", []),
+    # SYSTEM$ names, unquoted or a whole quoted identifier
+    ("select system$wait(5)", ["sql_system_function"]),
+    ("select SYSTEM$WAIT(5), System$Wait(6)", ["sql_system_function"]),
+    ("select snowflake.x.system$wait(5)", ["sql_system_function"]),
+    ('select "SYSTEM$WAIT"(5)', ["sql_system_function"]),
+    ('select "system$wait"(5)', ["sql_quoted_identifier_unsupported", "sql_system_function"]),
+    ('select "SYSTEM$ X"(5)', ["sql_quoted_identifier_unsupported", "sql_system_function"]),
+    ("select $$a$$system$wait(5)", ["sql_system_function"]),
+    ("select a::system$x", ["sql_system_function"]),
+    ("select my_system$x from t", []),
+    ("select $system$x", []),
+    ('select "MY_SYSTEM$X" from t', []),
+    ('select "a""SYSTEM$x" from t', ["sql_quoted_identifier_unsupported"]),
+    ("select 'SYSTEM$X'", []),
+    ("select $$SYSTEM$X$$", []),
+    ("select system from t", []),
+    # the word procedure, listed with the write words
+    (PROCEDURE_SQL, ["sql_write_statement"]),
+    ("select Procedure, PROCEDURE from t", ["sql_write_statement"]),
+    ('select "PROCEDURE" from t', []),
+    ("select procedure_id, my$procedure from t", []),
+    ("select 'procedure', $$procedure$$", []),
+    # IDENTIFIER( and TABLE( with anything but one plain literal or name
+    ("select * from identifier(:t)", ["sql_dynamic_name"]),
+    ("select * from identifier(:region||'x')", ["sql_dynamic_name"]),
+    ("select * from identifier(?)", ["sql_positional_parameter", "sql_dynamic_name"]),
+    ("select * from identifier(:1)", ["sql_positional_bind", "sql_dynamic_name"]),
+    ("select * from identifier($t)", ["sql_dynamic_name"]),
+    ("select * from identifier($$t$$)", ["sql_dynamic_name"]),
+    ('select * from identifier("T")', ["sql_dynamic_name"]),
+    ("select * from identifier('a'||'b')", ["sql_dynamic_name"]),
+    ("select * from identifier('a', 'b')", ["sql_dynamic_name"]),
+    ("select * from identifier('a''b')", ["sql_dynamic_name"]),
+    ("select * from identifier('a\\b')", ["sql_dynamic_name"]),
+    ("select * from identifier('SYSTEM$X')", ["sql_dynamic_name"]),
+    ("select * from identifier('snowflake.x.system$x')", ["sql_dynamic_name"]),
+    ("select * from identifier()", ["sql_dynamic_name"]),
+    ("select * from identifier( )", ["sql_dynamic_name"]),
+    ("select * from identifier('t'", ["sql_dynamic_name"]),
+    ("select * from identifier(", ["sql_dynamic_name"]),
+    ("select * from identifier(a.b)", ["sql_dynamic_name"]),
+    ("select * from identifier(1)", ["sql_dynamic_name"]),
+    ("select * from identifier(concat('a', 'b'))", ["sql_dynamic_name"]),
+    ("select * from identifier(('t'))", ["sql_dynamic_name"]),
+    ("select * from identifier((select 't'))", ["sql_dynamic_name"]),
+    ("select * from IDENTIFIER \n (:t), identifier(:u)", ["sql_dynamic_name"]),
+    ("select $$a$$identifier(:t)", ["sql_dynamic_name"]),
+    ("select * from table(:t)", ["sql_dynamic_name"]),
+    ("select * from table($t)", ["sql_dynamic_name"]),
+    ("select * from table('a'||:t)", ["sql_dynamic_name"]),
+    ("select * from table(concat('a','b'))", ["sql_dynamic_name"]),
+    ("select * from table(identifier('t'))", ["sql_dynamic_name"]),
+    ("select * from identifier('db.s.t')", []),
+    ("select * from identifier( 'MY_TABLE' )", []),
+    ("select * from IDENTIFIER\t(\n'MY_TABLE'\n)", []),
+    ("select * from identifier('a)b')", []),
+    ("select * from identifier('a(b')", []),
+    ("select * from identifier(my_var)", []),
+    ("select * from identifier(my_var$1)", []),
+    ("select * from table('db.s.t')", []),
+    ("select * from Table(my_table)", []),
+    ("select identifier from t", []),
+    ("select identifier, (:a) from t", []),
+    ("select identifier + (:a) from t", []),
+    ("select my_identifier(:a), my_table(:b), $identifier(:c)", []),
+    ('select "IDENTIFIER"(:a), "TABLE"(:b)', []),
+    ("select 'IDENTIFIER(:x)'", []),
+    ("select $$TABLE(:x)$$", []),
+    # several rules, and a name directly after a `:` is a parameter
+    (
+        "select system$x, identifier(:a) ->> call procedure",
+        [
+            "sql_flow_operator",
+            "sql_system_function",
+            "sql_dynamic_name",
+            "sql_write_statement",
+            "sql_write_statement",
+        ],
+    ),
+    ("select :identifier, :table, :procedure, :system$x", []),
+]
+
+
+@pytest.mark.parametrize(("sql", "codes"), READ_RULES)
+def test_snowflake_read_rules_golden(sql: str, codes: list[str]) -> None:
+    assert _codes(sql) == codes
+    issues = statement_rules(sql, dialect="snowflake")
+    assert not any(sql in i.message or "system$" in i.message.lower() for i in issues)
+    # the Databricks default has none of these rules
+    assert not NEW_CODES & set(_codes(sql, "databricks"))
+    assert not any("PROCEDURE" in i.message for i in statement_rules(sql))
+
+
+def test_snowflake_procedure_is_listed_with_the_write_words() -> None:
+    issues = statement_rules("select procedure, delete, procedure", dialect="snowflake")
+    assert [i.message for i in issues] == [
+        "PROCEDURE is not allowed in a read statement",
+        "DELETE is not allowed in a read statement",
+    ]
+
+
+def test_a_snowflake_flow_token_takes_the_whole_operator() -> None:
+    tokens = tokenize("a->>b ->c", dialect="snowflake")
+    assert tokens == [
+        Token("ident", "a"),
+        Token("flow", "->>"),
+        Token("ident", "b"),
+        Token("ident", "c"),
+    ]
+    assert tokenize("a->>b") == [Token("ident", "a"), Token("ident", "b")]
+
+
+# #285, #312 and the flow operator: each text with its run-time outcome
+RUNTIME_REFUSED = [
+    "SELECT SYSTEM$CANCEL_ALL_QUERIES()",
+    "select system$cancel_all_queries()",
+    "SELECT SNOWFLAKE.X.SYSTEM$CANCEL_ALL_QUERIES()",
+    "WITH a AS (SELECT System$Cancel_All_Queries()) SELECT * FROM a",
+    'SELECT "SYSTEM$CANCEL_ALL_QUERIES"()',
+    'SELECT "system$abort_session"(1)',
+    "SELECT $$a$$SYSTEM$X()",
+    "SELECT 'a'SYSTEM$X()",
+    "SELECT a::SYSTEM$X",
+    PROCEDURE_SQL,
+    "SELECT procedure FROM t",
+    "SELECT * FROM TABLE(IDENTIFIER('SYSTEM$CANCEL_ALL_QUERIES'))",
+    "SELECT IDENTIFIER('system$abort_session')(1)",
+    "select identifier( '  System$Cancel_All_Queries ' )()",
+    "SELECT IDENTIFIER /* c */ ('SYSTEM$X')()",
+    "SELECT IDENTIFIER('SNOWFLAKE.X.SYSTEM$X')()",
+    "SELECT IDENTIFIER('\"SYSTEM$X\"')()",
+    "SELECT IDENTIFIER('\\SYSTEM$X')()",
+    "SELECT IDENTIFIER($$SYSTEM$X$$)()",
+    "SELECT IDENTIFIER('SYS' || 'TEM$X')()",
+    "SELECT $$a$$IDENTIFIER('SYS' || 'TEM$X')()",
+    "SELECT a.IDENTIFIER('SYS' || 'TEM$X')()",
+    "SELECT IDENTIFIER\u00a0(:a || 'TEM$X')()",
+    "SELECT IDENTIFIER(:a || 'TEM$X')()",
+    "SELECT IDENTIFIER('a''b')",
+    "SELECT * FROM IDENTIFIER($t)",
+    "SELECT * FROM IDENTIFIER()",
+    "SELECT * FROM IDENTIFIER('t'",
+    'SELECT * FROM IDENTIFIER("t")',
+    "SELECT * FROM IDENTIFIER('a', 'b')",
+    "SELECT * FROM IDENTIFIER(CONCAT('a', 'b'))",
+    "select 1 ->> execute immediate 'drop table x'",
+    "select 1 ->> remove @s",
+    "select 1 ->> undrop table x",
+    "SHOW TABLES ->> SELECT * FROM $1",
+]
+RUNTIME_ACCEPTED = [
+    "SELECT 'SYSTEM$CANCEL_ALL_QUERIES()'",
+    "SELECT $$SYSTEM$CANCEL_ALL_QUERIES()$$",
+    "SELECT 1 -- SYSTEM$CANCEL_ALL_QUERIES()",
+    "SELECT my_system$x FROM t",
+    'SELECT "my_system$x" FROM t',
+    'SELECT "a""SYSTEM$x" FROM t',
+    "SELECT $system$x, $identifier(:a)",
+    "SELECT procedure_id, 'procedure' FROM t",
+    'SELECT "PROCEDURE" FROM t',
+    "SELECT * FROM IDENTIFIER('db.schema.table')",
+    "SELECT * FROM identifier( 'MY_TABLE' )",
+    "SELECT * FROM IDENTIFIER(my_var)",
+    "SELECT * FROM IDENTIFIER /* c */ ( 'a)b' )",
+    "SELECT * FROM IDENTIFIER('a)b')",
+    "SELECT identifier FROM t",
+    "SELECT identifier + (:a) FROM t",
+    "SELECT my_identifier('SYSTEM$X') FROM t",
+    "SELECT 'IDENTIFIER($$x$$)'",
+    "SELECT \"IDENTIFIER('SYSTEM$X')\" FROM t",
+    "select '->>'",
+    "select $$->>$$",
+    'SELECT "->>" FROM t',
+    "SELECT 1 -- ->> x",
+    "SELECT filter(a, x -> x > 1), a >> b, a - >> b FROM t",
+]
+# the two places publish is stricter: a bound IDENTIFIER, and any TABLE( argument but a plain one
+PUBLISH_STRICTER = [
+    "SELECT * FROM IDENTIFIER(?)",
+    "SELECT * FROM IDENTIFIER(:tbl)",
+    "SELECT * FROM TABLE(IDENTIFIER(:fn))",
+    "SELECT * FROM TABLE(:t)",
+    "SELECT * FROM TABLE($t)",
+    "SELECT * FROM TABLE(FLATTEN(a))",
+    "SELECT * FROM TABLE(IDENTIFIER('t'))",
+]
+
+
+def _runtime_refuses(sql: str) -> bool:
+    try:
+        check_read_only(sql, dialect="snowflake")
+    except AdapterFailure:
+        return True
+    return False
+
+
+@pytest.mark.parametrize("sql", RUNTIME_REFUSED + RUNTIME_ACCEPTED + PUBLISH_STRICTER)
+def test_snowflake_publish_refuses_what_the_runtime_check_refuses(sql: str) -> None:
+    published = _codes(sql)
+    refused = _runtime_refuses(sql)
+    assert refused is (sql in RUNTIME_REFUSED)
+    # refused at run time implies refused at publish; accepted at publish, accepted at run time
+    assert not (refused and published == [])
+    # stricter only for a bound IDENTIFIER and for TABLE(
+    assert ("sql_dynamic_name" in published and not refused) is (sql in PUBLISH_STRICTER)
+    if not refused:
+        assert not {"sql_flow_operator", "sql_system_function", "sql_write_statement"} & set(
+            published
+        )
+
+
+@pytest.mark.parametrize("word", ["identifier", "system$x", "procedure"])
+def test_a_snowflake_word_directly_after_a_colon_is_a_parameter(word: str) -> None:
+    sql = f"select :{word}"
+    assert _codes(sql) == []
+    assert [i.code for i in check(sql, [], [], dialect="snowflake")] == ["sql_parameter_undeclared"]
+
+
+def test_snowflake_flow_operator_has_the_runtime_message() -> None:
+    sql = "select 1 ->> execute immediate 'drop table x'"
+    assert [(i.code, i.message) for i in statement_rules(sql, dialect="snowflake")] == [
+        ("sql_flow_operator", FLOW_OPERATOR_MESSAGE)
+    ]
+    with pytest.raises(AdapterFailure) as raised:
+        check_read_only(sql, dialect="snowflake")
+    assert raised.value.message == FLOW_OPERATOR_MESSAGE
+
+
+def test_the_databricks_default_accepts_the_flow_operator_characters() -> None:
+    check_read_only("SELECT a ->> b FROM t")
+    assert statement_rules("select a ->> b from t") == []
+
+
 ALLOWED = ["DEMO_DB.PUBLIC.CUSTOMERS", "demo_db.public.orders"]
 
 
@@ -277,6 +532,15 @@ def test_snowflake_parameter_rules_use_the_name_form() -> None:
 def test_snowflake_table_name_supported(name: str, supported: bool) -> None:
     assert table_name_supported(name, "snowflake") is supported
     assert table_name_supported(name, "databricks") is True
+
+
+def test_the_snowflake_read_rules_never_raise_on_odd_input() -> None:
+    rng = random.Random(358)
+    parts = ["identifier", "table", "procedure", "system$", "system$x", "->>", "->", "(", ")", "$"]
+    parts += [" ", "'a'", "'", '"SYSTEM$X"', '"', "$$x$$", "$$", ":n", ":", "?", "é", "1", "\\"]
+    for _ in range(2000):
+        sql = "".join(rng.choice(parts) for _ in range(rng.randint(1, 10)))
+        check(sql, ["A.B.C"], ["n"], dialect="snowflake")
 
 
 def test_the_snowflake_dialect_never_raises_on_odd_input() -> None:

@@ -3,9 +3,10 @@
 * `check_read_only`: the keyword check a `read` invoke passes before any network call (a read
   first keyword, no write keyword anywhere in the code; in the Snowflake dialect also no
   `procedure`/`call` word, no `SYSTEM$` function, #285, an `IDENTIFIER(...)` call only
-  with one simple argument, #312, and with a bound `IDENTIFIER(?)`/`IDENTIFIER(:name)` call no
-  string param containing `system$`, #339). Its function deny-list is best-effort defense in
-  depth; the least-privileged read credential (B-1507) is the real control.
+  with one simple argument, #312, with a bound `IDENTIFIER(?)`/`IDENTIFIER(:name)` call no
+  string param containing `system$`, #339, and no `->>` flow operator, #358). Its function
+  deny-list is best-effort defense in depth; the least-privileged read credential (B-1507) is
+  the real control.
 * `classify_status`: HTTP status -> `ErrorClass`, with fixed messages (never a body).
 * `send`: one request through an egress-guarded client, with one `Retry-After` retry on 429.
 * `run_statement`: submit, poll, cancel at the deadline.
@@ -28,7 +29,13 @@ import httpx
 from shifde.adapters.base import AdapterFailure, ErrorClass, ExecContext
 from shifde.adapters.httputil import classify_exception
 from shifde.core.egress import EgressViolation
-from shifde.core.sqlrules import WRITE_KEYWORDS
+from shifde.core.sqlrules import (
+    FLOW_OPERATOR,
+    FLOW_OPERATOR_MESSAGE,
+    SNOWFLAKE_REFUSED_WORDS,
+    SYSTEM_PREFIX,
+    WRITE_KEYWORDS,
+)
 
 JSON = dict[str, Any]  # Any: free-form JSON object
 
@@ -52,9 +59,7 @@ _WORD = re.compile(r"[\w$]+")
 # Databricks dialect: a word is a maximal run of ASCII letters, digits and `_` (as publish's
 # tokenizer splits identifiers)
 _DATABRICKS_WORD = re.compile(r"[A-Za-z0-9_]+")
-_SNOWFLAKE_REFUSED_WORDS = frozenset({"procedure", "call"})
-# Snowflake system functions (`SYSTEM$CANCEL_ALL_QUERIES`) can act on the account (#285)
-_SNOWFLAKE_REFUSED_PREFIX = "system$"
+_SNOWFLAKE_REFUSED_WORDS = SNOWFLAKE_REFUSED_WORDS | {"call"}
 # Snowflake reads `:1` as a positional bind reference; the runtime binds only `?` in order (#319)
 _SNOWFLAKE_POSITIONAL_BIND = re.compile(r":[0-9]")
 # Snowflake dialect tokens of `_code_of`'s `code` (comments already blanked): a `'...'` literal
@@ -160,8 +165,9 @@ def check_read_only(sql: str, *, dialect: Dialect = "databricks", params: object
     """Refuse (CAPABILITY, 422) anything but one statement whose first keyword is a read keyword
     and whose code holds no word of `WRITE_KEYWORDS` (the set publish refuses, shared through
     `core/sqlrules.py`); comments are stripped first, quoted text is never read as code. The
-    Snowflake dialect also refuses a `procedure` or `call` word anywhere in the code (anonymous
-    procedures), a word or a whole `"..."` identifier starting with `SYSTEM$` (system
+    Snowflake dialect also refuses the `->>` flow operator in the code (it chains a second
+    statement, #358; the message is publish's), a `procedure` or `call` word anywhere in the code
+    (anonymous procedures), a word or a whole `"..."` identifier starting with `SYSTEM$` (system
     functions, #285), a `:` directly followed by a digit (a positional bind reference, #319) and
     an `IDENTIFIER(...)` call whose argument is not exactly one `'...'` literal without a
     backslash and without `system$` anywhere, one `?`, one `:name` or one plain name (#312);
@@ -171,6 +177,8 @@ def check_read_only(sql: str, *, dialect: Dialect = "databricks", params: object
     ignores `params`. The function deny-list is best-effort; the least-privileged read
     credential (B-1507) is the limiting control."""
     code, semicolons, bare, identifiers = _code_of(sql, dialect)
+    if dialect == "snowflake" and FLOW_OPERATOR in bare:
+        raise AdapterFailure(ErrorClass.CAPABILITY, FLOW_OPERATOR_MESSAGE)
     stripped = code.rstrip()
     if semicolons:
         if len(semicolons) > 1 or semicolons[0] != len(stripped) - 1:
@@ -186,7 +194,7 @@ def check_read_only(sql: str, *, dialect: Dialect = "databricks", params: object
     if dialect == "snowflake" and any(word in _SNOWFLAKE_REFUSED_WORDS for word in words):
         raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
     if dialect == "snowflake" and any(
-        name.lower().startswith(_SNOWFLAKE_REFUSED_PREFIX) for name in words + identifiers
+        name.lower().startswith(SYSTEM_PREFIX) for name in words + identifiers
     ):
         raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
     if dialect == "snowflake" and _SNOWFLAKE_POSITIONAL_BIND.search(bare):
@@ -204,7 +212,7 @@ def _refused_param(params: object) -> bool:
         values = params
     else:
         return False
-    return any(isinstance(v, str) and _SNOWFLAKE_REFUSED_PREFIX in v.lower() for v in values)
+    return any(isinstance(v, str) and SYSTEM_PREFIX in v.lower() for v in values)
 
 
 def _check_identifier_calls(code: str) -> bool:
@@ -233,7 +241,7 @@ def _check_identifier_calls(code: str) -> bool:
             k >= len(tokens)
             or tokens[k] != ")"
             or not _IDENTIFIER_ARGUMENT.fullmatch(text)
-            or (text.startswith("'") and _SNOWFLAKE_REFUSED_PREFIX in text.lower())
+            or (text.startswith("'") and SYSTEM_PREFIX in text.lower())
         ):
             raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
         bound = bound or text == "?" or text.startswith(":")

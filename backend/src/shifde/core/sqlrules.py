@@ -5,7 +5,8 @@ parser library).
 It lives in `core` (it imports nothing from `shifde`) so every layer can share it: `build` runs
 `statement_rules` at tool publish on a `connection.sql` template converted to the `:name` form,
 with the dialect of the tool's connection, and the runtime read checks of `adapters` refuse any
-word of `WRITE_KEYWORDS` in a `read` invoke. Every function takes any string and never raises;
+word of `WRITE_KEYWORDS` in a `read` invoke (the Snowflake one also shares `FLOW_OPERATOR`,
+`SYSTEM_PREFIX` and `SNOWFLAKE_REFUSED_WORDS`). Every function takes any string and never raises;
 every issue is an error (callers add severity and path).
 
 `dialect="snowflake"` reads text as `adapters/dataplatforms/sqlapi._code_of` does for Snowflake:
@@ -17,6 +18,14 @@ positional bind reference (`sql_positional_bind`, as the runtime check refuses i
 `col:1` included), `SNOWFLAKE_FIRST_WORDS` are refused as the first word, and table names are
 compared and reported uppercased. `table_name_supported` is the check behind the request-table
 422 `table_name_unsupported`.
+
+The Snowflake statement rules also refuse what the runtime check refuses (#358): the `->>` flow
+operator in code (`sql_flow_operator`), a word or a whole `"..."` identifier starting with
+`SYSTEM$` (`sql_system_function`), the word `procedure` (`sql_write_statement`) and an
+`IDENTIFIER(...)` whose argument is not one plain literal or name (`sql_dynamic_name`). Here they
+are stricter in two places: a bound `IDENTIFIER(:name)` is refused (no value is known yet) and
+`TABLE(...)` keeps the rule of `IDENTIFIER(...)`. A word directly after a single `:` is a
+parameter name, never one of these words.
 """
 
 from __future__ import annotations
@@ -37,11 +46,23 @@ WRITE_KEYWORDS = frozenset(
 SNOWFLAKE_FIRST_WORDS = frozenset(
     {"list", "comment", "remove", "unset", "execute", "undrop", "begin", "commit", "rollback"}
 )
+# the Snowflake rules `adapters/dataplatforms/sqlapi.check_read_only` shares (#358): `->>` chains a
+# second statement, `SYSTEM$...` functions (`SYSTEM$CANCEL_ALL_QUERIES`) can act on the account
+# (#285), `procedure` starts an anonymous procedure
+FLOW_OPERATOR = "->>"
+FLOW_OPERATOR_MESSAGE = "the ->> flow operator is not allowed"
+SYSTEM_PREFIX = "system$"
+SNOWFLAKE_REFUSED_WORDS = frozenset({"procedure"})
 PUNCTUATION = frozenset(".,();")
 Dialect = Literal["databricks", "snowflake"]
 # the content of a Snowflake quoted identifier that names exactly what the unquoted name does
 _SNOWFLAKE_PLAIN = re.compile(r"[A-Z_][A-Z0-9_$]*")
 _SNOWFLAKE_TABLE_PART = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
+# a word as the runtime check reads it: a maximal run of letters, digits, `_` and `$`
+_SNOWFLAKE_WORD = re.compile(r"[\w$]+")
+# the one argument `IDENTIFIER(...)` and `TABLE(...)` may hold: a literal without a backslash or a
+# doubled quote, or a plain name
+_SNOWFLAKE_ARGUMENT = re.compile(r"'[^'\\]*'|[A-Za-z_][A-Za-z0-9_$]*")
 
 
 @dataclass(frozen=True)
@@ -57,9 +78,10 @@ class Token:
     (a quote or backtick that never closes; always the last token). The Snowflake dialect adds
     `//` comments, `quoted_unsupported` (a `"..."` identifier that is not a plain uppercase
     name, its content as written), `positional` (a `?`), `positional_bind` (a `:` directly
-    followed by a digit, the second `:` of `::` included) and `syntax` (a backtick, or a `$$`
-    right after a name character). A `param` also carries its span in the text (`start`, `end`),
-    outside equality."""
+    followed by a digit, the second `:` of `::` included), `flow` (the `->>` operator) and
+    `syntax` (a backtick, or a `$$` right after a name character). A `param`, and in the
+    Snowflake dialect a `string`, `punct` and unquoted `ident`, also carries its span in the text
+    (`start`, `end`), outside equality."""
 
     kind: str
     value: str
@@ -185,7 +207,7 @@ def _tokenize_snowflake(sql: str) -> list[Token]:
                 return tokens
             inner = sql[i + 1 : end - 1]
             if ch == "'":
-                tokens.append(Token("string", inner))
+                tokens.append(Token("string", inner, start=i, end=end))
             else:
                 name = inner.replace('""', '"')
                 if _SNOWFLAKE_PLAIN.fullmatch(name):  # the same name as unquoted, never a keyword
@@ -202,7 +224,7 @@ def _tokenize_snowflake(sql: str) -> list[Token]:
             if end < 0:
                 tokens.append(Token("unterminated", "$$"))
                 return tokens
-            tokens.append(Token("string", sql[i + 2 : end]))
+            tokens.append(Token("string", sql[i + 2 : end], start=i, end=end + 2))
             i = end + 2
         elif (ch == "-" and nxt == "-") or (ch == "/" and nxt == "/"):
             tokens.append(Token("comment", ch + nxt))
@@ -212,6 +234,9 @@ def _tokenize_snowflake(sql: str) -> list[Token]:
             tokens.append(Token("comment", "/*"))
             end = sql.find("*/", i + 2)
             i = n if end < 0 else end + 2
+        elif sql.startswith(FLOW_OPERATOR, i):
+            tokens.append(Token("flow", FLOW_OPERATOR))
+            i += len(FLOW_OPERATOR)
         elif ch == "`":
             tokens.append(Token("syntax", "`"))
             i += 1
@@ -234,12 +259,12 @@ def _tokenize_snowflake(sql: str) -> list[Token]:
                 i += 1
         elif _is_name_start(ch):
             j = _snowflake_name_end(sql, i)
-            tokens.append(Token("ident", sql[i:j].lower()))
+            tokens.append(Token("ident", sql[i:j].lower(), start=i, end=j))
             i = j
         elif "0" <= ch <= "9":  # a number (`1e5` included) is skipped as a whole
             i = _snowflake_name_end(sql, i)
         elif ch in PUNCTUATION:
-            tokens.append(Token("punct", ch))
+            tokens.append(Token("punct", ch, start=i, end=i + 1))
             i += 1
         else:
             i += 1
@@ -276,11 +301,14 @@ def statement_rules(sql: str, *, dialect: Dialect = "databricks") -> list[SqlIss
         issues.append(SqlIssue("sql_not_select", "the statement must start with SELECT or WITH"))
     seen: list[str] = []
     if snowflake:
-        issues += _snowflake_rules(tokens)
+        issues += _snowflake_rules(sql, tokens)
         if first is not None and _bare(first, *SNOWFLAKE_FIRST_WORDS):
             seen.append(first.value)
-    for t in tokens:
-        if t.kind == "ident" and not t.quoted and t.value in WRITE_KEYWORDS and t.value not in seen:
+    for i, t in enumerate(tokens):
+        refused = t.kind == "ident" and not t.quoted and t.value in WRITE_KEYWORDS
+        if snowflake and _snowflake_word(sql, tokens, i) in SNOWFLAKE_REFUSED_WORDS:
+            refused = True
+        if refused and t.value not in seen:
             seen.append(t.value)
     for word in seen:
         issues.append(
@@ -289,7 +317,45 @@ def statement_rules(sql: str, *, dialect: Dialect = "databricks") -> list[SqlIss
     return issues
 
 
-def _snowflake_rules(tokens: list[Token]) -> list[SqlIssue]:
+def _snowflake_word(sql: str, tokens: list[Token], i: int) -> str:
+    """The lowercased word of code that starts at the unquoted `ident` at `i`, split as the
+    runtime check splits words; empty when none starts there (`system$x` in `$system$x`)."""
+    t = tokens[i]
+    if t.kind != "ident" or t.quoted:
+        return ""
+    before = _at(tokens, i - 1)
+    after_string = before is not None and before.kind == "string" and before.end == t.start
+    if t.start and not after_string and _SNOWFLAKE_WORD.match(sql, t.start - 1):
+        return ""
+    word = _SNOWFLAKE_WORD.match(sql, t.start)
+    return word.group().lower() if word else ""
+
+
+def _system_name(sql: str, tokens: list[Token], i: int) -> bool:
+    t = tokens[i]
+    quoted = t.kind == "quoted_unsupported" or t.quoted
+    name = t.value.lower() if quoted else _snowflake_word(sql, tokens, i)
+    return name.startswith(SYSTEM_PREFIX)
+
+
+def _dynamic_name(sql: str, tokens: list[Token], i: int) -> bool:
+    """Whether the token at `i` is the word `identifier` or `table`, called with anything but one
+    plain literal (without `SYSTEM_PREFIX`) or one plain name. It reads the text between the
+    parentheses: operators and a lone `$` are no tokens, and a `$$...$$` is a `string` too."""
+    if _snowflake_word(sql, tokens, i) not in ("identifier", "table"):
+        return False
+    opened, closed = _at(tokens, i + 1), _at(tokens, i + 3)  # a plain argument is one token
+    if opened is None or not _punct(opened, "(") or sql[tokens[i].end : opened.start].strip():
+        return False
+    if closed is None or not _punct(closed, ")"):
+        return True
+    argument = sql[opened.end : closed.start].strip()
+    if not _SNOWFLAKE_ARGUMENT.fullmatch(argument):
+        return True
+    return argument.startswith("'") and SYSTEM_PREFIX in argument.lower()
+
+
+def _snowflake_rules(sql: str, tokens: list[Token]) -> list[SqlIssue]:
     issues: list[SqlIssue] = []
     if any(t == Token("syntax", "`") for t in tokens):
         issues.append(SqlIssue("sql_syntax", "backticks are not Snowflake SQL; use plain names"))
@@ -315,6 +381,17 @@ def _snowflake_rules(tokens: list[Token]) -> list[SqlIssue]:
             SqlIssue(
                 "sql_positional_bind",
                 "positional :n bind references are not allowed; use named parameters",
+            )
+        )
+    if any(t.kind == "flow" for t in tokens):
+        issues.append(SqlIssue("sql_flow_operator", FLOW_OPERATOR_MESSAGE))
+    if any(_system_name(sql, tokens, i) for i in range(len(tokens))):
+        issues.append(SqlIssue("sql_system_function", "system functions are not allowed"))
+    if any(_dynamic_name(sql, tokens, i) for i in range(len(tokens))):
+        issues.append(
+            SqlIssue(
+                "sql_dynamic_name",
+                "IDENTIFIER(...) and TABLE(...) must hold one plain string literal or name",
             )
         )
     return issues
