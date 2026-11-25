@@ -45,6 +45,7 @@ from shifde.authz import service as authz
 from shifde.authz.service import ResourceRef
 from shifde.build import schemas as build_schemas
 from shifde.build.service import ArtifactService
+from shifde.connections.service import ConnectionService
 from shifde.core import db
 from shifde.core.context import RequestContext
 from shifde.core.db import Database
@@ -112,7 +113,8 @@ ACCEPT = "assist:proposal:accept"
 PROPOSAL_TARGET = "assist_proposal"
 PROPOSAL_NOT_FOUND = "proposal not found"
 # the read permissions, on the request's project, of what a proposal's payload names: only a
-# caller holding all of them sees the payload (advisory item 5 of issue #280)
+# caller holding all of them, who can also read the connection or target the payload names, sees
+# the payload (advisory item 5 of issue #280; issue #351)
 PAYLOAD_READ: dict[str, tuple[str, ...]] = {
     "appgen_request": ("connection:read",),
     "evaluation_run": ("packaging:solution:read", "evaluation:run:read"),
@@ -1052,15 +1054,15 @@ class AssistService:
 
     def _proposal_out(self, p: Mapping[str, Any], project: ResourceRef) -> s.ProposalOut:
         """The proposal as the caller may see it: the payload only with the read permissions of
-        what it names on the request's project, `result_ref` only when the caller can read the
-        object it names (design section 6)."""
-        shown = not self.sc.pdp.missing_permissions(set(PAYLOAD_READ[p["kind"]]), project)
+        what it names on the request's project and when the caller can read the connection or
+        target it names, `result_ref` only when the caller can read the object it names (design
+        section 6)."""
         ref = p["result_ref"]
         return s.ProposalOut(
             id=p["id"],
             run_id=p["run_id"],
             kind=p["kind"],
-            payload=p["payload"] if shown else None,
+            payload=p["payload"] if self._payload_readable(p, project) else None,
             status=p["status"],
             status_reason=p["status_reason"],
             result_ref=ref if ref is not None and self._result_readable(ref) else None,
@@ -1069,6 +1071,23 @@ class AssistService:
             created_at=p["created_at"],
             updated_at=p["updated_at"],
         )
+
+    def _payload_readable(self, p: Mapping[str, Any], project: ResourceRef) -> bool:
+        """Whether the caller holds every `PAYLOAD_READ` key on the request's project and can read
+        the connection or target the payload names; an id that is missing, not a UUID, unknown,
+        another client's or unreadable is False alike (no recorded decision, no commit)."""
+        if self.sc.pdp.missing_permissions(set(PAYLOAD_READ[p["kind"]]), project):
+            return False
+        if p["kind"] == "evaluation_run":
+            return True
+        key = "connection_id" if p["kind"] == "appgen_request" else "target_id"
+        try:
+            named = UUID(str(p["payload"][key]))
+        except (KeyError, TypeError, ValueError):
+            return False
+        if p["kind"] == "appgen_request":
+            return ConnectionService(self.sc, self.runtime).readable(named)
+        return TargetService(self.sc).readable(named)
 
     def _result_readable(self, ref: Mapping[str, Any]) -> bool:
         """Whether the caller can read the object an accepted proposal created (no settle step,
@@ -1174,7 +1193,9 @@ class AssistService:
         """Accept a proposal as the caller, through the owning service, in the request's project
         (design section 6). An accepted proposal is answered unchanged; a dismissed or failed one
         is 409. The proposal is claimed in a committed conditional UPDATE before the service call,
-        so of two concurrent accepts one creates the object and the other gets 409."""
+        so of two concurrent accepts one creates the object and the other gets 409. An accept whose
+        proposal was dismissed while it held the claim is 409 too; when its object was created
+        meanwhile, `assist.proposal.accept_superseded`, committed before the 409, names it."""
         p, row = self._proposal(proposal_id)
         self.sc.pdp.require(ACCEPT, _request_ref(self.sc.tenant_id, row), hide_unless=READ)
         if p["status"] == "accepted":
@@ -1211,12 +1232,12 @@ class AssistService:
             result_ref=result_ref,
         )
         if decided is None:  # dismissed while this accept held the claim
-            self._session.rollback()
-            fresh = repository.get_proposal(
-                self._session, tenant_id=self.sc.tenant_id, proposal_id=p["id"]
-            )
-            assert fresh is not None
-            return self._proposal_answer(fresh, row)
+            if result_ref is not None:
+                self._audit_proposal(
+                    "assist.proposal.accept_superseded", {**claimed, "result_ref": result_ref}, row
+                )
+                self._session.commit()
+            raise ProposalNotOpen("the proposal is no longer open")
         self._audit_proposal(f"assist.proposal.{status}", decided, row)
         self._session.commit()
         return self._proposal_answer(decided, row)

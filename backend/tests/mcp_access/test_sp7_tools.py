@@ -491,10 +491,11 @@ def test_a_refused_ask_is_a_result_without_a_run(
 
 
 def test_assist_get_withholds_a_proposals_payload_and_decides_nothing(
-    mcp: TestClient, world: World, admin: Hdr, owner_session: Session
+    mcp: TestClient, world: World, admin: Hdr, owner_session: Session, owner_db: Database
 ) -> None:
+    ws, p = (UUID(i) for i in project_of(owner_session, ORG_A))
     payload = {
-        "target_id": str(uuid7()),
+        "target_id": str(target(owner_db, tenant(owner_session, ORG_A), ws, p)),
         "release_id": str(uuid7()),
         "application_key": "sales-app",
         "display_name": "Sales app",
@@ -508,6 +509,56 @@ def test_assist_get_withholds_a_proposals_payload_and_decides_nothing(
     [hidden] = ok(mcp, masked, "assist_get", {"request_id": request})["proposals"]
     assert (shown["id"], shown["status"], shown["payload"]) == (proposal, "open", payload)
     assert hidden == {**shown, "payload": None}
+    assert proposal_row(owner_session, proposal) == before and before["status"] == "open"
+
+
+@pytest.mark.parametrize(
+    ("named", "admin_reads"), [("project P2", True), ("client B", False), ("unknown", False)]
+)
+def test_assist_get_withholds_a_payload_naming_a_target_the_caller_cannot_read(
+    mcp: TestClient,
+    world: World,
+    admin: Hdr,
+    settings: Settings,
+    owner_session: Session,
+    owner_db: Database,
+    app_db: Database,
+    named: str,
+    admin_reads: bool,
+) -> None:
+    add_project(admin, "other")
+    a = tenant(owner_session, ORG_A)
+    ws, p1 = (UUID(i) for i in project_of(owner_session, ORG_A))
+    if named == "project P2":
+        _, p2 = (UUID(i) for i in project_of(owner_session, ORG_A, "other"))
+        target_id = target(owner_db, a, ws, p2)
+    elif named == "client B":
+        ws_b, p_b = (UUID(i) for i in project_of(owner_session, ORG_B))
+        target_id = target(owner_db, tenant(owner_session, ORG_B), ws_b, p_b)
+    else:
+        target_id = uuid7()
+    payload = {
+        "target_id": str(target_id),
+        "release_id": str(uuid7()),
+        "application_key": "sales-app",
+        "display_name": "Sales app",
+    }
+    request, proposal = seed_proposal(owner_session, ORG_A, "delivery_plan", payload)
+    own = {**payload, "target_id": str(target(owner_db, a, ws, p1))}
+    request_own, _ = seed_proposal(owner_session, ORG_A, "delivery_plan", own)
+    member = _p1_member_key(owner_session, owner_db, app_db, settings, p1)
+    reader = _key(mcp, world)
+    _allow(mcp, world)
+    before = proposal_row(owner_session, proposal)
+
+    def shown(key: str, request_id: str) -> Any:
+        [got] = ok(mcp, key, "assist_get", {"request_id": request_id})["proposals"]
+        return got["payload"]
+
+    assert shown(member, request) is None
+    assert shown(reader, request) == (payload if admin_reads else None)
+    # the control: both keys see a payload naming P1's target
+    assert shown(member, request_own) == shown(reader, request_own) == own
     assert proposal_row(owner_session, proposal) == before and before["status"] == "open"
 
 

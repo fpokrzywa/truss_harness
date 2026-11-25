@@ -25,7 +25,9 @@ cutoff, `purge` blanks the text and context of ended requests (routed, refused o
 run is gone or has ended, and `delete`, after the run families, deletes ended requests whose run
 is gone (the families just deleted included) and every proposal of them, proposals first; a
 request with a proposal newer than the cutoff is kept. Migration `assist_0001`'s guard admits
-these deletes only for rows created before `shifde.retention_delete_cutoff`.
+these deletes only for rows created before `shifde.retention_delete_cutoff`; since `assist_0002`
+(issue #351, B-4010) it also refuses a client on legal hold, a cutoff later than now() minus the
+run retention floor and a cutoff inside the client's effective run retention, as the run guard.
 """
 
 from __future__ import annotations
