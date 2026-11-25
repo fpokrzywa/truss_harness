@@ -1,8 +1,8 @@
 {
-  "session_id": "22d87221-ee1d-4148-861a-aa7ddc19823e",
-  "head_sha": "560930f34459edce83a6a4301ba4fbf53c836485",
+  "session_id": "32c340cd-bb17-4aaa-88ff-008cf258c4a8",
+  "head_sha": "1c0b55180abf7dc4652b0e300146831b8ce89052",
   "branch": "main",
-  "unit_in_progress": "charter 7 factory run",
-  "next_step": "Per docs/build/HANDOFF.md: job queue, message seth-supervisor-10, reviews of 194 (4b0d3d6), gate and reviews of 202 (9579a2b), batch 10, then 193",
-  "written_at": "2026-11-25T16:38:05Z"
+  "unit_in_progress": "none",
+  "next_step": "Per docs/build/HANDOFF.md: queue, message seth-supervisor-11, main CI on 2dc5007, then 194 on lead/batch-11 (sync, gates, six demos, S-070)",
+  "written_at": "2026-11-25T18:55:12Z"
 }
