@@ -1,8 +1,8 @@
 {
-  "session_id": "fa50758a-e990-4e5d-a659-7e40ade9970e",
-  "head_sha": "b8111bb2c4068247547812760d64d5a78111c1d9",
+  "session_id": "51a7f901-7f73-4c21-84af-1b3840fb90e8",
+  "head_sha": "3fa6a0e04e984ffc23ad2dc894e85056276bd942",
   "branch": "main",
-  "unit_in_progress": "charter 7 factory run",
-  "next_step": "Per docs/build/HANDOFF.md: job queue; 185 and 188 approvers, 187 reviewers, 184 and 186 gates; hosted DB setup due",
-  "written_at": "2026-11-25T05:06:25Z"
+  "unit_in_progress": "none",
+  "next_step": "Per docs/build/HANDOFF.md: gate and merge batch 5 (PR #388, eabbd42d), 173 approver and ruling, SP6 demo, intake #374 #375 #384 #385",
+  "written_at": "2026-11-25T06:45:01Z"
 }
