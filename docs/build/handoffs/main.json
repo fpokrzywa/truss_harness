@@ -1,8 +1,8 @@
 {
-  "session_id": "32c340cd-bb17-4aaa-88ff-008cf258c4a8",
-  "head_sha": "1c0b55180abf7dc4652b0e300146831b8ce89052",
+  "session_id": "e18207aa-0bd4-4a3a-83ff-1565e94b03d8",
+  "head_sha": "6e0ca88f33b9cc3254c9c9db609b032321eaaf30",
   "branch": "main",
-  "unit_in_progress": "none",
-  "next_step": "Per docs/build/HANDOFF.md: queue, message seth-supervisor-11, main CI on 2dc5007, then 194 on lead/batch-11 (sync, gates, six demos, S-070)",
-  "written_at": "2026-11-25T18:55:12Z"
+  "unit_in_progress": "193-sp8-5-fabric-delivery (batch 13 to build)",
+  "next_step": "Per docs/build/HANDOFF.md: queue, message seth-supervisor-13, build lead/batch-13 (main + 193 at 6b1a239 + supervisor/rulings-s072), send its head, then gates, CI and seven demos",
+  "written_at": "2026-11-25T22:35:50Z"
 }
