@@ -1,15 +1,15 @@
-"""Snowflake delivery test helpers (SP6-3): a test-only Native App artifact, its plan and plan job,
-and the plan's approval, deployment and apply job.
-
-No Snowflake release can be sealed before SP6-4 and the plan route refuses Snowflake targets until
-SP6-6, so these rows are written here, as `shifde_app` in the organization's context, through the
-same repository and `gateway.enqueue_job` calls the plan and approval routes use.
+"""Snowflake delivery test helpers. `app_target` and `app_release` (SP6-6): a Snowflake target
+bound to `CORTEX_MODEL` and a sealed, passed `/2` release for it. `snowflake_plan` and `approve`
+(SP6-3): a plan of a test-only Native App artifact with no release, its plan job, and the plan's
+approval, deployment and apply job, written as `shifde_app` in the organization's context through
+the same repository and `gateway.enqueue_job` calls the plan and approval routes use.
 """
 
 from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from typing import Any  # Any: JSON bodies
 from uuid import UUID
 
 from shifde.adapters.native.base import create_archive
@@ -17,10 +17,13 @@ from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.delivery import gateway, repository
 from shifde.packaging.canonical import canonical
+from tests.connections.routes import as_user
+from tests.delivery.app_releases import AppRelease, add_provider, app_release_for_target
+from tests.delivery.routes import Flow, register, snowflake_address, snowflake_body
 from tests.tenancy.conftest import app_session
 
 TARGET_KIND = "snowflake.native-app/v1"
-# A test-only package: the shape of a rendered one (the generator is SP6-5), no SDK template.
+# A test-only package: the shape of a rendered one, no SDK template.
 FILES = {
     "manifest.yml": b"manifest_version: 1\nversion:\n  name: V1\n  label: SHIFDE V1\n"
     b"artifacts:\n  setup_script: setup.sql\n  default_streamlit: APP_PUBLIC.UI\n",
@@ -29,6 +32,26 @@ FILES = {
     "ui/environment.yml": b"name: shifde_native_app\nchannels:\n  - snowflake\n",
     "ui/streamlit_app.py": b"import streamlit as st\n\nst.title('SHIFDE')\n",
 }
+
+
+def app_target(flow: Flow, **overrides: Any) -> dict[str, Any]:  # Any: a TargetOut body
+    """A Snowflake target of the flow's organization on an account of its own."""
+    h = as_user(flow.client, flow.requester)
+    body = snowflake_body(flow.workspace, snowflake_address(), **overrides)
+    made: dict[str, Any] = register(flow.client, h, flow.slug, body)
+    flow.client.cookies.clear()
+    return made
+
+
+def app_release(
+    flow: Flow, target: dict[str, Any], *, provider_id: UUID | None = None, **options: Any
+) -> AppRelease:  # Any: a TargetOut body, `make_app_release` options
+    """A `/2` Snowflake release in the target's workspace, bound to a `fake` provider of the
+    organization unless one is given."""
+    provider = provider_id or add_provider(flow.owner_db, flow.tenant, "fake", None)
+    return app_release_for_target(
+        flow.owner_db, target["id"], provider_id=provider, kind=TARGET_KIND, **options
+    )
 
 
 def native_app_artifact() -> tuple[bytes, str]:

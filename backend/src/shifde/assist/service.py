@@ -62,7 +62,7 @@ from shifde.core.pagination import Page, decode_cursor, encode_cursor, paginate
 from shifde.delivery.deployments import DeploymentService
 from shifde.delivery.plans import PlanService
 from shifde.delivery.schemas import PlanCreate
-from shifde.delivery.service import TargetService
+from shifde.delivery.service import TargetService, plan_project
 from shifde.evaluation.schemas import EvaluationRequest
 from shifde.evaluation.service import EvaluationService
 from shifde.ledger import enforcement, estimate
@@ -71,7 +71,7 @@ from shifde.models_admin.service import ModelService
 from shifde.packaging.service import SolutionService, scoped_release
 from shifde.runtime.governance import GovernanceHooks, TokenBudgetHooks
 from shifde.runtime.schemas import RunCreate
-from shifde.runtime.service import RunService
+from shifde.runtime.service import RunService, run_committed
 from shifde.tenancy import service as tenancy
 from shifde.tenancy.scope import TenantScope
 
@@ -268,6 +268,11 @@ def _candidates(row: Mapping[str, Any]) -> tuple[str, ...]:
     if not row["text"]:
         return ()
     return routing.route(row["text"], row["requested_specialist"], _context_kind(row)).candidates
+
+
+def _run_key(row: Mapping[str, Any]) -> str:
+    """The idempotency key of the request's run."""
+    return f"assist:{row['id']}"
 
 
 def _router_call(row: Mapping[str, Any]) -> model_schemas.InvokeIn:
@@ -791,7 +796,9 @@ class AssistService:
 
     def _in_project(self, ws: str, proj: str, project: ResourceRef, ctx: s.ContextIn) -> bool:
         """Whether the context object, read through its owning service under the caller's scope,
-        is in the request's project (a target, plan or deployment: or its workspace)."""
+        is in the request's project (a target: or its workspace; a plan or deployment: its target
+        in the project or its workspace, and its plan's release in the project, compared as stored
+        without a permission of its own)."""
         if ctx.kind == "solution":
             SolutionService(self.sc, self.runtime).get(ws, proj, ctx.id)
             return True
@@ -801,14 +808,22 @@ class AssistService:
             run = EvaluationService(self.sc, self.runtime, self.hooks).get_run(ctx.id)
             release = scoped_release(self.sc, run.release_id)
             return bool(release["project_id"] == project.project_id)
+        plan_id: UUID | None = None
         if ctx.kind == "plan":
-            target_id = PlanService(self.sc, self.runtime).get(ctx.id).target_id
+            plan_id, target_id = ctx.id, PlanService(self.sc, self.runtime).get(ctx.id).target_id
         elif ctx.kind == "deployment":
-            target_id = DeploymentService(self.sc).get(ctx.id).target_id
+            deployed = DeploymentService(self.sc).get(ctx.id)
+            plan_id, target_id = deployed.plan_id, deployed.target_id
         else:
             target_id = ctx.id
         target = TargetService(self.sc).get(target_id)
-        return target.workspace == ws and target.project in (None, proj)
+        if target.workspace != ws or target.project not in (None, proj):
+            return False
+        if plan_id is None:
+            return True
+        # a workspace-level target takes releases of any project of its workspace
+        released = plan_project(self._session, plan_id, tenant_id=self.sc.tenant_id)
+        return released is not None and released == project.project_id
 
     def _context(
         self, ws: str, proj: str, project: ResourceRef, ctx: s.ContextIn | None
@@ -919,7 +934,7 @@ class AssistService:
         )
         runs = RunService(self.sc, self.runtime, self.hooks)
         try:
-            created, _ = runs.create(body, f"assist:{row['id']}", max_cost=run_cost)
+            created, _ = runs.create(body, _run_key(row), max_cost=run_cost)
             run = runs.get(created.id)  # by (tenant_id, run_id) under the requester's scope
         except AppError as exc:
             self._session.rollback()
@@ -1288,7 +1303,9 @@ class AssistService:
     def _resume(self, row: Mapping[str, Any], max_cost: Decimal | None) -> None:
         """An interrupted handover: the step 1-3 pre-checks again, then step 4 (the idempotency
         key returns the same run). A refusal fails the request with its code and starts no run
-        (design 5.5 has no `handing_over -> refused`)."""
+        (design 5.5 has no `handing_over -> refused`). A capped, model-routed request is priced
+        again: when that leaves no cap it fails `budget_denied`, unless its run was already
+        committed, which step 4 then returns as it is."""
         settings = self._settings()
         project = ResourceRef(self.sc.tenant_id, row["workspace_id"], row["project_id"])
         checked = self._precheck(project, row["specialist_key"], settings)
@@ -1298,10 +1315,15 @@ class AssistService:
             )
             return
         if max_cost is not None and row["route_method"] == "model":
+            committed = run_committed(
+                self._session, self.sc.tenant_id, self.sc.principal.principal_id, _run_key(row)
+            )
             max_cost = self._after_router(row, settings, max_cost)
             if max_cost is None:
-                self._transition(row, ["handing_over"], "failed", status_reason=BUDGET_DENIED)
-                return
+                if not committed:
+                    self._transition(row, ["handing_over"], "failed", status_reason=BUDGET_DENIED)
+                    return
+                max_cost = Decimal(0)  # nothing is left: the run is replayed with its own cap
         self._hand_over(row, checked, settings, max_cost)
 
     def route(

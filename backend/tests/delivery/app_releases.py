@@ -3,7 +3,9 @@ like `releases.make_release`: a model provider (an `openai_compatible` one on `b
 `fake` one) and its connection, the published prompt, the two `connection.sql` tools of
 `SAMPLE_DRAFT` and the agent pinning them (specs as accept makes them), a solution version with
 the draft's screens, a dataset and the release, whose manifest is the packaging `/2` manifest with
-one model binding. Each release gets a project of its own (artifact keys are unique per scope)."""
+one model binding. Each release gets a project of its own (artifact keys are unique per scope).
+`kind=SNOWFLAKE_KIND` (SP6-6) is the `snowflake.native-app/v1` release of `SNOWFLAKE_SAMPLE_DRAFT`,
+its data reads every table the tools read (`SNOWFLAKE_SAMPLE_TABLES`), bound to `CORTEX_MODEL`."""
 
 from __future__ import annotations
 
@@ -16,16 +18,40 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from shifde.appgen.render import GENERATOR_VERSION
+from shifde.appgen.render import DATABRICKS_KIND, GENERATOR_VERSIONS
 from shifde.appgen.schemas import DraftTool
 from shifde.appgen.service import AGENT_LIMITS, tool_spec
 from shifde.core.db import Database, set_tenant
 from shifde.core.ids import uuid7
+from shifde.core.sqlrules import Dialect
 from shifde.packaging.canonical import digest
 from shifde.packaging.service import COMPILER_VERSION_APP
-from tests._support.appgen_fixtures import SAMPLE_DRAFT, SAMPLE_TABLES
-from tests.appgen.rendered import ENDPOINT, input_schema
+from tests._support.appgen_fixtures import (
+    SAMPLE_DRAFT,
+    SAMPLE_TABLES,
+    SNOWFLAKE_SAMPLE_DRAFT,
+    SNOWFLAKE_SAMPLE_TABLES,
+)
+from tests.appgen.rendered import CORTEX_MODEL, ENDPOINT, SNOWFLAKE_KIND, input_schema
 from tests.delivery.releases import TARGET_SCOPE_SQL, SealedRelease, insert_run
+
+
+@dataclass(frozen=True)
+class Kind:
+    """What a release of one target kind is made of."""
+
+    draft: dict[str, Any]
+    tables: tuple[str, ...]
+    model: str
+    dialect: Dialect
+
+
+KINDS = {
+    DATABRICKS_KIND: Kind(SAMPLE_DRAFT, SAMPLE_TABLES, ENDPOINT, "databricks"),
+    SNOWFLAKE_KIND: Kind(
+        SNOWFLAKE_SAMPLE_DRAFT, SNOWFLAKE_SAMPLE_TABLES, CORTEX_MODEL, "snowflake"
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -41,8 +67,9 @@ class AppRelease:
         return self.release.id
 
     def resolved(self) -> dict[str, Any]:  # Any: a `Resolved` document
-        """The `Resolved` the plan request must gather for this release."""
-        agent = SAMPLE_DRAFT["agent"]
+        """The `Resolved` the plan request must gather for this release (its provider apart)."""
+        draft = KINDS[self.release.manifest["target_kind"]].draft
+        agent = draft["agent"]
         return {
             "agent": {
                 "version_id": str(self.agent[0]),
@@ -62,14 +89,14 @@ class AppRelease:
                     "input_schema": input_schema(t["parameters"]),
                     "max_rows": t["max_rows"],
                 }
-                for t in sorted(SAMPLE_DRAFT["tools"], key=lambda t: t["name"])
+                for t in sorted(draft["tools"], key=lambda t: t["name"])
             ],
             "model": {
                 "serving_endpoint": self.release.manifest["bindings"]["model_bindings"]["default"][
                     "model"
                 ]
             },
-            "screens": SAMPLE_DRAFT["screens"],
+            "screens": draft["screens"],
         }
 
 
@@ -149,15 +176,18 @@ def make_app_release(
     workspace_id: UUID,
     *,
     provider_id: UUID,
-    model: str = ENDPOINT,
+    kind: str = DATABRICKS_KIND,
+    model: str | None = None,
     edit: Callable[[dict[str, Any]], None] | None = None,
 ) -> AppRelease:
-    """A sealed `/2` release of `tenant` in a new project of `workspace_id`, bound to
-    `provider_id`'s `model`, with a passed evaluation run; `edit` changes the manifest before it is
+    """A sealed `/2` release of `kind` and `tenant` in a new project of `workspace_id`, bound to
+    `provider_id`'s `model` (the kind's own unless given), with a passed evaluation run; `edit` changes the manifest before it is
     digested (a tampered pin, another generator version)."""
     project, solution, sv = uuid7(), uuid7(), uuid7()
     dataset_id, release_id, by, connection = uuid7(), uuid7(), uuid7(), uuid7()
-    cases = SAMPLE_DRAFT["evaluation_cases"]
+    made = KINDS[kind]
+    draft, model = made.draft, model or made.model
+    cases = draft["evaluation_cases"]
     dataset_digest = digest(cases)
     values = {"t": tenant, "w": workspace_id, "p": project, "u": by}
     with owner_db.session() as o:
@@ -169,7 +199,7 @@ def make_app_release(
             ),
             {**values, "s": f"p-{project.hex}"},
         )
-        agent = SAMPLE_DRAFT["agent"]
+        agent = draft["agent"]
         prompt = _version(
             o, values, "prompts", agent["name"], {"sections": {"system": agent["instructions"]}}
         )
@@ -179,24 +209,24 @@ def make_app_release(
                 values,
                 "tools",
                 t["name"],
-                tool_spec(DraftTool.model_validate(t), connection),
+                tool_spec(DraftTool.model_validate(t), connection, made.dialect),
                 t["description"],
             )
-            for t in SAMPLE_DRAFT["tools"]
+            for t in draft["tools"]
         }
         agent_spec = {
             "prompt_version_id": str(prompt[0]),
             "model": {"model_id": str(uuid7())},
-            "tool_version_ids": [str(tools[t["name"]][0]) for t in SAMPLE_DRAFT["tools"]],
+            "tool_version_ids": [str(tools[t["name"]][0]) for t in draft["tools"]],
             "limits": {**AGENT_LIMITS, "max_cost": 1},
         }
         agent_version = _version(o, values, "agents", agent["name"], agent_spec)
         o.execute(
             text(
                 "INSERT INTO shifde.solutions (tenant_id, id, workspace_id, project_id, name, "
-                "target_kind, created_by) VALUES (:t, :s, :w, :p, :n, 'databricks.app/v1', :u)"
+                "target_kind, created_by) VALUES (:t, :s, :w, :p, :n, :k, :u)"
             ),
-            {**values, "s": solution, "n": f"solution-{solution.hex[-12:]}"},
+            {**values, "k": kind, "s": solution, "n": f"solution-{solution.hex[-12:]}"},
         )
         o.execute(
             text(
@@ -230,14 +260,14 @@ def make_app_release(
             "solution_id": str(solution),
             "solution_version_id": str(sv),
             "version_no": 1,
-            "target_kind": "databricks.app/v1",
+            "target_kind": kind,
             "entrypoint": {
                 "kind": "agent",
                 "version_id": str(agent_version[0]),
                 "spec_hash": agent_version[1],
             },
             "pins": pins,
-            "data_reads": [{"connection_id": str(connection), "tables": list(SAMPLE_TABLES)}],
+            "data_reads": [{"connection_id": str(connection), "tables": list(made.tables)}],
             "bindings": {
                 "model_bindings": {"default": {"provider_id": str(provider_id), "model": model}},
                 "connection_bindings": {},
@@ -248,8 +278,8 @@ def make_app_release(
                 "thresholds": {"min_accuracy": "0.9"},
             },
             "compiler_version": COMPILER_VERSION_APP,
-            "screens": SAMPLE_DRAFT["screens"],
-            "app": {"generator_version": GENERATOR_VERSION},
+            "screens": draft["screens"],
+            "app": {"generator_version": GENERATOR_VERSIONS[kind]},
         }
         if edit is not None:
             edit(manifest)

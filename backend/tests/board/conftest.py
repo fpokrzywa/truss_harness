@@ -276,6 +276,20 @@ def target(
     return target_id
 
 
+def bound_target(
+    owner_db: Database, tenant: UUID, workspace_id: UUID, project_id: UUID | None = None
+) -> UUID:
+    """A `target` with valid bindings, so its route (and a context check) can read it."""
+    target_id = target(owner_db, tenant, workspace_id, project_id)
+    owner_run(
+        owner_db,
+        "UPDATE shifde.delivery_targets SET bindings = CAST(:b AS jsonb) WHERE id = :g",
+        b=json.dumps({"warehouse_id": "abc123def456"}),
+        g=target_id,
+    )
+    return target_id
+
+
 def plan(
     owner_db: Database,
     tenant: UUID,

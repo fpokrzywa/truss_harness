@@ -1041,9 +1041,10 @@ def resolved_for_release(
     """`Resolved` of a `/2` release (design 6.3): its pinned agent, prompt and tool versions read
     through `build`'s service reads under `scope` (the plan requester's organization and RLS
     context, never another), the release's single model binding's `model` as the serving endpoint
-    and the manifest's screens. Every version the manifest pins (the entrypoint and each pin) must
-    exist in this organization with the pinned `spec_hash`, and the agent may name only pinned
-    versions; anything else is 409 `release_source_changed`, with nothing written."""
+    with its provider (None when `scope` cannot read it; SP6 call 40) and the manifest's screens.
+    Every version the manifest pins (the entrypoint and each pin) must exist in this organization
+    with the pinned `spec_hash`, and the agent may name only pinned versions; anything else is 409
+    `release_source_changed`, with nothing written."""
     artifacts = ArtifactService(scope, runtime)
     pinned: dict[UUID, str] = {}
     for item in [manifest.get("entrypoint") or {}, *(manifest.get("pins") or [])]:
@@ -1092,7 +1093,11 @@ def resolved_for_release(
             }
         )
     entry = UUID(str(manifest["entrypoint"]["version_id"]))
-    model_bindings = manifest["bindings"]["model_bindings"]
+    binding = next(iter(manifest["bindings"]["model_bindings"].values()))
+    provider_id = _version_uuid(binding.get("provider_id"))
+    provider = (
+        ModelService(scope, runtime).provider_destination(provider_id) if provider_id else None
+    )
     return s.Resolved.model_validate(
         {
             "agent": {
@@ -1103,7 +1108,12 @@ def resolved_for_release(
                 "limits": {key: agent["limits"][key] for key in AGENT_LIMITS},
             },
             "tools": sorted(tools, key=lambda t: t["name"]),
-            "model": {"serving_endpoint": next(iter(model_bindings.values()))["model"]},
+            "model": {
+                "serving_endpoint": binding["model"],
+                "provider": (
+                    {"kind": provider[0], "base_url": provider[1]} if provider is not None else None
+                ),
+            },
             "screens": manifest.get("screens") or [],
         }
     )
