@@ -1,12 +1,11 @@
 """The runner on a Fabric, Palantir or Docker target (SP8-1): the dispatch table has the five
 platform kinds; the fake platform builds each new kind's adapter over one lazily built fake; a
 leased job of each new kind runs its broker check (a mismatch is `credential_unavailable`), and a
-Fabric or Docker one then fails closed (`execution_failed`) before any adapter or platform call and
-any journal intent: a Docker job because its plan has no generator version (SP8-9;
-`test_runner_docker.py` has the rest), a Fabric job until SP8-5. Palantir jobs run (SP8-7):
+Docker one then fails closed (`execution_failed`) before any adapter or platform call and any
+journal intent because its plan has no generator version (SP8-9; `test_runner_docker.py` has the
+rest). Fabric jobs run (SP8-5): `test_runner_fabric.py`; Palantir jobs run (SP8-7):
 `test_runner_palantir.py`.
 
-The gateway cannot yet give a Fabric target's context (SP8-5 maps it), so
 `Gateway` answers `context` with the mapped target and everything else through the in-process
 gateway; the plan job rows are `tests.delivery.sp8`'s."""
 
@@ -74,7 +73,7 @@ from tests.executor.support import (
     sp8_credentials_file,
 )
 
-FAIL_CLOSED = ("fabric", "docker")  # Fabric until SP8-5; a Docker plan of no generator version
+FAIL_CLOSED = ("docker",)  # a Docker plan of no generator version
 GUID = "0a1b2c3d-0000-4000-8000-00000000abcd"
 ADDRESS = {
     "fabric": f"https://api.fabric.microsoft.com/v1/workspaces/{GUID}",
@@ -93,7 +92,12 @@ def _mapped(kind: str, address: str, **ids: Any) -> Target:
     the API origin)."""
     if kind == "fabric":
         host, workspace = address.split("/v1/workspaces/")
-        bindings = {"workspace": workspace, "lakehouse": "SalesLake", "notebook": "SalesNotebook"}
+        bindings = {
+            "workspace": workspace,
+            "entra_tenant_id": SP8_ENTRA_TENANT,
+            "lakehouse": "SalesLake",
+            "notebook": "SalesNotebook",
+        }
         return Target(host=host, bindings=bindings, **ids)
     if kind == "palantir":
         strings = {**PALANTIR_BINDINGS, "allow_preview_apis": "false"}
@@ -117,6 +121,7 @@ def _fake_platform(palantir_host: str = ADDRESS["palantir"]) -> FakePlatform:
         ),
         docker=FakeContainerRuntime(GUID),
         environment="test",
+        fabric_enabled=True,
     )
 
 
@@ -146,7 +151,8 @@ def test_the_dispatch_table_has_the_five_kinds() -> None:
 
 
 def test_the_fake_platform_builds_the_fabric_adapter_over_one_fake() -> None:
-    platform, target = FakePlatform(environment="test"), _unit_target("fabric")
+    platform = FakePlatform(environment="test", fabric_enabled=True)
+    target = _unit_target("fabric")
     assert platform.fabric is None
     adapter = platform.fabric_adapter(target, _fabric_ids)
     fake = platform.fabric

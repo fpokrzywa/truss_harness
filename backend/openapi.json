@@ -6979,8 +6979,13 @@
       },
       "FabricBindings": {
         "additionalProperties": false,
-        "description": "A Fabric target's bindings: the lakehouse and notebook item names in the workspace\n(SP8 design section 2).",
+        "description": "A Fabric target's bindings: the workspace's Entra tenant, stored lowercase (the executor's\ncredential entry must name the same one), and the lakehouse and notebook item names in the\nworkspace (SP8 design section 2). An error never echoes the tenant.",
         "properties": {
+          "entra_tenant_id": {
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+            "title": "Entra Tenant Id",
+            "type": "string"
+          },
           "lakehouse_name": {
             "pattern": "^[A-Za-z][A-Za-z0-9_]{0,99}$",
             "title": "Lakehouse Name",
@@ -6993,6 +6998,7 @@
           }
         },
         "required": [
+          "entra_tenant_id",
           "lakehouse_name",
           "notebook_name"
         ],
@@ -8634,6 +8640,7 @@
                   "execution_failed",
                   "credential_unavailable",
                   "snowflake_patch_limit",
+                  "foreign_item",
                   "plan_stale",
                   "docker_host_mismatch",
                   "foreign_project"

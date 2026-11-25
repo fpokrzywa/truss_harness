@@ -33,6 +33,7 @@ from shifde.delivery.service import PLATFORM_ALREADY_REGISTERED
 from tests.connections.routes import as_user
 from tests.delivery.routes import (
     DOCKER_BINDINGS,
+    FABRIC_BINDINGS,
     SNOWFLAKE_BINDINGS,
     SP8_KINDS,
     address,
@@ -637,6 +638,15 @@ def _forms(kind: str, url: str) -> list[str]:
     return [url]
 
 
+def _own_names(kind: str, n: int) -> dict[str, Any]:
+    """The n-th target's own Fabric item names: active Fabric targets of one claim share none
+    (SP8-5, `binding_in_use`). Nothing for another kind."""
+    if kind != "fabric":
+        return {}
+    names = {"lakehouse_name": f"Lake{n}", "notebook_name": f"Notebook{n}"}
+    return {"bindings": {**FABRIC_BINDINGS, **names}}
+
+
 @pytest.mark.parametrize("kind", SP8_KINDS)
 def test_sp8_targets_of_one_organization_share_one_claim(
     client: TestClient, world: World, people: People, owner_db: Database, kind: str
@@ -646,12 +656,14 @@ def test_sp8_targets_of_one_organization_share_one_claim(
     forms = _forms(kind, url)
     spaces = (ws_slug(world.a), ws2_slug(world.a), ws_slug(world.a))
     made = [
-        register(client, h, world.a.slug, sp8_body(kind, ws, form))
-        for ws, form in zip(spaces, forms, strict=False)
+        register(client, h, world.a.slug, sp8_body(kind, ws, form, **_own_names(kind, n)))
+        for n, (ws, form) in enumerate(zip(spaces, forms, strict=False))
     ]
     # one Docker claim binds a project and a port once (SP8-9)
     own = {"bindings": {**DOCKER_BINDINGS, "project": "other-app", "port": 8502}}
-    body = sp8_body(kind, ws2_slug(world.a), url, **(own if kind == "docker" else {}))
+    body = sp8_body(
+        kind, ws2_slug(world.a), url, **(own if kind == "docker" else _own_names(kind, 9))
+    )
     second = register(client, h, world.a.slug, body)
     assert {m["address"] for m in [*made, second]} == {url}
     assert all(m["platform_kind"] == kind for m in made)

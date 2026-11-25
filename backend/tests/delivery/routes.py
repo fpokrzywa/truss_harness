@@ -97,7 +97,11 @@ def snowflake_body(workspace: str, url: str, **overrides: Any) -> dict[str, Any]
 
 # ------------------------------------------------------------------ Fabric, Palantir, Docker
 SP8_KINDS = ("fabric", "palantir", "docker")
-FABRIC_BINDINGS = {"lakehouse_name": "SalesLake", "notebook_name": "SalesNotebook"}
+FABRIC_BINDINGS = {
+    "entra_tenant_id": "0a1b2c3d-0000-4000-8000-0000000000e1",
+    "lakehouse_name": "SalesLake",
+    "notebook_name": "SalesNotebook",
+}
 PALANTIR_BINDINGS: dict[str, Any] = {
     "marketplace_rid": "ri.marketplace.main.local.0a1b2c3d-0000-4000-8000-000000000001",
     "product_id": "0a1b2c3d-0000-4000-8000-000000000002",

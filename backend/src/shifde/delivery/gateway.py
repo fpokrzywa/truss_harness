@@ -23,7 +23,9 @@ transaction (settled call 5): `plan` (`service.on_plan_result` seals or fails th
 (`ReconciliationResult`), each with its `service.on_*_result` deployment hook; a result for a
 kind without an entry is refused. A leased `plan` job serves its plan's artifact (`artifact`).
 `job_context` answers what a leased job runs against (target, plan, deployment, owned resources;
-B-2688), so the executor can drive the adapter from ids alone.
+B-2688), so the executor can drive the adapter from ids alone. A Fabric target's context names the
+Fabric API origin as its host and its workspace as a binding (`service.adapter_target`), and its
+`apply` result is checked by `service.check_fabric_receipt` with the API's environment.
 """
 
 from __future__ import annotations
@@ -405,9 +407,16 @@ def checkpoint(
 
 
 def submit_result(
-    session: Session, executor: AuthenticatedExecutor, job_id: UUID, body: JobResultSubmission
+    session: Session,
+    executor: AuthenticatedExecutor,
+    job_id: UUID,
+    body: JobResultSubmission,
+    *,
+    env: str = "production",
 ) -> JobResultAck:
-    """Finish the job and run its kind's `on_result` hook in the same transaction."""
+    """Finish the job and run its kind's `on_result` hook in the same transaction. `env` is the
+    API's environment: a Fabric apply receipt of the fake is refused outside development and
+    test (the default refuses)."""
     row = _leased(session, executor, job_id, body)
     definition = JOB_KINDS.get(row["kind"])
     if definition is None:
@@ -428,6 +437,8 @@ def submit_result(
                     for e in exc.errors()
                 ],
             ) from exc
+        if row["kind"] == "apply":
+            service.check_fabric_receipt(session, row, body, env)
         result = {"status": "succeeded", "value": body.value}
     else:
         result = {"status": "failed", "error_code": body.error_code}

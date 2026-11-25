@@ -95,6 +95,24 @@ def snowflake_binding_in_use(
     )
 
 
+def fabric_binding_in_use(
+    session: Session, claim_id: UUID, lakehouse: str, notebook: str, *, tenant_id: UUID
+) -> bool:
+    """An active Fabric target on the claim binds `lakehouse` or `notebook` as either of its item
+    names (ignoring case: an item of a bound name is never adopted, whatever its type)."""
+    return bool(
+        session.execute(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM shifde.delivery_targets WHERE tenant_id = :t "
+                "AND claim_id = :c AND status = 'active' AND platform_kind = 'fabric' "
+                "AND (lower(bindings->>'lakehouse_name') IN (lower(:l), lower(:n)) "
+                "OR lower(bindings->>'notebook_name') IN (lower(:l), lower(:n))))"
+            ),
+            {"c": claim_id, "t": tenant_id, "l": lakehouse, "n": notebook},
+        ).scalar_one()
+    )
+
+
 def docker_binding_in_use(
     session: Session, claim_id: UUID, project: str, port: int, *, tenant_id: UUID
 ) -> bool:
