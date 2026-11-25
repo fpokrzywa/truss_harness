@@ -25,7 +25,7 @@ from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.identity import apikeys
 from shifde.ledger.estimate import estimate_input_tokens
-from shifde.runtime.service import RunService
+from shifde.runtime.service import RunService, run_committed
 from tests._support.assist_fixtures import (
     PICKS_COST,
     assist_model,
@@ -53,6 +53,7 @@ from tests.assist.helpers import (
     set_settings,
 )
 from tests.board.conftest import (
+    bound_target,
     cells,
     deployment,
     evaluation_run,
@@ -334,6 +335,44 @@ def test_a_p1_key_gets_not_found_for_p2(
     ids_2 = {str(p2), request_2, proposal_2, *theirs.values()}
     shown = json.dumps(results)
     assert {i for i in ids_2 if i in shown} == set()
+
+
+def test_a_context_of_p2_is_not_found_in_p1_though_the_key_reads_both(
+    mcp: TestClient,
+    world: World,
+    admin: Hdr,
+    model_id: str,
+    owner_session: Session,
+    owner_db: Database,
+) -> None:
+    add_project(admin, "other")
+    installed(admin, model_id, project="/workspaces/main/projects/other", keys=["cost"])
+    a = tenant(owner_session, ORG_A)
+    ws, p1 = (UUID(i) for i in project_of(owner_session, ORG_A))
+    _, p2 = (UUID(i) for i in project_of(owner_session, ORG_A, "other"))
+    theirs = _objects(owner_db, a, ws, p2)
+    shared = bound_target(owner_db, a, ws)  # workspace-level: it takes releases of P1 and of P2
+    plan_2 = plan(owner_db, a, shared, UUID(theirs["release"]))
+    deployed_2 = deployment(owner_db, a, plan_2, shared, "verified")
+    cases = [*theirs.items(), ("plan", str(plan_2)), ("deployment", str(deployed_2))]
+    key = _key(mcp, world)
+    _allow(mcp, world)
+    before = _counts(owner_session)
+
+    def ask(project_id: UUID, kind: str, oid: str) -> tuple[bool, dict[str, Any]]:
+        args = {"project_id": str(project_id), "text": COST_TEXT, "specialist": "cost"}
+        return call(mcp, key, "assist_ask", {**args, "context": {"kind": kind, "id": oid}})
+
+    for kind, oid in cases:
+        assert ask(p1, kind, oid) == (True, NOT_FOUND), (kind, oid)
+        assert ask(p1, kind, str(uuid7())) == (True, NOT_FOUND), kind
+    assert _counts(owner_session) == before
+    # the same key reads P2, and P2 takes each of them
+    board = ok(mcp, key, "board_get", {"project_id": str(p2)})
+    assert theirs["solution"] in json.dumps(board)
+    for kind, oid in cases:
+        is_error, asked = ask(p2, kind, oid)
+        assert not is_error and asked["context"] == {"kind": kind, "id": oid}, asked
 
 
 # ------------------------------------------------------------------ board_get
@@ -817,6 +856,68 @@ def test_a_recovery_whose_router_price_left_no_cap_starts_no_run(
     row = request_row(owner_session, asked["id"])
     assert (row["status"], row["status_reason"]) == ("failed", "budget_denied")
     assert rows(owner_session, "SELECT count(*) FROM shifde.runs") == [(0,)]
+
+
+@pytest.mark.parametrize("why", ["above the cap", "no rate"])
+def test_a_recovery_whose_router_price_left_no_cap_links_the_committed_run(
+    mcp: TestClient,
+    world: World,
+    admin: Hdr,
+    model_id: str,
+    owner_session: Session,
+    app_db: Database,
+    calls: Calls,
+    monkeypatch: pytest.MonkeyPatch,
+    why: str,
+) -> None:
+    _route_by_model(owner_session, model_id)
+    key = _key(mcp, world)
+    _allow(mcp, world, max_cost_per_call=0.01)
+    args = {"project_id": str(project(owner_session, ORG_A)), "text": VAGUE_TEXT}
+    asked = ok(mcp, key, "assist_ask", args)
+
+    def crash(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("the worker died")
+
+    with monkeypatch.context() as m:
+        m.setattr(RunService, "get", crash)  # the run is committed, the request not linked
+        with pytest.raises(RuntimeError):
+            run_route_job(mcp, owner_session, asked["id"])
+    row = request_row(owner_session, asked["id"])
+    assert (row["status"], row["route_method"], row["run_id"]) == ("handing_over", "model", None)
+    stored = (
+        "SELECT r.id, r.idempotency_key, a.content->'overrides'->>'max_cost' FROM shifde.runs r "
+        "JOIN shifde.run_artifacts a ON a.run_id = r.id AND a.kind = 'input'"
+    )
+    [(run_id, run_key, cap)] = rows(owner_session, stored)
+    assert run_key == f"assist:{asked['id']}" and Decimal(cap) == Decimal("0.01")
+    # only the requester's own run, in its client, counts
+    a, b = tenant(owner_session, ORG_A), tenant(owner_session, ORG_B)
+    person = UUID(str(row["requested_by"]))
+    for client_id, principal, found in ((a, person, True), (a, uuid7(), False), (b, person, False)):
+        s = app_session(app_db, client_id, person)
+        try:
+            assert run_committed(s, client_id, principal, run_key) is found
+        finally:
+            s.close()
+    if why == "above the cap":
+        _price(admin)  # since the router call
+        assert _worst(VAGUE_TEXT) > Decimal("0.01")
+    else:
+        set_tenant_setting(owner_session, ORG_A, "unknown_cost_policy", "deny")
+    _requeue(owner_session, asked["id"])
+    assert run_route_job(mcp, owner_session, asked["id"])
+    row = request_row(owner_session, asked["id"])
+    assert (row["status"], row["status_reason"], row["run_id"]) == ("routed", None, run_id)
+    assert rows(owner_session, stored) == [(run_id, run_key, cap)]
+    assert rows(owner_session, "SELECT count(*) FROM shifde.runs") == [(1,)]
+    assert len(calls.messages) == 1  # the router, once
+    [(actions,)] = rows(
+        owner_session,
+        "SELECT array_agg(action ORDER BY chain_seq) FROM shifde.audit_events WHERE target_id = :r",
+        r=asked["id"],
+    )
+    assert "assist.request.failed" not in actions and actions[-1] == "assist.request.routed"
 
 
 def test_an_exhausted_budget_refuses_both_paths_before_any_model_call(

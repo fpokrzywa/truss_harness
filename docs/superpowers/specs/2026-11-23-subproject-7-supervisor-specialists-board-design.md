@@ -123,8 +123,8 @@ All keys exist in the catalog today except `appgen:request:write`, which SP5-2 (
 | `solution` | `packaging.service.SolutionService.get(ws, proj, id)` |
 | `release` | `packaging.service.scoped_release(scope, id)`; its `project_id` must equal the request's |
 | `target` | `delivery.service.TargetService.get(id)`; in this project or its workspace |
-| `plan` | `delivery.plans.PlanService.get(id)`; its target in this project or workspace |
-| `deployment` | `delivery.deployments.DeploymentService.get(id)`; same rule |
+| `plan` | `delivery.plans.PlanService.get(id)`; its target in this project or workspace and its release in this project (a plan without a release is refused) |
+| `deployment` | `delivery.deployments.DeploymentService.get(id)`; same rule, its plan's release in this project |
 | `evaluation_run` | `evaluation.service.EvaluationService.get_run(id)`; its release in this project |
 
   Not visible or not in this project gives 404 `context not found`, and nothing is stored. (These getters may commit their settle step before the insert; this is the API path, not a run step.)

@@ -1,12 +1,11 @@
-"""The runner on a Snowflake target (SP6-3): a test-only Native App artifact through plan, apply,
-observe and verify on `FakeSnowflakeNativePlatform` over the in-process gateway, and every
-credential refusal (an entry of another organization, an entry of the other platform) failing the
+"""The runner on a Snowflake target (SP6-3): a rendered Native App release through plan, apply,
+observe and verify (`verified`, SP6-6) on `FakeSnowflakeNativePlatform` over the in-process
+gateway, a package without a free patch, and every credential refusal (an entry of another organization, an entry of the other platform) failing the
 job `credential_unavailable` before any statement reaches the account. No key material reaches a
 log, a job result or a receipt.
 
-The plan, its approval and deployment are written by `tests.delivery.snowflake` (no Snowflake
-release exists before SP6-4); the verify mapping to `verified` is SP6-6's, so the end to end run
-stops at the stored verification report."""
+The end to end and patch-limit runs go through the plan and approval routes; the credential tests
+take their plan, approval and deployment from `tests.delivery.snowflake` (a test-only artifact)."""
 
 from __future__ import annotations
 
@@ -16,15 +15,13 @@ from typing import Any  # Any: JSON bodies and rows
 from uuid import UUID, uuid4
 
 import pytest
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
 from sqlalchemy import text
 
 from shifde.adapters.native.snowflake.adapter import STEPS
 from shifde.adapters.native.snowflake.fake import FakeSnowflakeNativePlatform
 from shifde.core.db import Database
 from shifde.executor.client import GatewayClient
-from shifde.executor.credentials import CredentialBroker, snowflake_account
+from shifde.executor.credentials import CredentialBroker
 from shifde.executor.runner import FakePlatform, Runner, toolchain_digest
 from tests.connections.routes import as_user
 from tests.delivery.routes import (
@@ -38,12 +35,14 @@ from tests.delivery.routes import (
     snowflake_address,
     snowflake_body,
 )
-from tests.delivery.snowflake import approve, snowflake_plan
+from tests.delivery.snowflake import app_release, app_target, approve, snowflake_plan
 from tests.executor.support import (
-    SNOWFLAKE_USER,
+    ask_plan,
     credentials_file,
     fake_platform,
+    make_runner,
     snowflake_credentials_file,
+    snowflake_fake,
     snowflake_key_pem,
 )
 
@@ -74,14 +73,7 @@ def _runner(flow: Flow, creds: Path, platform: FakePlatform) -> Runner:
 
 def _account_fake(address: str) -> FakeSnowflakeNativePlatform:
     """A Snowflake fake that accepts `PEM`'s JWTs for the target's account."""
-    key = serialization.load_pem_private_key(PEM.encode(), password=None)
-    assert isinstance(key, rsa.RSAPrivateKey)
-    return FakeSnowflakeNativePlatform(
-        environment="test",
-        public_key=key.public_key(),
-        account=snowflake_account(address),
-        user=SNOWFLAKE_USER,
-    )
+    return snowflake_fake(address, PEM)
 
 
 def _native_types(owner_db: Database, deployment_id: object) -> list[str]:
@@ -100,7 +92,6 @@ def _native_types(owner_db: Database, deployment_id: object) -> list[str]:
 def test_plan_apply_observe_and_verify_run_on_the_snowflake_fake(
     flow: Flow,
     tmp_path: Path,
-    app_db: Database,
     owner_db: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -111,9 +102,10 @@ def test_plan_apply_observe_and_verify_run_on_the_snowflake_fake(
     runner = _runner(flow, creds, platform)
 
     # (a) the plan job seals the plan with the eight Native App steps, reading only
-    plan = snowflake_plan(app_db, flow.tenant, target["id"])
+    release = app_release(flow, target)
+    plan = ask_plan(flow, target["id"], release_id=release.id)
     assert runner.run_once()
-    sealed = plan_row(owner_db, plan.id)
+    sealed = plan_row(owner_db, plan["id"])
     assert sealed["status"] == "sealed", sealed["status_reason"]
     assert [s["key"] for s in sealed["steps"]] == list(STEPS)
     assert sealed["toolchain_digest"] == toolchain_digest("fake", "snowflake")
@@ -125,7 +117,7 @@ def test_plan_apply_observe_and_verify_run_on_the_snowflake_fake(
     assert fake is not None and fake.log and fake.writes() == []
 
     # (b) apply writes each step once, receipts marked `platform: fake`
-    deployment_id = approve(app_db, flow.tenant, plan.id)
+    deployment_id = flow.approve(flow.get_plan(plan["id"]))["deployment_id"]
     assert runner.run_once()
     body = flow.get(deployment_id)
     assert body["status"] == "observing", body
@@ -158,9 +150,10 @@ def test_plan_apply_observe_and_verify_run_on_the_snowflake_fake(
     assert runner.run_once()
     assert flow.get(deployment_id)["status"] == "verifying"
 
-    # (d) verify posts the three Snowflake checks, all passed
+    # (d) verify posts the three Snowflake checks, all passed: verified
     make_due(owner_db, deployment_id)
     assert runner.run_once()
+    assert deployment_row(owner_db, deployment_id)["status"] == "verified"
     verification = deployment_row(owner_db, deployment_id)["verification"]
     assert {c["name"]: c["status"] for c in verification["checks"]} == dict.fromkeys(
         SNOWFLAKE_CHECKS, "passed"
@@ -169,11 +162,63 @@ def test_plan_apply_observe_and_verify_run_on_the_snowflake_fake(
 
     # no key material in the logs, the job results or the stored receipt
     results = [j["result"] for j in deployment_jobs(owner_db, deployment_id)]
-    results.append(job_row(owner_db, plan.job_id)["result"])
+    with owner_db.session() as o:
+        job_id = o.execute(
+            text("SELECT id FROM shifde.delivery_jobs WHERE plan_id = :p AND kind = 'plan'"),
+            {"p": plan["id"]},
+        ).scalar_one()
+    results.append(job_row(owner_db, job_id)["result"])
     stored = deployment_row(owner_db, deployment_id)["receipt"]
     for leak in (PEM[40:120], "PRIVATE KEY", str(tmp_path), "credentials.json.p8"):
         for blob in (caplog.text, str(results), str(stored), str(body)):
             assert leak not in blob
+
+
+def _fill_patches(fake: FakeSnowflakeNativePlatform, address: str) -> None:
+    """Every patch 0..129 of the deployed package's version V1 is used."""
+    versions = fake.state(address).versions["SHIFDE_PKG"]
+    for patch in range(len(versions), 130):
+        versions.append({**versions[0], "patch": patch, "created_on": f"seeded {patch}"})
+
+
+def test_no_free_patch_fails_the_plan_job_with_its_own_code_and_an_apply_without(
+    flow: Flow, tmp_path: Path, owner_db: Database
+) -> None:
+    target = app_target(flow)
+    creds = snowflake_credentials_file(tmp_path, target["address"], PEM, tenant=flow.tenant)
+    fake = _account_fake(target["address"])
+    runner = make_runner(flow.client, flow.token, creds, fake_platform(), fake)
+
+    first = ask_plan(flow, target["id"], release_id=app_release(flow, target).id)
+    assert runner.run_once()
+    first_deployment = flow.approve(flow.get_plan(first["id"]))["deployment_id"]
+    for _ in ("apply", "observe", "verify"):
+        make_due(owner_db, first_deployment)
+        assert runner.run_once()
+    assert deployment_row(owner_db, first_deployment)["status"] == "verified"
+
+    # sealed and approved while a patch is free, applied when none is: the apply's code is unchanged
+    second = ask_plan(flow, target["id"], release_id=app_release(flow, target).id)
+    assert runner.run_once()
+    deployment_id = flow.approve(flow.get_plan(second["id"]))["deployment_id"]
+    _fill_patches(fake, target["address"])
+    writes = fake.writes()
+    assert runner.run_once()
+    (apply,) = deployment_jobs(owner_db, deployment_id, "apply")
+    assert apply["result"] == {"status": "failed", "error_code": "execution_failed"}
+    assert deployment_row(owner_db, deployment_id)["status"] == "failed"
+
+    # a plan now: refused before sealing
+    third = ask_plan(flow, target["id"], release_id=app_release(flow, target).id)
+    assert runner.run_once()
+    failed = plan_row(owner_db, third["id"])
+    assert (failed["status"], failed["status_reason"]) == (
+        "plan_failed",
+        "plan job failed: snowflake_patch_limit",
+    )
+    assert failed["digest"] is None and failed["sealed_at"] is None
+    assert fake.writes() == writes
+    assert not any("DROP" in entry for entry in fake.log)
 
 
 def _foreign_fails(
