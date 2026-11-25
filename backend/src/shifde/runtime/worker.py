@@ -44,7 +44,12 @@ by lease expiry and the reaper (C1), never cancelled.
 Client sweeps (issue #361): on a tick where this worker won the reaper lock, the reaper also runs
 the two sweeps below. Each visits every client, so a running worker gives them a thread of their
 own, one at a time: the main loop keeps claiming and reaping leases meanwhile, however many
-clients there are, and a reap that comes due during a sweep starts no second one.
+clients there are, and a reap that comes due during a sweep starts no second one. A sweep that has
+run longer than `max(2 * lease, 60)` seconds (issue #363) is stuck or very long: each due sweep it
+holds up logs `worker.sweep_still_running` and, until it ends, reaps stop recording `last_reap_at`,
+so platform health's reaper goes "stale". Readiness is unaffected, since claiming and lease reaping
+go on. A sweep thread that cannot start is a crash (exit 1). A stop ends the sweep before the next
+client and before the second sweep lists its clients.
 
 Capture-off sweep (F-12, issue #34): the first sweeps every capture-off client for ended runs (run
 and root terminal) whose content scrub never ran (the reaper's follow-up transaction failed, or a
@@ -227,6 +232,8 @@ class Worker:
         self._lock = threading.Lock()
         self._idle = threading.Condition(self._lock)  # a job ended or was abandoned
         self._sweeping = threading.Lock()  # held while this worker's client sweeps run
+        # monotonic start of the sweep in progress; set and cleared only with `_sweeping` held
+        self._sweep_started: float | None = None
 
     # ------------------------------------------------------------------ lifecycle
     def run(self) -> int:
@@ -613,22 +620,51 @@ class Worker:
     def _reap(self) -> None:
         """One whole reaper pass, sweeps included, on the calling thread (the main loop never
         waits for the sweeps: `_start_sweep`)."""
-        if self._reap_leases() and self._sweeping.acquire(blocking=False):
+        if self._reap_leases() and self._take_sweep():
             self._sweep()
 
     def _start_sweep(self) -> None:
         """Run the client sweeps on a thread of their own, unless they are still in progress."""
+        if self._take_sweep():
+            try:
+                threading.Thread(target=self._sweep, daemon=True, name="_sweep").start()
+            except Exception:  # not BaseException: an interrupt may follow a thread that did start
+                self._sweep_started = None
+                self._sweeping.release()
+                raise
+
+    def _take_sweep(self) -> bool:
+        """Take `_sweeping` for a due sweep; False when one is still in progress (logged once that
+        one is overdue)."""
         if self._sweeping.acquire(blocking=False):
-            threading.Thread(target=self._sweep, daemon=True, name="_sweep").start()
+            self._sweep_started = time.monotonic()
+            return True
+        elapsed = self._sweep_overdue()
+        if elapsed is not None:
+            log.warning(
+                "worker.sweep_still_running", worker_id=self.worker_id, elapsed_seconds=elapsed
+            )
+        return False
+
+    def _sweep_overdue(self) -> float | None:
+        """Seconds the sweep in progress has run, when longer than `wedged_after`; else None."""
+        started = self._sweep_started
+        if started is None:
+            return None
+        elapsed = time.monotonic() - started
+        return elapsed if elapsed > self.wedged_after.total_seconds() else None
 
     def _sweep(self) -> None:
-        """Both client sweeps, in order; releases `_sweeping`, which the caller took."""
+        """Both client sweeps, in order (the second only when the sweep is not over); releases
+        `_sweeping`, which the caller took."""
         try:
             self._sweep_capture_off()
-            self._sweep_invocation_holds()
+            if not self._sweep_over():
+                self._sweep_invocation_holds()
         except Exception:  # noqa: BLE001 - the next reap sweeps again
             log.error("worker.sweep_failed", exc_info=True)
         finally:
+            self._sweep_started = None
             self._sweeping.release()
 
     def _sweep_over(self) -> bool:
@@ -637,7 +673,8 @@ class Worker:
 
     def _reap_leases(self) -> bool:
         """Reap the expired leases; True when the client sweeps are due: this worker got the
-        reaper lock and no stop was requested."""
+        reaper lock and no stop was requested. Not recorded as `last_reap_at` while a sweep is
+        overdue (platform health)."""
         try:
             with self.db.session() as s:
                 got = s.execute(
@@ -645,7 +682,7 @@ class Worker:
                     {"k": REAPER_LOCK},
                 ).scalar_one()
                 rows = repo.reap(s) if got else []
-                if got:
+                if got and self._sweep_overdue() is None:
                     repo.mark_reap(s, self.worker_id)
                 s.commit()
         except Exception:  # noqa: BLE001

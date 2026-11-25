@@ -1,8 +1,8 @@
 {
-  "session_id": "3899de12-0fee-490d-94f5-1964121b9d2a",
-  "head_sha": "da6dbf80582aecb73763496e2f598d224bcded2c",
+  "session_id": "cd676343-c962-433a-a6d5-27e2ea15187e",
+  "head_sha": "4c08590e3235321688f538443680a7f678b9f344",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "Per docs/build/HANDOFF.md: job queue; sync 179 (#363, PR #365), green CI, job merge; then 176 per S-041, 173 (needs S-044), 177",
-  "written_at": "2026-11-25T00:17:27Z"
+  "next_step": "Per docs/build/HANDOFF.md: job queue; resume 180, 184, 176 (build round 2 with feedback-1.md), 177 (reviews), 181 (gate), 182 (isolation review, approver); 173 and 183 wait for rulings",
+  "written_at": "2026-11-25T01:41:55Z"
 }
