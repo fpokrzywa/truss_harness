@@ -1,8 +1,8 @@
 {
-  "session_id": "cd676343-c962-433a-a6d5-27e2ea15187e",
-  "head_sha": "4c08590e3235321688f538443680a7f678b9f344",
+  "session_id": "30fa23c5-2ba5-491a-a4a1-07d0c8fe3ff8",
+  "head_sha": "f3a7b82b74a5864522fdd7fa1f6096515d8b9e25",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "Per docs/build/HANDOFF.md: job queue; resume 180, 184, 176 (build round 2 with feedback-1.md), 177 (reviews), 181 (gate), 182 (isolation review, approver); 173 and 183 wait for rulings",
-  "written_at": "2026-11-25T01:41:55Z"
+  "next_step": "Per docs/build/HANDOFF.md: job queue; gate 173 round 3 and 181 round 2; 184 isolation review 2 then approver; hold merges of 177, 182, 183, 176, 180 and 173 until the successor supervisor rules",
+  "written_at": "2026-11-25T03:00:02Z"
 }
