@@ -429,6 +429,22 @@ def test_the_dashboard_of_a_key_whose_owner_holds_a_narrower_grant_too_stops_at_
         assert [n for n in HIDDEN_NAMES if n in text] == []
 
 
+def test_the_dashboard_of_a_key_whose_owner_holds_only_a_workspace_grant_shows_its_project(
+    key: Hdr, layout: Layout, owner_session: Session, owner_db: Database
+) -> None:
+    """A workspace grant with a project mask: `visible_scopes("project:read")` is empty, while
+    `authorize` allows P1."""
+    [(uid,)] = rows(
+        owner_session, "SELECT id FROM shifde.users WHERE primary_email = :e", e=ADMIN_A
+    )
+    owner_run(owner_db, "DELETE FROM shifde.role_bindings WHERE subject_id = :u", u=uid)
+    reads = ["workspace:read", "project:read"]
+    grant(owner_db, layout.tenant, uid, reads, scope_type="workspace", scope_id=layout.ws)
+    in_p1 = _in_p1(owner_session, layout)
+    for params in ({}, {"workspace": "main"}, {"workspace": "main", "project": "sample"}):
+        assert _activity(key, **params) == in_p1, params
+
+
 def test_the_dashboard_of_a_workspace_member_shows_all_of_its_workspace(
     member: Callable[..., Hdr], layout: Layout, owner_session: Session
 ) -> None:
