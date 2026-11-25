@@ -1,36 +1,36 @@
 {
-  "generated": "2026-11-25T11:56:22+00:00",
+  "generated": "2026-11-25T14:05:30+00:00",
   "note": "est_usd is an estimate at list price, not a bill",
   "totals": {
     "all": "all",
-    "input": 88832,
-    "output": 30438975,
-    "cache_write_5m": 208614456,
-    "cache_write_1h": 25820054,
-    "cache_read": 4412537879,
-    "requests": 43453,
-    "est_usd": 2605.4953
+    "input": 89694,
+    "output": 30890397,
+    "cache_write_5m": 213079976,
+    "cache_write_1h": 26279519,
+    "cache_read": 4456828754,
+    "requests": 43880,
+    "est_usd": 2649.0853
   },
   "by_model": [
     {
       "model": "claude-opus-5-5",
-      "input": 78260,
-      "output": 27319911,
-      "cache_write_5m": 179274164,
-      "cache_write_1h": 25047532,
-      "cache_read": 4095914637,
-      "requests": 38326,
-      "est_usd": 2462.6453
+      "input": 79086,
+      "output": 27764133,
+      "cache_write_5m": 183656704,
+      "cache_write_1h": 25506997,
+      "cache_read": 4139966811,
+      "requests": 38735,
+      "est_usd": 2505.9319
     },
     {
       "model": "claude-sonnet-5-5",
-      "input": 9806,
-      "output": 2423893,
-      "cache_write_5m": 27335431,
+      "input": 9842,
+      "output": 2431093,
+      "cache_write_5m": 27418411,
       "cache_write_1h": 354601,
-      "cache_read": 287025151,
-      "requests": 4746,
-      "est_usd": 122.718
+      "cache_read": 287263852,
+      "requests": 4764,
+      "est_usd": 123.0214
     },
     {
       "model": "claude-fable-5-2",
@@ -56,23 +56,23 @@
   "by_agent_type": [
     {
       "agent_type": "builder",
-      "input": 24496,
-      "output": 10345679,
-      "cache_write_5m": 95889610,
+      "input": 24692,
+      "output": 10511492,
+      "cache_write_5m": 97833845,
       "cache_write_1h": 0,
-      "cache_read": 1356941626,
-      "requests": 12015,
-      "est_usd": 957.8479
+      "cache_read": 1367191935,
+      "requests": 12112,
+      "est_usd": 972.9362
     },
     {
       "agent_type": "lead",
-      "input": 22984,
-      "output": 4967741,
+      "input": 23326,
+      "output": 5045399,
       "cache_write_5m": 0,
-      "cache_write_1h": 25820054,
-      "cache_read": 1669270130,
-      "requests": 11118,
-      "est_usd": 643.4284
+      "cache_write_1h": 26279519,
+      "cache_read": 1695523942,
+      "requests": 11289,
+      "est_usd": 653.9094
     },
     {
       "agent_type": "module-builder-critical",
@@ -86,53 +86,53 @@
     },
     {
       "agent_type": "spec-writer",
-      "input": 7022,
-      "output": 3308677,
-      "cache_write_5m": 15897421,
+      "input": 7086,
+      "output": 3387420,
+      "cache_write_5m": 16349193,
       "cache_write_1h": 0,
-      "cache_read": 177753178,
-      "requests": 3483,
-      "est_usd": 181.2394
+      "cache_read": 179463887,
+      "requests": 3514,
+      "est_usd": 185.4155
     },
     {
       "agent_type": "isolation-reviewer",
-      "input": 5622,
-      "output": 2272381,
-      "cache_write_5m": 18279140,
+      "input": 5700,
+      "output": 2313031,
+      "cache_write_5m": 19478886,
       "cache_write_1h": 0,
-      "cache_read": 147165176,
-      "requests": 2780,
-      "est_usd": 166.2988
-    },
-    {
-      "agent_type": "approver",
-      "input": 2846,
-      "output": 847297,
-      "cache_write_5m": 10074601,
-      "cache_write_1h": 0,
-      "cache_read": 39706620,
-      "requests": 1421,
-      "est_usd": 75.2717
+      "cache_read": 149242321,
+      "requests": 2817,
+      "est_usd": 173.5263
     },
     {
       "agent_type": "reviewer-code",
-      "input": 3546,
-      "output": 940753,
-      "cache_write_5m": 11864359,
+      "input": 3608,
+      "output": 978325,
+      "cache_write_5m": 12241551,
       "cache_write_1h": 0,
-      "cache_read": 55781132,
-      "requests": 1726,
-      "est_usd": 75.014
+      "cache_read": 57218313,
+      "requests": 1757,
+      "est_usd": 77.9391
+    },
+    {
+      "agent_type": "approver",
+      "input": 2892,
+      "output": 871957,
+      "cache_write_5m": 10257113,
+      "cache_write_1h": 0,
+      "cache_read": 41189179,
+      "requests": 1444,
+      "est_usd": 76.9741
     },
     {
       "agent_type": "reviewer-security",
-      "input": 2604,
-      "output": 687176,
-      "cache_write_5m": 8418082,
+      "input": 2642,
+      "output": 706302,
+      "cache_write_5m": 8645165,
       "cache_write_1h": 0,
-      "cache_read": 37900380,
-      "requests": 1292,
-      "est_usd": 63.4244
+      "cache_read": 38740839,
+      "requests": 1311,
+      "est_usd": 65.1106
     },
     {
       "agent_type": "module-builder",
@@ -156,13 +156,13 @@
     },
     {
       "agent_type": "intake",
-      "input": 2298,
-      "output": 421946,
-      "cache_write_5m": 3626857,
+      "input": 2334,
+      "output": 429146,
+      "cache_write_5m": 3709837,
       "cache_write_1h": 0,
-      "cache_read": 13506138,
-      "requests": 1148,
-      "est_usd": 14.6418
+      "cache_read": 13744839,
+      "requests": 1166,
+      "est_usd": 14.9452
     },
     {
       "agent_type": "reviewer-ux",
@@ -248,13 +248,13 @@
   "by_unit": [
     {
       "unit": "lead",
-      "input": 22984,
-      "output": 4967741,
+      "input": 23326,
+      "output": 5045399,
       "cache_write_5m": 0,
-      "cache_write_1h": 25820054,
-      "cache_read": 1669270130,
-      "requests": 11118,
-      "est_usd": 643.4284
+      "cache_write_1h": 26279519,
+      "cache_read": 1695523942,
+      "requests": 11289,
+      "est_usd": 653.9094
     },
     {
       "unit": "unassigned",
@@ -797,6 +797,16 @@
       "est_usd": 8.0761
     },
     {
+      "unit": "#398",
+      "input": 108,
+      "output": 85543,
+      "cache_write_5m": 960774,
+      "cache_write_1h": 0,
+      "cache_read": 6112596,
+      "requests": 53,
+      "est_usd": 7.6489
+    },
+    {
       "unit": "176",
       "input": 90,
       "output": 69008,
@@ -927,6 +937,26 @@
       "est_usd": 6.4432
     },
     {
+      "unit": "SP8-9 #294",
+      "input": 88,
+      "output": 51315,
+      "cache_write_5m": 961728,
+      "cache_write_1h": 0,
+      "cache_read": 2487999,
+      "requests": 42,
+      "est_usd": 6.3329
+    },
+    {
+      "unit": "#410",
+      "input": 94,
+      "output": 60762,
+      "cache_write_5m": 821616,
+      "cache_write_1h": 0,
+      "cache_read": 3161314,
+      "requests": 47,
+      "est_usd": 5.8853
+    },
+    {
       "unit": "143",
       "input": 314,
       "output": 86812,
@@ -1025,6 +1055,16 @@
       "cache_read": 6234096,
       "requests": 132,
       "est_usd": 5.1781
+    },
+    {
+      "unit": "#415",
+      "input": 78,
+      "output": 79279,
+      "cache_write_5m": 616307,
+      "cache_write_1h": 0,
+      "cache_read": 2451667,
+      "requests": 38,
+      "est_usd": 5.079
     },
     {
       "unit": "007",
@@ -1205,6 +1245,16 @@
       "cache_read": 2641063,
       "requests": 89,
       "est_usd": 4.0093
+    },
+    {
+      "unit": "#394",
+      "input": 56,
+      "output": 26998,
+      "cache_write_5m": 643832,
+      "cache_write_1h": 0,
+      "cache_read": 1208107,
+      "requests": 28,
+      "est_usd": 4.001
     },
     {
       "unit": "sp2-9",
@@ -1507,6 +1557,16 @@
       "est_usd": 2.3412
     },
     {
+      "unit": "#416",
+      "input": 50,
+      "output": 41608,
+      "cache_write_5m": 268087,
+      "cache_write_1h": 0,
+      "cache_read": 1118685,
+      "requests": 25,
+      "est_usd": 2.3314
+    },
+    {
       "unit": "184-usage-tests",
       "input": 46,
       "output": 28909,
@@ -1595,6 +1655,16 @@
       "cache_read": 1836509,
       "requests": 54,
       "est_usd": 1.8463
+    },
+    {
+      "unit": "#401",
+      "input": 46,
+      "output": 28259,
+      "cache_write_5m": 193176,
+      "cache_write_1h": 0,
+      "cache_read": 1496695,
+      "requests": 23,
+      "est_usd": 1.8306
     },
     {
       "unit": "002",
@@ -2180,23 +2250,23 @@
   "by_sub_project": [
     {
       "sub_project": "sp1",
-      "input": 65848,
-      "output": 25471234,
-      "cache_write_5m": 208614456,
+      "input": 66368,
+      "output": 25844998,
+      "cache_write_5m": 213079976,
       "cache_write_1h": 0,
-      "cache_read": 2743267749,
-      "requests": 32335,
-      "est_usd": 1962.0669
+      "cache_read": 2761304812,
+      "requests": 32591,
+      "est_usd": 1995.1759
     },
     {
       "sub_project": "lead",
-      "input": 22984,
-      "output": 4967741,
+      "input": 23326,
+      "output": 5045399,
       "cache_write_5m": 0,
-      "cache_write_1h": 25820054,
-      "cache_read": 1669270130,
-      "requests": 11118,
-      "est_usd": 643.4284
+      "cache_write_1h": 26279519,
+      "cache_read": 1695523942,
+      "requests": 11289,
+      "est_usd": 653.9094
     }
   ],
   "by_day": [
@@ -2212,13 +2282,13 @@
     },
     {
       "day": "2026-11-25",
-      "input": 5850,
-      "output": 3498980,
-      "cache_write_5m": 38774887,
-      "cache_write_1h": 3370205,
-      "cache_read": 329966623,
-      "requests": 2885,
-      "est_usd": 354.5367
+      "input": 6712,
+      "output": 3950402,
+      "cache_write_5m": 43240407,
+      "cache_write_1h": 3829670,
+      "cache_read": 374257498,
+      "requests": 3312,
+      "est_usd": 398.1267
     },
     {
       "day": "2026-11-24",
@@ -2332,6 +2402,60 @@
     }
   ],
   "rounds_per_unit": [
+    {
+      "unit": "#394",
+      "build": 0,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 3
+    },
+    {
+      "unit": "#398",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "#401",
+      "build": 0,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "#410",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 4
+    },
+    {
+      "unit": "#415",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 3
+    },
+    {
+      "unit": "#416",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 2
+    },
     {
       "unit": "002",
       "build": 1,
@@ -3537,6 +3661,15 @@
       "review": 0,
       "inventory": 0,
       "other": 2
+    },
+    {
+      "unit": "SP8-9 #294",
+      "build": 0,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 4
     },
     {
       "unit": "adapters",
