@@ -464,16 +464,23 @@ def _require_hiding(
     one of the caller grants is visible (403, not 404) even without `workspace:read`."""
     if ws.id in scope.pdp.ancestor_workspace_ids():
         scope.pdp.require(action, ref)
-    else:
+        return
+    try:
         scope.pdp.require(action, ref, hide_unless=hide_unless)
+    except NotFound as exc:  # hidden: the same answer as an unknown workspace slug (B-4093)
+        raise NotFound("workspace not found") from exc
+
+
+def _workspace_visible(scope: TenantScope, ws: Workspace) -> bool:
+    return (
+        scope.pdp.authorize("workspace:read", _ws_ref(scope, ws)).allowed
+        or ws.id in scope.pdp.ancestor_workspace_ids()  # P1 gap: ancestor of a grant
+    )
 
 
 def _readable_workspace(scope: TenantScope, slug: str) -> Workspace:
     ws = _get_workspace_row(scope, slug)
-    if (
-        not scope.pdp.authorize("workspace:read", _ws_ref(scope, ws)).allowed
-        and ws.id not in scope.pdp.ancestor_workspace_ids()  # P1 gap: ancestor of a grant
-    ):
+    if not _workspace_visible(scope, ws):
         raise NotFound("workspace not found")  # invisible == nonexistent (no oracle)
     return ws
 
@@ -700,10 +707,15 @@ def create_project(scope: TenantScope, ws_slug: str, body: ProjectCreate) -> Pro
 
 def update_project(scope: TenantScope, ws_slug: str, slug: str, body: ProjectPatch) -> ProjectOut:
     ws = _get_workspace_row(scope, ws_slug)
-    project = _get_project_row(scope, ws, slug)
-    scope.pdp.require(
-        "project:manage", _project_ref(scope, ws, project), hide_unless="project:read"
-    )
+    try:
+        project = _get_project_row(scope, ws, slug)
+        scope.pdp.require(
+            "project:manage", _project_ref(scope, ws, project), hide_unless="project:read"
+        )
+    except NotFound as exc:
+        if _workspace_visible(scope, ws):
+            raise
+        raise NotFound("workspace not found") from exc  # hidden, as in `_require_hiding`
     _assert_tenant_active(scope)
     _assert_workspace_active(ws)
     values = _patch_values(body, project.status)
@@ -776,8 +788,10 @@ def dashboard(
     members = identity.count_members(scope.session, scope.tenant_id) if can_read_members else None
 
     is_admin = scope.pdp.authorize("tenant:admin", scope.tenant_ref).allowed
-    # Activity is per workspace, not per project: a workspace a key only reaches through its mask
-    # (`ancestor_workspace_ids`) counts only when the query is limited to one readable project.
+    # Unless the caller administers the client (B-4092), an event without a project needs
+    # `workspace:read` on its workspace and an event of a project `project:read` on that project,
+    # both within `activity_ws_only`. A workspace a key only reaches through its mask
+    # (`ancestor_workspace_ids`) counts there only when the query names one readable project.
     activity_ws_only = (
         ws_only
         if ws_filter.tenant_wide or project is not None
@@ -788,11 +802,22 @@ def dashboard(
         if is_admin
         else repository.workspace_ids(scope.session, scope.tenant_id, activity_ws_only)
     )
+    readable_project_ids = [
+        project_id
+        for project_id, ws_id in repository.project_refs(
+            scope.session, scope.tenant_id, visible_ws_ids
+        )
+        if scope.pdp.authorize(
+            "project:read", ResourceRef(scope.tenant_id, ws_id, project_id)
+        ).allowed
+    ]
     activity = audit.recent_activity(
         scope.session,
         tenant_id=scope.tenant_id,
         tenant_wide=is_admin,
-        visible_workspace_ids=visible_ws_ids,
+        visible_workspace_ids=[w for w in visible_ws_ids if ws_filter.covers_workspace(w)],
+        project_workspace_ids=visible_ws_ids,
+        readable_project_ids=readable_project_ids,
         workspace_id=ws.id if ws else None,
         project_id=project.id if project else None,
     )

@@ -36,6 +36,7 @@ def _record(
     outcome: str = "success",
     actor_label: str | None = None,
     workspace_id: UUID | None = None,
+    project_id: UUID | None = None,
     details: dict[str, Any] | None = None,  # Any: free-form audit details
 ) -> None:
     audit.record(
@@ -46,6 +47,7 @@ def _record(
         tenant_id=tenant,
         actor_label=actor_label,
         workspace_id=workspace_id,
+        project_id=project_id,
         details=details,
     )
 
@@ -343,3 +345,32 @@ def test_scoped_listing_and_recent_activity(owner_session: Session) -> None:
         owner_session, tenant_id=t, tenant_wide=True, visible_workspace_ids=set()
     )
     assert len(wide) == 3
+
+
+def test_recent_activity_shows_rows_of_readable_projects_only(owner_session: Session) -> None:
+    """Fails closed (issue #374, DECISIONS B-4092): no readable project named, no project row."""
+    t, other, w1, w2, p1, p2, theirs = (uuid7() for _ in range(7))
+    _record(owner_session, t, workspace_id=w1, actor_label="own")
+    _record(owner_session, t, workspace_id=w1, project_id=p1, actor_label="p1")
+    _record(owner_session, t, workspace_id=w1, project_id=p2, actor_label="p2")
+    _record(owner_session, t, workspace_id=w2, project_id=p1, actor_label="p1 elsewhere")
+    _record(owner_session, t, project_id=p1, actor_label="p1 nowhere")
+    _record(owner_session, other, workspace_id=w1, actor_label="other own")
+    _record(owner_session, other, workspace_id=w1, project_id=theirs, actor_label="theirs")
+
+    def shown(**kw: Any) -> list[str | None]:  # Any: recent_activity arguments
+        items = audit.recent_activity(owner_session, tenant_id=t, tenant_wide=False, **kw)
+        return [i.actor for i in items]
+
+    assert shown(visible_workspace_ids={w1}) == ["own"]
+    assert shown(visible_workspace_ids={w1}, project_workspace_ids={w1}) == ["own"]
+    assert shown(visible_workspace_ids={w1}, readable_project_ids={p1}) == ["own"]
+    in_w1: dict[str, Any] = {"visible_workspace_ids": {w1}, "project_workspace_ids": {w1}}
+    assert shown(**in_w1, readable_project_ids={p1}) == ["p1", "own"]
+    in_w1["visible_workspace_ids"] = set()
+    assert shown(**in_w1, readable_project_ids={p1}) == ["p1"]
+    assert shown(**in_w1, readable_project_ids={p1, theirs}) == ["p1"]
+    assert shown(**in_w1, readable_project_ids={theirs}) == []
+    assert shown(**in_w1, readable_project_ids={p1, p2}, project_id=p2) == ["p2"]
+    assert shown(**in_w1, readable_project_ids={p1}, project_id=p2) == []
+    assert shown(**in_w1, readable_project_ids={p1}, workspace_id=w2) == []

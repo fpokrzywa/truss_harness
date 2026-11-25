@@ -184,6 +184,19 @@ def workspace_ids_of_projects(
     return {r[0] for r in rows}
 
 
+def workspace_ids_of_client(
+    session: Session, tenant_id: UUID, workspace_ids: Collection[UUID]
+) -> set[UUID]:
+    """Those of `workspace_ids` that are workspaces of this client."""
+    if not workspace_ids:
+        return set()
+    rows = session.execute(
+        text("SELECT id FROM shifde.workspaces WHERE tenant_id = :t AND id = ANY(:ids)"),
+        {"t": tenant_id, "ids": list(workspace_ids)},
+    )
+    return {r[0] for r in rows}
+
+
 def privileged_keys(session: Session) -> frozenset[str]:
     rows = session.execute(text("SELECT key FROM shifde.permissions WHERE is_privileged"))
     return frozenset(r[0] for r in rows)

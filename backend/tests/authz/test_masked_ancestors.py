@@ -19,6 +19,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from shifde.authz import repository
 from shifde.authz.service import PDP, ResourceRef, ScopeFilter, new_pdp
 from shifde.core import db
 from shifde.core.clock import utcnow
@@ -189,6 +190,35 @@ def test_a_mask_naming_another_clients_project_gives_none_of_its_workspaces(
     assert ancestors(org.tenant, org.p1, b.p1) == {org.ws}
     for projects in ((org.p1,), (b.p1,), (org.p1, b.p1)):  # the same principal inside B
         assert ancestors(b.tenant, *projects) == NOTHING
+
+
+def test_a_mask_naming_another_clients_workspace_does_not_give_it(
+    s: Session, org: Org, owner_session: Session, seed_engine: Engine
+) -> None:
+    """Issue #374 (DECISIONS B-4094)."""
+    b = _org(owner_session)
+    _bind(seed_engine, org)
+
+    def ancestors(tenant: UUID, *workspaces: UUID) -> frozenset[UUID]:
+        db.set_tenant(s, tenant)
+        mask = ResourceScope(workspace_ids=frozenset(workspaces))
+        key = Principal(org.uid, "u@x", "U", credential="api_key", resource_scope=mask)
+        return new_pdp(s, key, tenant).ancestor_workspace_ids()
+
+    assert ancestors(org.tenant, org.ws) == {org.ws}
+    assert ancestors(org.tenant, b.ws) == NOTHING
+    assert ancestors(org.tenant, org.ws, b.ws) == {org.ws}
+    assert ancestors(org.tenant, uuid7()) == NOTHING
+    cases = ((org.ws,), (b.ws,), (org.ws, b.ws))
+    for workspaces in cases:  # the same principal inside B
+        assert ancestors(b.tenant, *workspaces) == NOTHING
+    _bind(seed_engine, b, subject_id=org.uid)  # with the grant in B too: B's workspace only
+    for workspaces, expected in zip(cases, (NOTHING, {b.ws}, {b.ws}), strict=True):
+        assert ancestors(b.tenant, *workspaces) == expected
+    # the query names the client itself: row-level security does not apply to this session
+    both = {org.ws, b.ws}
+    assert repository.workspace_ids_of_client(owner_session, org.tenant, both) == {org.ws}
+    assert repository.workspace_ids_of_client(owner_session, b.tenant, both) == {b.ws}
 
 
 # ------------------------------------------------------------------ unchanged in every other case
