@@ -70,6 +70,12 @@ class ValidationFailed(AppError):
     status, code, title = 422, "validation_error", "Unprocessable Entity"
 
 
+class IdempotencyKeyReserved(AppError):
+    """A client's `Idempotency-Key` must not start with the platform's own run key prefix (#373)."""
+
+    status, code, title = 422, "idempotency_key_reserved", "Unprocessable Entity"
+
+
 class RateLimited(AppError):
     status, code, title = 429, "rate_limited", "Too Many Requests"
 

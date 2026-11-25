@@ -59,7 +59,7 @@ from shifde.models_admin.service import ModelService
 from shifde.packaging.service import SolutionService, in_scope, release_record, scoped_release
 from shifde.runtime.governance import TokenBudgetHooks
 from shifde.runtime.internal_tools import InternalToolCall, InternalToolFn
-from shifde.runtime.service import run_binding
+from shifde.runtime.service import RUN_KEY_PREFIX, run_binding
 from shifde.tenancy import service as tenancy
 
 MAX_BYTES = 64 * 1024  # the cap of a result's JSON
@@ -69,7 +69,6 @@ MAX_VERSIONS = 50  # solution versions read per solution
 MAX_RUNS = 50  # evaluation runs read per release
 NOT_FOUND = "not_found"
 NOT_AN_ASSIST_RUN = "not_an_assist_run"
-RUN_KEY_PREFIX = "assist:"  # the idempotency key of a handover's run (`assist:{request id}`)
 UNKNOWN = (NotFound, Forbidden)  # an owning service's answers for an id the caller cannot use
 
 

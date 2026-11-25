@@ -212,7 +212,7 @@ def sees_all_rows(session: Session) -> bool:
 
 def check_database_url(url: str) -> None:
     """`check_app_role` for a connection URL, on a short-lived engine that is always disposed."""
-    engine = create_engine(url, poolclass=NullPool)
+    engine = create_engine(url, poolclass=NullPool, hide_parameters=True)
     try:
         check_app_role(engine)
     finally:

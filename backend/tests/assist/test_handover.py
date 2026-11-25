@@ -280,6 +280,37 @@ def test_a_repeated_handover_returns_the_same_run(
     assert [j[1] for j in route_jobs(owner_session, out["id"])] == ["done"]
 
 
+def test_the_requester_cannot_replay_the_handovers_run_with_its_key(
+    admin: Hdr, model_id: str, owner_session: Session
+) -> None:
+    """Issue #373: the key `assist:{id}` is the platform's own, with the run's own body too."""
+    c = admin.client
+    installed(admin, model_id, keys=["cost"])
+    out = sent(c, admin, {"text": COST_TEXT})
+    assert out["status"] == "routed"
+    [(agent_id, version_id, key)] = rows(
+        owner_session,
+        "SELECT agent_id::text, agent_version_id::text, idempotency_key FROM shifde.runs "
+        "WHERE id = :r",
+        r=out["run_id"],
+    )
+    assert key == f"assist:{out['id']}"
+    body = {
+        "kind": "agent",
+        "agent_id": agent_id,
+        "version_id": version_id,
+        "workspace": "main",
+        "project": "sample",
+        "input": COST_TEXT,
+        "variables": {"assist_request_id": out["id"], "context": ""},
+    }
+    r = c.post(f"{A}/runs", headers={**admin, "Idempotency-Key": key}, json=body)
+    assert r.status_code == 422, r.text
+    assert r.json()["code"] == "idempotency_key_reserved"
+    assert out["run_id"] not in r.text and key not in r.text
+    assert rows(owner_session, "SELECT count(*) FROM shifde.runs") == [(1,)]
+
+
 def test_a_run_failed_by_the_budget_pre_flight_fails_the_request(
     admin: Hdr, model_id: str, owner_session: Session
 ) -> None:

@@ -140,6 +140,40 @@ def test_start_run_caps_max_cost_and_get_run_reads_the_run(
     assert refused(mcp, key, "start_run", {**base, "surprise": 1}) == "invalid_arguments"
 
 
+def test_start_run_takes_no_idempotency_key_of_the_client(
+    mcp: TestClient, world: World, owner_session: Session
+) -> None:
+    """A pin (issue #373): neither an argument nor a header gives the run a key."""
+    h = sign_in(mcp, world, ADMIN_A)
+    published = agent(mcp, h, A, project(owner_session, ORG_A))
+    _, key = make_key(mcp, world, ADMIN_A, A)
+    set_mcp(mcp, world, ADMIN_A, A, allowed_tools=ALL)
+    run_key = f"assist:{uuid7()}"
+    args = {
+        "project_id": str(project(owner_session, ORG_A)),
+        "agent_version_id": published["version"],
+        "input": "hello",
+    }
+    keyed = {**args, "idempotency_key": run_key}
+    assert refused(mcp, key, "start_run", keyed) == "invalid_arguments"
+    stored = text("SELECT id::text, idempotency_key FROM shifde.runs")
+    owner_session.rollback()
+    assert owner_session.execute(stored).all() == []
+    r = rpc(
+        mcp,
+        key,
+        "tools/call",
+        {"name": "start_run", "arguments": args},
+        headers={"Idempotency-Key": run_key},
+    )
+    assert r.status_code == 200, r.text
+    result = r.json()["result"]
+    assert not result.get("isError"), result
+    started = json.loads(result["content"][0]["text"])
+    owner_session.rollback()
+    assert [tuple(row) for row in owner_session.execute(stored)] == [(started["run_id"], None)]
+
+
 def test_an_exhausted_budget_refuses_start_run_in_the_ledger(
     mcp: TestClient, world: World, owner_session: Session
 ) -> None:
