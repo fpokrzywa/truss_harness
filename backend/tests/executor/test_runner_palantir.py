@@ -1,7 +1,8 @@
 """The runner on a Palantir target (SP8-7): a Marketplace release through plan, apply, observe and
 verify on `FakeFoundryStack` over the in-process gateway, a second release on the same
-installation, `plan_stale` at plan and at apply, the descriptor's refusals, a fake-made plan on the
-real toolchain, an uncertain write, the extra host suffixes, and every credential refusal ending
+installation, `plan_stale` at plan and at apply, a target or entry gone in the middle of a job (no
+later request, a cached token's included), the descriptor's refusals, a fake-made plan on the real
+toolchain, an uncertain write, the extra host suffixes, and every credential refusal ending
 `credential_unavailable` with no token, request or checkpoint. Nothing contacts a Foundry stack and
 no secret reaches a log, a result or a receipt."""
 
@@ -13,7 +14,7 @@ import json
 import logging
 import os
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from pathlib import Path
 from typing import Any  # Any: JSON bodies, recorded calls
@@ -21,6 +22,7 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
 import shifde
 from shifde.adapters.native.base import create_archive, read_archive
@@ -38,6 +40,7 @@ from shifde.adapters.native.palantir.adapter import PalantirMarketplaceAdapter
 from shifde.adapters.native.palantir.clients import (
     INSTALLATIONS,
     JOBS,
+    TOKEN_PATH,
     FoundryCredentials,
     PalantirClient,
 )
@@ -46,7 +49,7 @@ from shifde.adapters.native.planning import bindings_digest
 from shifde.core.db import Database
 from shifde.core.settings import Settings
 from shifde.executor import main
-from shifde.executor.client import GatewayClient
+from shifde.executor.client import GatewayClient, GatewayError
 from shifde.executor.credentials import CredentialBroker, CredentialUnavailable
 from shifde.executor.runner import (
     FakePlatform,
@@ -58,6 +61,7 @@ from shifde.executor.runner import (
     Runner,
     toolchain_digest,
 )
+from tests.connections.routes import as_user
 from tests.delivery.palantir import (
     CHECKS,
     DEPLOYABLE,
@@ -74,8 +78,13 @@ from tests.delivery.routes import (
     journal_rows,
     make_due,
     plan_row,
+    register,
+    sp8_body,
+    targets,
 )
 from tests.executor.support import SP8_SECRET, ask_plan, sp8_credentials_file, sp8_entry
+from tests.tenancy.conftest import World
+from tests.tenancy.routes import People, ws_slug
 
 STEPS = ("palantir-installation-create", "palantir-job-submit", "palantir-finalize")
 
@@ -302,9 +311,14 @@ class RealOnStack(RealPlatform):
         self, target: Target, credential_provider: FoundryCredentialProvider
     ) -> PalantirMarketplaceAdapter:
         adapter = super().palantir_adapter(target, credential_provider)
-        adapter.client_factory = lambda t: PalantirClient(
-            t, credential_provider=credential_provider, transport=self.stack.transport
-        )
+        build = adapter.client_factory
+
+        def on_stack(t: Target) -> PalantirClient:
+            client = build(t)
+            client.transport = self.stack.transport
+            return client
+
+        adapter.client_factory = on_stack
         return adapter
 
 
@@ -321,6 +335,242 @@ def test_a_fake_made_palantir_plan_is_refused_by_the_real_toolchain(
     assert (row["status"], row["status_reason"]) == ("failed", "no platform write was attempted")
     assert stack.tokens == set() and stack.requests == []
     assert journal_rows(owner_db, flow.tenant) == []
+
+
+# ------------------------------------------------------------------ the target or entry gone mid-job
+@dataclass
+class Mid:
+    """A runner whose job is changed under it, on the fake or the real platform's client."""
+
+    flow: Flow
+    target: dict[str, Any]  # a TargetOut body
+    stack: FakeFoundryStack
+    runner: Runner
+    sent: list[str] = field(default_factory=list)  # the paths requested after the change
+    changed: bool = False
+
+    def after(self, path: str, change: Callable[[Mid], None], nth: int = 1) -> None:
+        """`change` happens once, right after the stack answered its `nth` request from now whose
+        path starts with `path`; `sent` holds the paths requested from then on."""
+        left = nth
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            nonlocal left
+            if self.changed:
+                self.sent.append(request.url.path)
+            answer = self.stack.handle(request)
+            if request.url.path.startswith(path) and not self.changed:
+                left -= 1
+                if left == 0:
+                    change(self)
+                    self.changed = True
+            return answer
+
+        self.stack.transport = httpx.MockTransport(handle)
+
+    def job(self, deployment: str) -> Any:  # Any: the deployment row
+        make_due(self.flow.owner_db, deployment)
+        assert self.runner.run_once()
+        return deployment_row(self.flow.owner_db, deployment)
+
+    def expire_grant(self) -> None:
+        """The job in flight's grant has run out (30 seconds)."""
+        state = self.runner._state
+        assert state is not None and state.grant is not None
+        state.grant = state.grant.model_copy(update={"expires_at": utcnow()})
+
+
+@pytest.fixture(params=["fake", "real"])
+def mid(request: pytest.FixtureRequest, flow: Flow, tmp_path: Path) -> Mid:
+    target = palantir_target(flow)
+    stack = _stack(target)
+    creds = sp8_credentials_file(tmp_path, "palantir", target["address"], tenant=flow.tenant)
+    platform: Platform = (
+        FakePlatform(palantir=stack, environment="test")
+        if request.param == "fake"
+        else RealOnStack(stack)
+    )
+    return Mid(flow, target, stack, _runner(flow, creds, platform))
+
+
+def _archive(mid: Mid) -> None:
+    """An administrator archives the target; the grant runs out."""
+    flow = mid.flow
+    headers = as_user(flow.client, flow.requester)
+    url = f"{targets(flow.slug)}/{mid.target['id']}/archive"
+    assert flow.client.post(url, headers=headers).status_code == 200
+    flow.client.cookies.clear()
+    mid.expire_grant()
+
+
+def _remove_entry(mid: Mid) -> None:
+    mid.runner.broker._entries.clear()
+
+
+def _other_tenants_entry(mid: Mid) -> None:
+    entries = mid.runner.broker._entries
+    for ref, entry in list(entries.items()):
+        entries[ref] = entry.model_copy(update={"tenant_id": uuid4()})
+
+
+# how the job ends; an archived target is the gateway's `target_unavailable`
+GONE: dict[str, tuple[Callable[[Mid], None], str]] = {
+    "target-archived": (_archive, "execution_failed"),
+    "entry-removed": (_remove_entry, "credential_unavailable"),
+    "entry-of-another-tenant": (_other_tenants_entry, "credential_unavailable"),
+}
+ONTOLOGIES = "/api/v2/ontologies/"
+
+
+def _refusals(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The code of every credential grant the gateway refuses."""
+    codes: list[str] = []
+    grant = GatewayClient.credential_grant
+
+    def recorded(self: GatewayClient, lease: JobLease) -> CredentialGrant:
+        try:
+            return grant(self, lease)
+        except GatewayError as exc:
+            codes.append(exc.code)
+            raise
+
+    monkeypatch.setattr(GatewayClient, "credential_grant", recorded)
+    return codes
+
+
+@pytest.mark.parametrize(
+    ("path", "nth", "posts", "steps"),
+    [
+        (TOKEN_PATH, 1, [], []),
+        (ONTOLOGIES, 1, [], []),
+        (ONTOLOGIES, 4, [], []),  # the apply's own snapshot: the next request is the first write
+        (INSTALLATIONS, 1, [INSTALLATIONS], STEPS[:1]),
+        (INSTALLATIONS, 2, [INSTALLATIONS], STEPS[:1]),  # the next request submits the job
+    ],
+)
+@pytest.mark.parametrize("gone", GONE)
+def test_a_palantir_apply_sends_nothing_more_once_its_target_or_entry_is_gone(
+    mid: Mid,
+    owner_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    gone: str,
+    path: str,
+    nth: int,
+    posts: list[str],
+    steps: tuple[str, ...],
+) -> None:
+    """The cached token included: no later request, no later intent, and the job's named refusal."""
+    change, code = GONE[gone]
+    deployment = _approved(mid.flow, mid.target, mid.runner)
+    codes = _refusals(monkeypatch)
+    mid.after(path, change, nth)
+    row = mid.job(deployment)
+    assert mid.changed and mid.sent == []
+    assert [p for p, _ in mid.stack.posts] == posts
+    journal = {s["step_key"]: s["state"] for s in mid.flow.get(deployment)["journal"]}
+    assert journal == dict.fromkeys(steps, "complete")
+    (apply,) = deployment_jobs(owner_db, deployment, "apply")
+    assert apply["result"] == {"status": "failed", "error_code": code}
+    assert codes == (["target_unavailable"] if gone == "target-archived" else [])
+    reason = f"apply failed after a platform write may have happened: {code}"
+    assert (row["status"], row["status_reason"]) == (
+        ("unknown_outcome", reason) if steps else ("failed", "no platform write was attempted")
+    )
+
+
+@pytest.mark.parametrize("path", [TOKEN_PATH, ONTOLOGIES])
+@pytest.mark.parametrize("gone", GONE)
+def test_a_palantir_plan_job_sends_nothing_more_once_its_target_or_entry_is_gone(
+    mid: Mid, monkeypatch: pytest.MonkeyPatch, gone: str, path: str
+) -> None:
+    change, code = GONE[gone]
+    plan = _ask(mid.flow, mid.target)
+    codes = _refusals(monkeypatch)
+    mid.after(path, change)
+    assert mid.runner.run_once()
+    assert mid.changed and mid.sent == []
+    failed = plan_row(mid.flow.owner_db, plan["id"])
+    assert (failed["status"], failed["status_reason"]) == (
+        "plan_failed",
+        f"plan job failed: {code}",
+    )
+    assert codes == (["target_unavailable"] if gone == "target-archived" else [])
+
+
+@pytest.mark.parametrize(
+    ("kind", "path", "nth"),
+    [
+        ("observe", TOKEN_PATH, 1),
+        ("observe", INSTALLATIONS, 1),
+        ("observe", JOBS, 1),
+        ("verify", JOBS, 1),
+        ("verify", ONTOLOGIES, 3),  # inside `ontology-read`
+        ("verify", ONTOLOGIES, 5),  # the next request is the frontend asset
+    ],
+)
+@pytest.mark.parametrize("gone", GONE)
+def test_a_palantir_observe_or_verify_job_sends_nothing_more_once_its_target_or_entry_is_gone(
+    mid: Mid,
+    owner_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    gone: str,
+    kind: str,
+    path: str,
+    nth: int,
+) -> None:
+    """A refusal is the job's own failure, never a check that failed."""
+    change, code = GONE[gone]
+    deployment = _approved(mid.flow, mid.target, mid.runner)
+    for _ in ("apply",) if kind == "observe" else ("apply", "observe"):
+        mid.job(deployment)
+    codes = _refusals(monkeypatch)
+    mid.after(path, change, nth)
+    row = mid.job(deployment)
+    assert mid.changed and mid.sent == []
+    job = deployment_jobs(owner_db, deployment, kind)[0]
+    assert job["result"] == {"status": "failed", "error_code": code}
+    assert row["status"] != "verified" and row["verification"] is None
+    assert codes == (["target_unavailable"] if gone == "target-archived" else [])
+
+
+def test_bs_claim_of_an_archived_palantir_stack_gets_no_request_of_as_apply(
+    mid: Mid, client: TestClient, world: World, people: People
+) -> None:
+    """Cross-client: A archives its target mid-apply and B registers the same stack; A's running
+    apply sends nothing more to it."""
+
+    def change(mid: Mid) -> None:
+        _archive(mid)
+        headers = as_user(client, people.owner_b)
+        body = sp8_body("palantir", ws_slug(world.b), mid.target["address"], bindings=DEPLOYABLE)
+        register(client, headers, world.b.slug, body)
+        client.cookies.clear()
+
+    deployment = _approved(mid.flow, mid.target, mid.runner)
+    mid.after(ONTOLOGIES, change, 4)
+    assert mid.job(deployment)["status"] == "failed"
+    assert mid.changed and mid.sent == [] and mid.stack.posts == []
+
+
+def test_a_palantir_grant_that_ran_out_is_refreshed_and_the_apply_goes_on(mid: Mid) -> None:
+    deployment = _approved(mid.flow, mid.target, mid.runner)
+    mid.after(INSTALLATIONS, Mid.expire_grant)
+    assert mid.job(deployment)["status"] == "observing"
+    assert mid.changed and [p for p, _ in mid.stack.posts] == [INSTALLATIONS, JOBS]
+
+
+def test_a_rotated_palantir_secret_mints_a_new_token_mid_apply(mid: Mid, tmp_path: Path) -> None:
+    """A token of the entry's earlier secret is not used again."""
+
+    def rotate(_mid: Mid) -> None:
+        secret = tmp_path / "palantir.json.secret"
+        assert secret.read_text(encoding="utf-8").strip() == SP8_SECRET
+        secret.write_text("rotated-fixture-secret", encoding="utf-8")
+
+    deployment = _approved(mid.flow, mid.target, mid.runner)
+    mid.after(ONTOLOGIES, rotate, 4)
+    assert mid.job(deployment)["status"] == "observing"
+    assert mid.sent[:2] == [TOKEN_PATH, INSTALLATIONS] and mid.sent.count(TOKEN_PATH) == 1
 
 
 # ------------------------------------------------------------------ the descriptor
@@ -793,6 +1043,7 @@ def test_a_palantir_client_error_never_carries_the_secret(tmp_path: Path) -> Non
     client = PalantirClient(
         side.target,
         credential_provider=provider,
+        authorize=lambda: provider(HOST_A),
         transport=httpx.MockTransport(lambda _r: httpx.Response(401, text=SP8_SECRET)),
     )
     with pytest.raises(PermissionError) as raised:

@@ -8,13 +8,13 @@ adapter call. The deploying service principal comes from the credential entry, n
 The job context's `platform_kind` picks the adapter through `DISPATCH`: `databricks`
 (`DatabricksAdapter`, tokens from the broker), `snowflake` (`SnowflakeNativeAdapter`, a key pair
 the broker re-checks and reads on every statement), `palantir` (`PalantirMarketplaceAdapter`, client
-credentials the broker re-checks and reads for every token) or `docker` (`DockerComposeAdapter` over
-the job's own artifact store, the grant and entry checked again before every runtime call, only for
-a plan of the Docker generator's version and a bundle of the plan's release). An entry of another
-platform is refused like any other mismatch. A `fabric` job runs its platform's broker check and
-then fails closed (`execution_failed`) before any adapter or platform call and before any journal
-intent, until SP8-5 wires its call path; the platforms already build that adapter
-(`fabric_adapter`).
+credentials the broker re-checks and reads before every request, a cached token's too) or `docker`
+(`DockerComposeAdapter` over the job's own artifact store, the grant and entry checked again before
+every runtime call, only for a plan of the Docker generator's version and a bundle of the plan's
+release). An entry of another platform is refused like any other mismatch. A `fabric` job runs its
+platform's broker check and then fails closed (`execution_failed`) before any adapter or platform
+call and before any journal intent, until SP8-5 wires its call path; the platforms already build
+that adapter (`fabric_adapter`).
 
 A Palantir `plan` or `apply` job first reads the artifact's descriptor (`palantir.source`): one that
 is missing, spec-only or of another release is `execution_failed`, and one whose bindings digest is
@@ -304,7 +304,11 @@ class RealPlatform:
         self, target: Target, credential_provider: FoundryCredentialProvider
     ) -> PalantirMarketplaceAdapter:
         return PalantirMarketplaceAdapter(
-            client_factory=lambda t: PalantirClient(t, credential_provider=credential_provider),
+            client_factory=lambda t: PalantirClient(
+                t,
+                credential_provider=credential_provider,
+                authorize=lambda: credential_provider(t.host),
+            ),
             toolchain_digest=toolchain_digest(self.kind, "palantir"),
         )
 
@@ -703,25 +707,20 @@ class Runner:
 
     def _foundry_provider(self, state: LeaseState, target: Target) -> FoundryCredentialProvider:
         """The Foundry client credentials for the grant's audience only, re-checked by the broker
-        (and the secret file read) on every call; an expired grant is refreshed first."""
+        (and the secret file read) on every call; an expired grant is refreshed first. The client
+        calls it before every request (its `authorize`)."""
 
         def credentials(host: str) -> FoundryCredentials:
-            grant = state.grant
-            if grant is None or grant.expires_at <= utcnow():
-                grant = state.grant = self.client.credential_grant(state.lease)
-            try:
-                audience = normalize_palantir_address(host, self.broker.palantir_host_suffixes)
-            except AddressRefused:
-                raise CredentialUnavailable from None
-            if audience != grant.audience:
-                raise CredentialUnavailable
-            return self.broker.foundry_credentials_for(
-                grant,
-                job_id=state.lease.job.id,
-                executor_id=self.executor_id,
-                target_id=target.id,
-                tenant_id=target.tenant_id,
-            )
+            def checked(grant: CredentialGrant, **ids: UUID) -> FoundryCredentials:
+                try:
+                    audience = normalize_palantir_address(host, self.broker.palantir_host_suffixes)
+                except AddressRefused:
+                    raise CredentialUnavailable from None
+                if audience != grant.audience:
+                    raise CredentialUnavailable
+                return self.broker.foundry_credentials_for(grant, **ids)
+
+            return self._recheck(state, target, checked)
 
         return credentials
 

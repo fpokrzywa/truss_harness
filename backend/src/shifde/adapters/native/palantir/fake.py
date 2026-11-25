@@ -90,6 +90,7 @@ class FakeFoundryStack:
         return PalantirClient(
             target,
             credential_provider=credential_provider,
+            authorize=lambda: credential_provider(target.host),
             transport=self.transport,
             platform="fake",
         )
