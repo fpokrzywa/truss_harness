@@ -61,7 +61,10 @@ its next pass starts with the other of the two sweeps and goes on in the lost on
 which comes last. So a client that is slow every time delays the others and logs one such warning
 per pass of each worker that reaches it, but the others are swept; look into the named client when
 the warning repeats. A restarted worker starts at the first client again. When the connection cannot
-be opened, nothing is swept, `worker.sweep_failed` is logged and the next reap tries again.
+be opened, nothing is swept, `worker.sweep_failed` is logged and the next reap tries again. One exception
+to one sweep at a time: when listing the clients takes longer than the bound, the server ends the
+connection before the first step, and that one step runs without the lock; the warning then names
+the client it ran for, which is not the cause.
 
 ## Restart policy
 
