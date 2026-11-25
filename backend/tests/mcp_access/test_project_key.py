@@ -641,6 +641,19 @@ def test_a_project_update_of_a_hidden_sibling_answers_as_of_an_unknown_project(
     assert state() == before
 
 
+def test_a_hidden_sibling_of_an_archived_workspace_answers_as_an_unknown_project(
+    p1_only: Hdr, admin: Hdr, layout: Layout
+) -> None:
+    main = _json(admin, MAIN)
+    archive = {"status": "archived", "row_version": main["row_version"]}
+    assert _patch(admin, MAIN, archive).json()["status"] == "archived"
+    change = {"name": "renamed", "row_version": _json(admin, P2)["row_version"]}
+    assert _patch(admin, P2, change).json()["code"] == "scope_archived"
+    missing = _patch(p1_only, NO_PROJECT, change)
+    assert missing.json()["detail"] == "project not found"
+    same_404(_patch(p1_only, P2, change), missing)
+
+
 def test_a_refused_update_of_a_hidden_sibling_is_still_recorded_as_denied(
     p1_only: Hdr, layout: Layout, owner_session: Session
 ) -> None:
