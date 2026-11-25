@@ -218,7 +218,7 @@ FABRIC_KEY_OF_TYPE = {"fabric.Lakehouse": "lakehouse", "fabric.Notebook": "noteb
 
 def toolchain_digest(platform: str, target_kind: TargetKind = "databricks") -> str:
     """The executing toolchain: the adapter of `target_kind`, its version, its pinned CLI version
-    and the platform (`fake`, or the real platform)."""
+    and the platform (`fake`, or the real platform); another kind is refused."""
     if target_kind == "docker":
         return digest(
             {
@@ -252,9 +252,11 @@ def toolchain_digest(platform: str, target_kind: TargetKind = "databricks") -> s
                 "platform": "fake" if platform == "fake" else "palantir",
             }
         )
-    return digest(
-        {"adapter_version": ADAPTER_VERSION, "cli_version": CLI_VERSION, "platform": platform}
-    )
+    if target_kind == "databricks":
+        return digest(
+            {"adapter_version": ADAPTER_VERSION, "cli_version": CLI_VERSION, "platform": platform}
+        )
+    raise ValueError("no toolchain for this kind of target")
 
 
 def application_id(target_id: UUID, application_key: str) -> UUID:
@@ -1135,7 +1137,7 @@ class Runner:
     ) -> dict[str, Any]:  # Any: plan details JSON
         """The details the adapter sealed into the plan: for Snowflake and Palantir from the
         adapter's own helper on the current native state, for Fabric from its helper on the spec
-        and target, for Databricks derived from the target."""
+        and target, for Databricks derived from the target; another adapter is refused."""
         if ctx.plan is None:
             raise ValueError("the job has no plan")
         if isinstance(adapter, SnowflakeNativeAdapter):
@@ -1144,6 +1146,8 @@ class Runner:
             return adapter.plan_details(spec, read)
         if isinstance(adapter, PalantirMarketplaceAdapter):
             return adapter.plan_details(ctx.plan.toolchain_digest, read)
+        if not isinstance(adapter, DatabricksAdapter):
+            raise ValueError("no plan details for this kind of adapter")
         target = read.target
         warehouse = target.bindings.get(DatabricksApplicationSpec().warehouse_binding)
         if not warehouse:

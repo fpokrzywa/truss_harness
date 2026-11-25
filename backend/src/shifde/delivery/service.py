@@ -208,7 +208,8 @@ def adapter_target(row: Mapping[str, Any]) -> Target:
     `allow_preview_apis` becomes `"true"` or `"false"` and a Docker target's `port` its digits. A
     Fabric target's stored address is the API origin, its host, and the workspace GUID, its
     `workspace` binding beside the stored ones (SP8-5; an address with no workspace gives none, and
-    the executor refuses it). Any other kind's bindings are unchanged."""
+    the executor refuses it). A Databricks or Snowflake target's bindings are unchanged; a row of
+    another kind is refused."""
     host, bindings = row["address"], row["bindings"]
     if row["platform_kind"] == "fabric":
         host, _, workspace = row["address"].partition("/v1/workspaces/")
@@ -219,6 +220,8 @@ def adapter_target(row: Mapping[str, Any]) -> Target:
         bindings = {**bindings, "allow_preview_apis": "true" if allowed else "false"}
     elif row["platform_kind"] == "docker":
         bindings = {k: str(v) if k == "port" else v for k, v in bindings.items()}
+    elif row["platform_kind"] not in ("databricks", "snowflake"):
+        raise ValueError("no adapter target for this platform kind")
     return Target(
         tenant_id=row["tenant_id"],
         id=row["id"],
