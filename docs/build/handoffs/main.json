@@ -1,8 +1,8 @@
 {
-  "session_id": "d5e47c45-37ec-4982-9385-4e60efec2a2e",
-  "head_sha": "87fe7bac93fddc4aa9d79343383fd9e489b99712",
+  "session_id": "09e0eb46-7683-4c78-966e-8761169737d5",
+  "head_sha": "1df483252f617660feef91766527acfd4c395ae2",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "Per docs/build/HANDOFF.md: reviewers for 191 (r2), 193, 194, 195, 196 (all at review, gates PASS); then batch 7; start #390, #394, #398, #401",
-  "written_at": "2026-11-25T10:18:53Z"
+  "next_step": "Per docs/build/HANDOFF.md: reviewers for 195 (r2) and 198, gate 199 and its comparison series, then batch 8; 194 and 193 round 2 after 195 merges",
+  "written_at": "2026-11-25T12:11:02Z"
 }
