@@ -221,7 +221,9 @@ def test_generator_version_unsupported_writes_nothing(flow: Flow) -> None:
 
 @pytest.mark.parametrize("app", DOCKER_SEALS.values(), ids=DOCKER_SEALS)
 @pytest.mark.parametrize("platform", ["databricks", "docker"])
-def test_a_docker_release_is_planned_on_no_target(flow: Flow, platform: str, app: Any) -> None:
+def test_a_docker_release_is_planned_only_on_a_docker_target(
+    flow: Flow, platform: str, app: Any
+) -> None:
     """A `docker.compose/v1` release, however it was sealed, is refused on a Databricks target
     before any write (SP8-1). On a Docker target only the release the Docker generator sealed is
     planned (SP8-9)."""
