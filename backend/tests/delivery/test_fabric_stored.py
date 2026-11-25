@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 import logging
 import textwrap
 from collections.abc import Callable
@@ -245,6 +246,34 @@ def test_an_earlier_fabric_row_is_an_unknown_id_to_the_other_client(
     r = client.post(targets(world.b.slug), json=body, headers=h)
     assert (r.status_code, r.json()["code"]) == (409, "platform_already_registered"), r.text
     assert tenant_rows(flow.owner_db, flow.tenant) == before
+
+
+@pytest.mark.parametrize("extra", ["workspace", "unknown"])
+def test_an_extra_stored_fabric_binding_is_refused_and_never_names_the_workspace(
+    flow: Flow, app_db: Database, owner_db: Database, extra: str
+) -> None:
+    """Every read and use refuses the row; the mapping itself takes the address's workspace."""
+    made = fabric_target(flow)
+    release = fabric_release(owner_db, made["id"])
+    job = enqueue(app_db, flow.tenant, "observe", target_id=UUID(made["id"]))
+    leased = lease(flow.client, flow.token).json()
+    stored = {**FABRIC_BINDINGS, extra: str(uuid4())}
+    owner_sql(
+        owner_db,
+        "UPDATE shifde.delivery_targets SET bindings = CAST(:b AS jsonb) WHERE id = :g",
+        b=json.dumps(stored),
+        g=made["id"],
+    )
+    h = as_user(flow.client, flow.requester)
+    r = flow.client.get(f"{targets(flow.slug)}/{made['id']}", headers=h)
+    assert (r.status_code, r.json()["bindings"]) == (200, UNUSABLE), r.text
+    _refused(request_plan(flow.client, h, flow.slug, made["id"], release.id, 409))
+    r = flow.client.get(job_url(job, "context"), params=proof(leased), headers=bearer(flow.token))
+    assert r.status_code == 409, r.text
+    _refused(r.json())
+    row = _row("fabric", bindings=stored)
+    mapped = service.adapter_target(row)
+    assert mapped.bindings == {**stored, "workspace": row["address"].rsplit("/", 1)[1]}
 
 
 def _address() -> str:

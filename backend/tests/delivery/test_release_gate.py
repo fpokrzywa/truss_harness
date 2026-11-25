@@ -212,12 +212,12 @@ PLANNABLE = {
 
 def test_the_plan_gate_cases_are_five_kinds_by_five_platforms() -> None:
     assert (len(TARGET_KINDS), len(get_args(PlatformKind))) == (5, 5)
-    assert {kind for kind, _ in PLANNABLE} < set(TARGET_KINDS)
+    assert {kind for kind, _ in PLANNABLE} == set(TARGET_KINDS)
 
 
 @pytest.mark.parametrize("platform", get_args(PlatformKind))
 @pytest.mark.parametrize("kind", TARGET_KINDS)
-def test_only_a_databricks_snowflake_palantir_or_docker_release_is_planned_on_its_own_platform(
+def test_only_a_databricks_snowflake_fabric_palantir_or_docker_release_is_planned_on_its_platform(
     kind: str, platform: str
 ) -> None:
     """SP8-1, SP8-9: a Docker release is planned on a Docker target only, never on the Databricks

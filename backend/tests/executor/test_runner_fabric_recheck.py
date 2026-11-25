@@ -46,6 +46,7 @@ from tests.delivery.routes import (
     deployment_jobs,
     deployment_row,
     make_due,
+    owner_sql,
     plan_row,
     register,
     sp8_body,
@@ -96,6 +97,11 @@ def _token_answer(_request: httpx.Request) -> httpx.Response:
     return httpx.Response(200, json={"access_token": TOKEN, "expires_in": 3600})
 
 
+def _short_token(_request: httpx.Request) -> httpx.Response:
+    """A token inside the expiry margin at once: the provider mints again on every use."""
+    return httpx.Response(200, json={"access_token": TOKEN, "expires_in": 60})
+
+
 @dataclass
 class Mid:
     """A runner whose job is changed under it, on the fake or the real platform's client."""
@@ -112,6 +118,7 @@ class Mid:
     changed: bool = False
     change: Callable[[Mid], None] | None = None
     change_after: int = 0
+    change_in_mint: int = 0
     token_answer: Callable[[httpx.Request], httpx.Response] = _token_answer
 
     def __post_init__(self) -> None:
@@ -134,20 +141,30 @@ class Mid:
             self.sent.append("token" if login else request.url.path)
         if login:
             self.minted += 1
-            return self.token_answer(request)
+            answer = self.token_answer(request)
+            self._change_at(self.change_in_mint, self.minted)
+            return answer
         if self.real:
             assert request.headers["Authorization"] == f"Bearer {TOKEN}"
         self.requests += 1
         answer = self.fake.handle(request)
-        if self.change is not None and not self.changed and self.requests == self.change_after:
+        self._change_at(self.change_after, self.requests)
+        return answer
+
+    def _change_at(self, when: int, now: int) -> None:
+        if self.change is not None and not self.changed and now == when:
             self.change(self)
             self.changed = True
-        return answer
 
     def after(self, nth: int, change: Callable[[Mid], None]) -> None:
         """`change` happens once, right after the workspace answered the `nth` request from now."""
-        self.requests, self.sent, self.changed = 0, [], False
-        self.change_after, self.change = nth, change
+        self.requests, self.minted, self.sent, self.changed = 0, 0, [], False
+        self.change_after, self.change_in_mint, self.change = nth, 0, change
+
+    def in_mint(self, nth: int, change: Callable[[Mid], None]) -> None:
+        """`change` happens once, inside the `nth` token request from now."""
+        self.after(0, change)
+        self.change_in_mint = nth
 
     def approved(self) -> str:
         release = fabric_release(self.flow.owner_db, self.target["id"])
@@ -270,11 +287,10 @@ def test_a_fabric_apply_sends_nothing_more_once_its_target_or_entry_is_gone(
     change, code = GONE[gone]
     deployment = mid.approved()
     codes = _refusals(monkeypatch)
-    minted = mid.minted
     mid.after(nth, change)
     row = mid.job(deployment)
     assert mid.changed and mid.sent == []
-    assert mid.minted == minted + (1 if mid.real else 0)
+    assert mid.minted == (1 if mid.real else 0)
     complete, opened = JOURNAL[nth]
     journal = {s["step_key"]: s["state"] for s in mid.flow.get(deployment)["journal"]}
     assert journal == {**dict.fromkeys(complete, "complete"), **dict.fromkeys(opened, "intent")}
@@ -361,10 +377,9 @@ def test_bs_claim_of_an_archived_fabric_workspace_gets_no_request_of_as_apply(
 def test_a_fabric_grant_that_ran_out_is_refreshed_and_the_apply_goes_on(mid: Mid) -> None:
     deployment = mid.approved()
     mid.after(2, lambda mid: mid.expire_grant())
-    minted = mid.minted
     assert mid.job(deployment)["status"] == "observing"
     assert len(mid.sent) == APPLY_REQUESTS - 2
-    assert mid.minted == minted + (1 if mid.real else 0)  # one token, used ten times
+    assert mid.minted == (1 if mid.real else 0)  # one token, used ten times
 
 
 def test_a_rotated_fabric_secret_mints_a_new_token_mid_apply(real: Mid) -> None:
@@ -373,6 +388,98 @@ def test_a_rotated_fabric_secret_mints_a_new_token_mid_apply(real: Mid) -> None:
     assert real.job(deployment)["status"] == "observing"
     assert real.sent[0] == "token" and real.sent.count("token") == 1
     assert len(real.sent) == 1 + APPLY_REQUESTS - 2
+
+
+# ------------------------------------------------------------------ the two checks around a mint
+JOBS = {"plan": 0, "apply": 0, "observe": 1, "verify": 2}  # a kind -> the jobs before it
+BEFORE = ("apply", "observe")
+
+
+def _due(real: Mid, kind: str) -> Callable[[], str]:
+    """What runs the flow's next job of `kind`, which fails; it answers the job's error code."""
+    flow = real.flow
+    if kind == "plan":
+        release = fabric_release(flow.owner_db, real.target["id"])
+        plan = ask_plan(flow, real.target["id"], release_id=release.id)
+
+        def run_plan() -> str:
+            assert real.runner.run_once()
+            row = plan_row(flow.owner_db, plan["id"])
+            assert row["status"] == "plan_failed"
+            return str(row["status_reason"]).removeprefix("plan job failed: ")
+
+        return run_plan
+    deployment = real.approved()
+    for _ in BEFORE[: JOBS[kind]]:
+        real.job(deployment)
+
+    def run() -> str:
+        row = real.job(deployment)
+        assert row["verification"] is None  # never a failed check
+        job = deployment_jobs(flow.owner_db, deployment, kind)[0]
+        assert job["result"]["status"] == "failed"
+        return str(job["result"]["error_code"])
+
+    return run
+
+
+@pytest.mark.parametrize("kind", JOBS)
+@pytest.mark.parametrize("gone", GONE)
+def test_a_due_mint_of_a_gone_target_or_entry_sends_no_token_request(
+    real: Mid, gone: str, kind: str
+) -> None:
+    """The first check: the token is due for renewal, and the secret is not sent for a job that
+    may no longer use the target."""
+    change, code = GONE[gone]
+    run = _due(real, kind)
+    real.token_answer = _short_token
+    real.after(1, change)
+    assert run() == code
+    assert real.changed and real.sent == []
+
+
+@pytest.mark.parametrize("nth", [1, 2])
+@pytest.mark.parametrize("kind", JOBS)
+@pytest.mark.parametrize("gone", GONE)
+def test_a_target_or_entry_gone_inside_a_mint_gets_no_request_with_its_token(
+    real: Mid, gone: str, kind: str, nth: int
+) -> None:
+    """The second check: the token came after the target or the entry was gone."""
+    change, code = GONE[gone]
+    run = _due(real, kind)
+    real.token_answer = _short_token
+    real.in_mint(nth, change)
+    assert run() == code
+    assert real.changed and real.sent == [] and real.requests == nth - 1
+
+
+@pytest.mark.parametrize("kind", JOBS)
+def test_a_secret_rotated_inside_a_mint_gets_no_request_with_its_token(
+    real: Mid, kind: str
+) -> None:
+    run = _due(real, kind)
+    real.in_mint(1, _rotate)
+    assert run() == "execution_failed"
+    assert real.changed and real.sent == [] and real.requests == 0
+
+
+# ------------------------------------------------------------------ the stored address
+@pytest.mark.parametrize("kind", JOBS)
+def test_a_stored_address_of_another_origin_gets_no_request_and_no_token(
+    real: Mid, owner_db: Database, kind: str
+) -> None:
+    """Registration never stores one. The entry's host is always the Fabric origin, so the broker's
+    audience check ends the job before the artifact, the adapter, any request and any token."""
+    run = _due(real, kind)
+    owner_sql(
+        owner_db,
+        "UPDATE shifde.delivery_targets SET address = :a WHERE id = :g",
+        a=f"https://other.example.com/v1/workspaces/{workspace_of(real.target)}",
+        g=real.target["id"],
+    )
+    real.after(0, lambda _mid: None)
+    assert run() == "credential_unavailable"
+    assert (real.requests, real.minted) == (0, 0)
 
 
 # ------------------------------------------------------------------ the token endpoint's answers
@@ -489,6 +596,22 @@ def test_a_fabric_token_refused_inside_verify_is_the_jobs_failure(
     assert (row["status"], row["status_reason"]) == ("failed", "verification failed")
     assert row["verification"] is None
     _clean(caplog, real.flow, owner_db, deployment)
+
+
+@pytest.mark.parametrize("answer", NO_TOKEN)
+@pytest.mark.parametrize("kind", ["plan", "observe"])
+def test_a_fabric_token_refused_inside_a_plan_or_observe_is_the_jobs_failure(
+    real: Mid, kind: str, answer: str
+) -> None:
+    run = _due(real, kind)
+
+    def change(mid: Mid) -> None:
+        _rotate(mid)
+        mid.token_answer = NO_TOKEN[answer]
+
+    real.after(1, change)
+    assert run() == "execution_failed"
+    assert real.changed and real.sent == ["token"]
 
 
 @pytest.mark.parametrize("answer", NO_TOKEN)

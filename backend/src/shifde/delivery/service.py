@@ -60,6 +60,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal  # Any: target, executor and credential rows
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -212,7 +213,7 @@ def adapter_target(row: Mapping[str, Any]) -> Target:
     another kind is refused."""
     host, bindings = row["address"], row["bindings"]
     if row["platform_kind"] == "fabric":
-        host, _, workspace = row["address"].partition("/v1/workspaces/")
+        host, _, workspace = row["address"].partition(urlsplit(FABRIC_API_WORKSPACES).path)
         if workspace:
             bindings = {**bindings, "workspace": workspace}
     elif row["platform_kind"] == "palantir":
