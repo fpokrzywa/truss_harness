@@ -1,30 +1,35 @@
-# Handoff — 2026-11-25 ~05:10 EST, charter 7 factory run (lead session agt-trus-harness-80), context limit
+# Handoff — 2026-11-25, charter 7 factory run (lead session agt-trus-harness-b9), context limit
 
 Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` (newest progress entry and sub-projects table), then this file.
 
-**State:** cluster running. Merged this session: batch 6 (PR #400, `2184df2`, no migration, no hosted run due): 192, 189, 190, S-056..S-058. No agent, gate or wait loop running at handoff.
+**State:** cluster running. Merged this session: batch 7 (PR #412, `254dcbc`, main CI green, gates 18/18, 8395 passed; hosted DB setup done): 191, 196 (migration `delivery_0009_related_approvers`), 197, S-059 to S-062. No agent, gate or wait loop running at handoff.
 
 ## Rulings
-- Supervisor: **seth-supervisor-5** (took over 05:01; check `.devdata/supervisor/logs/supervising-session.log`; find it with ListAgents). Next free ruling S-059. It writes S-* rows on `supervisor/rulings-*` (docs only): take them in the next batch. Never edit S-* rows.
-- 196 (#352, PR #402) needs the supervisor's ruling before merge: migration `delivery_0009_related_approvers`, isolation review inserting directly as `shifde_app` for every row of the requirement 4 table and mutating the guard (drop each IF), approver decision. S-056 is a design view only; any DDL beyond the spec plus addendum 1 goes back to the supervisor.
-- 191 (#384, PR #393): new head `8276b8f` needs code and security review of the delta, the approver, full gates and CI on the exact head; it is at `review` round 2 with no reviewer started. The approver traced that no test server starts inside an API or worker process. The trigger is McpTestServer (decision.md), not RestTestServer.
-- A second failure of `test_a_worker_at_its_abandoned_cap_stops_claiming_and_exits_1` (#401) on any head goes to the supervisor before any merge; same for `test_orphaned_holds` (#366). No rerun-and-merge on a red CI: send the FAILED lines first.
-- Merge only with full gates and green CI on the head that merges (`--match-head-commit`, merge lock). After a merge with a migration: "hosted DB setup due" to the supervisor, no full gate active.
-- If `scripts/supervisor/autostart.ps1` shows as deleted, neither commit nor restore it; tell the supervisor.
+- Supervisor: **seth-supervisor-7** (find it with ListAgents; check `.devdata/supervisor/logs/supervising-session.log`). S-059 to S-062 are on main. **S-063** (branch `supervisor/rulings-s063`: 199 test diff accepted, condition #415 filed) goes in the next batch. Next free ruling S-064. Message the supervisor first. Never edit S-* rows.
+- S-059/S-060: content of 194 (3c4def8, B-4123) and 193 (c541744, B-4107, table A) accepted; NOT merge approvals. S-061: 195's round 1 expectations and B-4125..B-4129 accepted; round 2 needs the delta reviewed only; one shared re-check helper. S-062: 196 with delivery_0009 approved for batch 7 on full gates and green CI of the exact head. No lead-made source conflict resolution.
+- **Order after batch 7: 195, 194, 193, one at a time.** Each: merge main, resolve, code/security/isolation review of the delta and of every resolved conflict, the three demos, own CI, full gates, then a supervisor ruling. 193 and 194 wait for 195's merge (the helper). 196 added two key binds (`requested_api_key_id`, `decided_api_key_id`) to `repository.insert_plan`/`insert_approval`: 193/194/195 must pass them where they call these.
+- **#401 (job 199) diff is owed to the supervisor** (wait-only edit of an existing test: accepted only if every assertion and the 60 s timeout are unchanged and the reproduction is shown; its build.md answers whether a 4,500-client sweep is a product limit). Forward the exact diff.
+- After a merge with a migration: "hosted DB setup due" to the supervisor, no full gate active while it runs.
+- A second failure of #401's or #366's test on any head goes to the supervisor before any merge. No rerun-and-merge on a red CI: send the FAILED lines first. Merge only with full gates and green CI on the head that merges (`--match-head-commit`, merge lock). autostart.ps1 shown as deleted: neither commit nor restore.
+- S-061 and S-063 ask: reviewers of 195 round 2 look at B-4145's residual window (a write can start under a grant up to 30 s old plus the checkpoint and CLI version checks) and mutate `_recheck` and at least one `authorize` call. The reviewer that blocked 195 lived in the old session: start a fresh isolation-reviewer with round-1/isolation-review-2.md.
+- **199 needs a comparison series before it merges (S-063, amended on `supervisor/rulings-s063`).** 2 of 17 `-n 8` runs of the test file stalled (cause not established, overlapping batch 7's full suite). Put both before its reviewers and approver: can the diff cause them? Run the same file, same `-n 8`, the same count on `254dcbc7` and on `3d586dde`, each with comparable other load; no stall on the head that the base does not show; on a stall keep a thread dump (faulthandler dump_traceback_later) before killing it. A stall on both is its own issue and goes to the supervisor. Any product change, or a change of the 60 s or an assertion, comes back.
 
 ## Exact next step
-1. `factory/bin/job queue` (takes about 2 minutes; run in the background).
-2. **191** at review r2: spawn reviewer-code and reviewer-security (opus) on the delta since `0478201`. Then approver.
-   All factory gates below are PASS; none of their reviewers has started (round 1 unless noted). Each needs reviewer-code, reviewer-security (opus) and an isolation-reviewer (all four are isolation-critical), except 191 (code and security only):
-   - **193** (#290 Fabric, PR #404, `c541744`, main merged in): rule on B-4107 (setup-only change of `test_sp8_targets_of_one_organization_share_one_claim[fabric]`, distinct item names because requirement 2 refuses equal ones; lead leans accept, as for B-4129).
-   - **194** (#292 Palantir, PR #405, `3c4def8`): `plan_details` takes the sealed plan's toolchain digest; target PATCH left out (#397).
-   - **195** (#294 Docker, PR #403, `48b4d5b`): B-4129 setup-only test change; check the Snowflake branch edit in `PlanService.request` and the render dispatch default.
-   - **196** (#352, PR #402, `1faf7eb`): direct-INSERT table and one-IF-at-a-time mutations (see Rulings); one surviving mutant (tenant predicate of `api_key_creator`, redundant under RLS).
-3. Start **#390** (unblocked by 192), **#394** (after 189, also the dashboard bind limit), **#398** (after 190), **#401**; **#397** after 194; **#295**, **#296** last. #395 is the owner's: no factory label. Slots: concurrency 8.
-4. **Batch 7** (`lead/batch-7` from origin/main): whichever of 191, 193-196 are approved, and any `supervisor/rulings-*`. 193/194/195 edit the same shared files (`delivery/plans.py`, `executor/runner.py`, `delivery/schemas.py`, `CLAUDE.md`): expect conflicts beyond DECISIONS.md (a conflict outside DECISIONS.md goes to the supervisor; merge them one at a time). 196 changes the signatures of `repository.insert_plan`/`insert_approval` (a `requested_api_key_id`/`decided_api_key_id` argument, None allowed): 194 and 195 may call them directly.
-   `backend/tests/delivery/test_release_gate.py` (strict-subset assertion) breaks for whichever of 193/194/195 merges last.
+1. `factory/bin/job queue` (about 2 minutes; background). ListAgents, message the supervisor.
+2. **195** (#294, PR #403, `33580483`, synced on 254dcbc, gate PASS, review round 2): reviewer-code and reviewer-security (opus) on the delta `48b4d5b..33580483` excluding main's own changes, isolation-reviewer (fresh, see Rulings); then approver. Then the batch-8 gates and CI on the exact head, supervisor ruling, merge; it is the first of 195, 194, 193.
+3. **198** (#394, PR #411, `d33c5fa`, gate PASS, review round 1): reviewer-code, reviewer-security (opus) and an isolation-reviewer (project and workspace visibility, RLS-sensitive: existing assertions unchanged, #394 body). Spec ids B-4134, B-4135 used.
+4. **199** (#401, PR #413, `3d586dd`, builder READY, at stage `gate`, gate not run): `factory/bin/gate`, reviewer-code (opus), approver. Its existing-test edit is accepted by S-063 if nothing else changed.
+5. After 195 is merged: `factory/bin/job feedback 292` with `factory/jobs/194-*/lead-feedback-draft.md` (and 193's for #290 after 194); start a new builder for each (the old builders' sessions are gone). 194's PR #405 is synced with main at `6e850e6`.
+6. New issues to start when slots free: #397 (after 194), #398, #406/#407 (folded into 193/194 round 2 per the drafts, so do not start them separately), #410 (gateway checkpoint), #415 (client sweep), #395 (owner's, no label), #295, #296 last. Slots: concurrency 8.
+7. Batch 8 = `lead/batch-8` from origin/main: S-063, then whichever of 195, 198, 199 are approved. DECISIONS.md by union only; any other conflict goes to the supervisor.
 
-Next free lead decision id: **B-4131** (4098-4100 job 191, 4104-4109 job 193, 4113-4115 job 196, 4120-4124 job 194, 4125-4129 job 195, 4130 lead; older unused: B-4038, B-4039, B-4061, B-4062, B-4064, B-4066, B-4075, B-4077 to B-4080, B-4087, B-4088, 4110-4112, 4116-4119).
+Next free lead decision id: **B-4150** (4131-4133 job 197 unused, 4136-4139 job 198 free, 4142-4143 job 199 free, 4140 4148 4149 lead, 4144-4145 job 195 used, 4146-4147 free; older unused ids as before).
+
+## New this session (traps)
+- `gates.py --name X` checks out the ref into `.worktrees/X` and detaches it: never use the name of your own batch worktree (it took over `.worktrees/batch-7`); use `<batch>-merge`.
+- The factory gate takes about 5 minutes; the full gates 36 minutes with pytest 1699 s (3 builders alongside).
+- `union_merge.sh` takes the branch name without `origin/`. `saverev.py <agent id> <out> <title>` saves the LAST long hand-back of an agent (a second hand-back overwrites the first file if you reuse the name).
+- A reviewer asked a precise follow-up question reversed its verdict (195): ask reviewers about the two S-060 questions (token cache, stored rows) on every executor job.
 
 ## Helper scripts (gitignored, `.worktrees/_gate-logs/`)
 - `union_merge.sh <worktree> <remote-branch> <message>`: merge with DECISIONS.md by union; stops on any other conflict.
