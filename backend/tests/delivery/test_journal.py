@@ -15,8 +15,11 @@ from fastapi.testclient import TestClient
 from shifde.core.db import Database
 from tests.delivery.conftest import ExecutorSide
 from tests.delivery.routes import (
+    Flow,
     bearer,
+    deployment_row,
     enqueue,
+    enqueue_on_target,
     expire,
     job_row,
     job_url,
@@ -57,7 +60,10 @@ class Step:
 
 
 def _step(client: TestClient, ex: ExecutorSide, app_db: Database, deployment: UUID | None) -> Step:
-    enqueue(app_db, ex.tenant, "observe", deployment_id=deployment)
+    if deployment is None:
+        enqueue(app_db, ex.tenant, "observe")
+    else:
+        enqueue_on_target(app_db, ex.tenant, "observe", deployment)
     r = lease(client, ex.token)
     assert r.status_code == 200, r.text
     return Step(client, ex, r.json())
@@ -176,6 +182,62 @@ def test_a_job_without_a_deployment_has_no_journal(
     step = _step(client, executor_a, app_db, None)
     _code(step.post("intent"), 409, "no_journal")
     assert job_row(owner_db, step.job)["checkpoint_seq"] == 0
+
+
+def test_a_receipt_is_accepted_after_the_target_is_archived(
+    flow: Flow, executor_a: ExecutorSide, app_db: Database, owner_db: Database
+) -> None:
+    deployment = make_deployment(owner_db, executor_a.tenant)
+    step = _step(flow.client, executor_a, app_db, deployment)
+    _ok(step.post("intent"))
+    flow.archive(deployment_row(owner_db, deployment)["target_id"])
+    done = _ok(step.post("complete", receipt=RECEIPT))
+    assert done["state"] == "complete" and done["receipt"] == RECEIPT
+    after = journal_rows(owner_db, executor_a.tenant)
+    assert [row[2:6] for row in after] == [("deploy_app", DIGEST, "complete", RECEIPT)]
+    assert _ok(step.post("complete", receipt=RECEIPT)) == done
+    assert journal_rows(owner_db, executor_a.tenant) == after
+    assert job_row(owner_db, step.job)["checkpoint_seq"] == 3
+
+
+def test_a_recorded_intent_is_accepted_again_after_the_target_is_archived(
+    flow: Flow, executor_a: ExecutorSide, app_db: Database, owner_db: Database
+) -> None:
+    deployment = make_deployment(owner_db, executor_a.tenant)
+    step = _step(flow.client, executor_a, app_db, deployment)
+    _ok(step.post("intent", step="one"))
+    done = _ok(step.post("complete", step="one", receipt=RECEIPT))
+    intent = _ok(step.post("intent", step="two"))
+    other = _step(flow.client, executor_a, app_db, deployment)  # another job of the deployment
+    before = journal_rows(owner_db, executor_a.tenant)
+    flow.archive(deployment_row(owner_db, deployment)["target_id"])
+    assert _ok(step.post("intent", step="two")) == intent
+    assert _ok(step.post("intent", step="one")) == done
+    for key in ("one", "two"):
+        _code(step.post("intent", OTHER_DIGEST, step=key), 409, "input_digest_changed")
+    _code(step.post("intent", step="three"), 409, "target_unavailable")  # a new step
+    _code(other.post("intent", step="two"), 409, "step_outcome_unknown")
+    # the same job, leased again after its lease expired (fence 2)
+    expire(owner_db, step.job)
+    expire(owner_db, other.job)
+    r = lease(flow.client, executor_a.token, kinds=["observe"])
+    again = Step(flow.client, executor_a, r.json())
+    again.sequence = 100
+    assert again.job in (step.job, other.job) and again.leased["fence"] == 2
+    _code(again.post("intent", step="two"), 409, "step_outcome_unknown")
+    assert journal_rows(owner_db, executor_a.tenant) == before
+
+
+def test_an_intent_of_a_job_without_a_target_is_refused(
+    client: TestClient, executor_a: ExecutorSide, app_db: Database, owner_db: Database
+) -> None:
+    deployment = make_deployment(owner_db, executor_a.tenant)
+    enqueue(app_db, executor_a.tenant, "observe", deployment_id=deployment)
+    step = Step(client, executor_a, lease(client, executor_a.token).json())
+    _code(step.post("intent"), 409, "target_unavailable")
+    assert journal_rows(owner_db, executor_a.tenant) == []
+    row = job_row(owner_db, step.job)
+    assert (row["status"], row["checkpoint_seq"]) == ("leased", 0)
 
 
 def test_a_stale_fence_cannot_checkpoint(

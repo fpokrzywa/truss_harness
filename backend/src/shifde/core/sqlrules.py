@@ -25,10 +25,13 @@ operator in code (`sql_flow_operator`), a word or a whole `"..."` identifier sta
 `SYSTEM$` (`sql_system_function`), the word `procedure` (`sql_write_statement`) and an
 `IDENTIFIER(...)` whose argument is not one plain literal or name (`sql_dynamic_name`). Since #375
 both also refuse a comment or quote mark in an unquoted stage path (`sql_stage_path`; how Snowflake
-reads one is unconfirmed) and the functions `get_ddl`, `get_presigned_url` and `nextval` by name
-(`sql_refused_function`). The function deny-list as a whole is best effort; the least-privileged
-credential (B-1507) is the limiting control. The statement rules are stricter in two places: a
-bound `IDENTIFIER(:name)` is refused (no value is known yet) and `TABLE(...)` keeps the rule of
+reads one is unconfirmed; a character directly after a backslash does not end the path, #398) and
+the functions of `SNOWFLAKE_REFUSED_FUNCTIONS` by name (`sql_refused_function`). The run-time check
+alone refuses, since #398, a `//` directly after a `:` with its own message (here it is a
+`sql_comment`) and a non-ASCII character in code that is no letter or digit or is an invisible
+letter. The function deny-list as a whole is best effort; the least-privileged credential (B-1507)
+is the limiting control. The statement rules are stricter in two places: a bound
+`IDENTIFIER(:name)` is refused (no value is known yet) and `TABLE(...)` keeps the rule of
 `IDENTIFIER(...)`. A word directly after a single `:` is a parameter name, never one of these
 words; in a published template a raw `:call` is no bound parameter, and `raw_word_rules` reads it
 as code. The Snowflake table rules (drafts and render) are stricter again: they accept neither
@@ -60,11 +63,14 @@ FLOW_OPERATOR = "->>"
 FLOW_OPERATOR_MESSAGE = "the ->> flow operator is not allowed"
 SYSTEM_PREFIX = "system$"
 SNOWFLAKE_REFUSED_WORDS = frozenset({"procedure"})
-# functions refused by name (#375): they read an object named by a string (or a stage file), or
-# move a sequence
-SNOWFLAKE_REFUSED_FUNCTIONS = frozenset({"get_ddl", "get_presigned_url", "nextval"})
-# an unquoted stage path runs from an `@` in code to the first of these characters; Snowflake may
-# read a comment or quote mark inside it as part of the path, so one is refused there (#375)
+# functions refused by name (#375, #398): they read an object named by a string (or a stage file),
+# move a sequence, or name or read the result of another statement
+SNOWFLAKE_REFUSED_FUNCTIONS = frozenset(
+    {"get_ddl", "get_presigned_url", "nextval", "getnextval", "result_scan", "last_query_id"}
+)
+# an unquoted stage path runs from an `@` in code to the first of these characters that is not
+# directly preceded by a backslash (#398); Snowflake may read a comment or quote mark inside it as
+# part of the path, so one is refused there (#375)
 STAGE_PATH_ENDS = " \t\r\n"
 STAGE_PATH_MARKS = ("--", "//", "/*", "'", '"', "$$")
 STAGE_PATH_MESSAGE = "a comment or quote mark in an unquoted stage path is not allowed"
@@ -100,7 +106,9 @@ class SqlIssue:
 
 _SYSTEM_FUNCTION = SqlIssue("sql_system_function", "system functions are not allowed")
 _REFUSED_FUNCTION = SqlIssue(
-    "sql_refused_function", "GET_DDL, GET_PRESIGNED_URL and NEXTVAL are not allowed"
+    "sql_refused_function",
+    "GET_DDL, GET_PRESIGNED_URL, NEXTVAL, GETNEXTVAL, RESULT_SCAN and LAST_QUERY_ID are not"
+    " allowed",
 )
 _DYNAMIC_NAME = SqlIssue(
     "sql_dynamic_name",
@@ -422,12 +430,15 @@ def _dynamic_call(sql: str, tokens: list[Token], i: int) -> bool:
 
 def _stage_path_mark(sql: str, tokens: list[Token]) -> bool:
     """Whether a comment or quote mark stands in an unquoted stage path. The `@` and the characters
-    that end a path are text between tokens, and every mark starts a token. One pass."""
+    that end a path are text between tokens, and every mark starts a token. A path end directly
+    after a backslash does not end the path: Snowflake may read it as escaped (unconfirmed, #398).
+    One pass."""
     path = False
     end = 0
     for t in tokens:
-        for ch in sql[end : t.start]:
-            path = ch == "@" or (path and ch not in STAGE_PATH_ENDS)
+        for i in range(end, t.start):
+            ends = sql[i] in STAGE_PATH_ENDS and sql[i - 1] != "\\"
+            path = sql[i] == "@" or (path and not ends)
         if path and sql.startswith(STAGE_PATH_MARKS, t.start):
             return True
         end = t.end
@@ -759,7 +770,7 @@ def table_rules(
     rules (`_snowflake_references`) also refuse every `IDENTIFIER(...)` and `TABLE(...)`, a plain
     literal included. Neither dialect reads what a function names by a string or a one- or two-part
     name outside a FROM clause (a two-part UDF): the platform's grants limit those. The Snowflake
-    statement rules refuse `get_ddl`, `get_presigned_url` and `nextval` by name."""
+    statement rules refuse the functions of `SNOWFLAKE_REFUSED_FUNCTIONS` by name."""
     tokens = tokenize(sql, dialect=dialect)
     snowflake = dialect == "snowflake"
     norm = str.upper if snowflake else str.lower
