@@ -290,7 +290,9 @@ class McpTestServer:
         from mcp.server.fastmcp import FastMCP
         from mcp.types import ToolAnnotations
 
-        mcp = FastMCP("shifde-test-server")
+        # FastMCP's logging setup is for a process without one (`shifde-admin adapters verify`);
+        # WARNING, the root logger's own default, keeps the verify output quiet.
+        mcp = FastMCP("shifde-test-server", log_level="WARNING")
         calls = self.calls
 
         @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
@@ -354,9 +356,9 @@ class McpTestServer:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.bind(("127.0.0.1", 0))
         self.port = sock.getsockname()[1]
-        config = uvicorn.Config(
-            self._build_app(), log_level="error", lifespan="on", ws="none", access_log=False
-        )
+        # The loggers stay as this process set them up (B-4098): `log_config`, `log_level` and
+        # `access_log=False` would each change the process-wide uvicorn loggers for good.
+        config = uvicorn.Config(self._build_app(), log_config=None, lifespan="on", ws="none")
         self._server = uvicorn.Server(config)
         self._thread = threading.Thread(
             target=lambda: self._server.run(sockets=[sock]), daemon=True
