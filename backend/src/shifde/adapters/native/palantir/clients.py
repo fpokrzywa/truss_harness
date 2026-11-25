@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -30,6 +31,7 @@ MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 TOKEN_PATH = "/multipass/api/oauth2/token"
 INSTALLATIONS = "/api/v3/platform/marketplaceInstallations"
 JOBS = "/api/v3/platform/marketplaceInstallationJobs"
+TOKEN = re.compile(r"[!-~]+")  # printable ASCII without a space: a header value as it is
 
 
 @dataclass(frozen=True)
@@ -122,8 +124,8 @@ class PalantirClient:
             raise
 
     def _refusal(self) -> PermissionError:
-        """The error of a token the stack did not give or that is of other credentials; marks the
-        client `refused`."""
+        """The error of a token the stack did not give, that cannot be a header value or that is of
+        other credentials; marks the client `refused`."""
         self.refused = True
         return PermissionError("Foundry native credential unavailable")
 
@@ -147,14 +149,14 @@ class PalantirClient:
                         },
                     )
                 )
-            except (RuntimeError, ValueError):
+            except (RuntimeError, ValueError, httpx.DecodingError):
                 raise self._refusal() from None
             token = body.get("access_token")
-            if not isinstance(token, str) or not token:
+            if not isinstance(token, str) or not TOKEN.fullmatch(token):
                 raise self._refusal()
-            self._token, self._minted = token, credentials
             if self.authorize() != credentials:
                 raise self._refusal()
+            self._token, self._minted = token, credentials
         return self._token
 
     def request(

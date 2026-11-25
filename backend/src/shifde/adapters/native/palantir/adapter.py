@@ -9,10 +9,11 @@ when the credentials changed), so a refusal there leaves no intent; one that com
 write's own check, after the intent, leaves it open with no write sent.
 
 In verify the job fails, with no report, when `authorize` or the credential provider refuses, when
-the token endpoint answers anything but a token (a 4xx, a 5xx, an unreadable body) and when the
-credentials change while a token is minted. Any other error of the `ontology-read` or
-`frontend-asset` check is that check's failure, a timeout or lost connection of the token request
-included. Before those checks, in the reads of the observation, every error is the job's failure.
+the token endpoint answers anything but a token (a 4xx, a 5xx, an unreadable body, one whose content
+encoding does not decode, a token that cannot be a header value) and when the credentials change
+while a token is minted. Any other error of the `ontology-read` or `frontend-asset` check is that
+check's failure, a timeout or lost connection of the token request included. Before those checks, in
+the reads of the observation, every error is the job's failure.
 
 The accepted toolchain digest is the caller's (the executor's names its platform, so a plan made on
 the fake is refused on a real stack before any request). Every verification report carries
