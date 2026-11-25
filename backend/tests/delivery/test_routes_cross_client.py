@@ -18,7 +18,10 @@ behind an unknown outcome stay byte for byte unchanged through A's lease and A's
 deployment list and get, until B's own call settles them. The executor gateway routes (`delivery.gateway_api.router`) have
 their own table, `GATEWAY_ROUTE_TESTS`, in `test_gateway_cross_client.py`. Snowflake targets
 (SP6-3) answer A the same 404s and stay out of A's list, and B's executor leases none of A's
-Snowflake plan jobs.
+Snowflake plan jobs. Generated Snowflake apps (SP6-6): in both directions, a plan on the other
+organization's target or of its release, its plan (an approval quoting the real digest included)
+and its deployment answer the unknown-id 404, its provider is `model_not_in_target_account`, its
+rows stay out of the lists and unreadable to `shifde_app`, and they never change.
 """
 
 from __future__ import annotations
@@ -41,6 +44,7 @@ from shifde.delivery import api as delivery_api
 from shifde.delivery import gateway, repository, service
 from shifde.identity.apikeys import hash_key
 from tests.connections.routes import as_user, org, system_role_user
+from tests.delivery.app_releases import AppRelease, add_provider
 from tests.delivery.conftest import make_executor
 from tests.delivery.releases import release_for_target
 from tests.delivery.routes import (
@@ -75,7 +79,7 @@ from tests.delivery.routes import (
     target_body,
     targets,
 )
-from tests.delivery.snowflake import snowflake_plan
+from tests.delivery.snowflake import app_release, app_target, snowflake_plan
 from tests.tenancy.conftest import World, app_session
 from tests.tenancy.routes import People, ws_slug
 
@@ -1015,3 +1019,208 @@ def test_bs_executor_leases_none_of_as_snowflake_plan_jobs(
     assert job_row(owner_db, plan.job_id) == before
     r = lease(client, a.token, kinds=["plan"])
     assert r.status_code == 200 and r.json()["job"]["id"] == str(plan.job_id), r.text
+
+
+# ------------------------------------------------------------------ generated Snowflake apps (SP6-6)
+@dataclass(frozen=True)
+class SnowflakeSide:
+    flow: Flow
+    target: str
+    release: AppRelease
+    sealed: dict[str, Any]  # a sealed plan
+    approved: dict[str, Any]  # another plan, approved
+    deployment: str  # its queued deployment
+
+
+@pytest.fixture
+def two_snowflake_apps(
+    client: TestClient, world: World, people: People, owner_db: Database
+) -> dict[str, SnowflakeSide]:
+    """In each organization: a Snowflake target, a sealed, passed release of its own, a sealed plan
+    and an approved one with its queued deployment, all through the routes."""
+    sides = {}
+    for name, c, email in (("b", world.b, people.owner_b), ("a", world.a, people.owner_a)):
+        flow = Flow(
+            client,
+            c.slug,
+            ws_slug(c),
+            c.tenant,
+            email,
+            system_role_user(owner_db, c.tenant, "tenant_administrator"),
+            make_executor(client, c, email).token,
+            owner_db,
+        )
+        target = app_target(flow)
+        release = app_release(flow, target)
+        approved = flow.approve(flow.sealed(target["id"], "live-app", release_id=release.id))
+        sealed = flow.sealed(target["id"], release_id=release.id)
+        assert sealed["status"] == "sealed" and approved["deployment_id"]
+        sides[name] = SnowflakeSide(
+            flow, target["id"], release, sealed, approved, approved["deployment_id"]
+        )
+    return sides
+
+
+_SNOWFLAKE_TABLES = (
+    "delivery_targets",
+    "delivery_artifacts",
+    "delivery_plans",
+    "delivery_deployments",
+)
+
+
+def _tenant_rows(owner_db: Database, side: SnowflakeSide) -> list[list[tuple[Any, ...]]]:
+    """The organization's delivery rows and release, read as the schema owner."""
+    tables = (*_SNOWFLAKE_TABLES, "delivery_jobs", "delivery_approvals", "releases")
+    with owner_db.session() as o:
+        return [
+            [
+                tuple(r)
+                for r in o.execute(
+                    # the table names are the literals above
+                    text(f"SELECT * FROM shifde.{table} WHERE tenant_id = :t ORDER BY id"),  # nosec B608
+                    {"t": side.flow.tenant},
+                )
+            ]
+            for table in tables
+        ]
+
+
+@pytest.mark.parametrize(("me", "other"), [("a", "b"), ("b", "a")])
+def test_a_cannot_plan_bs_snowflake_target_or_release(
+    client: TestClient,
+    owner_db: Database,
+    two_snowflake_apps: dict[str, SnowflakeSide],
+    me: str,
+    other: str,
+) -> None:
+    mine, theirs = two_snowflake_apps[me], two_snowflake_apps[other]
+    flow, release = mine.flow, str(mine.release.id)
+    h = as_user(client, flow.requester)
+    request_plan(client, h, flow.slug, mine.target, release, application_key="own")  # own first
+    before, own = _tenant_rows(owner_db, theirs), _tenant_rows(owner_db, mine)
+    nobody = str(uuid7())
+    for named, unknown in (
+        (_plan_body(theirs.target, release), _plan_body(nobody, release)),
+        (_plan_body(theirs.target, str(theirs.release.id)), _plan_body(nobody, release)),
+        (_plan_body(mine.target, str(theirs.release.id)), _plan_body(mine.target, nobody)),
+    ):
+        _same_404(
+            client.post(plans(flow.slug), json=named, headers=h),
+            client.post(plans(flow.slug), json=unknown, headers=h),
+        )
+    assert _tenant_rows(owner_db, theirs) == before
+    assert _tenant_rows(owner_db, mine) == own
+
+
+@pytest.mark.parametrize(("me", "other"), [("a", "b"), ("b", "a")])
+def test_a_cannot_reach_bs_snowflake_plan_or_deployment(
+    client: TestClient,
+    owner_db: Database,
+    two_snowflake_apps: dict[str, SnowflakeSide],
+    me: str,
+    other: str,
+) -> None:
+    mine, theirs = two_snowflake_apps[me], two_snowflake_apps[other]
+    slug = mine.flow.slug
+    h = as_user(client, mine.flow.requester)
+    before = _tenant_rows(owner_db, theirs)
+    nobody = str(uuid7())
+    digest = {"plan_digest": theirs.sealed["digest"]}
+    note = {"note": "intruder"}
+    own_digest = {"plan_digest": mine.sealed["digest"]}
+    for base, own_id, their_id, calls in (
+        (
+            plans(slug),
+            mine.sealed["id"],
+            theirs.sealed["id"],
+            (("GET", "", None), ("POST", "/approve", digest), ("POST", "/reject", {})),
+        ),
+        (
+            deployments(slug),
+            mine.deployment,
+            theirs.deployment,
+            (
+                ("GET", "", None),
+                ("POST", "/reconcile", None),
+                ("POST", "/mark-failed", note),
+                ("POST", "/cancel", None),
+            ),
+        ),
+    ):
+        for method, suffix, payload in calls:
+            sent = own_digest if suffix == "/approve" else payload
+            r = client.request(method, f"{base}/{own_id}{suffix}", headers=h, json=sent)
+            assert r.status_code in (200, 403, 409), (suffix, r.text)  # own object first
+            _same_404(
+                client.request(method, f"{base}/{their_id}{suffix}", headers=h, json=payload),
+                client.request(method, f"{base}/{nobody}{suffix}", headers=h, json=payload),
+            )
+    listed_plans = client.get(f"{plans(slug)}?limit=200", headers=h).json()["items"]
+    assert {p["id"] for p in listed_plans} == {mine.sealed["id"], mine.approved["id"]}
+    listed = client.get(f"{deployments(slug)}?limit=200", headers=h).json()["items"]
+    assert [d["id"] for d in listed] == [mine.deployment]
+    by_target = client.get(plans(slug), params={"target": theirs.target}, headers=h)
+    assert by_target.json()["items"] == []
+    assert _tenant_rows(owner_db, theirs) == before
+
+
+@pytest.mark.parametrize(("me", "other"), [("a", "b"), ("b", "a")])
+def test_as_snowflake_release_cannot_use_bs_provider(
+    client: TestClient,
+    owner_db: Database,
+    two_snowflake_apps: dict[str, SnowflakeSide],
+    me: str,
+    other: str,
+) -> None:
+    """A provider of the other organization, its `base_url` on my own target's account: refused
+    like an unknown id, naming nothing of theirs."""
+    mine, theirs = two_snowflake_apps[me], two_snowflake_apps[other]
+    flow = mine.flow
+    h = as_user(client, flow.requester)
+    target = client.get(f"{targets(flow.slug)}/{mine.target}", headers=h).json()
+    client.cookies.clear()
+    answers = []
+    for provider in (
+        add_provider(
+            owner_db, theirs.flow.tenant, "openai_compatible", f"{target['address']}/api/v2"
+        ),
+        theirs.release.provider_id,
+        uuid7(),
+    ):
+        release = app_release(flow, target, provider_id=provider)
+        before, own = _tenant_rows(owner_db, theirs), _tenant_rows(owner_db, mine)
+        h = as_user(client, flow.requester)
+        body = request_plan(
+            client, h, flow.slug, mine.target, release.id, 409, application_key="own"
+        )
+        client.cookies.clear()
+        assert body["code"] == "model_not_in_target_account"
+        assert str(provider) not in str(body) and target["address"] not in str(body)
+        assert _tenant_rows(owner_db, theirs) == before
+        assert _tenant_rows(owner_db, mine) == own
+        answers.append({k: v for k, v in body.items() if k not in _VARYING})
+    assert answers[0] == answers[1] == answers[2]
+
+
+@pytest.mark.parametrize(("me", "other"), [("a", "b"), ("b", "a")])
+def test_shifde_app_in_as_context_selects_none_of_bs_snowflake_rows(
+    app_db: Database, two_snowflake_apps: dict[str, SnowflakeSide], me: str, other: str
+) -> None:
+    mine, theirs = two_snowflake_apps[me], two_snowflake_apps[other]
+    with app_session(app_db, mine.flow.tenant) as s:
+        for table in _SNOWFLAKE_TABLES:
+            # the table names are the literals above
+            found = s.execute(text(f"SELECT DISTINCT tenant_id FROM shifde.{table}"))  # nosec B608
+            assert set(found.scalars()) == {mine.flow.tenant}, table
+        for table, their_id in (
+            ("delivery_targets", theirs.target),
+            ("delivery_artifacts", theirs.sealed["artifact_id"]),
+            ("delivery_plans", theirs.sealed["id"]),
+            ("delivery_deployments", theirs.deployment),
+        ):
+            n = s.execute(
+                text(f"SELECT count(*) FROM shifde.{table} WHERE id = :i"),  # nosec B608
+                {"i": their_id},
+            ).scalar_one()
+            assert n == 0, table

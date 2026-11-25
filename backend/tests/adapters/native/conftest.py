@@ -36,6 +36,13 @@ from shifde.adapters.native.databricks.fake import FakeDatabricksPlatform
 from shifde.adapters.native.snowflake.adapter import SnowflakeNativeAdapter
 from shifde.adapters.native.snowflake.clients import SnowflakeKeyPair
 from shifde.adapters.native.snowflake.fake import Account, FakeSnowflakeNativePlatform
+from shifde.appgen.render import render
+from tests.appgen.rendered import (
+    CORTEX_MODEL,
+    SNOWFLAKE_DIGEST,
+    SNOWFLAKE_MANIFEST,
+    SNOWFLAKE_RESOLVED,
+)
 
 WAREHOUSE = "warehouse-123"
 PRINCIPAL = "4a3c1f7e-0b5d-4c8e-9f21-6d7a8b9c0e1f"  # a service principal's application id
@@ -130,15 +137,12 @@ SF_PEM = SF_KEY.private_bytes(
 SF_HOST = "https://acct1.snowflakecomputing.com"
 SF_BINDINGS = {"package": "SHIFDE_PKG", "application": "SHIFDE_APP", "warehouse": "APP_WH"}
 SF_ROLE = "DEPLOY_ROLE"
-# A test-only package: the shape of a rendered one (the generator is SP6-5).
+SF_RELEASE = SNOWFLAKE_DIGEST  # the release digest the package's deep health answers
+# The rendered sample package as the adapter reads it (the executor strips `release.json`).
 SF_FILES = {
-    "manifest.yml": b"manifest_version: 1\nversion:\n  name: V1\n  label: SHIFDE V1\n"
-    b"artifacts:\n  setup_script: setup.sql\n  default_streamlit: APP_PUBLIC.UI\n",
-    "setup.sql": b"CREATE APPLICATION ROLE IF NOT EXISTS APP_USER;\n"
-    b"CREATE OR ALTER VERSIONED SCHEMA APP_PUBLIC;\n",
-    "ui/environment.yml": b"name: shifde_native_app\nchannels:\n  - snowflake\n",
-    "ui/streamlit_app.py": b"import streamlit as st\n\nst.title('SHIFDE')\n",
-    "ui/deep_health.py": b"def run(session):\n    return {'status': 'ok'}\n",
+    path: data
+    for path, data in render(SNOWFLAKE_MANIFEST, SF_RELEASE, SNOWFLAKE_RESOLVED).items()
+    if path != "release.json"
 }
 
 
@@ -225,6 +229,7 @@ def make_sf_setup(
     tenant = uuid4()
     target = Target(tenant_id=tenant, host=host, bindings=dict(SF_BINDINGS))
     account = host.removeprefix("https://").split(".")[0]  # the target host's account
+    platform.data(host).cortex.setdefault(CORTEX_MODEL, [])  # the package's Cortex model
     credential = sf_credential(tenant, credential_host or host, account=account)
     build = BuildContext(
         tenant_id=tenant, artifacts=InMemoryArtifactStore(), toolchain_digest="b" * 64

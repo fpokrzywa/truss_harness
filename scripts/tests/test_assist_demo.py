@@ -1,5 +1,5 @@
 """scripts/assist_demo.py without the backend environment or a cluster: only `--fake` runs, and
-without it the script stops with exit 2 and the fake-only message; `--through` takes 1..7 only."""
+without it the script stops with exit 2 and the fake-only message; `--through` takes 1..8 only."""
 
 from __future__ import annotations
 
@@ -28,16 +28,17 @@ class WithoutFake(unittest.TestCase):
         self.assertEqual(out.getvalue().strip(), f"ASSIST DEMO NOT RUN: {demo.FAKE_ONLY}")
         self.assertIn("run with --fake", out.getvalue())
 
-    def test_through_takes_steps_1_to_7_only(self) -> None:
-        for value in ("0", "8", "x"):
+    def test_through_takes_steps_1_to_8_only(self) -> None:
+        self.assertEqual(demo.STEPS, 8)
+        for value in ("0", "9", "x"):
             err = io.StringIO()
             with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as refused:
                 demo.main(["--fake", "--through", value])
             self.assertEqual(refused.exception.code, 2, value)
             self.assertIn("--through", err.getvalue())
 
-    def test_through_1_to_7_without_fake_still_needs_fake(self) -> None:
-        for value in ("1", "7"):
+    def test_through_1_to_8_without_fake_still_needs_fake(self) -> None:
+        for value in ("1", "8"):
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 code = demo.main(["--through", value])

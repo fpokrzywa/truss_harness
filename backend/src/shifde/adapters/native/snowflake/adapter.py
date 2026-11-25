@@ -636,7 +636,7 @@ class SnowflakeNativeAdapter:
             checks=[
                 Check(name="native-version", status="passed"),
                 self._runtime_health(gateway, names),
-                self._deep_health(gateway, names, receipt.artifact_digest),
+                self._deep_health(gateway, names, request.release_digest),
             ]
         )
 
@@ -656,7 +656,16 @@ class SnowflakeNativeAdapter:
         )
 
     @staticmethod
-    def _deep_health(gateway: SqlGateway, names: dict[str, str], release: str) -> Check:
+    def _deep_health(gateway: SqlGateway, names: dict[str, str], release: str | None) -> Check:
+        """`status` ok, the plan's release digest (never the artifact's) and every check of a
+        non-empty list passed; the problems are the evidence. No release digest: failed, no
+        call."""
+        if release is None:
+            return Check(
+                name="app-deep-health",
+                status="failed",
+                evidence="app-deep-health: the request has no release digest",
+            )
         sql = f'CALL {quoted(names["application"])}."APP_PUBLIC"."DEEP_HEALTH"()'
         try:
             rows = gateway.execute(sql, warehouse=names["warehouse"]).rows
@@ -674,7 +683,7 @@ class SnowflakeNativeAdapter:
         if report.get("release_digest") != release:
             problems.append("release digest differs from the plan's")
         checks = report.get("checks")
-        for item in checks if isinstance(checks, list) else [{"name": "checks"}]:
+        for item in checks if isinstance(checks, list) and checks else [{"name": "checks"}]:
             if not isinstance(item, dict) or item.get("status") != "passed":
                 item = item if isinstance(item, dict) else {}
                 reason = item.get("reason") or "failed"

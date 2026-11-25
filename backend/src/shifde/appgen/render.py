@@ -9,13 +9,14 @@ kind or another version is refused with `GeneratorVersionUnsupported`. `GENERATO
 Databricks alias. Every version matches `GENERATOR_VERSION_PATTERN`,
 `shifde.appgen(.<kind>)?/<major>.<minor>`.
 
-`databricks.app/v1` renders the Databricks App bundle: the managed `databricks.yml`,
-`app/app.yaml`, the generated service (`app/app.py`, the platform-neutral `app/agent_loop.py` and
-`app/backend_databricks.py`) and its hashed lock, the four config files, the committed React
-bundle under `app/static/` and `release.json`. `snowflake.native-app/v1` renders the Native App
-package of `appgen.render_snowflake`. `Resolved` lives here, not in `appgen.schemas` (which
-re-exports it), because `appgen.schemas` imports `evaluation` and `packaging`, which render may
-not reach.
+`databricks.app/v1` renders the Databricks App bundle: the managed `databricks.yml`, `app/app.yaml`,
+the generated service (`app/app.py`, the platform-neutral `app/agent_loop.py` and
+`app/backend_databricks.py`) and its hashed lock, the four config files, the committed React bundle
+under `app/static/` and `release.json`. `snowflake.native-app/v1` renders the Native App package of
+`appgen.render_snowflake`. `Resolved` lives here, not in `appgen.schemas` (which re-exports it),
+because `appgen.schemas` imports `evaluation` and `packaging`, which render may not reach.
+`Resolved.model.provider` is only compared by the delivery plan gates: no renderer reads it, so the
+provider's `base_url` never reaches an app.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ from importlib.resources.abc import Traversable
 from typing import Any  # Any: JSON documents
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from shifde.appgen import render_snowflake
 from shifde.core.errors import AppError
@@ -101,9 +102,18 @@ class ResolvedTool(BaseModel):
     max_rows: int
 
 
+class ResolvedProvider(BaseModel):
+    """The model's provider as the reader may see it: for comparison only, never rendered."""
+
+    model_config = Strict
+    kind: str
+    base_url: str | None = Field(default=None, repr=False)
+
+
 class ResolvedModel(BaseModel):
     model_config = Strict
     serving_endpoint: str
+    provider: ResolvedProvider | None = None
 
 
 class Resolved(BaseModel):

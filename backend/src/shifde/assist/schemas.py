@@ -10,6 +10,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from shifde.core.bodies import Body
+
 Strict = ConfigDict(extra="forbid")
 SpecialistStatus = Literal["installing", "enabled", "disabled"]
 RequestStatus = Literal["queued", "classifying", "handing_over", "routed", "refused", "failed"]
@@ -103,10 +105,9 @@ class ContextIn(BaseModel):
     id: UUID
 
 
-class AssistRequestIn(BaseModel):
+class AssistRequestIn(Body):
     """`POST .../assist/requests`: the person's text, their pick of specialist and a context."""
 
-    model_config = Strict
     text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
     specialist: str | None = None
     context: ContextIn | None = None
