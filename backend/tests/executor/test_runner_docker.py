@@ -432,6 +432,41 @@ def test_an_artifact_that_is_not_the_bundle_is_refused(docker: Docker, owner_db:
     assert docker.reason(made) == "plan job failed: execution_failed"
 
 
+# ------------------------------------------------------------------ the target's one container
+def test_two_applications_on_one_docker_target_never_replace_each_others_container(
+    docker: Docker, owner_db: Database
+) -> None:
+    """The compose project is the target's: with two application keys sealed and approved, the
+    second apply is refused by the fingerprint without a build or a compose-up, and a later plan
+    of another key is refused."""
+
+    def sealed(key: str, release_id: object) -> dict[str, Any]:  # Any: a PlanOut body
+        made = ask_plan(docker.flow, docker.target["id"], key, release_id)
+        assert docker.runner.run_once()
+        plan = docker.flow.get_plan(made["id"])
+        assert plan["status"] == "sealed", plan["status_reason"]
+        return plan
+
+    other = docker_release(docker.flow, docker.target)
+    made = [sealed("sales-app", docker.release.id), sealed("other-app", other.id)]
+    first, second = (str(docker.flow.approve(plan)["deployment_id"]) for plan in made)
+    assert docker.runner.run_once()  # the first apply, the oldest job
+    assert deployment_row(owner_db, first)["status"] == "observing"
+    actions, container = list(docker.fake.actions), docker.fake.projects[docker.project]
+    assert [action for action, _ in actions] == ["build", "compose-up"]
+    row = docker.run(second, "apply")
+    assert (row["status"], row["status_reason"]) == ("failed", "no platform write was attempted")
+    assert docker.flow.get(second)["journal"] == []
+    assert docker.run(first, "observe", "verify")["status"] == "verified"
+    third = ask_plan(docker.flow, docker.target["id"], "third-app", other.id)
+    assert docker.runner.run_once()
+    assert plan_row(owner_db, third["id"])["status"] == "plan_failed"
+    assert docker.reason(third) == "refusing to adopt an unowned native app"
+    assert docker.fake.actions == actions
+    assert docker.fake.projects == {docker.project: container}
+    assert container.image == image_tag(docker.project, docker.release.release.digest)
+
+
 # ------------------------------------------------------------------ the target or entry gone mid-job
 def _expire_grant(docker: Docker) -> None:
     """The job in flight's grant has run out (30 seconds), as during a long build."""
