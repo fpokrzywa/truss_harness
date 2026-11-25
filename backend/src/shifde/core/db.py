@@ -222,8 +222,9 @@ def _clean_checkout(
     dbapi_connection: Any, connection_record: ConnectionPoolEntry, connection_proxy: object
 ) -> None:
     """Pool `checkout` hook: discard session state, then refuse a preset context. SETH keeps no
-    session state across a checkout (advisory locks are transaction-level, LISTEN uses its own
-    connection). `Database` turns psycopg's automatic prepared statements off, because DISCARD ALL
+    session state across a checkout (a pooled connection's advisory locks are transaction-level;
+    LISTEN and the worker's session-level client-sweep lock use connections of their own).
+    `Database` turns psycopg's automatic prepared statements off, because DISCARD ALL
     drops them server-side behind psycopg's back (DECISIONS B-404). Raising here makes
     SQLAlchemy invalidate (close) the connection."""
     autocommit = dbapi_connection.autocommit

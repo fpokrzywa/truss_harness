@@ -44,12 +44,21 @@ by lease expiry and the reaper (C1), never cancelled.
 Client sweeps (issue #361): on a tick where this worker won the reaper lock, the reaper also runs
 the two sweeps below. Each visits every client, so a running worker gives them a thread of their
 own, one at a time: the main loop keeps claiming and reaping leases meanwhile, however many
-clients there are, and a reap that comes due during a sweep starts no second one. A sweep that has
-run longer than `max(2 * lease, 60)` seconds (issue #363) is stuck or very long: each due sweep it
-holds up logs `worker.sweep_still_running` and, until it ends, reaps stop recording `last_reap_at`,
-so platform health's reaper goes "stale". Readiness is unaffected, since claiming and lease reaping
-go on. A sweep thread that cannot start is a crash (exit 1). A stop ends the sweep before the next
-client and before the second sweep lists its clients.
+clients there are, and a reap that comes due during a sweep starts no second one. One worker sweeps
+at a time (issue #415): a sweep holds a session-level advisory lock (`SWEEP_LOCK`) from before it
+lists the first client to its end, on a connection of its own opened for that sweep; a worker that
+does not get the lock skips the sweep until its next due one, and nothing is swept without it. The
+connection runs one `SELECT 1` after each finished client and has an idle bound of `max(2 * lease,
+60)` seconds (`idle_session_timeout`): when a step is stuck or the holder's host is gone, the server
+ends the session and another worker can sweep. A holder that goes on after that logs
+`worker.sweep_lock_lost` and visits no further client.
+
+A sweep is stuck when no client has finished for `max(2 * lease, 60)` seconds (since its start,
+until the first one has; issues #363, #415), however long the whole sweep takes: each due sweep it
+holds up logs `worker.sweep_still_running` and, until it progresses or ends, reaps stop recording
+`last_reap_at`, so platform health's reaper goes "stale". Readiness is unaffected, since claiming
+and lease reaping go on. A sweep thread that cannot start is a crash (exit 1). A stop ends the sweep
+before the next client and before the second sweep lists its clients.
 
 Capture-off sweep (F-12, issue #34): the first sweeps every capture-off client for ended runs (run
 and root terminal) whose content scrub never ran (the reaper's follow-up transaction failed, or a
@@ -93,7 +102,8 @@ import threading
 import time
 import traceback
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -132,6 +142,7 @@ from shifde.runtime.settle import capture_full, scrub_ended
 
 log = structlog.get_logger("shifde.worker")
 REAPER_LOCK = "shifde:reaper"
+SWEEP_LOCK = "shifde:client-sweep"  # session-level, held over both client sweeps
 CAPTURE_SWEEP_LOCK = "shifde:capture-sweep:{}"  # per client
 _CLIENTS = text("SELECT id FROM shifde.tenants ORDER BY id")
 EXIT_CONFIG = 2  # as `settings_or_exit`: a configuration a restart cannot fix
@@ -162,6 +173,10 @@ class _Job:
     lease_lost: threading.Event = field(default_factory=threading.Event)
     # wedged past its run's deadline: no longer heartbeated, waited for or counted (ARCH M3)
     abandoned: threading.Event = field(default_factory=threading.Event)
+
+
+class _SweepLockLost(Exception):
+    """The session that held `SWEEP_LOCK` ended while this worker swept."""
 
 
 class Worker:
@@ -234,6 +249,8 @@ class Worker:
         self._sweeping = threading.Lock()  # held while this worker's client sweeps run
         # monotonic start of the sweep in progress; set and cleared only with `_sweeping` held
         self._sweep_started: float | None = None
+        # monotonic end of the last client's step in that sweep; None until the first one ends
+        self._sweep_progressed: float | None = None
 
     # ------------------------------------------------------------------ lifecycle
     def run(self) -> int:
@@ -647,25 +664,75 @@ class Worker:
         return False
 
     def _sweep_overdue(self) -> float | None:
-        """Seconds the sweep in progress has run, when longer than `wedged_after`; else None."""
+        """Seconds since the sweep in progress last finished a client (or started), when longer
+        than `wedged_after`; else None."""
+        # read before `_sweep_started`, which the end of a sweep clears first
+        progressed = self._sweep_progressed
         started = self._sweep_started
         if started is None:
             return None
-        elapsed = time.monotonic() - started
+        elapsed = time.monotonic() - (started if progressed is None else max(started, progressed))
         return elapsed if elapsed > self.wedged_after.total_seconds() else None
 
     def _sweep(self) -> None:
-        """Both client sweeps, in order (the second only when the sweep is not over); releases
-        `_sweeping`, which the caller took."""
+        """Both client sweeps, in order (the second only when the sweep is not over), under
+        `SWEEP_LOCK`; none while another worker holds it. Releases `_sweeping`, which the caller
+        took."""
         try:
-            self._sweep_capture_off()
-            if not self._sweep_over():
-                self._sweep_invocation_holds()
+            with self._sweep_lock() as lock:
+                if lock is None or self._sweep_over():
+                    return
+                self._sweep_capture_off(lock)
+                if not self._sweep_over():
+                    self._sweep_invocation_holds(lock)
+        except _SweepLockLost:
+            log.warning("worker.sweep_lock_lost", worker_id=self.worker_id)
         except Exception:  # noqa: BLE001 - the next reap sweeps again
             log.error("worker.sweep_failed", exc_info=True)
         finally:
             self._sweep_started = None
+            self._sweep_progressed = None
             self._sweeping.release()
+
+    @contextmanager
+    def _sweep_lock(self) -> Iterator[psycopg.Connection | None]:
+        """The connection that holds `SWEEP_LOCK`, or None while another worker holds it. The lock
+        is session state, so the connection is never a pooled one. The server ends it, and so frees
+        the lock, once it was idle for `wedged_after`. It is unlocked before it is closed: the
+        server frees the lock of a closed connection only a moment later."""
+        url = make_url(self.settings.database_url).set(drivername="postgresql")
+        idle_ms = max(1, int(self.wedged_after.total_seconds() * 1000))  # 0 would be no bound
+        options = f"-c idle_session_timeout={idle_ms}"
+        if self.settings.db_statement_timeout_ms > 0:
+            options += f" -c statement_timeout={self.settings.db_statement_timeout_ms}"
+        c = psycopg.connect(
+            url.render_as_string(hide_password=False),
+            autocommit=True,
+            connect_timeout=10,
+            options=options,
+        )
+        got = False
+        try:
+            row = c.execute(
+                "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))", (SWEEP_LOCK,)
+            ).fetchone()
+            got = row is not None and bool(row[0])
+            yield c if got else None
+        finally:
+            with suppress(Exception):  # the server frees the lock of a session that is gone
+                if got:
+                    c.execute("SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (SWEEP_LOCK,))
+            with suppress(Exception):
+                c.close()
+
+    def _client_swept(self, lock: psycopg.Connection) -> None:
+        """A client's step ended: the sweep progressed, and its lock connection is not idle. Raises
+        `_SweepLockLost` when that connection is gone."""
+        self._sweep_progressed = time.monotonic()
+        try:
+            lock.execute("SELECT 1")
+        except Exception:  # noqa: BLE001 - without an answer the lock may be another worker's
+            raise _SweepLockLost from None
 
     def _sweep_over(self) -> bool:
         """No further client is swept: a stop was requested or the worker is shutting down."""
@@ -726,7 +793,7 @@ class Worker:
         except Exception:  # noqa: BLE001 - auditing the reaper must never stop it
             log.error("worker.reap_audit_failed", exc_info=True)
 
-    def _sweep_capture_off(self) -> None:
+    def _sweep_capture_off(self, lock: psycopg.Connection) -> None:
         """Capture off (F-12): scrub the ended runs (run and root terminal) whose scrub never ran
         (a follow-up transaction failed, or a worker died first). Clients are listed under the
         platform-administrator context; each one is then swept in a transaction of its own with
@@ -737,6 +804,7 @@ class Worker:
             if self._sweep_over():
                 return
             self._sweep_client(tenant_id)
+            self._client_swept(lock)
 
     def _clients(self, event: str) -> list[UUID] | None:
         """Every client's id, listed under the platform-administrator context; None (logged as
@@ -751,7 +819,7 @@ class Worker:
             return None
         return clients
 
-    def _sweep_invocation_holds(self) -> None:
+    def _sweep_invocation_holds(self, lock: psycopg.Connection) -> None:
         """Settle every client's marked direct-invocation holds past their TTL (issue #91), each
         client in a transaction of its own with only that client set. Idempotent. Ends early on a
         stop request."""
@@ -759,6 +827,7 @@ class Worker:
             if self._sweep_over():
                 return
             self._sweep_client_invocations(tenant_id)
+            self._client_swept(lock)
 
     def _sweep_client_invocations(self, tenant_id: UUID) -> None:
         with self.db.session() as s:
