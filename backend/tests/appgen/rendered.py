@@ -5,8 +5,8 @@ written to a directory and their modules imported, a real `databricks.sdk.Worksp
 socket is opened), and SETH's own answer of a tool on the same fake (`_answer` of
 `tests/adapters/dataplatforms/test_databricks_appgen_fixtures.py`). SP6-5 adds the
 `snowflake.native-app/v1` release of `SNOWFLAKE_SAMPLE_DRAFT` (`SNOWFLAKE_MANIFEST`, bound to
-Cortex model `CORTEX_MODEL`). SP8-1 adds the `docker.compose/v1` manifests no generator renders
-(`DOCKER_SEALS`, `on_docker`)."""
+Cortex model `CORTEX_MODEL`). SP8-1 adds `docker.compose/v1` manifests by how they were sealed
+(`DOCKER_SEALS`, `on_docker`); only the first seal renders (SP8-9)."""
 
 from __future__ import annotations
 

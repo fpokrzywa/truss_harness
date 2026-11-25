@@ -26,9 +26,11 @@ names a release the caller can read (else `release not found`), not withdrawn (4
 `release_withdrawn`), in the target's workspace and project (409 `release_target_mismatch`), with a
 passing evaluation of its digests (409 `evaluation_required`) and of the target's kind (409
 `target_kind_mismatch`: the manifest's `target_kind` is not of the target's `platform_kind`; only
-`databricks.app/v1` and `snowflake.native-app/v1` have a platform). The plan stores the release,
-its digest and the passing run; the artifact carries `release.json` and the plan digest the release
-digest. Approval checks the release again after the plan row lock; reject does not.
+`databricks.app/v1`, `snowflake.native-app/v1` and `docker.compose/v1` have a platform; behind
+that gate, a pair of platform and kind no branch names is 409 `generator_version_unsupported`).
+The plan stores the release, its digest and the passing run; the artifact carries `release.json`
+and the plan digest the release digest. Approval checks the release again after the plan row lock;
+reject does not.
 
 A `/2` release (compiler `packaging.service.COMPILER_VERSION_APP`, SP5 design 6.6) on a Databricks
 target deploys the generated app instead of the SDK template. After the checks above it is refused
@@ -52,6 +54,15 @@ account address, read from `Resolved.model.provider`; `Resolved` is gathered fir
 pin's `release_source_changed` may come before it). The render then refuses with
 `generator_version_unsupported` or `release_not_renderable` (a fixed detail: a pinned version may
 be one the requester cannot see).
+
+A Docker target deploys only the generated Docker bundle of a `/2` release (SP8 design section 6),
+never the template. After the checks above it is refused with 409, in this order and before any
+write: `workspace_not_claimed` (this organization holds no active claim on the target's
+`workspace_host` as a Databricks target: an unclaimed host, another organization's and a released
+one get one answer), `serving_endpoint_mismatch`, `model_not_in_target_workspace` (the provider
+rule above against `workspace_host`), `release_source_changed` and `generator_version_unsupported`.
+Approval checks the claim again under the plan row lock (`workspace_not_claimed`, the plan stays
+sealed); reject does not.
 
 A plan is scoped by its target's workspace/project; a plan or target the caller cannot read gets
 the answer an unknown id gets. Every plan route first settles the organization's plans (the lost
@@ -83,6 +94,7 @@ from shifde.adapters.native.contracts import DatabricksApplicationSpec
 from shifde.adapters.native.databricks.source import scaffold_files
 from shifde.adapters.runtime import IntegrationRuntime
 from shifde.appgen.render import GeneratorVersionUnsupported, ResolvedProvider, render
+from shifde.appgen.render_docker import DockerTargetValues
 from shifde.appgen.render_snowflake import ReleaseNotRenderable
 from shifde.appgen.service import resolved_for_release
 from shifde.audit import service as audit
@@ -109,6 +121,7 @@ APPROVAL_CONSTRAINT = "uq_delivery_approvals__tenant_plan"
 PLATFORM_OF_KIND = {
     "databricks.app/v1": "databricks",
     "snowflake.native-app/v1": "snowflake",
+    "docker.compose/v1": "docker",
 }
 
 
@@ -154,6 +167,19 @@ class ServingEndpointMismatch(AppError):
 
 class ModelNotInTargetWorkspace(AppError):
     status, code, title = 409, "model_not_in_target_workspace", "Conflict"
+
+
+class WorkspaceNotClaimed(AppError):
+    """The Docker target's Databricks workspace is not this organization's (one fixed message for
+    an unclaimed workspace, another organization's and a released one)."""
+
+    status, code, title = 409, "workspace_not_claimed", "Conflict"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "The target's Databricks workspace is not registered as a Databricks target of this "
+            "organization."
+        )
 
 
 class CortexModelMismatch(AppError):
@@ -368,12 +394,20 @@ class PlanService:
             raise TargetUnresolved("the target has an unresolved unknown outcome")
         release, passing = self._gate(target, body.release_id)
         generator_version = service.app_generator_version(release["manifest"])
-        if target["platform_kind"] == "snowflake":
+        # each branch names its platform and kind, also behind the kind gate; none is a default
+        pair = (target["platform_kind"], release["manifest"].get("target_kind"))
+        if pair == ("snowflake", "snowflake.native-app/v1"):
             content, artifact_digest = self._snowflake_artifact(target, release)
-        elif generator_version is None:
+        elif pair == ("docker", "docker.compose/v1"):
+            content, artifact_digest = self._docker_artifact(target, release)
+        elif pair == ("databricks", "databricks.app/v1") and generator_version is None:
             content, artifact_digest = template_artifact(release["manifest"], release["digest"])
-        else:
+        elif pair == ("databricks", "databricks.app/v1"):
             content, artifact_digest = self._app_artifact(target, release)
+        else:
+            raise GeneratorVersionUnsupported(
+                "no app generator renders this release for the target"
+            )
         session = self.sc.session
         principal_id = self.sc.principal.principal_id
         artifact_id, plan_id = uuid7(), uuid7()
@@ -475,6 +509,40 @@ class PlanService:
             return False
         return origin == address
 
+    def _holds_workspace(self, target: Mapping[str, Any]) -> bool:
+        """This organization holds an active claim on the Docker target's Databricks workspace."""
+        suffixes = self.runtime.settings.delivery_databricks_host_suffixes
+        host = target["bindings"]["workspace_host"]
+        return TargetService(self.sc, suffixes).holds_claim("databricks", host)
+
+    def _docker_artifact(
+        self, target: Mapping[str, Any], release: Mapping[str, Any]
+    ) -> tuple[bytes, str]:
+        """The generated Docker bundle's archive and digest (SP8 design section 6): the claim,
+        serving endpoint and model checks, `Resolved` under the requester's scope, then render."""
+        if not self._holds_workspace(target):
+            raise WorkspaceNotClaimed
+        manifest, bound = release["manifest"], target["bindings"]
+        bindings = list(((manifest.get("bindings") or {}).get("model_bindings") or {}).values())
+        if len(bindings) != 1 or bindings[0].get("model") != bound["serving_endpoint"]:
+            raise ServingEndpointMismatch(
+                "The release's model binding is not the target's serving endpoint."
+            )
+        if not self._in_workspace(bindings[0].get("provider_id"), bound["workspace_host"]):
+            raise ModelNotInTargetWorkspace(
+                "The release's model provider is not in the target's workspace."
+            )
+        resolved = resolved_for_release(self.sc, self.runtime, manifest)
+        if service.app_generator_version(manifest) is None:
+            raise GeneratorVersionUnsupported("the release is not a generated app release")
+        values = DockerTargetValues(
+            target_id=target["id"],
+            port=bound["port"],
+            warehouse_id=bound["warehouse_id"],
+            serving_endpoint=bound["serving_endpoint"],
+        )
+        return archive(render(manifest, release["digest"], resolved, values))
+
     def _snowflake_artifact(
         self, target: Mapping[str, Any], release: Mapping[str, Any]
     ) -> tuple[bytes, str]:
@@ -536,7 +604,8 @@ class PlanService:
 
     def _recheck(self, row: Mapping[str, Any]) -> None:
         """At approval, under the plan row lock: the plan's release is still sealed, unchanged
-        and passed. No packaging permission is asked of the approver."""
+        and passed, and a Docker target's workspace is still this organization's. No packaging
+        permission is asked of the approver."""
         session = self.sc.session
         if row["release_id"] is None:
             raise EvaluationRequired("This release has no passing evaluation.")
@@ -549,6 +618,11 @@ class PlanService:
             raise EvaluationRequired("This release has no passing evaluation.") from None
         if current["digest"] != row["release_digest"]:
             raise EvaluationRequired("This release has no passing evaluation.")
+        target = repository.get_target(session, row["target_id"], tenant_id=self.sc.tenant_id)
+        if target is None:  # pragma: no cover - `fk_delivery_plans__target`
+            raise NotFound("plan not found")
+        if target["platform_kind"] == "docker" and not self._holds_workspace(target):
+            raise WorkspaceNotClaimed
 
     def _related(self, row: Mapping[str, Any]) -> str | None:
         """Why the caller may not decide the plan `row` (None: they may): the same principal, a

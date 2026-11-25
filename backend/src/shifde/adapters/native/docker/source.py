@@ -20,6 +20,9 @@ import yaml
 from shifde.adapters.native.contracts import Target
 
 ADAPTER_VERSION = "0.1.0"
+# the app generator's version for this kind (`appgen.render.GENERATOR_VERSIONS`); here because the
+# executor, which runs only generator-produced bundles (B-3948), never imports `appgen`
+GENERATOR_VERSION = "shifde.appgen.docker/1.0"
 # python:3.12-slim index digest, read from registry-1.docker.io on 2026-11-23.
 BASE_IMAGE = (
     "python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b"

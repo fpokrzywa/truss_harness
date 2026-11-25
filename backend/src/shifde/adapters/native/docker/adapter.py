@@ -6,6 +6,9 @@ the caller; the compose project, image and env file are named after the target i
 timed-out write propagates, and the journal turns any uncertain outcome into `NeedsAttention`. A
 target's daemon must be the runtime's (`docker_host_mismatch`), and the target's compose project
 must carry this target's label (`foreign_project`). There is no down and no image prune.
+
+`authorize` raises unless the job may still use the target's daemon. It runs before every runtime
+call, and for a step of an apply before the step's journal intent, so a refusal leaves no intent.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
+from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Literal  # Any: decoded health JSON
@@ -88,10 +92,20 @@ def identity(containers: list[ContainerState]) -> list[dict[str, Any]]:
 
 
 class DockerComposeAdapter:
-    def __init__(self, runtime: ContainerRuntime, *, artifacts: ArtifactStore) -> None:
-        self.runtime = runtime
+    def __init__(
+        self,
+        runtime: ContainerRuntime,
+        *,
+        artifacts: ArtifactStore,
+        authorize: Callable[[], None],
+    ) -> None:
+        self.runtime, self.authorize = runtime, authorize
         # Plans read the artifact's bundle; a `ReadContext` carries no artifact store.
         self.artifacts = artifacts
+
+    def _authorized(self) -> ContainerRuntime:
+        self.authorize()
+        return self.runtime
 
     @staticmethod
     def _resource(project: str, application_id: UUID, target_id: UUID) -> ResourceBinding:
@@ -109,18 +123,19 @@ class DockerComposeAdapter:
         if not match:
             raise ValueError("the target is not a Docker daemon address")
         ctx.check_deadline()
-        if self.runtime.daemon_id() != match.group(1):
+        if self._authorized().daemon_id() != match.group(1):
             raise DockerRefused("docker_host_mismatch")
         return match.group(1)
 
     def _containers(self, project: str, ctx: ReadContext) -> list[ContainerState]:
         """The project's containers; refuses a project not labelled for this target."""
-        containers = self.runtime.compose_ps(project)
+        containers = self._authorized().compose_ps(project)
         if any(c.labels.get(TARGET_LABEL) != str(ctx.target.id) for c in containers):
             raise DockerRefused("foreign_project")
         return containers
 
     def capabilities(self, ctx: ReadContext) -> CapabilityReport:
+        self.authorize()
         try:
             self.runtime.daemon_id()
             item = Capability(operation="runtime", status="supported", reason="Docker reachable")
@@ -215,6 +230,15 @@ class DockerComposeAdapter:
             "release_digest": bundle.release_digest,
             "daemon_id": daemon_id,
         }
+
+    def plan_details(self, artifact: BuildArtifact, ctx: ReadContext) -> dict[str, str | int]:
+        """The details `plan` seals for `artifact` on the target, without a daemon call."""
+        self._check_artifact(artifact, ctx)
+        match = DOCKER_HOST.fullmatch(ctx.target.host)
+        if not match:
+            raise ValueError("the target is not a Docker daemon address")
+        contents = read_archive(self.artifacts.read(artifact.archive, ctx.tenant_id))
+        return self._details(contents, match.group(1), ctx)
 
     def plan(self, request: PlanRequest, ctx: ReadContext) -> DeploymentPlan:
         artifact = request.artifact
@@ -321,6 +345,7 @@ class DockerComposeAdapter:
                 destination = directory / path
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(data)
+            self.authorize()
             if ctx.journal.intent("image-build", {"plan": plan.digest}):
                 ctx.check_deadline()
                 self.runtime.build(
@@ -332,11 +357,13 @@ class DockerComposeAdapter:
                     },
                 )
                 ctx.journal.complete("image-build", {"image": image})
+            self.authorize()
             if ctx.journal.intent("image-verify", {"plan": plan.digest}):
                 labels = self.runtime.image_labels(image)
                 if labels is None or labels.get(RELEASE_LABEL) != release_digest:
                     raise ValueError("the built image does not carry the release digest")
                 ctx.journal.complete("image-verify", {"release_digest": release_digest})
+            self.authorize()
             if ctx.journal.intent("compose-up", {"plan": plan.digest}):
                 ctx.check_deadline()
                 self.runtime.compose_up(directory, project=project)
@@ -375,7 +402,7 @@ class DockerComposeAdapter:
             raise PermissionError("receipt project is not the target's compose project")
         if handles.get("daemon_id") != self._daemon(ctx):
             raise DockerRefused("docker_host_mismatch")
-        containers = self.runtime.compose_ps(project)
+        containers = self._authorized().compose_ps(project)
         failed: Literal["failed"] = "failed"
         if not containers:
             return NativeObservation(state=failed, diagnostics=["the project has no container"])
@@ -398,7 +425,7 @@ class DockerComposeAdapter:
             )
         if any(c.health != "healthy" for c in containers):
             return NativeObservation(state="running", resources=receipt.resources)
-        labels = self.runtime.image_labels(handles["image"]) or {}
+        labels = self._authorized().image_labels(handles["image"]) or {}
         if labels.get(RELEASE_LABEL) != handles["release_digest"]:
             return NativeObservation(
                 state=failed, diagnostics=["the image does not carry the release digest"]
@@ -423,6 +450,16 @@ class DockerComposeAdapter:
 
     def verify(self, request: VerifyRequest, ctx: ReadContext) -> VerificationReport:
         receipt = request.receipt
+        self._check_receipt(receipt, ctx)
+        if request.release_digest not in (None, receipt.operation_handles.get("release_digest")):
+            # the plan's release is not the one the receipt deployed
+            return VerificationReport(
+                checks=[
+                    Check(name="native-version", status="failed"),
+                    Check(name="runtime-health", status="skipped"),
+                    Check(name="app-deep-health", status="skipped"),
+                ]
+            )
         observed = self.observe(ObserveRequest(receipt=receipt), ctx)
         checks = [
             Check(
@@ -437,6 +474,7 @@ class DockerComposeAdapter:
             ]
             return VerificationReport(checks=checks)
         project, port = receipt.operation_handles["project"], int(receipt.operation_handles["port"])
+        self.authorize()  # outside the `try`: a refusal is never a failed check
         try:
             status, body = self._health(project, port, "/health")
             good = status == 200 and body.get("status") == "ok"
@@ -450,6 +488,7 @@ class DockerComposeAdapter:
 
     def _deep_health(self, project: str, port: int, release_digest: str) -> Check:
         """SP5 6.6: 200, `status` ok, the plan's release digest and every check passed."""
+        self.authorize()
         try:
             status, body = self._health(project, port, "/health?deep=1")
         except Exception:
