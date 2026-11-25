@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from typing import Any
-from uuid import UUID
+from uuid import RFC_4122, UUID
 
 import httpx
 import pytest
@@ -38,11 +38,18 @@ from tests.governance.routes import (
     workspace_scope,
 )
 from tests.governance.runtime_rows import HOLD, OLD_DAYS, RuntimeRows, seed_runtime
-from tests.ledger.util import add_budget
+from tests.ledger.util import add_budget, add_model
 from tests.tenancy.conftest import Client, World
 from tests.tenancy.routes import People
 
 _VARYING = {"instance", "request_id"}
+
+# Event keys of the usage test. Each holds letters and underscores no generated id (UUID, hex
+# digest, hex slug tail) can contain (#377). A's is also its event's model_key: the export writes
+# that column and not the event key.
+USAGE_MARKER_A = "usage_row_owned_by_first_client"
+USAGE_MARKER_B_ONE = "usage_row_one_of_second_client"
+USAGE_MARKER_B_TWO = "usage_row_two_of_second_client"
 
 
 def _same(r: httpx.Response, missing: httpx.Response, status: int = 404) -> None:
@@ -404,6 +411,14 @@ def test_a_cannot_scope_a_budget_or_quota_to_bs_scopes(
 
 
 # ------------------------------------------------------------------ usage and exports
+def test_no_generated_id_can_contain_a_usage_marker() -> None:
+    chance = UUID("01a210aa-1162-7000-8000-000000000000")  # the prefix of B's run id in #377
+    assert chance.version == 7 and chance.variant == RFC_4122
+    assert "a-1" in str(chance)  # the old marker of A's usage row
+    for marker in (USAGE_MARKER_A, USAGE_MARKER_B_ONE, USAGE_MARKER_B_TWO):
+        assert set(marker) - set("0123456789abcdef-"), marker
+
+
 def test_usage_reads_and_exports_hold_only_as_own(
     client: TestClient, world: World, two: Two, owner_session: Session
 ) -> None:
@@ -412,11 +427,17 @@ def test_usage_reads_and_exports_hold_only_as_own(
 
     run_b = run_of(world.b)  # a real run of B (runtime_0001), with one usage event
     idle_b, idle_a = run_of(world.b), run_of(world.a)  # real runs with no usage event
-    for c, key in ((world.a, "a-1"), (world.b, "b-1"), (world.b, "b-2")):
+    model_a = add_model(owner_session, world.a.tenant, "openai", USAGE_MARKER_A)
+    model_of_a = {"model_id": model_a, "provider_key": "openai", "model_key": USAGE_MARKER_A}
+    for c, key, model in (
+        (world.a, USAGE_MARKER_A, model_of_a),
+        (world.b, USAGE_MARKER_B_ONE, {}),
+        (world.b, USAGE_MARKER_B_TWO, {}),
+    ):
         ledger.record(
             owner_session,
             {"tenant_id": c.tenant, "event_key": key, "event_type": "tool_call",
-             "workspace_id": c.ws, "input_tokens": 100, "call_count": 1},
+             "workspace_id": c.ws, "input_tokens": 100, "call_count": 1, **model},
         )  # fmt: skip
     # B's usage event on B's run, written as a raw row
     owner_session.execute(
@@ -430,7 +451,7 @@ def test_usage_reads_and_exports_hold_only_as_own(
     h = as_user(client, two.a.email)
     base = two.a.base
     events = client.get(f"{base}/usage/events", headers=h).json()["items"]
-    assert [e["event_key"] for e in events] == ["a-1"]
+    assert [e["event_key"] for e in events] == [USAGE_MARKER_A]
     summary = client.get(f"{base}/usage/summary?group_by=workspace", headers=h).json()
     assert [g["key"] for g in summary["groups"]] == [str(world.a.ws)]
     assert summary["totals"]["input_tokens"] == 100 and summary["totals"]["calls"] == 1
@@ -461,11 +482,16 @@ def test_usage_reads_and_exports_hold_only_as_own(
     assert exported.status_code == 200
     assert str(run_b) not in exported.text and str(world.b.ws) not in exported.text
     assert str(world.a.ws) in exported.text
+    assert USAGE_MARKER_A in exported.text  # so its absence from B's export below says something
     # B sees only its own
     hb = as_user(client, two.b.email)
     b_events = client.get(f"{two.b.base}/usage/events", headers=hb).json()["items"]
-    assert sorted(e["event_key"] for e in b_events) == ["b-1", "b-2", "b-run"]
-    assert "a-1" not in client.get(f"{two.b.base}/usage/export", headers=hb).text
+    assert sorted(e["event_key"] for e in b_events) == [
+        "b-run",
+        USAGE_MARKER_B_ONE,
+        USAGE_MARKER_B_TWO,
+    ]
+    assert USAGE_MARKER_A not in client.get(f"{two.b.base}/usage/export", headers=hb).text
     h = as_user(client, two.a.email)
     missing = org(f"no-such-{uuid7().hex[-12:]}")
     for path in ("usage/events", "usage/summary", f"usage/runs/{run_b}", "usage/export"):
