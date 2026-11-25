@@ -774,6 +774,17 @@ def plan_generator_version(session: Session, plan: Mapping[str, Any]) -> str | N
     return app_generator_version(release["manifest"]) if release is not None else None
 
 
+def plan_project(session: Session, plan_id: UUID, *, tenant_id: UUID) -> UUID | None:
+    """The project of the plan's release, read in `tenant_id` only; None for an unknown plan, a
+    plan without a release and a release not found. No permission check: the caller checks its own
+    (assist)."""
+    plan = repository.get_plan(session, plan_id, tenant_id=tenant_id)
+    if plan is None or plan["release_id"] is None:
+        return None
+    release = release_record(session, plan["release_id"], tenant_id=tenant_id)
+    return release["project_id"] if release is not None else None
+
+
 def start_planning(session: Session, job: Mapping[str, Any]) -> None:
     """A leased `plan` job moves its `requested` plan to `planning` (same transaction)."""
     if job["kind"] == "plan" and job["plan_id"] is not None:

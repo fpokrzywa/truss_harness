@@ -140,6 +140,13 @@ def run_binding(session: Session, tenant_id: UUID, run_id: UUID) -> RunBinding |
     )
 
 
+def run_committed(session: Session, tenant_id: UUID, principal_id: UUID, key: str) -> bool:
+    """Whether `principal_id`'s run with the idempotency key `key` exists in `tenant_id` (no
+    permission check: `RunService.create` checks its own when it replays the run)."""
+    run = repo.run_by_idempotency(session, tenant_id, principal_id, key)
+    return run is not None and run["tenant_id"] == tenant_id
+
+
 class RunService:
     def __init__(
         self, scope: TenantScope, runtime: IntegrationRuntime, hooks: GovernanceHooks
