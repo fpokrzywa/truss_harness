@@ -154,6 +154,10 @@ def checkpoint(
 
 @router.post("/jobs/{job_id}/result", tags=["executor"])
 def job_result(
-    job_id: UUID, body: c.JobResultSubmission, executor: ExecutorDep, session: SessionDep
+    job_id: UUID,
+    body: c.JobResultSubmission,
+    executor: ExecutorDep,
+    session: SessionDep,
+    settings: SettingsDep,
 ) -> c.JobResultAck:
-    return gateway.submit_result(session, executor, job_id, body)
+    return gateway.submit_result(session, executor, job_id, body, env=settings.env)

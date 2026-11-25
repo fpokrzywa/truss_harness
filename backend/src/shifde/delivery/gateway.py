@@ -22,7 +22,9 @@ transaction (settled call 5): `plan` (`service.on_plan_result` seals or fails th
 (`ReconciliationResult`), each with its `service.on_*_result` deployment hook; a result for a
 kind without an entry is refused. A leased `plan` job serves its plan's artifact (`artifact`).
 `job_context` answers what a leased job runs against (target, plan, deployment, owned resources;
-B-2688), so the executor can drive the adapter from ids alone.
+B-2688), so the executor can drive the adapter from ids alone. A Fabric target's context names the
+Fabric API origin as its host and its workspace as a binding (`_fabric_target`, SP8-5), and its
+`apply` result is checked by `service.check_fabric_receipt` with the API's environment.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.orm import Session
 
+from shifde.adapters.native.addresses import FABRIC_API_WORKSPACES
 from shifde.adapters.native.contracts import (
     ApplyReceipt,
     CheckpointSubmission,
@@ -59,6 +62,7 @@ from shifde.adapters.native.contracts import (
     Target,
     VerificationReport,
 )
+from shifde.adapters.native.fabric.source import ORIGIN as FABRIC_ORIGIN
 from shifde.core.errors import AppError, NotFound, ValidationFailed
 from shifde.delivery import repository, service
 from shifde.delivery.service import AuthenticatedExecutor
@@ -239,6 +243,25 @@ def artifact(
     return Artifact(content=bytes(found["content"]), digest=found["digest"])
 
 
+def _fabric_target(row: Row, tenant_id: UUID) -> Target:
+    """A Fabric target as its adapter takes it: the API origin as the host, and the workspace GUID
+    of the stored address as a binding beside the stored ones."""
+    bindings = row["bindings"]
+    return Target(
+        tenant_id=tenant_id,
+        id=row["id"],
+        revision=row["revision"],
+        environment=row["environment"],
+        host=FABRIC_ORIGIN,
+        bindings={
+            "workspace": row["address"].removeprefix(FABRIC_API_WORKSPACES),
+            "lakehouse_name": bindings["lakehouse_name"],
+            "notebook_name": bindings["notebook_name"],
+            "entra_tenant_id": bindings["entra_tenant_id"],
+        },
+    )
+
+
 def job_context(
     session: Session, executor: AuthenticatedExecutor, job_id: UUID, proof: LeaseProof
 ) -> JobContext:
@@ -276,7 +299,9 @@ def job_context(
     session.commit()
     return JobContext(
         job=_leased_job(row),
-        target=Target(
+        target=_fabric_target(target, tenant_id)
+        if target["platform_kind"] == "fabric"
+        else Target(
             tenant_id=tenant_id,
             id=target["id"],
             revision=target["revision"],
@@ -402,9 +427,16 @@ def checkpoint(
 
 
 def submit_result(
-    session: Session, executor: AuthenticatedExecutor, job_id: UUID, body: JobResultSubmission
+    session: Session,
+    executor: AuthenticatedExecutor,
+    job_id: UUID,
+    body: JobResultSubmission,
+    *,
+    env: str = "production",
 ) -> JobResultAck:
-    """Finish the job and run its kind's `on_result` hook in the same transaction."""
+    """Finish the job and run its kind's `on_result` hook in the same transaction. `env` is the
+    API's environment: a Fabric apply receipt of the fake is refused outside development and
+    test (the default refuses)."""
     row = _leased(session, executor, job_id, body)
     definition = JOB_KINDS.get(row["kind"])
     if definition is None:
@@ -425,6 +457,8 @@ def submit_result(
                     for e in exc.errors()
                 ],
             ) from exc
+        if row["kind"] == "apply":
+            service.check_fabric_receipt(session, row, body, env)
         result = {"status": "succeeded", "value": body.value}
     else:
         result = {"status": "failed", "error_code": body.error_code}

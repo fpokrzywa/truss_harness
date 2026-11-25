@@ -5,6 +5,10 @@ Ported from the FDE SDK `shifde_fabric/adapter.py` and `shifde_core/fabric_recei
 (`begin` before it, `complete` after it, the operation id recorded before polling) and attempted
 once: an uncertain outcome becomes `NeedsAttention`. An item of a bound name that the target does
 not own is never adopted (`ForeignItem`).
+
+The executor drives it (SP8-5): `toolchain_digest` is the digest of the executing platform, which
+every artifact, plan and deploy context must carry, and `plan_details` rebuilds a sealed plan's
+details without a platform request.
 """
 
 from __future__ import annotations
@@ -211,10 +215,15 @@ class FabricAdapter:
     kind = "fabric.solution/v1"
 
     def __init__(
-        self, *, client_factory: Callable[[Target], FabricClient], env: str | None = None
+        self,
+        *,
+        client_factory: Callable[[Target], FabricClient],
+        env: str | None = None,
+        toolchain_digest: str = TOOLCHAIN_DIGEST,
     ) -> None:
         self.client_factory = client_factory
         self.env = env or environment()
+        self.toolchain_digest = toolchain_digest
 
     def _client(self, ctx: ReadContext) -> FabricClient:
         ctx.check_deadline()
@@ -276,7 +285,7 @@ class FabricAdapter:
 
     def build(self, request: BuildRequest, ctx: BuildContext) -> BuildArtifact:
         spec = fabric_spec(request.spec)
-        if ctx.toolchain_digest != TOOLCHAIN_DIGEST or not self.validate(request, ctx).passed:
+        if ctx.toolchain_digest != self.toolchain_digest or not self.validate(request, ctx).passed:
             raise ValueError("Fabric source/toolchain validation failed")
         return BuildArtifact(
             tenant_id=ctx.tenant_id,
@@ -286,11 +295,10 @@ class FabricAdapter:
             spec_digest=digest(spec),
             spec=spec,
             adapter_version=ADAPTER_VERSION,
-            toolchain_digest=TOOLCHAIN_DIGEST,
+            toolchain_digest=self.toolchain_digest,
         )
 
-    @staticmethod
-    def _artifact(artifact: BuildArtifact, ctx: ReadContext) -> FabricSolutionSpec:
+    def _artifact(self, artifact: BuildArtifact, ctx: ReadContext) -> FabricSolutionSpec:
         spec = fabric_spec(artifact.spec)
         if artifact.tenant_id != ctx.tenant_id or artifact.archive.tenant_id != ctx.tenant_id:
             raise PermissionError("Fabric artifact belongs to another tenant")
@@ -298,7 +306,7 @@ class FabricAdapter:
             artifact.spec_digest != digest(spec)
             or artifact.source_digest != artifact.archive.digest
             or artifact.adapter_version != ADAPTER_VERSION
-            or artifact.toolchain_digest != TOOLCHAIN_DIGEST
+            or artifact.toolchain_digest != self.toolchain_digest
         ):
             raise ValueError("Fabric artifact identity/toolchain mismatch")
         return spec
@@ -445,6 +453,14 @@ class FabricAdapter:
             "release_digest": spec.release_digest,
         }
 
+    def plan_details(
+        self, spec: ApplicationSpec | None, ctx: ReadContext
+    ) -> dict[str, Any]:  # Any: plan details JSON
+        """The details `plan()` seals for `spec` on the target (no platform request), so an
+        executor can rebuild a sealed plan for `apply` and `reconcile`."""
+        fabric = fabric_spec(spec)
+        return self._details(fabric, *bindings(fabric, ctx.target))
+
     def plan(self, request: PlanRequest, ctx: ReadContext) -> DeploymentPlan:
         artifact = request.artifact
         spec = self._artifact(artifact, ctx)
@@ -462,7 +478,7 @@ class FabricAdapter:
                 spec_digest=artifact.spec_digest,
                 bindings_digest=bindings_digest(ctx.target),
                 adapter_version=ADAPTER_VERSION,
-                toolchain_digest=TOOLCHAIN_DIGEST,
+                toolchain_digest=self.toolchain_digest,
                 snapshot=EnvironmentSnapshot(
                     resources=list(ctx.owned_resources), fingerprint=digest(state)
                 ),
@@ -493,8 +509,8 @@ class FabricAdapter:
             artifact.archive.digest,
             artifact.spec_digest,
             ADAPTER_VERSION,
-            TOOLCHAIN_DIGEST,
-            TOOLCHAIN_DIGEST,
+            self.toolchain_digest,
+            self.toolchain_digest,
         ):
             raise ValueError("Fabric plan/artifact/toolchain mismatch")
         workspace, names = bindings(spec, ctx.target)

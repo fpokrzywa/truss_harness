@@ -1,8 +1,8 @@
 """Deployment plans and their second-person decision (design sections 3 and 4, section 9 items 1,
 2, 9, 11, 12 and 17; DECISIONS B-2675..B-2679).
 
-A plan request builds the artifact here (offline: no credential, no outbound request): the SDK
-template, or the generated app of a `/2` release. It stores it and queues one `plan` job for the
+A plan request builds the artifact here (offline: no credential, no outbound request): the SDK or
+Fabric template, or a `/2` release's generated app. It stores it and queues one `plan` job for the
 executor. The job's result seals the plan or fails it (`service.on_plan_result`). A sealed plan is
 decided once, by a person other than its requester who holds `delivery:plan:approve` on the target's
 scope, before `expires_at`; approve quotes the sealed digest. Related principals count as the
@@ -21,9 +21,10 @@ names a release the caller can read (else `release not found`), not withdrawn (4
 `release_withdrawn`), in the target's workspace and project (409 `release_target_mismatch`), with a
 passing evaluation of its digests (409 `evaluation_required`) and of the target's kind (409
 `target_kind_mismatch`: the manifest's `target_kind` is not of the target's `platform_kind`; only
-`databricks.app/v1` and `snowflake.native-app/v1` have a platform). The plan stores the release,
-its digest and the passing run; the artifact carries `release.json` and the plan digest the release
-digest. Approval checks the release again after the plan row lock; reject does not.
+`databricks.app/v1`, `snowflake.native-app/v1` and `fabric.solution/v1` have a platform). The plan
+stores the release, its digest and the passing run; the artifact carries `release.json` and the
+plan digest the release digest. Approval checks the release again after the plan row lock; reject
+does not.
 
 A `/2` release (compiler `packaging.service.COMPILER_VERSION_APP`, SP5 design 6.6) on a Databricks
 target deploys the generated app instead of the SDK template. After the checks above it is refused
@@ -47,6 +48,11 @@ account address, read from `Resolved.model.provider`; `Resolved` is gathered fir
 pin's `release_source_changed` may come before it). The render then refuses with
 `generator_version_unsupported` or `release_not_renderable` (a fixed detail: a pinned version may
 be one the requester cannot see).
+
+A Fabric target deploys only the Fabric template (SP8 design section 4): the lakehouse, the
+notebook whose generated first cell exits with the release digest, and `release.json`. After the
+checks above a release with an app generator version is refused with 409
+`generator_version_unsupported` before any write.
 
 A plan is scoped by its target's workspace/project; a plan or target the caller cannot read gets
 the answer an unknown id gets. Every plan route first settles the organization's plans (the lost
@@ -76,6 +82,7 @@ from shifde.adapters.native.addresses import (
 from shifde.adapters.native.base import create_archive
 from shifde.adapters.native.contracts import DatabricksApplicationSpec
 from shifde.adapters.native.databricks.source import scaffold_files
+from shifde.adapters.native.fabric import source as fabric_source
 from shifde.adapters.runtime import IntegrationRuntime
 from shifde.appgen.render import GeneratorVersionUnsupported, ResolvedProvider, render
 from shifde.appgen.render_snowflake import ReleaseNotRenderable
@@ -104,6 +111,7 @@ APPROVAL_CONSTRAINT = "uq_delivery_approvals__tenant_plan"
 PLATFORM_OF_KIND = {
     "databricks.app/v1": "databricks",
     "snowflake.native-app/v1": "snowflake",
+    "fabric.solution/v1": "fabric",
 }
 
 
@@ -170,6 +178,19 @@ def template_artifact(manifest: Mapping[str, Any], release_digest: str) -> tuple
     """The SDK template archive (default `databricks.app/v1` spec) with the release at its root
     (`release.json`, the canonical JSON of the manifest and its digest), and its sha256 digest."""
     files = scaffold_files(DatabricksApplicationSpec())
+    files["release.json"] = canonical({"manifest": manifest, "digest": release_digest})
+    return archive(files)
+
+
+def fabric_artifact(manifest: Mapping[str, Any], release_digest: str) -> tuple[bytes, str]:
+    """The Fabric template archive of the release (SP8 design section 4) with the release at its
+    root (`release.json`), and its sha256 digest; a release with an app generator version is
+    `GeneratorVersionUnsupported`."""
+    if service.app_generator_version(manifest) is not None:
+        raise GeneratorVersionUnsupported("no app generator renders a Fabric release")
+    spec = fabric_source.template_spec(release_digest)
+    files = fabric_source.scaffold_files(spec)
+    fabric_source.validate_source(files, spec)
     files["release.json"] = canonical({"manifest": manifest, "digest": release_digest})
     return archive(files)
 
@@ -365,6 +386,8 @@ class PlanService:
         generator_version = service.app_generator_version(release["manifest"])
         if target["platform_kind"] == "snowflake":
             content, artifact_digest = self._snowflake_artifact(target, release)
+        elif target["platform_kind"] == "fabric":
+            content, artifact_digest = fabric_artifact(release["manifest"], release["digest"])
         elif generator_version is None:
             content, artifact_digest = template_artifact(release["manifest"], release["digest"])
         else:

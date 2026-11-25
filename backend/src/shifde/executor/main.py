@@ -4,7 +4,9 @@ B-2693, B-2694).
 Configured from the environment only (never `shifde.core.settings`, which reaches the database):
 `SHIFDE_EXECUTOR_API_URL`, `SHIFDE_EXECUTOR_TOKEN`, `SHIFDE_EXECUTOR_CREDENTIALS_FILE` and
 `SHIFDE_ENV` (`development`, `test` or, when unset, `production`). Outside development and test
-the API URL must be https and `--fake-platform` is refused. No message ever echoes the token.
+the API URL must be https and `--fake-platform` is refused. With `--fake-platform`, Fabric jobs run
+on the in-memory fake only when `SHIFDE_DEV_FAKE_DATA_PLATFORMS` is true (SP8-5). No message ever
+echoes the token.
 
 Process control (SP4 design 6.2): SIGTERM, SIGINT and CTRL_BREAK stop the runner (no new lease;
 the job in flight runs to its normal end) and the process waits up to
@@ -44,6 +46,7 @@ CREDENTIALS_FILE = "SHIFDE_EXECUTOR_CREDENTIALS_FILE"
 HEALTH_HOST = "SHIFDE_EXECUTOR_HEALTH_HOST"
 HEALTH_PORT = "SHIFDE_EXECUTOR_HEALTH_PORT"
 SHUTDOWN_GRACE = "SHIFDE_EXECUTOR_SHUTDOWN_GRACE_SECONDS"
+FAKE_DATA_PLATFORMS = "SHIFDE_DEV_FAKE_DATA_PLATFORMS"
 REQUIRED = (API_URL, TOKEN, CREDENTIALS_FILE)
 DEV_ENVS = ("development", "test")
 EXIT_STOPPED = 0  # stopped on request and drained
@@ -68,9 +71,10 @@ EPILOG = f"""environment:
                                     client_id, client_secret_file}}
                                     Docker {{tenant_id, host, platform: "docker"}}
                                     (a secret file holds one value; on POSIX mode 0600;
-                                    Fabric, Palantir and Docker jobs fail closed until
-                                    SP8-5/7/9)
+                                    Palantir and Docker jobs fail closed until SP8-7/9)
   SHIFDE_ENV                        development | test | production (default production)
+  {FAKE_DATA_PLATFORMS}     true: with --fake-platform, Fabric jobs run on the
+                                    in-memory fake (they fail closed otherwise)
   {HEALTH_HOST}       the /healthz and /readyz host (default 127.0.0.1)
   {HEALTH_PORT}       their port, 0..65535 (default 0: off)
   {SHUTDOWN_GRACE}
@@ -104,8 +108,8 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "run against the in-memory fake Databricks, Snowflake, Fabric, Palantir and Docker "
-            "platforms (development and test only; Fabric, Palantir and Docker jobs fail closed "
-            "until SP8-5/7/9)"
+            "platforms (development and test only; Fabric jobs run only with "
+            f"{FAKE_DATA_PLATFORMS}=true, Palantir and Docker jobs fail closed until SP8-7/9)"
         ),
     )
     return parser
@@ -157,8 +161,10 @@ def configure(argv: Sequence[str] | None, environ: Mapping[str, str]) -> Config:
     platform: Platform = RealPlatform()
     if args.fake_platform:
         fake = FakePlatform()
-        # the Snowflake and Docker fakes refuse to run unless this is development or test
+        # the Snowflake, Docker and Fabric fakes refuse to run unless this is development or test
         fake.environment = environ.get("SHIFDE_ENV") or "production"
+        # and the Fabric fake also refuses without this switch
+        fake.fabric_enabled = (environ.get(FAKE_DATA_PLATFORMS) or "").strip().lower() == "true"
         platform = fake
     return Config(
         api_url=api_url,

@@ -201,7 +201,11 @@ def test_the_target_kind_must_be_the_releases() -> None:
         assert refused.value.detail == "The release is for another kind of target."
 
 
-PLANNABLE = {("databricks.app/v1", "databricks"), ("snowflake.native-app/v1", "snowflake")}
+PLANNABLE = {
+    ("databricks.app/v1", "databricks"),
+    ("snowflake.native-app/v1", "snowflake"),
+    ("fabric.solution/v1", "fabric"),
+}
 
 
 def test_the_plan_gate_cases_are_five_kinds_by_five_platforms() -> None:

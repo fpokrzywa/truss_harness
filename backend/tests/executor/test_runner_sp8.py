@@ -1,10 +1,11 @@
 """The runner on a Fabric, Palantir or Docker target (SP8-1): the dispatch table has the five
 platform kinds; the fake platform builds each new kind's adapter over one lazily built fake; a
-leased job of each new kind runs its broker check (a mismatch is `credential_unavailable`) and
-then fails closed (`execution_failed`) before any adapter or platform call and any journal intent.
+leased job of each new kind runs its broker check (a mismatch is `credential_unavailable`), and a
+Palantir or Docker job then fails closed (`execution_failed`) before any adapter or platform call
+and any journal intent (Fabric jobs run: `test_runner_fabric.py`).
 
-The gateway cannot yet give these targets' contexts (SP8-5, SP8-7 and SP8-9 map them), so
-`Gateway` answers `context` with the mapped target and everything else through the in-process
+The gateway cannot yet give the Palantir and Docker targets' contexts (SP8-7 and SP8-9 map them),
+so `Gateway` answers `context` with the mapped target and everything else through the in-process
 gateway; the plan job rows are `tests.delivery.sp8`'s."""
 
 from __future__ import annotations
@@ -89,7 +90,12 @@ def _mapped(kind: str, address: str, **ids: Any) -> Target:
     the API origin)."""
     if kind == "fabric":
         host, workspace = address.split("/v1/workspaces/")
-        bindings = {"workspace": workspace, "lakehouse": "SalesLake", "notebook": "SalesNotebook"}
+        bindings = {
+            "workspace": workspace,
+            "entra_tenant_id": SP8_ENTRA_TENANT,
+            "lakehouse": "SalesLake",
+            "notebook": "SalesNotebook",
+        }
         return Target(host=host, bindings=bindings, **ids)
     if kind == "palantir":
         strings = {**PALANTIR_BINDINGS, "allow_preview_apis": "false"}
@@ -112,6 +118,7 @@ def _fake_platform(palantir_host: str = ADDRESS["palantir"]) -> FakePlatform:
         ),
         docker=FakeContainerRuntime(GUID),
         environment="test",
+        fabric_enabled=True,
     )
 
 
@@ -137,7 +144,8 @@ def test_the_dispatch_table_has_the_five_kinds() -> None:
 
 
 def test_the_fake_platform_builds_the_fabric_adapter_over_one_fake() -> None:
-    platform, target = FakePlatform(environment="test"), _unit_target("fabric")
+    platform = FakePlatform(environment="test", fabric_enabled=True)
+    target = _unit_target("fabric")
     assert platform.fabric is None
     adapter = platform.fabric_adapter(target, _fabric_ids)
     fake = platform.fabric
@@ -274,7 +282,7 @@ def _leased(flow: Flow, app_db: Database, owner_db: Database, kind: str) -> Leas
     return Leased(made, plan, Gateway(flow, kind, target, context_plan), platform)
 
 
-@pytest.mark.parametrize("kind", SP8_KINDS)
+@pytest.mark.parametrize("kind", ["palantir", "docker"])
 def test_a_leased_job_of_a_new_kind_fails_closed(
     flow: Flow,
     tmp_path: Path,
@@ -342,7 +350,7 @@ class NoPlatform(FakePlatform):
 
 
 @pytest.mark.parametrize("job_kind", ["plan", "apply", "observe", "verify", "reconcile"])
-@pytest.mark.parametrize("kind", SP8_KINDS)
+@pytest.mark.parametrize("kind", ["palantir", "docker"])
 def test_every_job_kind_fails_closed_before_any_adapter_or_checkpoint(
     tmp_path: Path, kind: str, job_kind: str
 ) -> None:

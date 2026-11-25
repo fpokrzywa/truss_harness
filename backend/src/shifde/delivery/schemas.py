@@ -31,6 +31,7 @@ CREDENTIAL_REF = r"^[A-Za-z][A-Za-z0-9_.-]{0,127}$"
 PlatformKind = Literal["databricks", "snowflake", "fabric", "palantir", "docker"]
 SNOWFLAKE_IDENTIFIER = r"^[A-Za-z_][A-Za-z0-9_$]{0,254}$"  # `snowflake.source.identifier`
 FABRIC_ITEM_NAME = r"^[A-Za-z][A-Za-z0-9_]{0,99}$"  # `fabric.source._NAME`
+ENTRA_TENANT = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 WAREHOUSE_ID = r"^[A-Za-z0-9-]{1,64}$"
 SERVING_ENDPOINT = r"^[A-Za-z0-9_-]{1,63}$"
 
@@ -56,12 +57,19 @@ class SnowflakeBindings(BaseModel):
 
 
 class FabricBindings(BaseModel):
-    """A Fabric target's bindings: the lakehouse and notebook item names in the workspace
-    (SP8 design section 2)."""
+    """A Fabric target's bindings: the workspace's Entra tenant, stored lowercase (the executor's
+    credential entry must name the same one), and the lakehouse and notebook item names in the
+    workspace (SP8 design section 2). An error never echoes the tenant."""
 
     model_config = Strict
+    entra_tenant_id: str = Field(pattern=ENTRA_TENANT)
     lakehouse_name: str = Field(pattern=FABRIC_ITEM_NAME)
     notebook_name: str = Field(pattern=FABRIC_ITEM_NAME)
+
+    @field_validator("entra_tenant_id")
+    @classmethod
+    def _lowercase(cls, value: str) -> str:
+        return value.lower()
 
     @model_validator(mode="after")
     def _distinct(self) -> FabricBindings:
