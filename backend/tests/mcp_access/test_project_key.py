@@ -524,6 +524,48 @@ def test_the_dashboards_statement_count_does_not_grow_with_the_projects(
     assert statements() == before
 
 
+@pytest.mark.parametrize("at", ["workspace", "project"])
+def test_the_dashboards_bind_parameters_do_not_grow_with_the_projects(
+    member: Callable[..., Hdr],
+    admin: Hdr,
+    layout: Layout,
+    owner_session: Session,
+    owner_db: Database,
+    at: str,
+) -> None:
+    """B-4135, for a caller with one workspace grant and for one with a grant at each project."""
+    reads, readable = ["project:read"], [layout.p1, layout.p2]
+
+    def grant_projects(*projects: UUID) -> None:
+        [(uid,)] = rows(
+            owner_session,
+            "SELECT id FROM shifde.users WHERE primary_email LIKE 'member-%@demo-a.local'",
+        )
+        for p in projects:
+            grant(owner_db, layout.tenant, uid, reads, scope_type="project", scope_id=p)
+
+    if at == "workspace":
+        c = member("workspace:read", *reads, scope_type="workspace", scope_id=layout.ws)
+    else:
+        c = member(*reads, scope_type="project", scope_id=layout.p1)
+        grant_projects(layout.p2)
+
+    def largest(**params: str) -> int:
+        """The most bind parameters of one statement of the request."""
+        with statement_log("shifde_app") as log:
+            shown = _json(c, f"{A}/dashboard", **params)
+        assert shown["counts"]["projects"] == len(readable)
+        return max(s.count("%(") for s in log.statements)
+
+    largest()  # the first request of the session may do more
+    before = (largest(), largest(workspace="main"))
+    more = [UUID(add_project(admin, f"more-{i}")) for i in range(12)]
+    if at == "project":
+        grant_projects(*more)
+    readable += more
+    assert (largest(), largest(workspace="main")) == before
+
+
 # ------------------------------------------------------------------ hidden projects (B-4134)
 NO_PROJECT, NO_WORKSPACE = f"{MAIN}/projects/nope", f"{A}/workspaces/nope/projects/nope"
 
