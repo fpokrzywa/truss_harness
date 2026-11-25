@@ -18,7 +18,7 @@ def _url() -> str:
 
 
 def run_migrations_online() -> None:
-    engine = create_engine(_url())
+    engine = create_engine(_url(), hide_parameters=True)
     try:
         with engine.connect() as connection:
             # The version table lives in the shifde schema, which must exist first.

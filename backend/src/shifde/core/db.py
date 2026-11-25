@@ -258,6 +258,7 @@ class Database:
             options += f" -c statement_timeout={int(statement_timeout_ms)}"
         self.engine: Engine = create_engine(
             url,
+            hide_parameters=True,  # bound values never in an exception's text, which is logged
             pool_pre_ping=True,
             pool_size=pool_size,
             max_overflow=max_overflow,
