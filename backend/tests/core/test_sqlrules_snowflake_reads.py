@@ -7,6 +7,8 @@ No database."""
 from __future__ import annotations
 
 import random
+import re
+import unicodedata
 
 import pytest
 
@@ -19,6 +21,7 @@ from shifde.adapters.dataplatforms.sqlapi import (
 )
 from shifde.build.tools import named_sql, positional_sql
 from shifde.core.sqlrules import (
+    SNOWFLAKE_BLANK_LETTERS,
     SNOWFLAKE_REFUSED_FUNCTIONS,
     STAGE_PATH_MESSAGE,
     check,
@@ -488,12 +491,20 @@ def test_the_raw_word_rules_never_raise_on_odd_input() -> None:
         "select \u20ac",
         "select a -- c\n, b\u2060 from t",
         "select \ud800",
+        # the blank letters U+13441 and U+13442 (#425)
+        "select get_ddl\U00013441('a')",
+        "select get_ddl\U00013442('a')",
+        "select get_\U00013441ddl('a')",
+        "select get_\U00013442ddl('a')",
+        "select :\U00013441call",
+        "select :\U00013442call",
     ],
 )
 def test_a_non_ascii_character_that_is_no_visible_letter_is_refused_at_run_time(sql: str) -> None:
     assert _refused(sql) == _REFUSED_CHARACTER
     assert sql not in _REFUSED_CHARACTER
-    # publish has no such issue: such a tool publishes and never runs
+    # the raw word rules have no such issue; of these characters the statement rules refuse the blank
+    # letters only (#425), so a tool with another one publishes and never runs
     assert raw_word_rules(sql) == []
 
 
@@ -509,6 +520,13 @@ def test_a_non_ascii_character_that_is_no_visible_letter_is_refused_at_run_time(
         "select 1 -- \u3164\u200b",
         "select 1 // \u3164\u200b",
         "select 1 /* \u3164\u200b */",
+        # (#425)
+        "select '\U00013441', '\U00013442'",
+        'select "\U00013441", "\U00013442" from t',
+        "select $$\U00013441\U00013442$$",
+        "select 1 -- \U00013441\U00013442",
+        "select 1 // \U00013441\U00013442",
+        "select 1 /* \U00013441\U00013442 */",
     ],
 )
 def test_a_visible_letter_in_code_and_any_character_in_quotes_is_accepted(sql: str) -> None:
@@ -521,12 +539,90 @@ def test_a_visible_letter_in_code_and_any_character_in_quotes_is_accepted(sql: s
         ("select get_ddl('a'), x\u3164", _NOT_READ),
         ("select identifier\u200b('t')", _NOT_READ),
         ("drop table t\u3164", _NOT_READ),
+        ("select get_ddl('a'), x\U00013441", _NOT_READ),
+        ("drop table t\U00013442", _NOT_READ),
         ("select a\u00a0://x", _COLON_COMMENT),
         ("select $1 from @s\u00a0//x", STAGE_PATH_MESSAGE),
     ],
 )
 def test_the_non_ascii_refusal_is_the_last_one(sql: str, message: str) -> None:
     assert _refused(sql) == message
+
+
+# ------------------------------------------------------------------ the blank letters (#425)
+BLANK_MESSAGE = "invisible letters are not allowed outside quoted text"
+BLANK_LETTERS = [0x115F, 0x1160, 0x3164, 0xFFA0, 0x13441, 0x13442]
+
+
+@pytest.mark.parametrize("point", BLANK_LETTERS, ids=lambda p: f"U+{p:04X}")
+def test_a_blank_letter_in_code_has_one_issue_at_publish(point: int) -> None:
+    letter = chr(point)
+    for sql in (
+        f"select get_ddl{letter}('a')",
+        f"select get_{letter}ddl('a'), '{letter}'",
+        f"select :{letter}id",
+        f"select {letter}",
+        f"select a from t {letter}",
+        f"select a{letter}, {letter}b{letter} from t{letter}",
+        f"select 1{letter}",
+    ):
+        issues = [(i.code, i.message) for i in statement_rules(sql, dialect="snowflake")]
+        assert issues == [("sql_syntax", BLANK_MESSAGE)], ascii(sql)
+    for sql in (f"select '{letter}'", f"select $${letter}$$ from t", f"select 'a\\'{letter}'"):
+        assert _codes(sql) == []
+    # quoted text and a comment keep their own issue, and only that
+    assert _codes(f'select "{letter}" from t') == ["sql_quoted_identifier_unsupported"]
+    for sql in (f"select 1 -- {letter}", f"select 1 // {letter}", f"select 1 /* {letter} */"):
+        assert _codes(sql) == ["sql_comment"]
+
+
+def test_another_non_ascii_character_still_has_no_issue_at_publish() -> None:
+    for sql in ("select \u0430 from t", "select gr\u00f6\u00dfe from t", "select a\u200b from t"):
+        assert _codes(sql) == []
+
+
+# Default_Ignorable_Code_Point: DerivedCoreProperties.txt of the Unicode Character Database 15.1.0
+# (`unicodedata` does not carry the property)
+DEFAULT_IGNORABLE = [
+    (0x00AD, 0x00AD),
+    (0x034F, 0x034F),
+    (0x061C, 0x061C),
+    (0x115F, 0x1160),
+    (0x17B4, 0x17B5),
+    (0x180B, 0x180F),
+    (0x200B, 0x200F),
+    (0x202A, 0x202E),
+    (0x2060, 0x206F),
+    (0x3164, 0x3164),
+    (0xFE00, 0xFE0F),
+    (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0),
+    (0xFFF0, 0xFFF8),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+]
+BLANK_WORDS = {
+    "FILLER", "BLANK", "INVISIBLE", "NULL", "SPACE", "EMPTY", "VOID", "JOINER", "SEPARATOR",
+}  # fmt: skip
+TANGUT_IDEOGRAPHS = [*range(0x17000, 0x187F8), *range(0x18D00, 0x18D09)]
+
+
+def test_no_other_letter_or_digit_is_blank_by_unicode_data() -> None:
+    # Unicode has no property for an empty glyph, so blank means Default_Ignorable_Code_Point or a
+    # word of the character name. U+13443..U+13446 (LOST SIGN) are drawn as hatched areas and so
+    # count as visible. The scan reads Unicode data, not fonts.
+    scanned = [p for p in range(0x110000) if re.match(r"\w", chr(p))]
+    assert len(scanned) > 100_000
+    ignorable = {p for p in scanned if any(low <= p <= high for low, high in DEFAULT_IGNORABLE)}
+    assert ignorable == {0x115F, 0x1160, 0x3164, 0xFFA0}
+    names = {p: unicodedata.name(chr(p), "") for p in scanned}
+    named = {p for p in scanned if BLANK_WORDS & set(re.split("[ -]", names[p]))}
+    assert named == {0x115F, 0x1160, 0x3164, 0xFFA0, 0x13441, 0x13442}
+    assert [p for p in scanned if not names[p]] == TANGUT_IDEOGRAPHS  # nothing else has no name
+    assert sorted(ignorable | named) == [ord(letter) for letter in SNOWFLAKE_BLANK_LETTERS]
+    for p in ignorable | named:
+        assert _refused(f"select get_ddl{chr(p)}('a')") == _REFUSED_CHARACTER
 
 
 # ------------------------------------------------------------------ Databricks (#398)
@@ -543,6 +639,9 @@ def test_the_non_ascii_refusal_is_the_last_one(sql: str, message: str) -> None:
         "select $1 from @s/a\\ 'b'",
         "select a\u3164",
         "select a\u200b from t",
+        # (#425)
+        "select get_ddl\U00013441('a') from t",
+        "select get_ddl\U00013442('a') from t",
     ],
 )
 def test_databricks_reads_the_texts_of_398_as_before(sql: str) -> None:

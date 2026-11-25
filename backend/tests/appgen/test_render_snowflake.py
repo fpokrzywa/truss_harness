@@ -348,6 +348,15 @@ def test_a_plain_table_name_renders_uppercased(table: str) -> None:
             "select identifier('sc.seq.nextval') from DEMO_DB.PUBLIC.CUSTOMERS c",
             "must hold one plain string literal or name",
         ),
+        # a blank letter in code (#425)
+        (
+            "select get_ddl\U00013441('a') from DEMO_DB.PUBLIC.CUSTOMERS c",
+            "invisible letters are not allowed outside quoted text",
+        ),
+        (
+            "select get_ddl\U00013442('a') from DEMO_DB.PUBLIC.CUSTOMERS c",
+            "invisible letters are not allowed outside quoted text",
+        ),
         # a table outside the data reads (#358)
         (
             "select s.id from DEMO_DB.PUBLIC.SECRETS s",
@@ -368,6 +377,14 @@ def test_tool_sql_the_app_may_not_run_is_refused(sql: str, reason: str) -> None:
     resolved["tools"][0]["sql"] = sql
     detail = _refused(SNOWFLAKE_MANIFEST, resolved)
     assert "invoiced_by_region" in detail and reason in detail
+
+
+def test_a_blank_letter_in_quoted_text_renders() -> None:
+    sql = "select '\U00013441' a, $$\U00013442$$ b from DEMO_DB.PUBLIC.CUSTOMERS c"
+    resolved = copy.deepcopy(SNOWFLAKE_RESOLVED)
+    resolved["tools"][0] |= {"sql": sql, "parameters": [], "input_schema": input_schema([])}
+    [tool, _] = json.loads(_render(resolved)["ui/config/tools.json"])
+    assert tool["sql"] == sql
 
 
 JOINED = "select s.* from DEMO_DB.PUBLIC.CUSTOMERS c join DEMO_DB.PUBLIC.ORDERS o on o.customer_id = c.id"
