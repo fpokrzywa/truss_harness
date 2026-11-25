@@ -152,6 +152,10 @@ Two new migrations widen CHECK constraints only, each in its own branch's next f
   - The shared write keywords are still refused anywhere in the statement. The Snowflake-only additions `list comment remove unset execute undrop begin commit rollback` are refused only as the first token of a statement.
   - A `?` outside a string literal in tool SQL is refused (`sql_positional_parameter`).
   - A `:` directly followed by a digit outside quoted text and comments is refused (`sql_positional_bind`, #325), as the run-time check refuses it (`col:1` and `x::1` included).
+  - The `->>` flow operator in code is refused (`sql_flow_operator`, #358): it chains a second statement. The run-time check refuses it with the same message. Quoted text, comments, `->` and `>>` are not it.
+  - An unquoted name, or a whole `"..."` identifier, starting with `SYSTEM$` in any case is refused (`sql_system_function`, #358), as the run-time check does (#285).
+  - The word `procedure` is refused anywhere in code as `sql_write_statement` (#358), as the run-time check does.
+  - `IDENTIFIER(` and `TABLE(` may hold only one `'...'` literal (no backslash, no doubled quote, no `system$`) or one plain name; anything else is `sql_dynamic_name` (#358). It is the run-time rule of #312 except in two places, where publish is stricter: a bound `IDENTIFIER(:name)` is refused (no value is known at publish, and the generated app checks none; the run-time check accepts it and checks the value, #339), and `TABLE(` has no run-time rule.
   - A name followed by `(` after `from`/`join` (`TABLE(...)`, `IDENTIFIER(...)`) stays `sql_table_function`.
   - Table names and aliases are compared uppercased on both sides, against the discovered names uppercased.
   - Each dialect rule has golden test cases in the issue's acceptance checks.
@@ -197,6 +201,7 @@ Two new migrations widen CHECK constraints only, each in its own branch's next f
   - after each answer it inserts one `APP_DATA.USAGE` row with bound parameters, under the owner's rights;
   - `run_sql`: `session.sql(sql, params=[...in param_order]).collect()` keeps SP5's row-limit rule and sets `truncated` the same way. It adds no extra `.limit`. Tool results are capped at 256 KiB, as in SP5.
 - Limits, `invalid_tool_call`, the protocol and the parity test are SP5's; one parity test runs over both rendered loops.
+- Render checks every tool's SQL against the release's `data_reads` (`table_rules` over the union of their tables, #358): a tool that reads another table is 409 `release_not_renderable`, after the statement and parameter checks.
 - `streamlit_app.py` gets the session with `get_active_session()` and passes it in; the core modules never import Snowpark, so tests inject a fake session.
 - **Conformance test** (`tests/appgen/test_generated_snowflake_app.py`): unpack the rendered archive; run `agent_loop` + `backend_snowflake` with a fake session backed by `FakeSnowflakeAccount(sample_data=True, cortex={...: AGENT_SCRIPT})` over the fixture dataset (each case passes its assertions); run `deep_health.run` (200-equivalent `status: ok`, then `table_denied` gives "the app cannot read"); run `streamlit_app.py` with `streamlit.testing.v1.AppTest` and a stub `snowflake.snowpark.context` module on a temporary `sys.path` (chat answers; the table screen shows rows). The archive scan of SP5 6.3 adds `-----BEGIN` and `.snowflakecomputing.com` (no account address in the artifact).
 
