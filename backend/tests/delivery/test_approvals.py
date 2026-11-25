@@ -449,6 +449,7 @@ def _decide_as_service_account(
     plan_id: object,
     decision: str,
     digest: str,
+    api_key_id: UUID | None = None,
 ) -> Any:  # Any: a PlanOut, or the AppError raised
     """`PlanService` approve or reject in A as the service account `sa` (an API key caller)."""
     with app_db.session() as session:
@@ -461,6 +462,7 @@ def _decide_as_service_account(
             principal_type="service_account",
             credential="api_key",
             tenant_id=world.a.tenant,
+            api_key_id=api_key_id,
         )
         scope = TenantScope(
             session=session,
@@ -497,9 +499,11 @@ def _denials(owner_db: Database, tenant: UUID) -> list[Any]:
         )
 
 
-def _requested_by(owner_db: Database, template: dict[str, Any], requester: UUID) -> UUID:
-    """A copy of the sealed plan `template`, still in its window, requested by `requester`
-    (inserted as the schema owner, as `_expired_plan` does)."""
+def _requested_by(
+    owner_db: Database, template: dict[str, Any], requester: UUID, api_key_id: UUID | None = None
+) -> UUID:
+    """A copy of the sealed plan `template`, still in its window, requested by `requester` with
+    `api_key_id` (inserted as the schema owner, as `_expired_plan` does)."""
     plan_id = uuid7()
     with owner_db.session() as o:
         o.execute(
@@ -507,13 +511,14 @@ def _requested_by(owner_db: Database, template: dict[str, Any], requester: UUID)
                 "INSERT INTO shifde.delivery_plans (tenant_id, id, target_id, target_revision, "
                 "artifact_id, artifact_digest, application_key, display_name, status, "
                 "requested_by, steps, snapshot, adapter_version, toolchain_digest, digest, "
-                "sealed_at, expires_at, release_id, release_digest, evaluation_run_id) "
+                "sealed_at, expires_at, release_id, release_digest, evaluation_run_id, "
+                "requested_api_key_id) "
                 "SELECT tenant_id, :id, target_id, target_revision, artifact_id, artifact_digest, "
                 "application_key, display_name, 'sealed', :r, steps, snapshot, adapter_version, "
                 "toolchain_digest, digest, sealed_at, expires_at, release_id, release_digest, "
-                "evaluation_run_id FROM shifde.delivery_plans WHERE id = :p"
+                "evaluation_run_id, :k FROM shifde.delivery_plans WHERE id = :p"
             ),
-            {"id": plan_id, "r": requester, "p": template["id"]},
+            {"id": plan_id, "r": requester, "p": template["id"], "k": api_key_id},
         )
         o.commit()
     return plan_id
