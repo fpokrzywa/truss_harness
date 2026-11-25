@@ -42,6 +42,13 @@ A health probe is ready only on a 2xx answer within a short timeout (procctl: 2 
 cuts a platform write mid-call: an executor that passes its grace with a write in flight exits 1
 and the write is left to the unknown-outcome path.
 
+A `worker.sweep_still_running` warning (`worker_id`, `elapsed_seconds`) with a "stale"
+`reaper.status` in platform health (`GET /api/v1/platform/health-details`) means a client sweep of
+that worker is stuck or very long: it has run longer than twice the lease, at least 60 s. The worker
+stays ready and keeps claiming and reaping leases. It only stops recording its reaps, until the
+sweep ends. With several workers a healthy one keeps the status "ok", so the log line is the
+per-worker signal.
+
 ## Restart policy
 
 - Restart on 1 (and any code outside 0 and 2-5) after `min(2**n, 60)` seconds for the n-th
