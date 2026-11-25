@@ -4,7 +4,8 @@ Every route of `appgen.api.router` has a test here (`ROUTE_TESTS`, matched again
 run both ways (A against B, then B against A). A's administrator asking for B's request on any
 request route gets exactly the answer a random id gets (404, same body) and changes nothing of
 B's; B's rows are absent from A's list, B's connection in A's create is an unknown connection (B's
-Snowflake connection too, SP6-4), and B's slug in the path is an unknown organization. A member bound only at project P1 gets the
+Snowflake connection too, SP6-4), and B's slug in the path is an unknown organization; B's
+Databricks and Snowflake releases have no app preview for A (SP6-5). A member bound only at project P1 gets the
 same 404 on every route for P2's request (an edit without waiting on another writer's lock of
 it), and P2's list and create answer as a project that does not exist. Under row-level security, `shifde_app` in A's
 context reads none of B's requests or drafts and an UPDATE naming B's request touches nothing;
@@ -27,6 +28,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from shifde.appgen import api as appgen_api
+from shifde.appgen.render import GENERATOR_VERSIONS
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from tests._support.appgen_fixtures import SAMPLE_DRAFT
@@ -52,6 +54,8 @@ from tests.appgen.helpers import (
     wire,
     wire_snowflake,
 )
+from tests.appgen.rendered import SNOWFLAKE_KIND
+from tests.appgen.test_render_snowflake import KEYS as SNOWFLAKE_FILES
 from tests.delivery.app_releases import add_provider, make_app_release
 from tests.tenancy.conftest import app_session
 
@@ -271,6 +275,44 @@ def test_a_cannot_preview_bs_release(
 
     _same(preview(releases[them.org]), preview(uuid7()))
     assert preview(releases[me.org]).status_code == 200
+
+
+def _on_snowflake(manifest: dict[str, Any]) -> None:
+    manifest["target_kind"] = SNOWFLAKE_KIND
+    manifest["app"] = {"generator_version": GENERATOR_VERSIONS[SNOWFLAKE_KIND]}
+    manifest["data_reads"][0]["tables"] = list(SF_TABLES)
+
+
+@DIRECTIONS
+def test_a_cannot_preview_bs_snowflake_release(
+    two: Two, owner_session: Session, owner_db: Database, direction: str
+) -> None:
+    """SP6-5: a Snowflake `/2` release renders in its own organization's preview (the Native App
+    file list) and is an unknown id to the other organization."""
+    me, them = _ways(two, direction)
+    releases = {}
+    for side in (me, them):
+        tenant = UUID(str(tenant_id(owner_session, _slug(side))))
+        workspace = owner_session.execute(
+            text("SELECT id FROM shifde.workspaces WHERE tenant_id = :t AND slug = 'main'"),
+            {"t": tenant},
+        ).scalar_one()
+        owner_session.rollback()
+        provider = add_provider(owner_db, tenant, "fake", None)
+        releases[side.org] = make_app_release(
+            owner_db, tenant, workspace, provider_id=provider, edit=_on_snowflake
+        ).id
+    h = me.h
+
+    def preview(release_id: object) -> httpx.Response:
+        return _send(h, "GET", f"{me.org}/releases/{release_id}/app-preview", None)
+
+    _same(preview(releases[them.org]), preview(uuid7()))
+    mine = preview(releases[me.org])
+    assert mine.status_code == 200, mine.text
+    body = mine.json()
+    assert body["generator_version"] == "shifde.appgen.snowflake/1.0"
+    assert [f["path"] for f in body["files"]] == sorted(SNOWFLAKE_FILES)
 
 
 @DIRECTIONS

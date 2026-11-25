@@ -1,11 +1,14 @@
-"""The agent loop of a generated app, standalone (stdlib and databricks-sdk only).
+"""The agent loop of a generated app, standalone and platform-neutral (stdlib only).
 
 It speaks SETH's tool protocol: `PROTOCOL`, `MAX_CALLS_PER_RESPONSE`, `FENCE`, `parse_tool_calls`
 and `untrusted_block` are verbatim copies of `shifde/runtime/agent.py` (a parity test keeps them
 equal). The system message is the agent's instructions, the protocol and the tool listing; the
 question is the user message; each reply is appended, and the tool results go back as one user
 message of `<untrusted>` blocks. Limits come from `config/limits.json`. A stop is `Stop(code)`;
-a serving or warehouse failure is `UpstreamFailed`, which carries no exception text.
+a model or SQL failure is `UpstreamFailed`, which carries no exception text. The platform comes in
+as two callables of the app's backend module (`backend_databricks.py`, `backend_snowflake.py`):
+`call_model(messages) -> (text, prompt_tokens, completion_tokens)` and
+`run_sql(tool, arguments) -> result`; either raises `UpstreamFailed` on failure.
 """
 
 from __future__ import annotations
@@ -15,15 +18,9 @@ import html
 import json
 import re
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any  # Any: JSON documents
-
-from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
-from databricks.sdk.service.sql import (
-    ExecuteStatementRequestOnWaitTimeout,
-    StatementParameterListItem,
-    StatementState,
-)
 
 MAX_CALLS_PER_RESPONSE = 8
 FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.S)
@@ -74,7 +71,6 @@ def untrusted_block(source: str, step_id: object, value: Any) -> str:  # Any: JS
 
 
 MAX_RESULT_BYTES = 262144  # 256 KiB of a tool result's JSON encoding
-WAIT_TIMEOUT = "30s"
 KEYWORDS = frozenset(
     {"type", "properties", "required", "additionalProperties", "maxLength", "pattern", "format"}
 )
@@ -91,7 +87,7 @@ class Stop(Exception):
 
 
 class UpstreamFailed(Exception):
-    """The serving endpoint or the warehouse failed; no exception text is kept."""
+    """The model or the SQL warehouse failed; no exception text is kept."""
 
 
 # ---------------------------------------------------------------------- config
@@ -168,56 +164,17 @@ def valid(schema: dict[str, Any], value: Any) -> bool:  # Any: a JSON value
 
 
 # ---------------------------------------------------------------------- calls
-def sql_type(prop: Any) -> str:  # Any: an input schema property
-    kind = prop.get("type") if isinstance(prop, dict) else None
-    if kind == "integer":
-        return "BIGINT"
-    if kind == "number":
-        return "DOUBLE"
-    if kind == "boolean":
-        return "BOOLEAN"
-    if kind == "string" and prop.get("format") == "date":
-        return "DATE"
-    return "STRING"
+CallModel = Callable[[list[dict[str, str]]], tuple[str, int, int]]
+RunSql = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]  # Any: JSON
 
 
 def run_tool(
-    client: Any, warehouse_id: str, tool: dict[str, Any], arguments: dict[str, Any]
-) -> dict[str, Any]:  # Any: the workspace client and JSON
+    run_sql: RunSql, tool: dict[str, Any], arguments: dict[str, Any]
+) -> dict[str, Any]:  # Any: JSON
     """The tool's result in SETH's shape; `Stop` on bad arguments or an oversized result."""
     if not valid(tool["input_schema"], arguments):
         raise Stop("invalid_tool_call")
-    props = tool["input_schema"].get("properties") or {}
-    parameters = [
-        StatementParameterListItem(
-            name=p["name"],
-            value=None if arguments.get(p["name"]) is None else str(arguments[p["name"]]),
-            type=sql_type(props.get(p["name"])),
-        )
-        for p in tool["parameters"]
-    ]
-    max_rows = int(tool["max_rows"])
-    try:
-        response = client.statement_execution.execute_statement(
-            warehouse_id=warehouse_id,
-            statement=tool["sql"],
-            parameters=parameters,
-            row_limit=max_rows,
-            wait_timeout=WAIT_TIMEOUT,
-            on_wait_timeout=ExecuteStatementRequestOnWaitTimeout.CANCEL,
-        )
-    except Exception as exc:
-        raise UpstreamFailed() from exc
-    if response.status is None or response.status.state != StatementState.SUCCEEDED:
-        raise UpstreamFailed()
-    manifest = response.manifest
-    schema = manifest.schema if manifest is not None else None
-    columns = [str(c.name) for c in (schema.columns if schema is not None else None) or []]
-    data = (response.result.data_array if response.result is not None else None) or []
-    rows = data[:max_rows]
-    result: dict[str, Any] = {"columns": columns, "rows": rows, "row_count": len(rows)}
-    if len(data) > max_rows or (manifest is not None and manifest.truncated):
-        result["truncated"] = True
+    result = run_sql(tool, arguments)
     encoded = json.dumps(result, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     if len(encoded) > MAX_RESULT_BYTES:
         raise Stop("tool_result_too_large")
@@ -236,29 +193,13 @@ def system_message(instructions: str, tools: dict[str, dict[str, Any]]) -> str: 
     return f"{instructions}\n\n{PROTOCOL}## Tools\n{listing}"
 
 
-def _model(client: Any, endpoint: str, convo: list[dict[str, str]]) -> tuple[str, int, int]:
-    messages = [ChatMessage(role=ChatMessageRole(m["role"]), content=m["content"]) for m in convo]
-    try:
-        response = client.serving_endpoints.query(name=endpoint, messages=messages)
-        text = response.choices[0].message.content
-    except Exception as exc:
-        raise UpstreamFailed() from exc
-    if not isinstance(text, str):
-        raise UpstreamFailed()
-    usage = response.usage
-    prompt = int(usage.prompt_tokens or 0) if usage is not None else 0
-    completion = int(usage.completion_tokens or 0) if usage is not None else 0
-    return text, prompt, completion
-
-
 def ask(
-    client: Any,
+    call_model: CallModel,
+    run_sql: RunSql,
     config: dict[str, Any],
-    warehouse_id: str,
-    endpoint: str,
     question: str,
     clock: Any = time.monotonic,
-) -> dict[str, Any]:  # Any: the workspace client, config and JSON
+) -> dict[str, Any]:  # Any: config and JSON
     """Answer `question`: `{answer, tool_calls, prompt_tokens, completion_tokens}`, or `Stop`."""
     started = clock()
     limits, tools = config["limits"], config["tools"]
@@ -276,7 +217,7 @@ def ask(
         if iteration >= int(limits["max_iterations"]):
             raise Stop("limit_exceeded")
         check_deadline()
-        text, used_prompt, used_completion = _model(client, endpoint, convo)
+        text, used_prompt, used_completion = call_model(convo)
         iteration += 1
         prompt, completion = prompt + used_prompt, completion + used_completion
         try:
@@ -299,7 +240,7 @@ def ask(
             if tool_calls >= int(limits["max_tool_calls"]):
                 raise Stop("limit_exceeded")
             check_deadline()
-            output = run_tool(client, warehouse_id, tool, call["arguments"])
+            output = run_tool(run_sql, tool, call["arguments"])
             tool_calls += 1
             results.append(untrusted_block(f"tool:{call['name']}", f"{iteration}.{index}", output))
         convo.append(
