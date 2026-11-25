@@ -729,3 +729,56 @@ def test_a_plan_request_on_an_sp8_target_is_refused_without_a_write(
     refused = request_plan(client, h, world.a.slug, made["id"], release, status=409)
     assert refused["code"] == "target_kind_mismatch"
     assert rows() == (0, 0, 0)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "acme.palantirfoundry.com",
+        "a.b.palantirfoundry.com",
+        " Acme.PalantirFoundry.com ",
+        "foundry.corp.example,stack-1.foundry.corp.example",
+        "stack-1.foundry.corp.example,foundry.corp.example",
+        "a.b.c.corp.example, Corp.Example",
+        "x.example,foundry.corp.example,y.example,a.foundry.corp.example",
+        ["Foundry.Corp.Example ", " a.foundry.corp.example"],
+    ],
+)
+def test_a_nested_palantir_installation_suffix_is_refused(value: Any) -> None:
+    base: dict[str, Any] = {
+        "_env_file": None,
+        "database_url": "postgresql+psycopg://x",
+        "env": "test",
+    }
+    with pytest.raises(ValidationError) as raised:
+        Settings(**base, delivery_palantir_host_suffixes=value)
+    message = str(raised.value)
+    assert "SHIFDE_DELIVERY_PALANTIR_HOST_SUFFIXES" in message
+    entries = value if isinstance(value, list) else value.split(",")
+    for entry in entries:
+        assert entry.strip().lower() not in message.lower()
+    # the Databricks list's rule is unchanged: it keeps every one of these
+    expected = [entry.strip().lower() for entry in entries]
+    kept = Settings(**base, delivery_databricks_host_suffixes=value)
+    assert kept.delivery_databricks_host_suffixes == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "foundry.corp.example,a.b-c.io",
+        "notpalantirfoundry.com",
+        "corp.example,xcorp.example",
+        "foundry.corp.example,foundry.corp.example",
+        "a.example.com,b.example.com",
+        "palantirfoundry.com.example",
+    ],
+)
+def test_a_palantir_suffix_beside_another_is_accepted(value: str) -> None:
+    base: dict[str, Any] = {
+        "_env_file": None,
+        "database_url": "postgresql+psycopg://x",
+        "env": "test",
+    }
+    s = Settings(**base, delivery_palantir_host_suffixes=value)
+    assert s.delivery_palantir_host_suffixes == value.split(",")

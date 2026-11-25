@@ -534,6 +534,28 @@ REFUSED_SQL = [
     "select identifier('GET_DDL')('table','t')",
     "select identifier('sc.seq.nextval')",
     "select :nextval",
+    # `//` directly after a `:` (#398)
+    "select $1 from snow://a/b ->> remove @s/y",
+    "select a://x",
+    "select x:://c",
+    # a path end directly after a backslash does not end a stage path (#398)
+    "select $1 from @s/a\\ //x ->> remove @y",
+    "select $1 from @s/a\\\t//x ->> remove @y",
+    "select $1 from @s/a\\ 'b'",
+    # (#398)
+    "select getnextval(s)",
+    "select * from table(result_scan(last_query_id()))",
+    "select identifier('LAST_QUERY_ID')()",
+    "select :last_query_id",
+    # a non-ASCII character in code that is no visible letter or digit (#398)
+    "select get_ddl\u3164('a')",
+    "select get_d\u200bdl('a')",
+    "select\u00a0a from t",
+    # a blank letter in code (#425)
+    "select get_ddl\U00013441('a')",
+    "select get_ddl\U00013442('a')",
+    "select get_\U00013441ddl('a')",
+    "select :\U00013442call",
 ]
 ACCEPTED_SQL = [
     "SELECT $$hello$$",
@@ -597,6 +619,21 @@ ACCEPTED_SQL = [
     "select my_get_ddl, nextval_at from t",
     "select 'get_ddl', $$nextval$$",
     "select $nextval",
+    # the neighbours of the refusals of #398
+    "select a: //x",
+    "select 'a://b', $$a://b$$ -- a://b",
+    "select 1 /* a: *///c",
+    "select :id//c",
+    "select x::int // c",
+    "select $1 from @s/a\\  //x",
+    "select $1 from @s/a\\b //x",
+    "select my_getnextval, result_scan_at, last_query_ids from t",
+    "select 'result_scan', $$last_query_id$$",
+    "select :call\u00e9",
+    "select gr\u00f6\u00dfe from t",
+    "select '\u3164', \"\u200b\" from t -- \u3164",
+    "select '\U00013441\U00013442', \"\U00013441\U00013442\" from t -- \U00013441\U00013442",
+    "select $$\U00013441\U00013442$$ /* \U00013441\U00013442 */",
 ]
 
 
@@ -662,6 +699,7 @@ REFUSED_BOUND = [
     ("select identifier(?)", ["SEQ.NEXTVAL"]),
     ("select identifier(?)('table', ?)", ["Get_Ddl", "t"]),
     ("select identifier(:fn)(1)", {"fn": "get_presigned_url"}),
+    ("select identifier(?)()", ["Last_Query_Id"]),
 ]
 
 

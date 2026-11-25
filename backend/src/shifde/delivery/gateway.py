@@ -13,8 +13,9 @@ moves its deployment to `leased`; its first accepted `intent` moves it to `apply
 Every per-job call proves the current lease (`lease_id` and `fence`). A job of another
 organization, or one that does not exist, answers the same 404; a lease that is not the caller's
 current one answers 409 `lease_lost`, and nothing revives an expired lease. The journal mirrors
-the SDK journal: intent before write, no changed input digest, no conflicting receipt. A refusal
-changes nothing (the transaction is rolled back). Times are the database clock's.
+the SDK journal: intent before write, no changed input digest, no conflicting receipt. A new
+intent needs an active target; receipts, existing intents and results do not. A refusal changes
+nothing (the transaction is rolled back). Times are the database clock's.
 
 `JOB_KINDS` maps a job kind to its result model and an `on_result` hook run in the result's
 transaction (settled call 5): `plan` (`service.on_plan_result` seals or fails the plan), `apply`
@@ -23,7 +24,7 @@ transaction (settled call 5): `plan` (`service.on_plan_result` seals or fails th
 kind without an entry is refused. A leased `plan` job serves its plan's artifact (`artifact`).
 `job_context` answers what a leased job runs against (target, plan, deployment, owned resources;
 B-2688), so the executor can drive the adapter from ids alone. A Fabric target's context names the
-Fabric API origin as its host and its workspace as a binding (`_fabric_target`, SP8-5), and its
+Fabric API origin as its host and its workspace as a binding (`service.adapter_target`), and its
 `apply` result is checked by `service.check_fabric_receipt` with the API's environment.
 """
 
@@ -39,7 +40,6 @@ from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.orm import Session
 
-from shifde.adapters.native.addresses import FABRIC_API_WORKSPACES
 from shifde.adapters.native.contracts import (
     ApplyReceipt,
     CheckpointSubmission,
@@ -59,10 +59,8 @@ from shifde.adapters.native.contracts import (
     OwnedResource,
     PlanJobResult,
     ReconciliationResult,
-    Target,
     VerificationReport,
 )
-from shifde.adapters.native.fabric.source import ORIGIN as FABRIC_ORIGIN
 from shifde.core.errors import AppError, NotFound, ValidationFailed
 from shifde.delivery import repository, service
 from shifde.delivery.service import AuthenticatedExecutor
@@ -243,32 +241,14 @@ def artifact(
     return Artifact(content=bytes(found["content"]), digest=found["digest"])
 
 
-def _fabric_target(row: Row, tenant_id: UUID) -> Target:
-    """A Fabric target as its adapter takes it: the API origin as the host, and the workspace GUID
-    of the stored address as a binding beside the stored ones."""
-    bindings = row["bindings"]
-    return Target(
-        tenant_id=tenant_id,
-        id=row["id"],
-        revision=row["revision"],
-        environment=row["environment"],
-        host=FABRIC_ORIGIN,
-        bindings={
-            "workspace": row["address"].removeprefix(FABRIC_API_WORKSPACES),
-            "lakehouse_name": bindings["lakehouse_name"],
-            "notebook_name": bindings["notebook_name"],
-            "entra_tenant_id": bindings["entra_tenant_id"],
-        },
-    )
-
-
 def job_context(
     session: Session, executor: AuthenticatedExecutor, job_id: UUID, proof: LeaseProof
 ) -> JobContext:
     """What the job runs against: its target, its plan (sealed fields once sealed, its release
     digest and the release's app generator version, read in the executor's organization only),
     its deployment (receipt once applied) and the native resources the plan's application owns on
-    the target. Never a credential, the claim or address key, or the artifact bytes."""
+    the target. Never a credential, the claim or address key, or the artifact bytes. A target
+    whose stored bindings no longer validate is 409 `target_bindings_invalid`."""
     tenant_id = executor.tenant_id
     row = _leased(session, executor, job_id, proof)
     target = (
@@ -278,6 +258,7 @@ def job_context(
     )
     if target is None or target["status"] != "active":
         raise TargetUnavailable("the job's target is not available")
+    service.require_bindings(target)
     plan = (
         repository.get_plan(session, row["plan_id"], tenant_id=tenant_id)
         if row["plan_id"] is not None
@@ -299,16 +280,7 @@ def job_context(
     session.commit()
     return JobContext(
         job=_leased_job(row),
-        target=_fabric_target(target, tenant_id)
-        if target["platform_kind"] == "fabric"
-        else Target(
-            tenant_id=tenant_id,
-            id=target["id"],
-            revision=target["revision"],
-            environment=target["environment"],
-            host=target["address"],
-            bindings=target["bindings"],
-        ),
+        target=service.adapter_target(target),
         platform_kind=target["platform_kind"],
         plan=None
         if plan is None
@@ -380,7 +352,8 @@ def _entry(row: Row) -> JournalEntry:
 def checkpoint(
     session: Session, executor: AuthenticatedExecutor, job_id: UUID, body: CheckpointSubmission
 ) -> JournalEntry:
-    """Record a journal step: the intent before the platform write, the receipt after it."""
+    """Record a journal step: the intent before the platform write, the receipt after it. A new
+    intent needs the job's target active; a receipt and an intent already recorded do not."""
     tenant_id = executor.tenant_id
     row = _leased(session, executor, job_id, body)
     if body.sequence <= row["checkpoint_seq"]:
@@ -395,6 +368,13 @@ def checkpoint(
         raise InputDigestChanged("the step's input digest changed")
     if body.state == "intent":
         if current is None:
+            target = (
+                repository.get_target(session, row["target_id"], tenant_id=tenant_id)
+                if row["target_id"] is not None
+                else None
+            )
+            if target is None or target["status"] != "active":
+                raise TargetUnavailable("the job's target is not available")
             current = repository.insert_intent(
                 session,
                 {

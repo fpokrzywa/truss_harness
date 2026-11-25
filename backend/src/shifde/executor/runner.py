@@ -1,25 +1,30 @@
 """The runner: lease one job, run it through the adapter of its target's platform (Databricks,
-Snowflake or Fabric), post its result (design 4 and 5, settled calls 5, 8 and 14; FDE SDK
-`shifde_executor.runner`, synchronous, one job at a time; B-2688..B-2695; SP6 design 6.4; SP8
-design 4).
+Snowflake, Fabric, Palantir or Docker), post its result (design 4 and 5, settled calls 5, 8 and 14;
+FDE SDK `shifde_executor.runner`, synchronous, one job at a time; B-2688..B-2695; SP6 design 6.4;
+SP8 design 4).
 
 Every job reads its context (target, plan, deployment, owned resources) and a credential grant
 under its lease; a grant the broker refuses ends the job `credential_unavailable` before any
 adapter call. The deploying service principal comes from the credential entry, not the target.
 The job context's `platform_kind` picks the adapter through `DISPATCH`: `databricks`
 (`DatabricksAdapter`, tokens from the broker), `snowflake` (`SnowflakeNativeAdapter`, a key pair
-the broker re-checks and reads on every statement) or `fabric` (`FabricAdapter`, Entra
-client-credentials tokens of one job, the secret re-checked and read on every token request). An
-entry of another platform is refused like any other mismatch, and so is a Fabric entry of another
-Entra tenant or workspace than the target's. A `palantir` or `docker` job runs its platform's
-broker check and then fails closed (`execution_failed`) before any adapter or platform call and
-before any journal intent, until SP8-7 and SP8-9 wire its call path; the platforms already build
-those adapters (`palantir_adapter`, `docker_adapter`).
+the broker re-checks and reads on every statement), `fabric` (`FabricAdapter`, Entra
+client-credentials tokens of one job, the secret re-checked and read on every token request),
+`palantir` (`PalantirMarketplaceAdapter`, client credentials the broker re-checks and reads before
+every request, a cached token's too) or `docker` (`DockerComposeAdapter` over the job's own artifact
+store, the grant and entry checked again before every runtime call, only for a plan of the Docker
+generator's version and a bundle of the plan's release). An entry of another platform is refused
+like any other mismatch, and so is a Fabric entry of another Entra tenant or workspace than the
+target's.
 
 A Fabric job of every kind builds its spec from the plan's sealed artifact: the bytes hash to the
 plan's artifact digest, `release.json` names the plan's release digest and the other files are the
 template of that digest. Observe and verify also match the stored receipt with that artifact and
 the owned resources. A mismatch ends the job before any platform request (SP8-5).
+
+A Palantir `plan` or `apply` job first reads the artifact's descriptor (`palantir.source`): one that
+is missing, spec-only or of another release is `execution_failed`, and one whose bindings digest is
+not the context target's is `plan_stale`, before any token, request or journal intent.
 
 While a job runs it is heartbeated in the background; a 409 marks the lease lost.
 
@@ -27,19 +32,21 @@ While a job runs it is heartbeated in the background; a 409 marks the lease lost
 checkpoint and writes only once the gateway acknowledged it; afterwards it posts `complete`.
 Any exception ends the job with one failed result `execution_failed` (none once the lease is lost:
 the server's sweep decides `unknown_outcome` or `failed`), except a `plan` job that finds no free
-patch in the Snowflake package, which fails `snowflake_patch_limit`, or a Fabric item of a bound
-name that the target does not own, which fails `foreign_item`. Nothing is retried here; the
+patch in the Snowflake package (`snowflake_patch_limit`), a Fabric item of a bound name that the
+target does not own (`foreign_item`), a Palantir plan whose target changed (`plan_stale`), another
+Docker daemon than the target's (`docker_host_mismatch`) or another target's compose project
+(`foreign_project`), which fails with that code. Nothing is retried here; the
 server re-queues read-only jobs after a lost lease. A failed result never carries error text.
 
 The platform is real (`RealPlatform`: the pinned Databricks CLI and workspace REST reads with
 tokens from the broker, the Snowflake SQL API and the pinned Snowflake CLI's stage copy with the
-broker's key pair, or the Fabric REST API with Entra tokens) or the in-memory fakes
-(`FakePlatform`, one fake per platform per process; the Snowflake fake is built with the
-executor's `SHIFDE_ENV`, so it refuses outside development and test, as the Docker and Fabric
-fakes do; the Fabric fake also needs its switch, `fabric_enabled`). The toolchain digest names the
-adapter, its CLI version and the platform, so a plan made on a fake is never applied by a real
-executor, and the fake marks every `complete` receipt and the apply receipt's handles with
-`platform: fake`.
+broker's key pair, the Fabric REST API with Entra tokens, or the Foundry REST API with the broker's
+client credentials) or the in-memory fakes (`FakePlatform`, one fake per platform per process; the
+Snowflake and Foundry fakes are built with the executor's `SHIFDE_ENV`, so they refuse outside
+development and test, as the Docker and Fabric fakes do; the Fabric fake also needs its switch,
+`fabric_enabled`). The toolchain digest names the adapter, its CLI version (the API and packager of
+the Palantir kind) and the platform, so a plan made on a fake is never applied by a real executor,
+and the fake marks every `complete` receipt and the apply receipt's handles with `platform: fake`.
 
 Process control (SP4 design 6.2): `stop()` requests no new lease, while the job in flight runs to
 its normal end, result included. `last_tick` is the monotonic time of the last run-loop pass (or
@@ -47,10 +54,11 @@ lease heartbeat while a job is in flight) and `live()` / `ready()` hold while it
 last successful gateway call, are within `window()`. `abandon()` (the shutdown grace ran out)
 posts nothing more for the job in flight; `write_in_flight()` tells whether a platform write was.
 
-A plan's artifact is the application source (the SDK source, the Fabric template or a Snowflake
-Native App package) plus a root `release.json`, the release it deploys (SP3-4).
+A plan's artifact is the application source (the SDK source, the Fabric template, a Snowflake Native
+App package or a Docker bundle) plus a root `release.json`, the release it deploys (SP3-4).
 Its digest covers the whole archive; the adapter reads the source without `release.json`
-(`ReleaseArtifactStore`), so the record is checked but never deployed.
+(`ReleaseArtifactStore`), so the record is checked but never deployed. The Docker adapter reads the
+whole archive: its bundle rules need the record.
 """
 
 from __future__ import annotations
@@ -58,11 +66,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Literal, Protocol  # Any: JSON step inputs and receipts
 from uuid import UUID, uuid5
 
@@ -73,6 +83,7 @@ from shifde.adapters.native.addresses import (
     FABRIC_API_WORKSPACES,
     AddressRefused,
     normalize_databricks_address,
+    normalize_palantir_address,
 )
 from shifde.adapters.native.base import (
     ArtifactStore,
@@ -92,7 +103,9 @@ from shifde.adapters.native.contracts import (
     CredentialGrant,
     DatabricksApplicationSpec,
     DeploymentPlan,
+    DockerComposeSpec,
     FabricSolutionSpec,
+    FoundryMarketplaceSpec,
     JobContext,
     JobKind,
     JobLease,
@@ -119,13 +132,16 @@ from shifde.adapters.native.databricks.adapter import (
 from shifde.adapters.native.databricks.clients import DatabricksCLI, DatabricksWorkspaceGateway
 from shifde.adapters.native.databricks.fake import FakeDatabricksPlatform
 from shifde.adapters.native.databricks.source import ADAPTER_VERSION, CLI_VERSION
+from shifde.adapters.native.docker import adapter as docker_adapter
+from shifde.adapters.native.docker import source as docker_source
 from shifde.adapters.native.docker.adapter import DockerComposeAdapter
-from shifde.adapters.native.docker.fake import FakeContainerRuntime
-from shifde.adapters.native.docker.runtime import DockerCliRuntime
+from shifde.adapters.native.docker.fake import FakeContainerRuntime, prepare_rendered_app
+from shifde.adapters.native.docker.runtime import MIN_ENGINE, DockerCliRuntime, DockerRefused
 from shifde.adapters.native.fabric import source as fabric_source
 from shifde.adapters.native.fabric.adapter import FabricAdapter, ForeignItem
 from shifde.adapters.native.fabric.clients import EntraTokenProvider, FabricClient
 from shifde.adapters.native.fabric.fake import FakeFabricWorkspace
+from shifde.adapters.native.palantir import source as palantir_source
 from shifde.adapters.native.palantir.adapter import PalantirMarketplaceAdapter
 from shifde.adapters.native.palantir.clients import FoundryCredentials, PalantirClient
 from shifde.adapters.native.palantir.fake import FakeFoundryStack
@@ -165,17 +181,50 @@ TokenProvider = Callable[[str], str]
 FabricCredentialProvider = Callable[[], FabricCredentials]
 FoundryCredentialProvider = Callable[[str], FoundryCredentials]
 ErrorCode = Literal[
-    "execution_failed", "credential_unavailable", "snowflake_patch_limit", "foreign_item"
+    "execution_failed",
+    "credential_unavailable",
+    "snowflake_patch_limit",
+    "foreign_item",
+    "plan_stale",
+    "docker_host_mismatch",
+    "foreign_project",
 ]
+# the Docker refusals a failed plan job names (any other is `execution_failed`)
+DOCKER_PLAN_REFUSALS: dict[str, ErrorCode] = {
+    "docker_host_mismatch": "docker_host_mismatch",
+    "foreign_project": "foreign_project",
+}
 TargetKind = Literal["databricks", "snowflake", "fabric", "palantir", "docker"]
-Adapter = DatabricksAdapter | SnowflakeNativeAdapter | FabricAdapter
-Spec = DatabricksApplicationSpec | SnowflakeApplicationSpec | FabricSolutionSpec
+Adapter = (
+    DatabricksAdapter
+    | SnowflakeNativeAdapter
+    | FabricAdapter
+    | PalantirMarketplaceAdapter
+    | DockerComposeAdapter
+)
+Spec = (
+    DatabricksApplicationSpec
+    | SnowflakeApplicationSpec
+    | FabricSolutionSpec
+    | FoundryMarketplaceSpec
+    | DockerComposeSpec
+)
 FABRIC_KEY_OF_TYPE = {"fabric.Lakehouse": "lakehouse", "fabric.Notebook": "notebook"}
 
 
 def toolchain_digest(platform: str, target_kind: TargetKind = "databricks") -> str:
     """The executing toolchain: the adapter of `target_kind`, its version, its pinned CLI version
     and the platform (`fake`, or the real platform)."""
+    if target_kind == "docker":
+        return digest(
+            {
+                "adapter": "docker",
+                "adapter_version": docker_source.ADAPTER_VERSION,
+                "min_engine": ".".join(str(part) for part in MIN_ENGINE),
+                "base_image": docker_source.BASE_IMAGE,
+                "platform": "fake" if platform == "fake" else "docker",
+            }
+        )
     if target_kind == "snowflake":
         return digest(
             {
@@ -190,6 +239,13 @@ def toolchain_digest(platform: str, target_kind: TargetKind = "databricks") -> s
             {
                 **fabric_source.FABRIC_PROFILE,
                 "platform": "fake" if platform == "fake" else "fabric",
+            }
+        )
+    if target_kind == "palantir":
+        return digest(
+            {
+                **palantir_source.PALANTIR_PROFILE,
+                "platform": "fake" if platform == "fake" else "palantir",
             }
         )
     return digest(
@@ -231,13 +287,17 @@ class Platform(Protocol):
         self, target: Target, credential_provider: FoundryCredentialProvider
     ) -> PalantirMarketplaceAdapter: ...
 
-    def docker_adapter(self, target: Target, artifacts: ArtifactStore) -> DockerComposeAdapter: ...
+    def docker_adapter(
+        self, target: Target, artifacts: ArtifactStore, authorize: Callable[[], None]
+    ) -> DockerComposeAdapter: ...
 
 
 class RealPlatform:
     """A Databricks workspace (the pinned CLI writes, httpx reads, tokens from the broker), a
     Snowflake account (SQL API statements and the pinned CLI's stage copy, key pairs from the
-    broker) or a Fabric workspace (REST calls, Entra tokens of one job)."""
+    broker), a Fabric workspace (REST calls, Entra tokens of one job), a Foundry stack (REST calls,
+    client credentials from the broker) or the executor host's local Docker daemon (the `docker`
+    CLI)."""
 
     kind = "databricks"
 
@@ -278,11 +338,22 @@ class RealPlatform:
         self, target: Target, credential_provider: FoundryCredentialProvider
     ) -> PalantirMarketplaceAdapter:
         return PalantirMarketplaceAdapter(
-            client_factory=lambda t: PalantirClient(t, credential_provider=credential_provider)
+            client_factory=lambda t: PalantirClient(
+                t,
+                credential_provider=credential_provider,
+                authorize=lambda: credential_provider(t.host),
+            ),
+            toolchain_digest=toolchain_digest(self.kind, "palantir"),
         )
 
-    def docker_adapter(self, target: Target, artifacts: ArtifactStore) -> DockerComposeAdapter:
-        return DockerComposeAdapter(DockerCliRuntime(), artifacts=artifacts)
+    def docker_adapter(
+        self, target: Target, artifacts: ArtifactStore, authorize: Callable[[], None]
+    ) -> DockerComposeAdapter:
+        # Docker Desktop on Windows installs compose and buildx per user only (B-3946)
+        plugins = [Path.home() / ".docker" / "cli-plugins"] if os.name == "nt" else []
+        return DockerComposeAdapter(
+            DockerCliRuntime(plugin_dirs=plugins), artifacts=artifacts, authorize=authorize
+        )
 
 
 class FakePlatform:
@@ -292,10 +363,11 @@ class FakePlatform:
     `environment` (the executor's `SHIFDE_ENV`; it refuses anything but development and test) and
     the public key of the job's key pair, so it accepts the JWTs signed with the entry's key; it
     treats the target's bound Cortex model as available in the target host's sample account.
-    The Fabric workspace, Foundry stack (for the first target's host, frontend origin and
-    ontology) and Docker daemon (for the first target's daemon id; it refuses outside development
-    and test) fakes are each built on first use and kept for the process. The Fabric fake is built
-    and used only in development and test with `fabric_enabled`
+    The Fabric workspace, Foundry stack (for the first target's host, frontend origin, ontology and
+    namespace, with `environment`; its clients take the job's credential provider) and Docker daemon
+    (for the first target's daemon id; it serves the staged rendered app over the sample tables and
+    refuses outside development and test) fakes are each built on first use and kept for the
+    process. The Fabric fake is built and used only in development and test with `fabric_enabled`
     (`SHIFDE_DEV_FAKE_DATA_PLATFORMS`, off by default); the target's workspace then exists."""
 
     kind = "fake"
@@ -378,20 +450,28 @@ class FakePlatform:
     ) -> PalantirMarketplaceAdapter:
         if self.palantir is None:
             self.palantir = FakeFoundryStack(
+                environment=self.environment,
                 host=target.host,
                 frontend_origin=target.bindings["frontend_origin"],
                 ontology_rid=target.bindings["ontology_rid"],
+                namespace_rid=target.bindings["namespace_rid"],
                 object_type=target.bindings.get("object_type") or "Example",
             )
-        return PalantirMarketplaceAdapter(client_factory=self.palantir.client_factory)
+        stack = self.palantir
+        return PalantirMarketplaceAdapter(
+            client_factory=lambda t: stack.client(t, credential_provider),
+            toolchain_digest=toolchain_digest(self.kind, "palantir"),
+        )
 
-    def docker_adapter(self, target: Target, artifacts: ArtifactStore) -> DockerComposeAdapter:
+    def docker_adapter(
+        self, target: Target, artifacts: ArtifactStore, authorize: Callable[[], None]
+    ) -> DockerComposeAdapter:
         if self.docker is None:
             daemon = DOCKER_HOST.fullmatch(target.host)
             if daemon is None:
                 raise ValueError("the target is not a Docker daemon")
-            self.docker = FakeContainerRuntime(daemon.group(1))
-        return DockerComposeAdapter(self.docker, artifacts=artifacts)
+            self.docker = FakeContainerRuntime(daemon.group(1), prepare_app=prepare_rendered_app)
+        return DockerComposeAdapter(self.docker, artifacts=artifacts, authorize=authorize)
 
 
 class JobFailure(Exception):
@@ -408,13 +488,14 @@ class ArtifactMismatch(ValueError):
 @dataclass(frozen=True)
 class Prepared:
     """A job's platform half: the target as its adapter sees it, the application spec, the
-    adapter, its version and the owned resources as adapter bindings."""
+    adapter, its version, the owned resources as adapter bindings and the job's artifact store."""
 
     target: Target
     spec: Spec
     adapter_version: str
     adapter: Adapter
     owned: tuple[ResourceBinding, ...]
+    store: InMemoryArtifactStore = field(default_factory=ReleaseArtifactStore)
 
 
 @dataclass
@@ -629,24 +710,32 @@ class Runner:
             "succeeded" if value is not None else f"failed ({code})",
         )
 
+    def _recheck[T](self, state: LeaseState, target: Target, check: Callable[..., T]) -> T:
+        """The broker's `check` of the job's grant and identities, made again on every use; an
+        expired grant is refreshed first. Any refusal propagates."""
+        grant = state.grant
+        if grant is None or grant.expires_at <= utcnow():
+            grant = state.grant = self.client.credential_grant(state.lease)
+        return check(
+            grant,
+            job_id=state.lease.job.id,
+            executor_id=self.executor_id,
+            target_id=target.id,
+            tenant_id=target.tenant_id,
+        )
+
     def _token_provider(self, state: LeaseState, target: Target) -> TokenProvider:
         def token(host: str) -> str:
-            grant = state.grant
-            if grant is None or grant.expires_at <= utcnow():
-                grant = state.grant = self.client.credential_grant(state.lease)
-            try:
-                audience = normalize_databricks_address(host)
-            except AddressRefused:
-                raise CredentialUnavailable from None
-            if audience != grant.audience:
-                raise CredentialUnavailable
-            return self.broker.token_for(
-                grant,
-                job_id=state.lease.job.id,
-                executor_id=self.executor_id,
-                target_id=target.id,
-                tenant_id=target.tenant_id,
-            )
+            def checked(grant: CredentialGrant, **ids: UUID) -> str:
+                try:
+                    audience = normalize_databricks_address(host)
+                except AddressRefused:
+                    raise CredentialUnavailable from None
+                if audience != grant.audience:
+                    raise CredentialUnavailable
+                return self.broker.token_for(grant, **ids)
+
+            return self._recheck(state, target, checked)
 
         return token
 
@@ -655,16 +744,7 @@ class Runner:
         an expired grant is refreshed first."""
 
         def key_pair() -> SnowflakeKeyPair:
-            grant = state.grant
-            if grant is None or grant.expires_at <= utcnow():
-                grant = state.grant = self.client.credential_grant(state.lease)
-            return self.broker.key_pair_for(
-                grant,
-                job_id=state.lease.job.id,
-                executor_id=self.executor_id,
-                target_id=target.id,
-                tenant_id=target.tenant_id,
-            )
+            return self._recheck(state, target, self.broker.key_pair_for)
 
         return key_pair
 
@@ -707,6 +787,25 @@ class Runner:
             raise CredentialUnavailable
         return entry
 
+    def _foundry_provider(self, state: LeaseState, target: Target) -> FoundryCredentialProvider:
+        """The Foundry client credentials for the grant's audience only, re-checked by the broker
+        (and the secret file read) on every call; an expired grant is refreshed first. The client
+        calls it before every request (its `authorize`)."""
+
+        def credentials(host: str) -> FoundryCredentials:
+            def checked(grant: CredentialGrant, **ids: UUID) -> FoundryCredentials:
+                try:
+                    audience = normalize_palantir_address(host, self.broker.palantir_host_suffixes)
+                except AddressRefused:
+                    raise CredentialUnavailable from None
+                if audience != grant.audience:
+                    raise CredentialUnavailable
+                return self.broker.foundry_credentials_for(grant, **ids)
+
+            return self._recheck(state, target, checked)
+
+        return credentials
+
     def _execute(self, state: LeaseState) -> BaseModel:
         lease = state.lease
         job = lease.job
@@ -727,7 +826,7 @@ class Runner:
         app_id = application_id(ctx.target.id, ctx.plan.application_key)
         prepared = DISPATCH[kind](self, state, ctx, grant, app_id)
         target, spec, adapter = prepared.target, prepared.spec, prepared.adapter
-        adapter_version, owned = prepared.adapter_version, prepared.owned
+        adapter_version, owned, store = prepared.adapter_version, prepared.owned, prepared.store
         toolchain = toolchain_digest(self.platform.kind, kind)
         deadline = job.deadline or utcnow() + timedelta(hours=1)
         read = ReadContext(
@@ -735,14 +834,20 @@ class Runner:
         )
         build = (spec, adapter_version, toolchain)
         if job.kind == "plan":
-            store = ReleaseArtifactStore()
             artifact = self._artifact(state, ctx.plan, target, store, app_id, build)
+            if kind == "palantir":
+                self._fresh(ctx, store, artifact)
+            if isinstance(adapter, DockerComposeAdapter):
+                self._docker_details(adapter, ctx.plan, artifact, read)
             try:
                 planned = adapter.plan(PlanRequest(artifact=artifact), read)
             except SnowflakePatchLimit:
                 raise JobFailure("snowflake_patch_limit") from None
             except ForeignItem:
                 raise JobFailure("foreign_item") from None
+            except DockerRefused as refused:
+                code = DOCKER_PLAN_REFUSALS.get(refused.code, "execution_failed")
+                raise JobFailure(code) from None
             return PlanJobResult(
                 steps=planned.steps,
                 snapshot=planned.snapshot,
@@ -752,9 +857,14 @@ class Runner:
         if job.kind == "apply":
             if ctx.deployment is None:
                 raise ValueError("the apply job has no deployment")
-            store = ReleaseArtifactStore()
             artifact = self._artifact(state, ctx.plan, target, store, app_id, build)
-            details = self._details(adapter, ctx, read, app_id, spec)
+            if kind == "palantir":
+                self._fresh(ctx, store, artifact)
+            details = (
+                self._docker_details(adapter, ctx.plan, artifact, read)
+                if isinstance(adapter, DockerComposeAdapter)
+                else self._details(adapter, ctx, read, app_id, spec)
+            )
             plan = self._plan(ctx, target, app_id, spec, details)
             journal = GatewayJournal(
                 self.client,
@@ -782,20 +892,25 @@ class Runner:
                 )
             return receipt
         if job.kind == "reconcile":
-            # The Snowflake adapter's reconcile reads no plan details, and after an unknown
-            # outcome the native state no longer gives the planned ones.
-            details = {} if kind == "snowflake" else self._details(adapter, ctx, read, app_id, spec)
+            # The Snowflake, Palantir and Docker adapters' reconcile reads no plan details, and
+            # after an unknown outcome the native state no longer gives the planned ones.
+            details = (
+                {}
+                if isinstance(
+                    adapter,
+                    SnowflakeNativeAdapter | PalantirMarketplaceAdapter | DockerComposeAdapter,
+                )
+                else self._details(adapter, ctx, read, app_id, spec)
+            )
             plan = self._plan(ctx, target, app_id, spec, details)
             return adapter.reconcile(ReconcileRequest(plan=plan), read)
         if ctx.deployment is None or ctx.deployment.receipt is None:
             raise ValueError("the job's deployment has no receipt")
         receipt = ctx.deployment.receipt
-        if isinstance(spec, FabricSolutionSpec):  # from the sealed artifact, matched to the receipt
-            if job.kind == "observe":
-                return adapter.observe(ObserveRequest(receipt=receipt, spec=spec), read)
-            return adapter.verify(VerifyRequest(receipt=receipt, spec=spec), read)
+        # the Fabric and Palantir adapters check the receipt against their spec
+        checked = spec if kind in ("fabric", "palantir") else None
         if job.kind == "observe":
-            return adapter.observe(ObserveRequest(receipt=receipt), read)
+            return adapter.observe(ObserveRequest(receipt=receipt, spec=checked), read)
         # a generated app's deep health must answer the plan's release digest (SP5 6.6); a
         # generated app's plan without one fails closed rather than skip deep health
         release_digest = None
@@ -803,7 +918,9 @@ class Runner:
             if ctx.plan.release_digest is None:
                 raise ValueError("the generated app's plan has no release digest")
             release_digest = ctx.plan.release_digest
-        return adapter.verify(VerifyRequest(receipt=receipt, release_digest=release_digest), read)
+        return adapter.verify(
+            VerifyRequest(receipt=receipt, spec=checked, release_digest=release_digest), read
+        )
 
     # ------------------------------------------------------------------ dispatch (DISPATCH)
     def _grant_ids(self, state: LeaseState, ctx: JobContext) -> dict[str, UUID]:
@@ -907,27 +1024,78 @@ class Runner:
             _match_fabric_receipt(ctx.deployment.receipt, ctx, spec, files)
         return spec
 
-    # SP8-1: the platform's broker check (a mismatch is `credential_unavailable`), then fail closed
-    # before any adapter or platform call and any journal intent; SP8-7 (Palantir) and SP8-9
-    # (Docker) replace each with its call path.
     def _palantir(
         self, state: LeaseState, ctx: JobContext, grant: CredentialGrant, app_id: UUID
     ) -> Prepared:
         self.broker.palantir_entry_for(grant, **self._grant_ids(state, ctx))
-        raise JobFailure("execution_failed")
+        target = ctx.target
+        return Prepared(
+            target=target,
+            spec=palantir_source.DELIVERY_SPEC,
+            adapter_version=palantir_source.ADAPTER_VERSION,
+            adapter=self.platform.palantir_adapter(target, self._foundry_provider(state, target)),
+            owned=tuple(
+                ResourceBinding(
+                    key="installation",
+                    native_id=r.native_id,
+                    resource_type=r.resource_type,
+                    application_id=app_id,
+                    target_id=target.id,
+                )
+                for r in ctx.owned_resources
+            ),
+        )
 
     def _docker(
         self, state: LeaseState, ctx: JobContext, grant: CredentialGrant, app_id: UUID
     ) -> Prepared:
+        """Only a bundle the Docker generator made runs (B-3948); the adapter reads the job's own
+        store, which keeps `release.json`."""
         self.broker.docker_entry_for(grant, **self._grant_ids(state, ctx))
-        raise JobFailure("execution_failed")
+        if ctx.plan is None or ctx.plan.generator_version != docker_source.GENERATOR_VERSION:
+            raise JobFailure("execution_failed")
+        target = ctx.target
+        if any(r.resource_type != docker_adapter.RESOURCE_TYPE for r in ctx.owned_resources):
+            raise ValueError("the target owns a resource the Docker adapter does not bind")
+        store = InMemoryArtifactStore()
+
+        def authorize() -> None:
+            self._recheck(state, target, self.broker.docker_entry_for)
+
+        return Prepared(
+            target=target,
+            spec=DockerComposeSpec(),
+            adapter_version=docker_source.ADAPTER_VERSION,
+            adapter=self.platform.docker_adapter(target, store, authorize),
+            owned=tuple(
+                ResourceBinding(
+                    key=docker_adapter.RESOURCE_KEY,
+                    native_id=r.native_id,
+                    resource_type=r.resource_type,
+                    application_id=app_id,
+                    target_id=target.id,
+                )
+                for r in ctx.owned_resources
+            ),
+            store=store,
+        )
+
+    @staticmethod
+    def _docker_details(
+        adapter: DockerComposeAdapter, plan: ContextPlan, artifact: BuildArtifact, read: ReadContext
+    ) -> dict[str, Any]:  # Any: plan details JSON
+        """The details the adapter seals, refused unless the bundle is of the plan's release."""
+        details = adapter.plan_details(artifact, read)
+        if details["release_digest"] != plan.release_digest:
+            raise ArtifactMismatch
+        return details
 
     def _artifact(
         self,
         state: LeaseState,
         plan: ContextPlan,
         target: Target,
-        store: ReleaseArtifactStore,
+        store: InMemoryArtifactStore,
         app_id: UUID,
         build: tuple[Spec, str, str],
     ) -> BuildArtifact:
@@ -951,18 +1119,33 @@ class Runner:
         )
 
     @staticmethod
+    def _fresh(ctx: JobContext, store: InMemoryArtifactStore, artifact: BuildArtifact) -> None:
+        """A Palantir artifact's descriptor is of the plan's release and of the target as the
+        context gives it now: another release (or no delivery descriptor) is refused, a changed
+        target is `plan_stale`."""
+        found = palantir_source.read_delivery(
+            read_archive(store.read(artifact.archive, artifact.tenant_id))
+        )
+        if ctx.plan is None or found.release_digest != ctx.plan.release_digest:
+            raise ValueError("the descriptor is of another release")
+        if found.bindings_digest != bindings_digest(ctx.target):
+            raise JobFailure("plan_stale")
+
+    @staticmethod
     def _details(
         adapter: Adapter, ctx: JobContext, read: ReadContext, app_id: UUID, spec: Spec
     ) -> dict[str, Any]:  # Any: plan details JSON
-        """The details the adapter sealed into the plan: for Snowflake from the adapter's own
-        helper on the current native state, for Fabric from its helper on the spec and target,
-        for Databricks derived from the target."""
+        """The details the adapter sealed into the plan: for Snowflake and Palantir from the
+        adapter's own helper on the current native state, for Fabric from its helper on the spec
+        and target, for Databricks derived from the target."""
         if ctx.plan is None:
             raise ValueError("the job has no plan")
         if isinstance(adapter, SnowflakeNativeAdapter):
             return adapter.plan_details(ctx.plan.artifact_digest, app_id, read)
         if isinstance(adapter, FabricAdapter):
             return adapter.plan_details(spec, read)
+        if isinstance(adapter, PalantirMarketplaceAdapter):
+            return adapter.plan_details(ctx.plan.toolchain_digest, read)
         target = read.target
         warehouse = target.bindings.get(DatabricksApplicationSpec().warehouse_binding)
         if not warehouse:

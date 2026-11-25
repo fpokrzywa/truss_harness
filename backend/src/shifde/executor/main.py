@@ -7,6 +7,9 @@ Configured from the environment only (never `shifde.core.settings`, which reache
 the API URL must be https and `--fake-platform` is refused. With `--fake-platform`, Fabric jobs run
 on the in-memory fake only when `SHIFDE_DEV_FAKE_DATA_PLATFORMS` is true (SP8-5). No message ever
 echoes the token.
+`SHIFDE_DELIVERY_PALANTIR_HOST_SUFFIXES` (optional) is the installation's list of extra Palantir
+host suffixes, read with the API's rules (`core.hostsuffixes`): an invalid list is exit 2, naming
+the variable only.
 
 Process control (SP4 design 6.2): SIGTERM, SIGINT and CTRL_BREAK stop the runner (no new lease;
 the job in flight runs to its normal end) and the process waits up to
@@ -35,6 +38,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from shifde.core.healthserver import HealthServer
+from shifde.core.hostsuffixes import checked_palantir_suffixes, split_suffixes
 from shifde.core.httplogs import quiet_http_client_logs
 from shifde.executor.client import GatewayClient, GatewayError, Whoami
 from shifde.executor.credentials import CredentialBroker, CredentialFileRefused
@@ -47,6 +51,7 @@ HEALTH_HOST = "SHIFDE_EXECUTOR_HEALTH_HOST"
 HEALTH_PORT = "SHIFDE_EXECUTOR_HEALTH_PORT"
 SHUTDOWN_GRACE = "SHIFDE_EXECUTOR_SHUTDOWN_GRACE_SECONDS"
 FAKE_DATA_PLATFORMS = "SHIFDE_DEV_FAKE_DATA_PLATFORMS"
+PALANTIR_SUFFIXES = "SHIFDE_DELIVERY_PALANTIR_HOST_SUFFIXES"
 REQUIRED = (API_URL, TOKEN, CREDENTIALS_FILE)
 DEV_ENVS = ("development", "test")
 EXIT_STOPPED = 0  # stopped on request and drained
@@ -71,10 +76,14 @@ EPILOG = f"""environment:
                                     client_id, client_secret_file}}
                                     Docker {{tenant_id, host, platform: "docker"}}
                                     (a secret file holds one value; on POSIX mode 0600;
-                                    Palantir and Docker jobs fail closed until SP8-7/9)
+                                    Fabric and Palantir jobs run (experimental, not
+                                    live validated; on the fakes with --fake-platform))
   SHIFDE_ENV                        development | test | production (default production)
   {FAKE_DATA_PLATFORMS}     true: with --fake-platform, Fabric jobs run on the
                                     in-memory fake (they fail closed otherwise)
+  {PALANTIR_SUFFIXES}
+                                    extra Palantir stack host suffixes, comma-separated (the
+                                    API's value; default none)
   {HEALTH_HOST}       the /healthz and /readyz host (default 127.0.0.1)
   {HEALTH_PORT}       their port, 0..65535 (default 0: off)
   {SHUTDOWN_GRACE}
@@ -109,7 +118,7 @@ def _parser() -> argparse.ArgumentParser:
         help=(
             "run against the in-memory fake Databricks, Snowflake, Fabric, Palantir and Docker "
             "platforms (development and test only; Fabric jobs run only with "
-            f"{FAKE_DATA_PLATFORMS}=true, Palantir and Docker jobs fail closed until SP8-7/9)"
+            f"{FAKE_DATA_PLATFORMS}=true)"
         ),
     )
     return parser
@@ -155,13 +164,21 @@ def configure(argv: Sequence[str] | None, environ: Mapping[str, str]) -> Config:
     health_port = _integer(parser, environ, HEALTH_PORT, 0, 0, 65535)
     grace = _integer(parser, environ, SHUTDOWN_GRACE, 60, 1)
     try:
-        broker = CredentialBroker.from_file(Path(environ[CREDENTIALS_FILE]))
+        suffixes = checked_palantir_suffixes(
+            split_suffixes(environ.get(PALANTIR_SUFFIXES) or ""), PALANTIR_SUFFIXES
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    try:
+        broker = CredentialBroker.from_file(
+            Path(environ[CREDENTIALS_FILE]), palantir_host_suffixes=suffixes
+        )
     except CredentialFileRefused as exc:
         parser.error(str(exc))
     platform: Platform = RealPlatform()
     if args.fake_platform:
         fake = FakePlatform()
-        # the Snowflake, Docker and Fabric fakes refuse to run unless this is development or test
+        # the Snowflake, Fabric, Palantir and Docker fakes refuse unless this is development or test
         fake.environment = environ.get("SHIFDE_ENV") or "production"
         # and the Fabric fake also refuses without this switch
         fake.fabric_enabled = (environ.get(FAKE_DATA_PLATFORMS) or "").strip().lower() == "true"

@@ -6,7 +6,8 @@ from collections.abc import Collection
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import ColumnElement, func, insert, or_, select, text, update
+from sqlalchemy import ColumnElement, Uuid, any_, func, insert, literal, or_, select, text, update
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session
 
 from shifde.tenancy.models import InstallationSettings, Project, Tenant, Workspace
@@ -198,10 +199,14 @@ def get_project_by_slug(
 def _visibility(
     workspace_ids_: Collection[UUID] | None, project_ids: Collection[UUID]
 ) -> ColumnElement[bool] | None:
-    """None = unrestricted. Otherwise the predicate for visible projects."""
+    """None = unrestricted. Otherwise the predicate for visible projects; the project ids are one
+    array parameter, however many there are (B-4135)."""
     if workspace_ids_ is None:
         return None
-    return or_(Project.workspace_id.in_(list(workspace_ids_)), Project.id.in_(list(project_ids)))
+    return or_(
+        Project.workspace_id.in_(list(workspace_ids_)),
+        Project.id == any_(literal(list(project_ids), ARRAY(Uuid))),
+    )
 
 
 def list_projects(

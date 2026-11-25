@@ -194,6 +194,9 @@ class GatewayClient:
                 "credential_unavailable",
                 "snowflake_patch_limit",
                 "foreign_item",
+                "plan_stale",
+                "docker_host_mismatch",
+                "foreign_project",
             ]
             | None
         ) = None,

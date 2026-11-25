@@ -32,6 +32,7 @@ from shifde.core.settings import Settings
 from shifde.delivery.service import PLATFORM_ALREADY_REGISTERED
 from tests.connections.routes import as_user
 from tests.delivery.routes import (
+    DOCKER_BINDINGS,
     FABRIC_BINDINGS,
     SNOWFLAKE_BINDINGS,
     SP8_KINDS,
@@ -658,9 +659,12 @@ def test_sp8_targets_of_one_organization_share_one_claim(
         register(client, h, world.a.slug, sp8_body(kind, ws, form, **_own_names(kind, n)))
         for n, (ws, form) in enumerate(zip(spaces, forms, strict=False))
     ]
-    second = register(
-        client, h, world.a.slug, sp8_body(kind, ws2_slug(world.a), url, **_own_names(kind, 9))
+    # one Docker claim binds a project and a port once (SP8-9)
+    own = {"bindings": {**DOCKER_BINDINGS, "project": "other-app", "port": 8502}}
+    body = sp8_body(
+        kind, ws2_slug(world.a), url, **(own if kind == "docker" else _own_names(kind, 9))
     )
+    second = register(client, h, world.a.slug, body)
     assert {m["address"] for m in [*made, second]} == {url}
     assert all(m["platform_kind"] == kind for m in made)
     assert counts(owner_db, world.a.tenant) == (len(made) + 1, 1)

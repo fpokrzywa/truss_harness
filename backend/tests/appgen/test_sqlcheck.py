@@ -83,6 +83,9 @@ def test_a_snowflake_only_refusal_shows_only_in_the_snowflake_dialect(sql: str, 
         ("select get_ddl('table', 't') from DEMO_DB.PUBLIC.ORDERS", "sql_refused_function"),
         ("select get_presigned_url('s', 'f') from DEMO_DB.PUBLIC.ORDERS", "sql_refused_function"),
         ("select seq.nextval from DEMO_DB.PUBLIC.ORDERS", "sql_refused_function"),
+        # (#398)
+        ("select id from DEMO_DB.PUBLIC.ORDERS where id = @s/a\\ 'b'", "sql_stage_path"),
+        ("select last_query_id() from DEMO_DB.PUBLIC.ORDERS", "sql_refused_function"),
     ],
 )
 def test_the_shared_read_rules_are_forwarded_in_the_snowflake_dialect(sql: str, code: str) -> None:
@@ -93,6 +96,23 @@ def test_the_shared_read_rules_are_forwarded_in_the_snowflake_dialect(sql: str, 
         Draft.model_validate(value), SNOWFLAKE_SAMPLE_TABLES, dialect="snowflake"
     )
     assert [(d.path, d.code) for d in found] == [("tools.1.sql", code)]
+
+
+@pytest.mark.parametrize("letter", ["\U00013441", "\U00013442"])
+def test_a_blank_letter_in_code_is_a_syntax_diagnostic(letter: str) -> None:
+    value = copy.deepcopy(SNOWFLAKE_SAMPLE_DRAFT)
+    value["tools"][1]["parameters"] = []
+
+    def found(sql: str) -> list[tuple[str, str, str]]:
+        value["tools"][1]["sql"] = sql
+        draft = Draft.model_validate(value)
+        diagnostics = sqlcheck.validate(draft, SNOWFLAKE_SAMPLE_TABLES, dialect="snowflake")
+        return [(d.path, d.code, d.message) for d in diagnostics]
+
+    refused = found(f"select get_ddl{letter}('a') from DEMO_DB.PUBLIC.ORDERS")
+    assert {(path, code) for path, code, _ in refused} == {("tools.1.sql", "sql_syntax")}
+    assert "invisible letters are not allowed outside quoted text" in [m for _, _, m in refused]
+    assert found(f"select id, '{letter}', $${letter}$$ from DEMO_DB.PUBLIC.ORDERS") == []
 
 
 def test_a_snowflake_draft_parameter_named_call_has_no_diagnostic() -> None:

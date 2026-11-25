@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import sys
 import tempfile
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any  # Any: compose service values
 from uuid import uuid4
 
@@ -31,7 +33,11 @@ from shifde.adapters.native.contracts import (
     VerifyRequest,
 )
 from shifde.adapters.native.docker import LIVE_VALIDATED, MATURITY
-from shifde.adapters.native.docker.fake import FakeContainerRuntime
+from shifde.adapters.native.docker.fake import (
+    FakeContainerRuntime,
+    FakeWorkspaceClient,
+    prepare_rendered_app,
+)
 from shifde.adapters.native.docker.runtime import DockerRefused
 from shifde.adapters.native.docker.source import (
     BASE_IMAGE,
@@ -640,3 +646,224 @@ def test_docker_spec_artifact_is_refused_by_the_databricks_adapter(setup: Setup)
             ValidateRequest(spec=DockerComposeSpec(), source=artifact.archive), setup.build
         )
     assert setup.platform.actions == []
+
+
+# --------------------------------------------------------------------------- SP8-9
+def test_docker_plan_details_are_the_plans_without_a_daemon_call(
+    docker: DockerSetup, runtime: FakeContainerRuntime
+) -> None:
+    artifact = docker.artifact()
+    sealed = docker.adapter.plan(PlanRequest(artifact=artifact), docker.read).details
+    runtime.daemon_mismatch = True
+    assert docker.adapter.plan_details(artifact, docker.read) == sealed
+
+
+def test_docker_plan_details_refuse_another_tenants_artifact(docker: DockerSetup) -> None:
+    other = docker.artifact().model_copy(update={"tenant_id": uuid4()})
+    with pytest.raises(PermissionError):
+        docker.adapter.plan_details(other, docker.read)
+
+
+def test_docker_verify_of_another_release_fails_without_a_runtime_call(
+    docker: DockerSetup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact, plan, deploy = docker.prepare()
+    receipt = docker.adapter.apply(ApplyRequest(artifact=artifact, plan=plan), deploy)
+    for release_digest in (None, RELEASE):
+        request = VerifyRequest(receipt=receipt, release_digest=release_digest)
+        assert docker.adapter.verify(request, docker.read).passed
+    foreign = receipt.model_copy(update={"tenant_id": uuid4()})
+    with pytest.raises(PermissionError):
+        docker.adapter.verify(VerifyRequest(receipt=foreign, release_digest=SECOND), docker.read)
+
+    def called(self: FakeContainerRuntime, *args: Any) -> Any:
+        raise AssertionError("the runtime was called")
+
+    monkeypatch.setattr(FakeContainerRuntime, "compose_ps", called)
+    monkeypatch.setattr(FakeContainerRuntime, "http_get_local", called)
+    report = docker.adapter.verify(
+        VerifyRequest(receipt=receipt, release_digest=SECOND), docker.read
+    )
+    assert [(c.name, c.status) for c in report.checks] == [
+        ("native-version", "failed"),
+        ("runtime-health", "skipped"),
+        ("app-deep-health", "skipped"),
+    ]
+
+
+class Refused(PermissionError):
+    pass
+
+
+RUNTIME_CALLS = (
+    "daemon_id",
+    "build",
+    "image_labels",
+    "compose_up",
+    "compose_ps",
+    "http_get_local",
+)
+
+
+def _recorded(docker: DockerSetup, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The authorizations and runtime calls the adapter makes, in order."""
+    events: list[str] = []
+    runtime = docker.adapter.runtime
+
+    class Recording:
+        def __getattr__(self, name: str) -> Any:  # Any: a runtime method
+            if name in RUNTIME_CALLS:
+                events.append(name)
+            return getattr(runtime, name)
+
+    monkeypatch.setattr(docker.adapter, "runtime", Recording())
+    monkeypatch.setattr(docker.adapter, "authorize", lambda: events.append("authorize"))
+    return events
+
+
+def test_docker_every_runtime_call_and_every_steps_intent_follows_its_own_authorization(
+    docker: DockerSetup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events = _recorded(docker, monkeypatch)
+    artifact = docker.artifact()
+    inspect = InspectRequest(application_id=artifact.application_id, app_name=docker.project)
+    docker.adapter.capabilities(docker.read)
+    docker.adapter.inspect(inspect, docker.read)
+    plan = docker.adapter.plan(PlanRequest(artifact=artifact), docker.read)
+    deploy = docker.deploy_context()
+    intent = deploy.journal.intent
+    monkeypatch.setattr(
+        deploy.journal, "intent", lambda key, inputs: events.append(key) or intent(key, inputs)
+    )
+    del events[:]
+    receipt = docker.adapter.apply(ApplyRequest(artifact=artifact, plan=plan), deploy)
+    assert events == [
+        *("authorize", "daemon_id", "authorize", "compose_ps"),
+        *("authorize", "image-build", "build"),
+        *("authorize", "image-verify", "image_labels"),
+        *("authorize", "compose-up", "compose_up"),
+        "container-ready",
+    ]
+    del events[:]
+    docker.adapter.verify(VerifyRequest(receipt=receipt, release_digest=RELEASE), docker.read)
+    assert events == [
+        *("authorize", "daemon_id", "authorize", "compose_ps", "authorize", "image_labels"),
+        *("authorize", "http_get_local", "authorize", "http_get_local"),
+    ]
+
+
+@pytest.mark.parametrize("operation", ["capabilities", "inspect", "plan", "observe", "verify"])
+def test_docker_a_refused_authorization_ends_every_read_before_its_next_runtime_call(
+    docker: DockerSetup, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    """Refused at each of its authorizations in turn: the refusal itself is raised, and no runtime
+    call follows it."""
+    artifact, plan, deploy = docker.prepare()
+    receipt = docker.adapter.apply(ApplyRequest(artifact=artifact, plan=plan), deploy)
+    inspect = InspectRequest(application_id=artifact.application_id, app_name=docker.project)
+    run: dict[str, Callable[[], object]] = {
+        "capabilities": lambda: docker.adapter.capabilities(docker.read),
+        "inspect": lambda: docker.adapter.inspect(inspect, docker.read),
+        "plan": lambda: docker.adapter.plan(PlanRequest(artifact=artifact), docker.read),
+        "observe": lambda: docker.adapter.observe(ObserveRequest(receipt=receipt), docker.read),
+        "verify": lambda: docker.adapter.verify(VerifyRequest(receipt=receipt), docker.read),
+    }
+    events = _recorded(docker, monkeypatch)
+    run[operation]()
+    allowed = events.count("authorize")
+    assert allowed == len(events) / 2
+    for last in range(allowed):
+        del events[:]
+
+        def authorize(last: int = last) -> None:
+            if events.count("authorize") == last:
+                events.append("refused")
+                raise Refused
+            events.append("authorize")
+
+        monkeypatch.setattr(docker.adapter, "authorize", authorize)
+        with pytest.raises(Refused):
+            run[operation]()
+        assert events[-1] == "refused" and len(events) == 2 * last + 1
+
+
+def test_docker_fake_loads_each_staged_apps_own_siblings_and_restores_sys_modules(
+    tmp_path: Path,
+) -> None:
+    earlier = ModuleType("agent_loop")
+    loaded = []
+    sys.modules["agent_loop"] = earlier
+    try:
+        for value in ("one", "two"):
+            directory = tmp_path / value
+            directory.mkdir()
+            (directory / "agent_loop.py").write_text(f"VALUE = {value!r}\n", encoding="utf-8")
+            (directory / "backend_x.py").write_text("import agent_loop\n", encoding="utf-8")
+            (directory / "app.py").write_text(
+                "import agent_loop\nimport backend_x\n\nVALUE = agent_loop.VALUE\n"
+                "SAME = backend_x.agent_loop is agent_loop\n",
+                encoding="utf-8",
+            )
+            module = FakeContainerRuntime._load(directory)
+            assert module.SAME
+            loaded.append(module.VALUE)
+            assert sys.modules["agent_loop"] is earlier
+            assert "backend_x" not in sys.modules and str(directory) not in sys.path
+        (tmp_path / "two" / "app.py").write_text(
+            "import agent_loop\nraise RuntimeError\n", encoding="utf-8"
+        )
+        with pytest.raises(RuntimeError):
+            FakeContainerRuntime._load(tmp_path / "two")
+        assert sys.modules["agent_loop"] is earlier
+    finally:
+        del sys.modules["agent_loop"]
+    assert loaded == ["one", "two"]
+
+
+ENVIRONMENT = {"DATABRICKS_WAREHOUSE_ID": "wh-1", "SERVING_ENDPOINT": "endpoint-1"}
+
+
+def test_docker_prepare_rendered_app_sets_the_environment_only_while_the_app_is_created(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SERVING_ENDPOINT", "before")
+    monkeypatch.delenv("DATABRICKS_WAREHOUSE_ID", raising=False)
+    seen: list[dict[str, str | None]] = []
+
+    def create_app(client: FakeWorkspaceClient) -> str:
+        seen.append({name: os.environ.get(name) for name in ENVIRONMENT})
+        if fail:
+            raise RuntimeError
+        return "app"
+
+    module: Any = ModuleType("staged")  # Any: attributes of a loaded module
+    module.StatementState, module.create_app = str, create_app
+    fail = False
+    prepare_rendered_app(module, ENVIRONMENT)
+    assert module.app == "app"
+    fail = True
+    with pytest.raises(RuntimeError):
+        prepare_rendered_app(module, ENVIRONMENT)
+    assert seen == [ENVIRONMENT, ENVIRONMENT]
+    assert os.environ["SERVING_ENDPOINT"] == "before"
+    assert "DATABRICKS_WAREHOUSE_ID" not in os.environ
+
+
+def test_docker_fake_workspace_client_answers_the_bound_warehouse_and_endpoint_only() -> None:
+    module: Any = SimpleNamespace(StatementState=str)  # Any: stands in for a loaded module
+    client = FakeWorkspaceClient(module, ENVIRONMENT)
+
+    def state(statement: str, warehouse: str = "wh-1") -> str:
+        answer = client.statement_execution.execute_statement(
+            warehouse_id=warehouse, statement=statement, wait_timeout="10s", on_wait_timeout="x"
+        )
+        return str(answer.status.state)
+
+    assert state("SELECT 1") == "SUCCEEDED"
+    assert state("SELECT * FROM `main`.`default`.`orders` LIMIT 0") == "SUCCEEDED"
+    assert state("SELECT * FROM `main`.`default`.`payroll` LIMIT 0") == "FAILED"
+    with pytest.raises(RuntimeError):
+        state("SELECT 1", "wh-2")
+    assert client.serving_endpoints.get("endpoint-1").state.ready.value == "READY"
+    with pytest.raises(RuntimeError):
+        client.serving_endpoints.get("endpoint-2")

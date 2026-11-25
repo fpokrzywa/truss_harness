@@ -1,8 +1,12 @@
 """Bounded Foundry REST client (Marketplace v3 preview, read-only Ontology v2), synchronous.
 
 Every authenticated request goes to `target.host`; the only other request is the unauthenticated
-frontend asset fetch. No redirects, ambient proxy settings, retries or unbounded responses. The
-client secret and the token never appear in an error, a `repr` or a receipt.
+frontend asset fetch, to a public HTTPS origin only. `authorize` runs before every request of every
+kind: it raises unless the job may still use the target, and answers the credentials it may use now.
+The cached token is used only while they are the ones it was minted with. No redirects, ambient
+proxy settings, retries or unbounded responses. The client secret and the token never appear in an
+error, a `repr` or a receipt. It runs only inside the organization's own executor, never in the API
+or the worker.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ from urllib.parse import quote
 
 import httpx
 
+from shifde.adapters.native.addresses import public_https_origin
 from shifde.adapters.native.contracts import FoundryMarketplaceSpec, Target, digest, utcnow
 from shifde.adapters.native.palantir.source import Bindings, object_type, rid
 
@@ -41,6 +46,7 @@ class PalantirClient:
         target: Target,
         *,
         credential_provider: Callable[[str], FoundryCredentials],
+        authorize: Callable[[], FoundryCredentials],
         transport: httpx.BaseTransport | None = None,
         platform: Literal["palantir", "fake"] = "palantir",
         deadline: datetime | None = None,
@@ -52,7 +58,10 @@ class PalantirClient:
         )
         self.platform: Literal["palantir", "fake"] = platform
         self.deadline = deadline
+        self._authorize = authorize
         self._token: str | None = None
+        self._minted: FoundryCredentials | None = None  # the credentials `_token` is of
+        self.refused = False  # this client was refused a check, a credential or a token
 
     def __repr__(self) -> str:
         return f"PalantirClient(host={self.target.host!r}, platform={self.platform!r})"
@@ -100,10 +109,32 @@ class PalantirClient:
             raise ValueError("invalid Foundry response")
         return value
 
-    def _bearer(self) -> str:
-        """One client-credentials token per client instance, minted on first use."""
+    def authorize(self) -> FoundryCredentials:
+        """The credentials the job may use now, asked again on every call; a refusal propagates and
+        marks the client `refused`."""
+        return self._asked(self._authorize)
+
+    def _asked(self, ask: Callable[[], FoundryCredentials]) -> FoundryCredentials:
+        try:
+            return ask()
+        except Exception:
+            self.refused = True
+            raise
+
+    def _refusal(self) -> PermissionError:
+        """The error of a token the stack did not give or that is of other credentials; marks the
+        client `refused`."""
+        self.refused = True
+        return PermissionError("Foundry native credential unavailable")
+
+    def bearer(self) -> str:
+        """A client-credentials token of the credentials the job may use now: minted on first use
+        and again when they changed. Nothing is sent between the last check and the request the
+        token is for."""
+        if self.authorize() != self._minted:
+            self._token = self._minted = None
         if self._token is None:
-            credentials = self.credential_provider(self.target.host)
+            credentials = self._asked(lambda: self.credential_provider(self.target.host))
             try:
                 body = self._object(
                     self._send(
@@ -117,11 +148,13 @@ class PalantirClient:
                     )
                 )
             except (RuntimeError, ValueError):
-                raise PermissionError("Foundry native credential unavailable") from None
+                raise self._refusal() from None
             token = body.get("access_token")
             if not isinstance(token, str) or not token:
-                raise PermissionError("Foundry native credential unavailable")
-            self._token = token
+                raise self._refusal()
+            self._token, self._minted = token, credentials
+            if self.authorize() != credentials:
+                raise self._refusal()
         return self._token
 
     def request(
@@ -142,7 +175,7 @@ class PalantirClient:
             self._send(
                 method,
                 self.target.host + path,
-                headers={"Authorization": "Bearer " + self._bearer()},
+                headers={"Authorization": "Bearer " + self.bearer()},
                 params=query or None,
                 body=body,
             )
@@ -197,7 +230,7 @@ class PalantirClient:
     # ------------------------------------------------------------------ frontend asset
     def frontend_asset_sha256(self, bindings: Bindings, spec: FoundryMarketplaceSpec) -> str:
         # A separate, unauthenticated request: the bearer never crosses to the frontend origin.
-        asset = self._send(
-            "GET", bindings.frontend_origin + "/" + quote(spec.frontend_asset_path, safe="/")
-        )
+        origin = public_https_origin(bindings.frontend_origin)
+        self.authorize()
+        asset = self._send("GET", origin + "/" + quote(spec.frontend_asset_path, safe="/"))
         return hashlib.sha256(asset).hexdigest()

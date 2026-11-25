@@ -25,11 +25,13 @@ from tests.delivery.routes import (
     deployment_row,
     expire,
     job_result,
+    job_row,
     job_url,
     journal_rows,
     lease,
     lease_kind,
     plans,
+    proof,
 )
 
 NO_WRITE = "no platform write was attempted"
@@ -148,6 +150,62 @@ def test_a_succeeded_apply_with_an_unfinished_step_is_unknown(
     row = deployment_row(owner_db, deployment)
     assert row["status"] == "unknown_outcome" and row["receipt"] is None
     assert deployment_jobs(owner_db, deployment, "observe") == []
+
+
+# ------------------------------------------------------------------ an archived target (#410)
+def test_a_first_intent_on_an_archived_target_records_nothing(
+    flow: Flow, client: TestClient, owner_db: Database
+) -> None:
+    plan, deployment = flow.deployment()
+    leased = lease_kind(client, flow.token, "apply")
+    job = leased["job"]["id"]
+    before = dict(job_row(owner_db, job))
+    assert (before["status"], before["checkpoint_seq"]) == ("leased", 0)
+    flow.archive(plan["target_id"])
+    stale = {**leased, "fence": leased["fence"] + 1}
+    _code(checkpoint(client, flow.token, stale, 1, "intent"), 409, "lease_lost")
+    for _ in range(2):  # the same sequence again: the refusal did not use it up
+        _code(checkpoint(client, flow.token, leased, 1, "intent"), 409, "target_unavailable")
+        assert journal_rows(owner_db, flow.tenant) == []
+        assert dict(job_row(owner_db, job)) == before
+        assert deployment_row(owner_db, deployment)["status"] == "leased"
+    beat = client.post(job_url(job, "heartbeat"), json=proof(leased), headers=bearer(flow.token))
+    assert beat.status_code == 200, beat.text
+    r = job_result(client, flow.token, leased, status="failed", error_code="execution_failed")
+    assert r.status_code == 200, r.text
+    row = deployment_row(owner_db, deployment)
+    assert (row["status"], row["status_reason"]) == ("failed", NO_WRITE)
+    _never_retried(owner_db, deployment)
+
+
+def test_a_later_steps_intent_on_an_archived_target_is_refused_and_the_outcome_unknown(
+    flow: Flow, client: TestClient, owner_db: Database
+) -> None:
+    plan, deployment = flow.deployment()
+    leased = lease_kind(client, flow.token, "apply")
+    job = leased["job"]["id"]
+    assert checkpoint(client, flow.token, leased, 1, "intent").status_code == 200
+    done = checkpoint(client, flow.token, leased, 2, "complete", {"ok": True})
+    assert done.status_code == 200, done.text
+    before = journal_rows(owner_db, flow.tenant)
+    flow.archive(plan["target_id"])
+    for sequence, code in ((2, "stale_sequence"), (3, "target_unavailable")):
+        body = {
+            **proof(leased),
+            "sequence": sequence,
+            "step_key": "bundle_run",
+            "state": "intent",
+            "input_digest": STEP_DIGEST,
+        }
+        r = client.post(job_url(job, "checkpoint"), json=body, headers=bearer(flow.token))
+        _code(r, 409, code)
+        assert journal_rows(owner_db, flow.tenant) == before and len(before) == 1
+        assert job_row(owner_db, job)["checkpoint_seq"] == 2
+    assert deployment_row(owner_db, deployment)["status"] == "applying"
+    r = job_result(client, flow.token, leased, status="failed", error_code="execution_failed")
+    assert r.status_code == 200, r.text
+    assert deployment_row(owner_db, deployment)["status"] == "unknown_outcome"
+    _never_retried(owner_db, deployment)
 
 
 # ------------------------------------------------------------------ an unresolved target

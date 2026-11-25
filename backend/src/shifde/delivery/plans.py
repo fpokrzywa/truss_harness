@@ -9,22 +9,28 @@ scope, before `expires_at`; approve quotes the sealed digest. Related principals
 requester (B-2733): a service account the requester owns (`service_accounts.owner_principal_id`) and
 the owner of a requesting service account are refused too, and so is a service account with the same
 owner as a requesting service account (sibling service accounts, B-2911; an unowned account has no
-siblings): 403 `self_approval_forbidden`, and that refusal is audited (`delivery.plan.approve` or
-`delivery.plan.reject`, outcome `denied`, committed before the 403). The `delivery_approvals` insert
-trigger enforces only the same-principal case. Approval creates the plan's deployment (`queued`) and
-its one-attempt `apply` job, due until the plan's `expires_at`, in the approval's transaction
-(B-2684). A target with an unresolved unknown outcome takes no new plan (409 `target_unresolved`,
-settled call 10).
+siblings). The creators of the API keys count too (B-4113; the plan records the key it was requested
+with, the decision the key it was made with, both from the caller's principal): the creator of the
+requesting key, a service account that creator owns, and a decider whose key the requester or the
+owner of the requesting service account created; a key that is not its principal's in this client is
+refused as well. Each refusal is 403 `self_approval_forbidden` and audited (`delivery.plan.approve`
+or `delivery.plan.reject`, outcome `denied`, committed before the 403). The `delivery_approvals`
+insert trigger refuses the same cases (delivery_0009). Accepted limit: one third person who created
+both keys relates nobody (the owner's product decision, #395). Approval creates the plan's
+deployment (`queued`) and its one-attempt `apply` job, due until the plan's `expires_at`, in the
+approval's transaction (B-2684). A target with an unresolved unknown outcome takes no new plan (409
+`target_unresolved`, settled call 10).
 
 A plan deploys one sealed release (SP3 design sections 4 and 6, settled calls 3 to 6): the request
 names a release the caller can read (else `release not found`), not withdrawn (409
 `release_withdrawn`), in the target's workspace and project (409 `release_target_mismatch`), with a
 passing evaluation of its digests (409 `evaluation_required`) and of the target's kind (409
 `target_kind_mismatch`: the manifest's `target_kind` is not of the target's `platform_kind`; only
-`databricks.app/v1`, `snowflake.native-app/v1` and `fabric.solution/v1` have a platform). The plan
-stores the release, its digest and the passing run; the artifact carries `release.json` and the
-plan digest the release digest. Approval checks the release again after the plan row lock; reject
-does not.
+`databricks.app/v1`, `snowflake.native-app/v1`, `fabric.solution/v1`, `palantir.marketplace/v1` and
+`docker.compose/v1` have a platform; behind that gate, a pair of platform and kind no branch names
+is 409 `generator_version_unsupported`). The plan stores the release, its digest and the passing
+run; the artifact carries `release.json` and the plan digest the release digest. Approval checks
+the release again after the plan row lock; reject does not.
 
 A `/2` release (compiler `packaging.service.COMPILER_VERSION_APP`, SP5 design 6.6) on a Databricks
 target deploys the generated app instead of the SDK template. After the checks above it is refused
@@ -53,6 +59,21 @@ A Fabric target deploys only the Fabric template (SP8 design section 4): the lak
 notebook whose generated first cell exits with the release digest, and `release.json`. After the
 checks above a release with an app generator version is refused with 409
 `generator_version_unsupported` before any write.
+
+A Palantir target deploys a release's descriptor (SP8-7): `deployment.json` with the constant spec,
+the digest of the target as the executor will see it and the release's digest, plus
+`release.json`. Nothing is built for the platform and nothing is requested. After the checks above
+it is refused with 409, before any write: `palantir_preview_not_allowed` (the target's
+`allow_preview_apis` is not true) and `generator_version_unsupported` (a generated-app release).
+
+A Docker target deploys only the generated Docker bundle of a `/2` release (SP8 design section 6),
+never the template. After the checks above it is refused with 409, in this order and before any
+write: `workspace_not_claimed` (this organization holds no active claim on the target's
+`workspace_host` as a Databricks target: an unclaimed host, another organization's and a released
+one get one answer), `serving_endpoint_mismatch`, `model_not_in_target_workspace` (the provider
+rule above against `workspace_host`), `release_source_changed` and `generator_version_unsupported`.
+Approval checks the claim again under the plan row lock (`workspace_not_claimed`, the plan stays
+sealed); reject does not.
 
 A plan is scoped by its target's workspace/project; a plan or target the caller cannot read gets
 the answer an unknown id gets. Every plan route first settles the organization's plans (the lost
@@ -83,8 +104,11 @@ from shifde.adapters.native.base import create_archive
 from shifde.adapters.native.contracts import DatabricksApplicationSpec
 from shifde.adapters.native.databricks.source import scaffold_files
 from shifde.adapters.native.fabric import source as fabric_source
+from shifde.adapters.native.palantir import source as palantir_source
+from shifde.adapters.native.planning import bindings_digest
 from shifde.adapters.runtime import IntegrationRuntime
 from shifde.appgen.render import GeneratorVersionUnsupported, ResolvedProvider, render
+from shifde.appgen.render_docker import DockerTargetValues
 from shifde.appgen.render_snowflake import ReleaseNotRenderable
 from shifde.appgen.service import resolved_for_release
 from shifde.audit import service as audit
@@ -112,6 +136,8 @@ PLATFORM_OF_KIND = {
     "databricks.app/v1": "databricks",
     "snowflake.native-app/v1": "snowflake",
     "fabric.solution/v1": "fabric",
+    "palantir.marketplace/v1": "palantir",
+    "docker.compose/v1": "docker",
 }
 
 
@@ -159,12 +185,29 @@ class ModelNotInTargetWorkspace(AppError):
     status, code, title = 409, "model_not_in_target_workspace", "Conflict"
 
 
+class WorkspaceNotClaimed(AppError):
+    """The Docker target's Databricks workspace is not this organization's (one fixed message for
+    an unclaimed workspace, another organization's and a released one)."""
+
+    status, code, title = 409, "workspace_not_claimed", "Conflict"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "The target's Databricks workspace is not registered as a Databricks target of this "
+            "organization."
+        )
+
+
 class CortexModelMismatch(AppError):
     status, code, title = 409, "cortex_model_mismatch", "Conflict"
 
 
 class ModelNotInTargetAccount(AppError):
     status, code, title = 409, "model_not_in_target_account", "Conflict"
+
+
+class PalantirPreviewNotAllowed(AppError):
+    status, code, title = 409, "palantir_preview_not_allowed", "Conflict"
 
 
 def check_target_kind(manifest: Mapping[str, Any], platform_kind: str) -> None:
@@ -380,18 +423,29 @@ class PlanService:
         target = TargetService(self.sc).plannable(body.target_id)
         if target["status"] != "active":
             raise gateway.TargetUnavailable("the target is archived")
+        service.require_bindings(target)
         if repository.target_unresolved(self.sc.session, target["id"], tenant_id=self.sc.tenant_id):
             raise TargetUnresolved("the target has an unresolved unknown outcome")
         release, passing = self._gate(target, body.release_id)
         generator_version = service.app_generator_version(release["manifest"])
-        if target["platform_kind"] == "snowflake":
+        # each branch names its platform and kind, also behind the kind gate; none is a default
+        pair = (target["platform_kind"], release["manifest"].get("target_kind"))
+        if pair == ("snowflake", "snowflake.native-app/v1"):
             content, artifact_digest = self._snowflake_artifact(target, release)
-        elif target["platform_kind"] == "fabric":
+        elif pair == ("fabric", "fabric.solution/v1"):
             content, artifact_digest = fabric_artifact(release["manifest"], release["digest"])
-        elif generator_version is None:
+        elif pair == ("palantir", "palantir.marketplace/v1"):
+            content, artifact_digest = self._palantir_artifact(target, release)
+        elif pair == ("docker", "docker.compose/v1"):
+            content, artifact_digest = self._docker_artifact(target, release)
+        elif pair == ("databricks", "databricks.app/v1") and generator_version is None:
             content, artifact_digest = template_artifact(release["manifest"], release["digest"])
-        else:
+        elif pair == ("databricks", "databricks.app/v1"):
             content, artifact_digest = self._app_artifact(target, release)
+        else:
+            raise GeneratorVersionUnsupported(
+                "no app generator renders this release for the target"
+            )
         session = self.sc.session
         principal_id = self.sc.principal.principal_id
         artifact_id, plan_id = uuid7(), uuid7()
@@ -419,6 +473,7 @@ class PlanService:
                 "application_key": body.application_key,
                 "display_name": body.display_name,
                 "requested_by": principal_id,
+                "requested_api_key_id": self.sc.principal.api_key_id,
                 "release_id": release["id"],
                 "release_digest": release["digest"],
                 "evaluation_run_id": passing["id"],
@@ -492,6 +547,40 @@ class PlanService:
             return False
         return origin == address
 
+    def _holds_workspace(self, target: Mapping[str, Any]) -> bool:
+        """This organization holds an active claim on the Docker target's Databricks workspace."""
+        suffixes = self.runtime.settings.delivery_databricks_host_suffixes
+        host = target["bindings"]["workspace_host"]
+        return TargetService(self.sc, suffixes).holds_claim("databricks", host)
+
+    def _docker_artifact(
+        self, target: Mapping[str, Any], release: Mapping[str, Any]
+    ) -> tuple[bytes, str]:
+        """The generated Docker bundle's archive and digest (SP8 design section 6): the claim,
+        serving endpoint and model checks, `Resolved` under the requester's scope, then render."""
+        if not self._holds_workspace(target):
+            raise WorkspaceNotClaimed
+        manifest, bound = release["manifest"], target["bindings"]
+        bindings = list(((manifest.get("bindings") or {}).get("model_bindings") or {}).values())
+        if len(bindings) != 1 or bindings[0].get("model") != bound["serving_endpoint"]:
+            raise ServingEndpointMismatch(
+                "The release's model binding is not the target's serving endpoint."
+            )
+        if not self._in_workspace(bindings[0].get("provider_id"), bound["workspace_host"]):
+            raise ModelNotInTargetWorkspace(
+                "The release's model provider is not in the target's workspace."
+            )
+        resolved = resolved_for_release(self.sc, self.runtime, manifest)
+        if service.app_generator_version(manifest) is None:
+            raise GeneratorVersionUnsupported("the release is not a generated app release")
+        values = DockerTargetValues(
+            target_id=target["id"],
+            port=bound["port"],
+            warehouse_id=bound["warehouse_id"],
+            serving_endpoint=bound["serving_endpoint"],
+        )
+        return archive(render(manifest, release["digest"], resolved, values))
+
     def _snowflake_artifact(
         self, target: Mapping[str, Any], release: Mapping[str, Any]
     ) -> tuple[bytes, str]:
@@ -534,6 +623,23 @@ class PlanService:
             return False
         return origin == address
 
+    def _palantir_artifact(
+        self, target: Mapping[str, Any], release: Mapping[str, Any]
+    ) -> tuple[bytes, str]:
+        """The Marketplace descriptor's archive and digest (SP8-7): the preview opt-in, then a `/1`
+        release only."""
+        if target["bindings"].get("allow_preview_apis") is not True:
+            raise PalantirPreviewNotAllowed("The target does not allow Foundry preview APIs.")
+        manifest = release["manifest"]
+        if service.app_generator_version(manifest) is not None:
+            raise GeneratorVersionUnsupported("the release is a generated app release")
+        files = palantir_source.delivery_files(
+            bindings_digest=bindings_digest(service.adapter_target(target)),
+            release_digest=release["digest"],
+        )
+        files["release.json"] = canonical({"manifest": manifest, "digest": release["digest"]})
+        return archive(files)
+
     def _gate(
         self, target: Mapping[str, Any], release_id: UUID
     ) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
@@ -553,7 +659,8 @@ class PlanService:
 
     def _recheck(self, row: Mapping[str, Any]) -> None:
         """At approval, under the plan row lock: the plan's release is still sealed, unchanged
-        and passed. No packaging permission is asked of the approver."""
+        and passed, the target's stored bindings still validate, and a Docker target's workspace is
+        still this organization's. No packaging permission is asked of the approver."""
         session = self.sc.session
         if row["release_id"] is None:
             raise EvaluationRequired("This release has no passing evaluation.")
@@ -566,13 +673,23 @@ class PlanService:
             raise EvaluationRequired("This release has no passing evaluation.") from None
         if current["digest"] != row["release_digest"]:
             raise EvaluationRequired("This release has no passing evaluation.")
+        target = repository.get_target(session, row["target_id"], tenant_id=self.sc.tenant_id)
+        if target is None:  # pragma: no cover - `fk_delivery_plans__target`
+            raise NotFound("plan not found")
+        service.require_bindings(target)
+        if target["platform_kind"] == "docker" and not self._holds_workspace(target):
+            raise WorkspaceNotClaimed
 
-    def _related(self, requested_by: UUID) -> str | None:
-        """Why the caller may not decide a plan `requested_by` requested (None: they may): the
-        same principal, a service account the requester owns, the owner of the requesting
-        service account, or a sibling service account (both owned by the same principal; an
-        unowned account has no siblings)."""
+    def _related(self, row: Mapping[str, Any]) -> str | None:
+        """Why the caller may not decide the plan `row` (None: they may): the same principal, a
+        service account the requester owns, the owner of the requesting service account, or a
+        sibling service account (both owned by the same principal; an unowned account has no
+        siblings); then an API key that is not its principal's, the creator of the plan's
+        requesting key, a service account that creator owns, or a caller whose key the requester
+        or the owner of the requesting service account created (a key without a creator relates
+        nobody). `shifde.delivery_approvals_guard()` refuses the same cases."""
         principal = self.sc.principal
+        requested_by: UUID = row["requested_by"]
         if requested_by == principal.principal_id:
             return "same_principal"
         session, tenant_id = self.sc.session, self.sc.tenant_id
@@ -590,6 +707,30 @@ class PlanService:
             return "requester_owned_by_decider"
         if decider_owner is not None and requester_owner == decider_owner:
             return "sibling_service_accounts"
+        requesting_creator: UUID | None = None
+        deciding_creator: UUID | None = None
+        if row["requested_api_key_id"] is not None:
+            key = repository.api_key_creator(
+                session, row["requested_api_key_id"], requested_by, tenant_id=tenant_id
+            )
+            if key is None:
+                return "api_key_unresolved"
+            requesting_creator = key["created_by"]
+        if principal.api_key_id is not None:
+            key = repository.api_key_creator(
+                session, principal.api_key_id, principal.principal_id, tenant_id=tenant_id
+            )
+            if key is None:
+                return "api_key_unresolved"
+            deciding_creator = key["created_by"]
+        if requesting_creator == principal.principal_id:
+            return "decider_created_requesting_key"
+        if decider_owner is not None and requesting_creator == decider_owner:
+            return "decider_owned_by_requesting_key_creator"
+        if deciding_creator == requested_by:
+            return "decider_key_created_by_requester"
+        if requester_owner is not None and deciding_creator == requester_owner:
+            return "decider_key_created_by_requester_owner"
         return None
 
     def approve(self, plan_id: UUID, body: s.PlanApprove) -> s.PlanOut:
@@ -607,7 +748,7 @@ class PlanService:
         session = self.sc.session
         row = self._get_row(plan_id, for_update=True)
         principal_id = self.sc.principal.principal_id
-        reason = self._related(row["requested_by"])
+        reason = self._related(row)
         if reason is not None:
             self._audit(
                 f"delivery.plan.{decision}", row, outcome="denied", decision=decision, reason=reason
@@ -642,6 +783,7 @@ class PlanService:
                         "plan_id": plan_id,
                         "plan_digest": row["digest"],
                         "decided_by": principal_id,
+                        "decided_api_key_id": self.sc.principal.api_key_id,
                         "decision": decision,
                         "note": note,
                     },

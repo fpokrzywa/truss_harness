@@ -2,8 +2,10 @@
 DECISIONS B-2501, B-2664).
 
 `TargetOut` never carries the claim id or the address key: the claim is the organization's
-private bookkeeping of the one-platform rule. `PlanOut` never carries the artifact's content.
-`DeploymentDetail` (with the step journal) is returned only by the deployment item GET.
+private bookkeeping of the one-platform rule. Its `bindings` are `UnusableBindings` when the stored
+ones no longer validate (#406), so one such row breaks no list. `PlanOut` never carries the
+artifact's content. `DeploymentDetail` (with the step journal) is returned only by the deployment
+item GET.
 """
 
 from __future__ import annotations
@@ -22,7 +24,8 @@ from pydantic import (
     model_validator,
 )
 
-from shifde.adapters.native.contracts import EnvironmentSnapshot, PlanStep, Target
+from shifde.adapters.native.addresses import public_https_origin
+from shifde.adapters.native.contracts import EnvironmentSnapshot, PlanStep
 from shifde.adapters.native.palantir import source as palantir_source
 
 Strict = ConfigDict(extra="forbid")
@@ -80,8 +83,9 @@ class FabricBindings(BaseModel):
 
 class PalantirBindings(BaseModel):
     """A Palantir Marketplace target's bindings (Call S8-H): every RID, the product version, the
-    object type and the frontend asset. Each is checked with `palantir.source`'s validators; an
-    error never echoes the value."""
+    object type and the frontend asset. Each is checked with `palantir.source`'s validators, and
+    `frontend_origin` is a public HTTPS origin (`addresses.public_https_origin`, stored
+    normalized); an error never echoes the value."""
 
     model_config = Strict
     marketplace_rid: str
@@ -115,9 +119,9 @@ class PalantirBindings(BaseModel):
     @classmethod
     def _origin(cls, value: str) -> str:
         try:
-            return str(Target._validate_host(value))
+            return public_https_origin(value)
         except ValueError:  # `urlsplit` may echo the value
-            raise ValueError("frontend_origin must be an HTTPS origin") from None
+            raise ValueError("frontend_origin must be a public HTTPS origin") from None
 
 
 class DockerBindings(BaseModel):
@@ -142,6 +146,14 @@ BINDINGS: dict[str, type[Bindings]] = {
     "palantir": PalantirBindings,
     "docker": DockerBindings,
 }
+
+
+class UnusableBindings(BaseModel):
+    """Stands in for stored bindings that no longer validate: no stored value is shown, the target
+    can be archived, and nothing is planned, approved or run on it (`target_bindings_invalid`)."""
+
+    model_config = Strict
+    unusable: Literal[True] = True
 
 
 class TargetCreate(BaseModel):
@@ -172,7 +184,7 @@ class TargetOut(BaseModel):
     platform_kind: PlatformKind
     address: str
     environment: str
-    bindings: Bindings
+    bindings: Bindings | UnusableBindings
     credential_ref: str
     status: str
     revision: int

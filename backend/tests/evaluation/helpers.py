@@ -104,9 +104,10 @@ def release(
     priced: bool = True,
     served: str = SERVED,
     name: str = "Evaluated",
+    target_kind: str = "databricks.app/v1",
 ) -> Release:
     """A sealed release of `org`'s stack agent whose dataset holds `cases`, its model pin bound
-    to `served` on the stack's provider; capture is full."""
+    to `served` on the stack's provider, of a solution of `target_kind`; capture is full."""
     c = h.client
     s = stack(c, h, org)
     model = served_model(c, h, s, org)
@@ -114,7 +115,7 @@ def release(
         card = rate_card(c, h, model_key=SERVED, base=org)
         rate_version(c, h, card["id"], base=org, currency="USD", input_rate=1, output_rate=1)
     golden = dataset(c, h, f"{name}-cases", org=org, cases=cases)
-    sid = solution(c, h, name, org)["id"]
+    sid = solution(c, h, name, org, target_kind)["id"]
     body = version_body(s.agent_v1, dataset=golden["id"], min_accuracy=min_accuracy)
     body["evaluation"].update(
         max_p95_latency_ms=max_p95_latency_ms, max_total_cost_usd=max_total_cost_usd

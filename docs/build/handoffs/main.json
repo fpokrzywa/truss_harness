@@ -1,8 +1,8 @@
 {
-  "session_id": "c6c40eef-db8d-4fa2-9bd9-f86c31ef3b87",
-  "head_sha": "1d6acd32cb2459b56ec75d1b0f8ee939c00a8cd7",
+  "session_id": "32c340cd-bb17-4aaa-88ff-008cf258c4a8",
+  "head_sha": "1c0b55180abf7dc4652b0e300146831b8ce89052",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "Per docs/build/HANDOFF.md: reviewers for 189, 190, 191 (at review round 1); start #290, #292, #294, #352; batch 6 with 192 (PR #389, approved)",
-  "written_at": "2026-11-25T08:16:10Z"
+  "next_step": "Per docs/build/HANDOFF.md: queue, message seth-supervisor-11, main CI on 2dc5007, then 194 on lead/batch-11 (sync, gates, six demos, S-070)",
+  "written_at": "2026-11-25T18:55:12Z"
 }

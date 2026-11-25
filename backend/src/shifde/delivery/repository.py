@@ -11,8 +11,8 @@ resolved only through the `shifde.delivery_resolve_executor` definer, which answ
 (tenant_id, executor_id) or nothing.
 
 Plans (B-2675): a plan row is read with its target's workspace/project and its decision; sealed
-plans are immutable (`shifde.delivery_plans_seal_guard`), and a decision by the requester is
-refused by `shifde.delivery_approvals_guard`.
+plans are immutable (`shifde.delivery_plans_seal_guard`), and a decision by the requester or a
+principal related to the requester is refused by `shifde.delivery_approvals_guard`.
 
 Deployments (B-2681..B-2683): a deployment row is read with its target's workspace/project; its
 status changes only along the state machine (`shifde.delivery_deployments_status_guard`), and the
@@ -109,6 +109,40 @@ def fabric_binding_in_use(
                 "OR lower(bindings->>'notebook_name') IN (lower(:l), lower(:n))))"
             ),
             {"c": claim_id, "t": tenant_id, "l": lakehouse, "n": notebook},
+        ).scalar_one()
+    )
+
+
+def docker_binding_in_use(
+    session: Session, claim_id: UUID, project: str, port: int, *, tenant_id: UUID
+) -> bool:
+    """An active Docker target on the claim binds `project` or `port`."""
+    return bool(
+        session.execute(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM shifde.delivery_targets WHERE tenant_id = :t "
+                "AND claim_id = :c AND status = 'active' AND platform_kind = 'docker' "
+                "AND (bindings->>'project' = :p "
+                "OR bindings->'port' = to_jsonb(CAST(:n AS integer))))"
+            ),
+            {"c": claim_id, "t": tenant_id, "p": project, "n": port},
+        ).scalar_one()
+    )
+
+
+def holds_claim(session: Session, platform_kind: str, address_key: str, *, tenant_id: UUID) -> bool:
+    """The organization's own claim on the address has an active target of its kind. Read only:
+    no definer, no lock, no other organization's row."""
+    return bool(
+        session.execute(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM shifde.delivery_platform_claims c "
+                "JOIN shifde.delivery_targets d ON d.tenant_id = c.tenant_id "
+                "AND d.claim_id = c.id AND d.platform_kind = c.platform_kind "
+                "WHERE c.tenant_id = :t AND c.platform_kind = :k AND c.address_key = :a "
+                "AND d.status = 'active')"
+            ),
+            {"t": tenant_id, "k": platform_kind, "a": address_key},
         ).scalar_one()
     )
 
@@ -573,7 +607,7 @@ PLAN_COLUMNS = (
     "p.application_key, p.display_name, p.status, p.status_reason, p.requested_by, p.steps, "
     "p.snapshot, p.adapter_version, p.toolchain_digest, p.digest, p.sealed_at, p.expires_at, "
     "p.created_at, p.updated_at, p.release_id, p.release_digest, p.evaluation_run_id, "
-    "t.workspace_id, t.project_id, "
+    "p.requested_api_key_id, t.workspace_id, t.project_id, "
     "a.decision AS approval_decision, a.decided_by AS approval_decided_by, "
     "a.decided_at AS approval_decided_at, a.note AS approval_note, "
     "dep.id AS deployment_id, now() AS db_now"
@@ -603,9 +637,10 @@ def insert_plan(session: Session, values: Mapping[str, Any]) -> None:
         text(
             "INSERT INTO shifde.delivery_plans (tenant_id, id, target_id, target_revision, "
             "artifact_id, artifact_digest, application_key, display_name, requested_by, "
-            "release_id, release_digest, evaluation_run_id) VALUES (:tenant_id, :id, :target_id, "
-            ":target_revision, :artifact_id, :artifact_digest, :application_key, :display_name, "
-            ":requested_by, :release_id, :release_digest, :evaluation_run_id)"
+            "requested_api_key_id, release_id, release_digest, evaluation_run_id) VALUES "
+            "(:tenant_id, :id, :target_id, :target_revision, :artifact_id, :artifact_digest, "
+            ":application_key, :display_name, :requested_by, :requested_api_key_id, :release_id, "
+            ":release_digest, :evaluation_run_id)"
         ),
         dict(values),
     )
@@ -641,6 +676,24 @@ def service_account_owner(session: Session, principal_id: UUID, *, tenant_id: UU
         {"p": principal_id, "t": tenant_id},
     ).scalar_one_or_none()
     return owner
+
+
+def api_key_creator(
+    session: Session, key_id: UUID, principal_id: UUID, *, tenant_id: UUID
+) -> Row | None:
+    """The row (`created_by`, which may be NULL) of the organization's API key `key_id` of
+    `principal_id`; None when the organization has no such key of that principal."""
+    return (
+        session.execute(
+            text(
+                "SELECT created_by FROM shifde.api_keys "
+                "WHERE id = :k AND principal_id = :p AND tenant_id = :t"
+            ),
+            {"k": key_id, "p": principal_id, "t": tenant_id},
+        )
+        .mappings()
+        .first()
+    )
 
 
 def list_plans(
@@ -762,8 +815,8 @@ def insert_approval(session: Session, values: Mapping[str, Any]) -> None:
     session.execute(
         text(
             "INSERT INTO shifde.delivery_approvals (tenant_id, id, plan_id, plan_digest, "
-            "decided_by, decision, note) VALUES (:tenant_id, :id, :plan_id, :plan_digest, "
-            ":decided_by, :decision, :note)"
+            "decided_by, decided_api_key_id, decision, note) VALUES (:tenant_id, :id, :plan_id, "
+            ":plan_digest, :decided_by, :decided_api_key_id, :decision, :note)"
         ),
         dict(values),
     )

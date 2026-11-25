@@ -164,6 +164,15 @@ def test_a_read_sql_tool_on_an_active_snowflake_read_connection_publishes(
         ("select $1 from @s/it's ->> remove @s/o'x", "sql_stage_path"),
         ("select get_ddl('table', 't')", "sql_refused_function"),
         ("select seq.nextval", "sql_refused_function"),
+        # (#398)
+        ("select $1 from @s/a\\ 'b'", "sql_stage_path"),
+        ("select * from table(result_scan(last_query_id()))", "sql_refused_function"),
+        ("select getnextval(s)", "sql_refused_function"),
+        # a blank letter in code (#425)
+        ("select get_ddl\U00013441('a') from DEMO_DB.PUBLIC.X", "sql_syntax"),
+        ("select get_ddl\U00013442('a') from DEMO_DB.PUBLIC.X", "sql_syntax"),
+        ("select a\U00013441 from DEMO_DB.PUBLIC.X", "sql_syntax"),
+        ("select :\U00013442call", "sql_syntax"),
         (
             "select o.id from DEMO_DB.PUBLIC.ORDERS o where o.id = %(customer_id)s_x",
             "invalid_template",
@@ -193,6 +202,7 @@ def test_the_snowflake_statement_rules_run_at_publish(
         "select ':1'",
         "select x::int from DEMO_DB.PUBLIC.T",
         "select :id from DEMO_DB.PUBLIC.T",
+        "select '\U00013441', $$\U00013442$$ from DEMO_DB.PUBLIC.T",
     ],
 )
 def test_snowflake_only_text_publishes_on_snowflake(
@@ -218,7 +228,7 @@ RAW_WORDS = [
     (
         "select :nextval",
         "sql_refused_function",
-        "GET_DDL, GET_PRESIGNED_URL and NEXTVAL are not allowed",
+        "GET_DDL, GET_PRESIGNED_URL, NEXTVAL, GETNEXTVAL, RESULT_SCAN and LAST_QUERY_ID are not allowed",
     ),
     (
         "select :identifier(%(customer_id)s||'x')",
@@ -287,6 +297,9 @@ def test_the_dialect_follows_the_connections_adapter_key(
         assert ("binding.sql_template", "sql_write_statement") in _errors(
             env, _sql_tool(conns.databricks, dollars)
         )
+        for letter in "\U00013441\U00013442":  # (#425)
+            blank = f"select get_ddl{letter}('a') from main.default.orders"
+            assert _errors(env, _sql_tool(conns.databricks, blank)) == []
         bind = "select :1 from main.default.orders"
         assert ("binding.sql_template", "sql_positional_bind") not in _errors(
             env, _sql_tool(conns.databricks, bind)

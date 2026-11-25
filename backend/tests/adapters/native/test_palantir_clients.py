@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import timedelta
 from typing import Any  # Any: httpx.Client keyword arguments
 from urllib.parse import parse_qs
@@ -16,6 +17,7 @@ import shifde.adapters.native.palantir.clients as clients
 from shifde.adapters.native.contracts import FoundryMarketplaceSpec, Target, utcnow
 from shifde.adapters.native.palantir.clients import FoundryCredentials, PalantirClient
 from shifde.adapters.native.palantir.source import bindings
+from tests.adapters.native.origins import NON_PUBLIC_ORIGINS
 
 HOST = "https://enrollment.example.test"
 ORIGIN = "https://native-app.example.test"
@@ -73,6 +75,7 @@ def _client(
     target: Target | None = None,
     token: Handler | None = None,
     hosts: list[str] | None = None,
+    authorize: Callable[[], FoundryCredentials] | None = None,
 ) -> PalantirClient:
     def provider(host: str) -> FoundryCredentials:
         if hosts is not None:
@@ -82,6 +85,7 @@ def _client(
     return PalantirClient(
         target or _target(),
         credential_provider=provider,
+        authorize=authorize or (lambda: CREDENTIALS),
         transport=_recording(api, sent, token),
     )
 
@@ -332,3 +336,80 @@ def test_the_token_request_carries_no_json_body() -> None:
     token, api = sent
     assert token.content and not token.content.startswith(b"{")
     assert json.loads(api.content) == {"a": 1}
+
+
+@pytest.mark.parametrize("origin", NON_PUBLIC_ORIGINS)
+def test_the_asset_of_a_non_public_frontend_origin_is_never_fetched(origin: str) -> None:
+    sent: list[httpx.Request] = []
+    target = _target()
+    broken = replace(bindings(target), frontend_origin=origin)
+    spec = FoundryMarketplaceSpec(frontend_asset_path="index.html")
+    with pytest.raises(ValueError, match="^must be a public HTTPS origin$"):
+        _client(_ok, sent, target=target).frontend_asset_sha256(broken, spec)
+    assert sent == []
+
+
+# --------------------------------------------------------------------------- authorize
+class Refused(Exception):
+    pass
+
+
+def _calls(client: PalantirClient) -> list[Callable[[], object]]:
+    b = bindings(client.target)
+    spec = FoundryMarketplaceSpec(frontend_asset_path="index.html")
+    return [
+        lambda: client.request("GET", "/api/v2/x", preview=False),
+        lambda: client.request("POST", "/api/v3/x", {}, preview=True),
+        lambda: client.get_installation(INSTALLATION),
+        lambda: client.schema(b),
+        lambda: client.read_one_object(b),
+        lambda: client.frontend_asset_sha256(b, spec),
+    ]
+
+
+@pytest.mark.parametrize("call", range(6))
+@pytest.mark.parametrize("cached", [False, True], ids=["no-token", "cached-token"])
+def test_a_refused_client_sends_no_request_not_even_with_a_cached_token(
+    call: int, cached: bool
+) -> None:
+    sent: list[httpx.Request] = []
+    allowed = [True]
+
+    def authorize() -> FoundryCredentials:
+        if not allowed[0]:
+            raise Refused
+        return CREDENTIALS
+
+    client = _client(_ok, sent, authorize=authorize)
+    if cached:
+        client.request("GET", "/api/v2/x", preview=False)
+    assert not client.refused
+    before, allowed[0] = len(sent), False
+    with pytest.raises(Refused):
+        _calls(client)[call]()
+    assert len(sent) == before and client.refused
+
+
+def test_a_check_that_fails_while_the_token_is_minted_sends_no_request_with_it() -> None:
+    sent: list[httpx.Request] = []
+
+    def authorize() -> FoundryCredentials:
+        if sent:
+            raise Refused
+        return CREDENTIALS
+
+    client = _client(_ok, sent, authorize=authorize)
+    with pytest.raises(Refused):
+        client.request("GET", "/api/v2/x", preview=False)
+    assert [request.url.path for request in sent] == ["/multipass/api/oauth2/token"]
+
+
+def test_a_token_of_other_credentials_is_not_used() -> None:
+    sent: list[httpx.Request] = []
+    now = [CREDENTIALS]
+    client = _client(_ok, sent, authorize=lambda: now[0])
+    client.request("GET", "/api/v2/x", preview=False)
+    now[0] = replace(CREDENTIALS, client_secret="rotated-fixture")
+    with pytest.raises(PermissionError, match="credential unavailable"):  # the provider's are older
+        client.request("GET", "/api/v2/y", preview=False)
+    assert [r.url.path for r in sent if r.url.path.startswith("/api")] == ["/api/v2/x"]

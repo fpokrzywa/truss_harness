@@ -513,7 +513,7 @@ def test_a_docker_version_with_screens_seals_under_compiler_2(
     assert all(d["status"] == "supported" for d in release["compatibility"])
 
 
-def test_a_sealed_docker_release_has_no_preview(client: TestClient, world: World) -> None:
+def test_a_sealed_docker_release_previews_its_bundle(client: TestClient, world: World) -> None:
     wire(client)
     h, s, _ = _setup(client, world)
     sid = solution(h.client, h, "Container app", target_kind=DOCKER_KIND)["id"]
@@ -524,9 +524,11 @@ def test_a_sealed_docker_release_has_no_preview(client: TestClient, world: World
     r = seal(h.client, h, sid, version["id"], bindings({s.model: s.provider}, {lake: lake}))
     assert r.status_code == 201, r.text
     r = h.client.get(f"{A}/releases/{r.json()['id']}/app-preview", headers=h)
-    assert r.status_code == 409, r.text
-    assert r.json()["code"] == "generator_version_unsupported"
-    assert r.json()["detail"] == "no app generator renders a Docker release"
+    assert r.status_code == 200, r.text
+    assert r.json()["generator_version"] == "shifde.appgen.docker/1.0"
+    paths = {f["path"] for f in r.json()["files"]}
+    assert {"Dockerfile", "app/app.py", "release.json"} <= paths
+    assert "compose.yaml" not in paths  # per target: a preview has none
 
 
 def test_a_docker_version_without_screens_is_refused(

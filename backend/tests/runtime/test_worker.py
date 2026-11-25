@@ -42,6 +42,7 @@ of A's run or decision through the routes.
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -177,13 +178,19 @@ def running(settings: Settings) -> Iterator[Callable[..., Worker]]:
         assert not t.is_alive(), "a worker loop did not stop"
 
 
-def _until(check: Callable[[], bool], timeout: float = 120.0) -> None:
+def _until(
+    check: Callable[[], bool], timeout: float = 120.0, *, detail: Callable[[], str] | None = None
+) -> None:
     end = time.monotonic() + timeout
+    checks, longest = 0, 0.0  # a check is not interrupted: a slow one can outlast the deadline
     while time.monotonic() < end:
+        began = time.monotonic()
         if check():
             return
+        checks, longest = checks + 1, max(longest, time.monotonic() - began)
         time.sleep(0.05)
-    raise AssertionError(f"condition not reached in {timeout:g} s")
+    message = f"condition not reached in {timeout:g} s ({checks} checks, longest {longest:.1f} s)"
+    raise AssertionError(f"{message}: {detail()}" if detail else message)
 
 
 def test_until_still_times_out_when_the_condition_never_holds() -> None:
@@ -191,6 +198,21 @@ def test_until_still_times_out_when_the_condition_never_holds() -> None:
     with pytest.raises(AssertionError, match=r"condition not reached in 0\.2 s"):
         _until(lambda: False, 0.2)
     assert time.monotonic() - started < 5
+
+
+def test_until_reports_a_check_that_outlasts_its_timeout_and_the_detail() -> None:
+    def slow() -> bool:
+        time.sleep(0.5)
+        return False
+
+    with pytest.raises(AssertionError) as failed:
+        _until(slow, 0.2, detail=lambda: "run pending")
+    said = re.fullmatch(
+        r"condition not reached in 0\.2 s \(1 checks, longest (\d+\.\d) s\): run pending",
+        str(failed.value),
+    )
+    assert said is not None, str(failed.value)
+    assert float(said[1]) >= 0.5
 
 
 def _on_owner(w: Worker, owner_url: str) -> Worker:
@@ -802,10 +824,28 @@ def test_a_worker_at_its_abandoned_cap_stops_claiming_and_exits_1(
                   w="w-cap") == [("stopped",)]  # fmt: skip
         # the wedged run's lease expires; another worker's reaper settles it as an unknown outcome
         reaper = _worker(settings, "w-cap-reaper")
+        reaps: list[bool] = []
+        sweeps: list[str] = []
+        monkeypatch.setattr(reaper, "_sweep", lambda: sweeps.append("sweep"))
+
+        def settled() -> bool:
+            # not `_reap()`: its sweeps grow with this database's clients and are not tested here
+            reaps.append(reaper._reap_leases())
+            return _status(owner_db, a.run) == "timed_out"
+
+        def detail() -> str:
+            jobs = _q(owner_db, "SELECT status, lease_owner, lease_expires_at < now() "
+                      "FROM shifde.jobs WHERE run_id = :r ORDER BY id", r=a.run)  # fmt: skip
+            return (
+                f"{reaps.count(False)} of {len(reaps)} lease reaps returned False, run "
+                f"{_status(owner_db, a.run)}, jobs (status, owner, lease expired) {jobs}"
+            )
+
         try:
-            _until(lambda: reaper._reap() or _status(owner_db, a.run) == "timed_out", 60)
+            _until(settled, 60, detail=detail)
         finally:
             reaper.db.dispose()
+        assert sweeps == []  # the wait never depends on how many clients there are
         _settled_unknown(owner_db, a.run)
     finally:
         release.set()

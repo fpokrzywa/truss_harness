@@ -17,6 +17,7 @@ from fastapi import Depends
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
+from shifde.adapters.native.addresses import address_key
 from shifde.adapters.runtime import IntegrationRuntime
 from shifde.core.db import Database
 from shifde.core.deps import check_origin, reject_basic_auth
@@ -256,19 +257,27 @@ def job_row(owner_db: Database, job_id: object) -> Any:  # Any: a RowMapping
 
 def make_deployment(owner_db: Database, tenant: UUID) -> UUID:
     """A real `queued` deployment of `tenant` (B-2673 keys), inserted as the schema owner with an
-    archived target of the organization's first workspace, an artifact and a `requested` plan, so
-    a job or a journal step can name it. No apply job is queued for it."""
+    active target (and its claim) of the organization's first workspace, an artifact and a
+    `requested` plan, so a job or a journal step can name it. No apply job is queued for it."""
     target, artifact, plan, deployment_id = uuid7(), uuid7(), uuid7(), uuid7()
+    claim, url = uuid7(), address()
     with owner_db.session() as o:
         o.execute(
             text(
-                "INSERT INTO shifde.delivery_targets (tenant_id, id, workspace_id, name, "
-                "platform_kind, address, environment, bindings, credential_ref, status, "
-                "created_by) SELECT :t, :g, w.id, 'helper target', 'databricks', :a, 'dev', "
-                "'{}'::jsonb, 'databricks-dev', 'archived', :u FROM shifde.workspaces w "
-                "WHERE w.tenant_id = :t ORDER BY w.id LIMIT 1"
+                "INSERT INTO shifde.delivery_platform_claims (id, tenant_id, platform_kind, "
+                "address_key, created_by) VALUES (:c, :t, 'databricks', :k, :u)"
             ),
-            {"t": tenant, "g": target, "a": address(), "u": uuid7()},
+            {"c": claim, "t": tenant, "k": address_key(url), "u": uuid7()},
+        )
+        o.execute(
+            text(
+                "INSERT INTO shifde.delivery_targets (tenant_id, id, workspace_id, name, "
+                "platform_kind, address, environment, bindings, credential_ref, claim_id, "
+                "created_by) SELECT :t, :g, w.id, 'helper target', 'databricks', :a, 'dev', "
+                "'{\"warehouse_id\": \"abc123def456\"}'::jsonb, 'databricks-dev', :c, :u "
+                "FROM shifde.workspaces w WHERE w.tenant_id = :t ORDER BY w.id LIMIT 1"
+            ),
+            {"t": tenant, "g": target, "a": url, "c": claim, "u": uuid7()},
         )
         o.execute(
             text(
@@ -294,6 +303,16 @@ def make_deployment(owner_db: Database, tenant: UUID) -> UUID:
         )
         o.commit()
     return deployment_id
+
+
+def enqueue_on_target(app_db: Database, tenant: UUID, kind: str, deployment_id: UUID) -> UUID:
+    """A queued job of `deployment_id` that names the deployment's target."""
+    with app_session(app_db, tenant) as s:
+        target_id = s.execute(
+            text("SELECT target_id FROM shifde.delivery_deployments WHERE id = :d"),
+            {"d": deployment_id},
+        ).scalar_one()
+    return enqueue(app_db, tenant, kind, deployment_id=deployment_id, target_id=target_id)
 
 
 def journal_rows(owner_db: Database, tenant: UUID) -> list[tuple[Any, ...]]:
@@ -519,6 +538,13 @@ class Flow:
         )
         self.client.cookies.clear()
         return made
+
+    def archive(self, target_id: object) -> None:
+        """The requester archives the target (its platform claim is freed)."""
+        h = as_user(self.client, self.requester)
+        r = self.client.post(f"{targets(self.slug)}/{target_id}/archive", headers=h)
+        self.client.cookies.clear()
+        assert r.status_code == 200, r.text
 
     def sealed(
         self,
