@@ -58,6 +58,7 @@ from tests.delivery.conftest import make_executor
 from tests.delivery.docker import docker_release, docker_target, rows, workspace, workspace_target
 from tests.delivery.releases import release_for_target
 from tests.delivery.routes import (
+    DOCKER_BINDINGS,
     SP8_KINDS,
     WHOAMI,
     Flow,
@@ -1545,18 +1546,9 @@ def test_a_p1_only_member_cannot_reach_p2s_docker_objects(
     assert rows(owner_db, a.tenant) == before
 
 
-def _workspace_refusal(flow: Flow, target_id: object, release_id: object) -> dict[str, Any]:
-    """The 409 body apart from the request id; no delivery row was written or changed."""
-    before = rows(flow.owner_db, flow.tenant)
-    h = as_user(flow.client, flow.requester)
-    r = flow.client.post(
-        plans(flow.slug), json=_plan_body(str(target_id), str(release_id)), headers=h
-    )
-    flow.client.cookies.clear()
-    assert r.status_code == 409, r.text
-    assert r.json()["code"] == "workspace_not_claimed"
-    assert rows(flow.owner_db, flow.tenant) == before
-    return {k: v for k, v in r.json().items() if k not in _VARYING}
+def _docker_body(flow: Flow, host: str) -> dict[str, Any]:
+    bindings = {**DOCKER_BINDINGS, "workspace_host": host}
+    return sp8_body("docker", flow.workspace, sp8_address("docker"), bindings=bindings)
 
 
 @pytest.mark.parametrize(("me", "other"), [("a", "b"), ("b", "a")])
@@ -1568,21 +1560,24 @@ def test_a_workspace_another_organization_claims_answers_as_an_unclaimed_one(
     other: str,
 ) -> None:
     mine, theirs = two_docker_apps[me], two_docker_apps[other]
-    flow, theirs_before = mine.flow, rows(owner_db, theirs.flow.tenant)
-    released = workspace_target(flow)
-    h = as_user(client, flow.requester)
+    flow, release = mine.flow, str(mine.release.id)
+    theirs_before = rows(owner_db, theirs.flow.tenant)
+    h = as_user(client, flow.requester)  # one sign-in: the per-address login limit
+    released = register(client, h, flow.slug, target_body(flow.workspace, address()))
     assert client.post(f"{targets(flow.slug)}/{released['id']}/archive", headers=h).is_success
-    client.cookies.clear()
-    answers = [
-        _workspace_refusal(flow, docker_target(flow, workspace_host=host)["id"], mine.release.id)
-        for host in (theirs.workspace["address"], address(), released["address"])
-    ]
+    answers = []
+    for host in (theirs.workspace["address"], address(), released["address"]):
+        target = register(client, h, flow.slug, _docker_body(flow, host))["id"]
+        before = rows(owner_db, flow.tenant)
+        body = request_plan(client, h, flow.slug, target, release, status=409)
+        assert body["code"] == "workspace_not_claimed"
+        assert rows(owner_db, flow.tenant) == before  # no artifact, plan or job row
+        answers.append({k: v for k, v in body.items() if k not in _VARYING})
     assert answers[0] == answers[1] == answers[2]
     assert rows(owner_db, theirs.flow.tenant) == theirs_before
     # the control: this organization's own claimed workspace
-    own = docker_target(flow, workspace_host=mine.workspace["address"])
-    h = as_user(client, flow.requester)
-    request_plan(client, h, flow.slug, own["id"], mine.release.id)
+    own = register(client, h, flow.slug, _docker_body(flow, mine.workspace["address"]))
+    request_plan(client, h, flow.slug, own["id"], release)
 
 
 @pytest.mark.parametrize("taken", [False, True], ids=["released", "claimed-by-b"])
