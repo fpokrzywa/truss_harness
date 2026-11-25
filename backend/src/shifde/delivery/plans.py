@@ -9,12 +9,17 @@ scope, before `expires_at`; approve quotes the sealed digest. Related principals
 requester (B-2733): a service account the requester owns (`service_accounts.owner_principal_id`) and
 the owner of a requesting service account are refused too, and so is a service account with the same
 owner as a requesting service account (sibling service accounts, B-2911; an unowned account has no
-siblings): 403 `self_approval_forbidden`, and that refusal is audited (`delivery.plan.approve` or
-`delivery.plan.reject`, outcome `denied`, committed before the 403). The `delivery_approvals` insert
-trigger enforces only the same-principal case. Approval creates the plan's deployment (`queued`) and
-its one-attempt `apply` job, due until the plan's `expires_at`, in the approval's transaction
-(B-2684). A target with an unresolved unknown outcome takes no new plan (409 `target_unresolved`,
-settled call 10).
+siblings). The creators of the API keys count too (B-4113; the plan records the key it was requested
+with, the decision the key it was made with, both from the caller's principal): the creator of the
+requesting key, a service account that creator owns, and a decider whose key the requester or the
+owner of the requesting service account created; a key that is not its principal's in this client is
+refused as well. Each refusal is 403 `self_approval_forbidden` and audited (`delivery.plan.approve`
+or `delivery.plan.reject`, outcome `denied`, committed before the 403). The `delivery_approvals`
+insert trigger refuses the same cases (delivery_0009). Accepted limit: one third person who created
+both keys relates nobody (the owner's product decision, #395). Approval creates the plan's
+deployment (`queued`) and its one-attempt `apply` job, due until the plan's `expires_at`, in the
+approval's transaction (B-2684). A target with an unresolved unknown outcome takes no new plan (409
+`target_unresolved`, settled call 10).
 
 A plan deploys one sealed release (SP3 design sections 4 and 6, settled calls 3 to 6): the request
 names a release the caller can read (else `release not found`), not withdrawn (409
@@ -396,6 +401,7 @@ class PlanService:
                 "application_key": body.application_key,
                 "display_name": body.display_name,
                 "requested_by": principal_id,
+                "requested_api_key_id": self.sc.principal.api_key_id,
                 "release_id": release["id"],
                 "release_digest": release["digest"],
                 "evaluation_run_id": passing["id"],
@@ -544,12 +550,16 @@ class PlanService:
         if current["digest"] != row["release_digest"]:
             raise EvaluationRequired("This release has no passing evaluation.")
 
-    def _related(self, requested_by: UUID) -> str | None:
-        """Why the caller may not decide a plan `requested_by` requested (None: they may): the
-        same principal, a service account the requester owns, the owner of the requesting
-        service account, or a sibling service account (both owned by the same principal; an
-        unowned account has no siblings)."""
+    def _related(self, row: Mapping[str, Any]) -> str | None:
+        """Why the caller may not decide the plan `row` (None: they may): the same principal, a
+        service account the requester owns, the owner of the requesting service account, or a
+        sibling service account (both owned by the same principal; an unowned account has no
+        siblings); then an API key that is not its principal's, the creator of the plan's
+        requesting key, a service account that creator owns, or a caller whose key the requester
+        or the owner of the requesting service account created (a key without a creator relates
+        nobody). `shifde.delivery_approvals_guard()` refuses the same cases."""
         principal = self.sc.principal
+        requested_by: UUID = row["requested_by"]
         if requested_by == principal.principal_id:
             return "same_principal"
         session, tenant_id = self.sc.session, self.sc.tenant_id
@@ -567,6 +577,30 @@ class PlanService:
             return "requester_owned_by_decider"
         if decider_owner is not None and requester_owner == decider_owner:
             return "sibling_service_accounts"
+        requesting_creator: UUID | None = None
+        deciding_creator: UUID | None = None
+        if row["requested_api_key_id"] is not None:
+            key = repository.api_key_creator(
+                session, row["requested_api_key_id"], requested_by, tenant_id=tenant_id
+            )
+            if key is None:
+                return "api_key_unresolved"
+            requesting_creator = key["created_by"]
+        if principal.api_key_id is not None:
+            key = repository.api_key_creator(
+                session, principal.api_key_id, principal.principal_id, tenant_id=tenant_id
+            )
+            if key is None:
+                return "api_key_unresolved"
+            deciding_creator = key["created_by"]
+        if requesting_creator == principal.principal_id:
+            return "decider_created_requesting_key"
+        if decider_owner is not None and requesting_creator == decider_owner:
+            return "decider_owned_by_requesting_key_creator"
+        if deciding_creator == requested_by:
+            return "decider_key_created_by_requester"
+        if requester_owner is not None and deciding_creator == requester_owner:
+            return "decider_key_created_by_requester_owner"
         return None
 
     def approve(self, plan_id: UUID, body: s.PlanApprove) -> s.PlanOut:
@@ -584,7 +618,7 @@ class PlanService:
         session = self.sc.session
         row = self._get_row(plan_id, for_update=True)
         principal_id = self.sc.principal.principal_id
-        reason = self._related(row["requested_by"])
+        reason = self._related(row)
         if reason is not None:
             self._audit(
                 f"delivery.plan.{decision}", row, outcome="denied", decision=decision, reason=reason
@@ -619,6 +653,7 @@ class PlanService:
                         "plan_id": plan_id,
                         "plan_digest": row["digest"],
                         "decided_by": principal_id,
+                        "decided_api_key_id": self.sc.principal.api_key_id,
                         "decision": decision,
                         "note": note,
                     },

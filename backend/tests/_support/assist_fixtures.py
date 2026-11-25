@@ -11,6 +11,7 @@ the specialist call the given internal functions, and `tool_results` reads what 
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from typing import Any  # Any: JSON bodies and row values
@@ -203,3 +204,50 @@ def tool_results(owner: Session, run_id: str) -> list[tuple[str, str, Any]]:
     ).all()  # fmt: skip
     owner.rollback()
     return [(r[0], r[1], r[2]) for r in rows]
+
+
+# ------------------------------------------------- issue #384: runs that hold a request's run key
+def specialist_run(
+    client: TestClient, h: dict[str, str], agent_id: str, project: str, org: str = A
+) -> str:
+    """An ordinary run of `agent_id` in the project `main/<project>`, started by `h`; its id."""
+    r = client.post(
+        f"{org}/runs",
+        headers=h,
+        json={
+            "kind": "agent",
+            "agent_id": agent_id,
+            "workspace": "main",
+            "project": project,
+            "input": "an ordinary question",
+            "variables": {"assist_request_id": str(uuid7()), "context": ""},
+        },
+    )
+    assert r.status_code in (200, 201, 202), r.text
+    return str(r.json()["id"])
+
+
+def handover_hash(body: Any) -> str:  # Any: the RunCreate of the handover
+    """The `request_hash` that `RunService.create` computes for `body`."""
+    return hashlib.sha256(
+        json.dumps(body.model_dump(mode="json"), sort_keys=True).encode()
+    ).hexdigest()
+
+
+def take_key(owner: Session, run_id: str, request_id: str, **columns: Any) -> None:
+    """Give the run the key of the request's run (schema owner; no client can send it)."""
+    owner.rollback()
+    sets = ", ".join(f"{c} = :{c}" for c in ("idempotency_key", *columns))
+    owner.execute(
+        text(f"UPDATE shifde.runs SET {sets} WHERE id = :r"),
+        {"idempotency_key": f"assist:{request_id}", "r": run_id, **columns},
+    )
+    owner.commit()
+
+
+def run_rows(owner: Session) -> dict[str, dict[str, Any]]:
+    """Every run's row of every client, by id (schema owner)."""
+    owner.rollback()
+    found = owner.execute(text("SELECT * FROM shifde.runs")).mappings().all()
+    owner.rollback()
+    return {str(r["id"]): dict(r) for r in found}

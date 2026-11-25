@@ -134,6 +134,9 @@ def test_an_fde_accepts_a_plan_proposal_and_a_second_administrator_approves(
     fde_id = rows(owner_session, "SELECT id::text FROM shifde.users WHERE primary_email = :e",
                   e=FDE)[0][0]  # fmt: skip
     assert (pid, requested_by, status) == (plan_id, fde_id, "requested")
+    assert rows(owner_session, "SELECT requested_api_key_id FROM shifde.delivery_plans") == [
+        (None,)  # accepted on a session
+    ]
     assert out["decided_by"] == fde_id and out["decided_at"] is not None
     actions = rows(owner_session, "SELECT action, details FROM shifde.audit_events "
                                   "WHERE target_id = :p ORDER BY chain_seq", p=proposal)  # fmt: skip
