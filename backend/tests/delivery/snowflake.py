@@ -103,6 +103,7 @@ def snowflake_plan(
                 "application_key": application_key,
                 "display_name": "Sales app",
                 "requested_by": requester,
+                "requested_api_key_id": None,
                 "release_id": None,
                 "release_digest": None,
                 "evaluation_run_id": None,
