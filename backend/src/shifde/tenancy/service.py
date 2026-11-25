@@ -464,16 +464,23 @@ def _require_hiding(
     one of the caller grants is visible (403, not 404) even without `workspace:read`."""
     if ws.id in scope.pdp.ancestor_workspace_ids():
         scope.pdp.require(action, ref)
-    else:
+        return
+    try:
         scope.pdp.require(action, ref, hide_unless=hide_unless)
+    except NotFound as exc:  # hidden: the same answer as an unknown workspace slug (B-4093)
+        raise NotFound("workspace not found") from exc
+
+
+def _workspace_visible(scope: TenantScope, ws: Workspace) -> bool:
+    return (
+        scope.pdp.authorize("workspace:read", _ws_ref(scope, ws)).allowed
+        or ws.id in scope.pdp.ancestor_workspace_ids()  # P1 gap: ancestor of a grant
+    )
 
 
 def _readable_workspace(scope: TenantScope, slug: str) -> Workspace:
     ws = _get_workspace_row(scope, slug)
-    if (
-        not scope.pdp.authorize("workspace:read", _ws_ref(scope, ws)).allowed
-        and ws.id not in scope.pdp.ancestor_workspace_ids()  # P1 gap: ancestor of a grant
-    ):
+    if not _workspace_visible(scope, ws):
         raise NotFound("workspace not found")  # invisible == nonexistent (no oracle)
     return ws
 
@@ -700,10 +707,15 @@ def create_project(scope: TenantScope, ws_slug: str, body: ProjectCreate) -> Pro
 
 def update_project(scope: TenantScope, ws_slug: str, slug: str, body: ProjectPatch) -> ProjectOut:
     ws = _get_workspace_row(scope, ws_slug)
-    project = _get_project_row(scope, ws, slug)
-    scope.pdp.require(
-        "project:manage", _project_ref(scope, ws, project), hide_unless="project:read"
-    )
+    try:
+        project = _get_project_row(scope, ws, slug)
+        scope.pdp.require(
+            "project:manage", _project_ref(scope, ws, project), hide_unless="project:read"
+        )
+    except NotFound as exc:
+        if _workspace_visible(scope, ws):
+            raise
+        raise NotFound("workspace not found") from exc  # hidden, as in `_require_hiding`
     _assert_tenant_active(scope)
     _assert_workspace_active(ws)
     values = _patch_values(body, project.status)

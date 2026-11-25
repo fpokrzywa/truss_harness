@@ -49,12 +49,15 @@ MAIN, SECOND = f"{A}/workspaces/main", f"{A}/workspaces/zulu-w2"
 P1, P2 = f"{MAIN}/projects/sample", f"{MAIN}/projects/zulu-p2"
 FAR = f"{SECOND}/projects/zulu-far"
 NO_ORG = "/api/v1/orgs/no-such-org"
+# what `layout` names outside P1 (P1's own connection is `zulu-one`)
+HIDDEN_NAMES = ("zulu-p2", "zulu-two", "zulu-main", "zulu-w2", "zulu-far", "zulu-second")
 # the mask, not a missing key scope, is what refuses the writes and the organization-wide reads
 KEY_SCOPES = [
     *TOOL_SCOPES,
     "connection:read",
     "workspace:manage",
     "project:create",
+    "project:manage",
     "member:read",
     "tenant:admin",
 ]
@@ -274,7 +277,44 @@ def test_the_key_writes_neither_its_workspace_nor_another(
     assert c.post(f"{MAIN}/projects", headers=key, json=new).status_code == 403
     assert c.patch(SECOND, headers=key, json=change).status_code == 404
     assert c.post(f"{SECOND}/projects", headers=key, json=new).status_code == 404
+    # a hidden workspace answers as an unknown slug, whatever the write (issue #374, B-4093)
+    nope = f"{A}/workspaces/nope"
+    same_404(c.patch(SECOND, headers=key, json=change), c.patch(nope, headers=key, json=change))
+    same_404(
+        c.post(f"{SECOND}/projects", headers=key, json=new),
+        c.post(f"{nope}/projects", headers=key, json=new),
+    )
+    unknown = c.patch(f"{nope}/projects/nope", headers=key, json=change)
+    for hidden in (FAR, f"{SECOND}/projects/nope"):
+        same_404(c.patch(hidden, headers=key, json=change), unknown)
     assert state() == before
+
+
+def test_a_refused_write_on_a_hidden_workspace_is_still_recorded_as_denied(
+    key: Hdr, layout: Layout, owner_session: Session
+) -> None:
+    def denied(action: str, resource: UUID) -> list[tuple[Any, ...]]:
+        return rows(
+            owner_session,
+            "SELECT decision, reason_codes FROM shifde.policy_decisions "
+            "WHERE tenant_id = :t AND action = :a AND resource_id = :r",
+            t=layout.tenant,
+            a=action,
+            r=str(resource),
+        )
+
+    [(ws2, far)] = rows(
+        owner_session,
+        "SELECT w.id, p.id FROM shifde.workspaces w JOIN shifde.projects p "
+        "ON p.workspace_id = w.id WHERE w.tenant_id = :t AND w.slug = 'zulu-w2'",
+        t=layout.tenant,
+    )
+    assert denied("workspace:manage", ws2) == denied("project:manage", far) == []
+    change = {"name": "renamed", "row_version": 1}
+    for url in (SECOND, FAR):
+        assert key.client.patch(url, headers=key, json=change).status_code == 404
+    refused = [("deny", ["resource_scope"])]
+    assert denied("workspace:manage", ws2) == denied("project:manage", far) == refused
 
 
 # ------------------------------------------------------------------ dashboard
