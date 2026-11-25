@@ -1,31 +1,34 @@
-# Handoff — 2026-11-25, charter 7 factory run (lead session agt-trus-harness-00), context limit
+# Handoff — 2026-11-25, charter 7 factory run (lead session agt-trus-harness-2f), context limit
 
 Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` (newest progress entry and sub-projects table), then this file.
 
-**State:** cluster running. Merged this session: batch 9 (PR #426, `7518995`, gates 18/18 on `8f123809`, 8719 passed, 13 skipped, CI green on that head before the merge, main CI green on `7518995`): #416 (203), #410 (201), #394 (198), #398 (200), S-066 to S-068, B-4168. No migration, no hosted setup due. Job 194 round 2 gate PASS on `4b0d3d6`. No agent, builder, full gate or wait loop of the lead is running.
+**State:** cluster running. Merged this session: batch 10 (PR #429, `2dc5007`, head `e2a31f1`, gates 18/18, 8836 passed, 13 skipped in 1671 s, CI run 45672838202 green on that head before the merge): #415 (job 202), #425 (job 204), S-069, B-4171. No migration, no hosted setup due. Main CI on `2dc5007` not yet seen: look at it first. No agent, gate or wait loop of the lead is running.
 
 ## Rulings
-- Supervisor: **seth-supervisor-10** (took over 10:40). Next free ruling S-069 (branch supervisor/rulings-s069). Message the supervisor first. Never edit S-* rows. Any conflict other than DECISIONS.md goes to the supervisor as a diff. Poll CI with REST (`gh api repos/fpokrzywa/truss_harness/actions/runs?head_sha=...`): the GraphQL limit (5000/h, shared) was hit at 09:05.
-- S-059 to S-061, S-065: 194 then 193, one at a time, each: delta + every resolved conflict reviewed (code, security, isolation), the demos, own CI, full gates, own ruling. A failure of test_r1_round5 or tests/runtime/test_worker.py on any head goes to the supervisor before a merge.
-- 202: condition of B-4166 (every client reached in bounded time, one and two workers, both sweeps; two-worker alternation test fails on 961539c; or the shared lock dropped).
-- Merge rule: 18/18 and green CI of the exact head (`--match-head-commit`, merge lock), composition from the supervisor on the exact head; no rerun-and-merge on a red CI. autostart.ps1 shown as deleted: neither commit nor restore.
-- Reviewer briefs: say "tests take their environment through the documented test setup, do not open .devdata yourself" (201's isolation reviewer loaded a worktree's SHIFDE_TEST_* lines itself; disclosed, S-066).
-- #421 before any live Docker validation (SP8-11, #296).
+- Supervisor: **seth-supervisor-11** (took over 13:14). Next free ruling S-070 (for 194). Message the supervisor first. Never edit S-* rows. Any conflict other than DECISIONS.md goes to the supervisor as a diff. Poll CI with REST (`gh api repos/fpokrzywa/truss_harness/actions/runs?head_sha=...`).
+- S-059 to S-061, S-065: 194 then 193, one at a time, each with its own ruling. A failure of test_r1_round5 or tests/runtime/test_worker.py on any head goes to the supervisor before a merge.
+- Merge rule: 18/18 and green CI of the exact head (`--match-head-commit`, merge lock `python scripts/unit.py lock merge --unit <x>`), composition from the supervisor on the exact head; no rerun-and-merge on a red CI. autostart.ps1 shown as deleted: neither commit nor restore.
+- Reviewer briefs: say "tests take their environment through the documented test setup, do not open .devdata yourself".
+- #421 and #430 before any live validation (Docker, Palantir; SP8-11, #296).
 
 ## Exact next step
-1. `factory/bin/job queue`, ListAgents, message the supervisor.
-2. **194** (#292, PR #405, `4b0d3d6`, main 7518995 merged, CI green): at `review`, gate PASS, no reviewer started: reviewer-code (opus), reviewer-security (opus), both on the delta `3c4def8..4b0d3d6` with the conflict tables of build.md (`git show --remerge-diff 22dee85` and `4b0d3d6`), isolation review 2 on the same head and the S-060 questions, approver, then the supervisor's ruling. The demos passed at `387de96` (with the fixture commit after it) and were not rerun at `4b0d3d6`: rerun palantir, delivery and snowflake demos on the head. Disclosed: one setup error in tests/adapters/native/test_palantir.py, cause unknown, 155 passed in three logged reruns.
-3. **202** (#415, PR #418, `9579a2b`, CI green, at `gate`; builder completed, worktree clean and in sync): run the gate, reviewer-code (opus) with the one edited assertion of its own file (`test_a_holder_that_lost_the_lock_visits_no_further_client`), isolation review 2 (bounded reach, B-4166), approver. Disclosed: one setup error (Windows access denial on the suite lock file, tests/conftest.py:236) in a first checks.sh run, cause unknown, rerun passed.
-4. Batch 10 = `lead/batch-10` from origin/main: 202 when approved, then 194 when ruled (S-059: own ruling).
-5. **193** (#290, PR #404) after 194: `factory/bin/job feedback 290` with its lead-feedback-draft.md plus the additions of 194's feedback-1.md (items 6-9, with 193's own DECISIONS ids), new builder; it reuses 194's #406 mechanism and 195's `_recheck`/`authorize`.
-6. Then #421, #397, #406/#407 (close when 194 and 193 carry them; do not start separately), then #295, #296. Concurrency 8.
+1. `factory/bin/job queue`, ListAgents, message the supervisor, main CI on `2dc5007`.
+2. **194** (#292, PR #405, `56cb96c`, needs-human: approver ESCALATE by rule only; code, security, isolation review 3 APPROVED, gate PASS, CI green): branch `lead/batch-11` from origin/main, merge it (supervisor predicts DECISIONS.md as the only conflict; any other conflict hunk or source change needs a delta isolation review). Send the sync head. B-4163 wording only, as the three replacements in decision.md "For the human" item 2 give it (same or separate commit); leave the adapter docstring alone. No code change for findings 1-3 (they are #430, no factory label until 194 is merged). Full gates and green CI on exactly that head, demos on it: palantir, delivery, snowflake, docker, solution, release (send the last lines, gates, CI run, conflict files), then S-070, then the merge with the lead's B-4172 record row.
+3. **193** (#290, PR #404) after 194: `factory/bin/job feedback 290` with its lead-feedback-draft.md plus items 6-9 of 194's feedback-1.md with 193's own DECISIONS ids, plus isolation review 2 finding 4 of 194 (193 must name Fabric explicitly in `toolchain_digest` (runner.py:222) and `_details` (runner.py:1027-1036)); a new builder; it reuses 194's #406 mechanism and 195's `_recheck`.
+4. Then #421, #397, #406/#407 (close when 194 and 193 carry them; do not start separately), #430 (add the `factory` label after 194), then #295, #296. Concurrency 8.
 
 ## Jobs and issues
-- New: #425 (U+13441/U+13442 pass the Snowflake run-time character check; no factory label yet: add it when a slot is free), #419 (no label, needs a migration), #395 (owner's).
-- For #295: the targets screen shows blank cells for an unusable target row (194's #406): it needs a hint. Isolation review 1 of 198: INFO only left.
-- Next free lead decision id: **B-4169** (4163-4165 job 194, 4166 job 202, 4157, 4158 and 4167 unused, 4168 lead).
+- New: #430. #419 (no label, needs a migration), #395 (owner's). #425 and #415 closed by batch 10.
+- For #295: the targets screen shows blank cells for an unusable target row (194's #406): it needs a hint.
+- 194 review notes recorded in its job folder: rounds 2 and 3 (`isolation-review-2.md`, `-3.md`).
+- Next free lead decision id: **B-4172** (B-4170 unused).
+- Worktrees `.worktrees/batch-10`, `batch-10-merge` and databases `shifde_194_iso`, `shifde_194_iso3`, `shifde_202_iso2` left by reviewers may be removed by hand.
 
 ## New this session
+- Always `export PYTHONUTF8=1` before `factory/bin/gate` and `job`: without it a gate crashed on cp1252 and wrote no verdict.
+- Reading the handoff, charter, skills and STATUS costs about 70k of the 200k: start the big agents early and use `cut` on STATUS.md.
+
+## Earlier: learned by session agt-trus-harness-00
 - `job advance` from review with every review PASS goes only to approve: for extra tests, run the approver (tell it the facts, not the decision), needs-human, `job feedback`.
 - An isolation reviewer found what gate, code review and the supervisor's reading missed (202): run it on every worker or executor job.
 - A shell `cd` moved the session's directory to `.worktrees/batch-9` for good, and agents then started there: use `git -C` and absolute paths (`python /s/.../scripts/x.py` works).
