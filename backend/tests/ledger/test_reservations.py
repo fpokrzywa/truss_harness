@@ -142,6 +142,14 @@ def test_daily_since_is_the_day_of_the_rows_not_of_the_live_clock(
     assert used(budgeting.period_start("daily")) == 0  # the reported failure
     assert used(daily_since(s, tenant)) == 250
     assert daily_since(s, tenant) == datetime(2026, 3, 1, tzinfo=UTC)
+    # with a hold it is the hold's day, so a charge dated before it is not followed
+    reservations.reserve_invocation(s, tenant, [], 1, Decimal(0), None)
+    s.execute(
+        text("UPDATE shifde.budget_reservations SET created_at = :c WHERE tenant_id = :t"),
+        {"c": datetime(2026, 3, 2, 12, tzinfo=UTC), "t": tenant},
+    )
+    assert daily_since(s, tenant) == datetime(2026, 3, 2, tzinfo=UTC)
+    assert used(daily_since(s, tenant)) == 0
     s.rollback()
 
 
@@ -246,6 +254,7 @@ def test_settling_orphans_charges_a_marked_hold_once_and_releases_an_unmarked_on
     unmarked = reservations.reserve_step(
         s, tenant, run, "model:1:1", [budget], 50, Decimal(0), None
     )
+    since = daily_since(s, tenant)  # before the charge
     assert reservations.settle_orphaned(s, tenant, run) == 2
     assert reservations.settle_orphaned(s, tenant, run) == 0
     assert _hold(s, marked) == ("settled_unknown", 700, 700, Decimal("0.5"), True)
@@ -275,7 +284,6 @@ def test_settling_orphans_charges_a_marked_hold_once_and_releases_an_unmarked_on
     ]
     # spent once, as used, never also as held
     rule = {"id": budget, "scope_type": "tenant", "scope_id": tenant, "period": "daily"}
-    since = daily_since(s, tenant)
     assert budgeting.used_and_held(s, tenant, None, rule, metric="tokens", since=since) == (700, 0)
     # a late settle of the real answer changes nothing (settle matches `held` only)
     reservations.settle(s, tenant, marked, 3, Decimal(0))
@@ -338,6 +346,7 @@ def test_settling_one_unknown_invocation_uses_the_callers_attribution_once(
     # not marked yet: nothing to settle
     assert reservations.settle_unknown_invocation(s, tenant, hold, attribution) is False
     reservations.mark_provider_request(s, tenant, hold)
+    since = daily_since(s, tenant)  # before the charge
     assert reservations.settle_unknown_invocation(s, tenant, uuid7(), attribution) is False
     assert reservations.settle_unknown_invocation(s, tenant, hold, attribution) is True
     assert reservations.settle_unknown_invocation(s, tenant, hold, attribution) is False
@@ -364,7 +373,6 @@ def test_settling_one_unknown_invocation_uses_the_callers_attribution_once(
         )  # fmt: skip
     ]
     rule = {"id": budget, "scope_type": "tenant", "scope_id": tenant, "period": "daily"}
-    since = daily_since(s, tenant)
     assert budgeting.used_and_held(s, tenant, None, rule, metric="tokens", since=since) == (120, 0)
     s.rollback()
 
