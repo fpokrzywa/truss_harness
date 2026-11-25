@@ -11,6 +11,7 @@ import { useAppRequests } from '@/lib/appgen-hooks';
 import { normalizeDiscovery, type DiscoveredTable } from '@/lib/discovery';
 import { useCan } from '@/lib/hooks';
 import { useConnections, useLatestDiscovery } from '@/lib/integrate-hooks';
+import { platformLabel } from '@/lib/platforms';
 import { appRequestHref, connectionHref, connectionsHref } from '@/lib/scope';
 import { ModelSelect } from '../build/pickers';
 import { Tabs } from '../command/Tabs';
@@ -32,9 +33,33 @@ import { useOrgParam } from '../security/useOrg';
 const MAX_TABLES = 50;
 const MAX_BRIEF = 4000;
 
-/** Only an active, read-only Databricks connection can feed the generator (design SP5 4). */
+const PLATFORMS = ['databricks', 'snowflake'];
+
+/** Only an active, read-only connection of these platforms can feed the generator (SP6 7). */
 const eligible = (c: Connection) =>
-  c.adapter_key === 'databricks' && c.access_mode === 'read' && c.status === 'active';
+  PLATFORMS.includes(c.adapter_key) && c.access_mode === 'read' && c.status === 'active';
+
+const hasCode = (error: unknown, code: string): error is ApiError =>
+  error instanceof ApiError && error.code === code;
+
+/** Plain words for a 422 `table_name_unsupported`, naming the tables it refuses. */
+function tablesRefusal(error: unknown): string | undefined {
+  if (!hasCode(error, 'table_name_unsupported')) return undefined;
+  const names = error.fieldErrors
+    .filter((f) => f.loc.length > 2 && f.loc[0] === 'body' && f.loc[1] === 'tables')
+    .map((f) => String(f.loc.at(-1)));
+  const refused =
+    names.length > 0
+      ? `These tables cannot be used: ${names.join(', ')}.`
+      : 'A selected table cannot be used.';
+  return `${refused} A generated app can use a Snowflake table only when its database, schema and table names contain just letters, digits, _ and $, and do not start with a digit or $.`;
+}
+
+/** Plain words for a 422 `connection_platform_unsupported`. */
+const connectionRefusal = (error: unknown): string | undefined =>
+  hasCode(error, 'connection_platform_unsupported')
+    ? "This connection's platform cannot be used. Choose a Databricks or Snowflake connection."
+    : undefined;
 
 const tableName = (t: DiscoveredTable) =>
   [t.catalog, t.schema, t.name].filter((p) => p !== undefined && p !== '').join('.');
@@ -51,7 +76,7 @@ export function GenerateView() {
     <div className="space-y-6">
       <PageHeader
         title="Generate solution"
-        description="Describe an app over a project's Databricks tables: a model drafts its agent, tools, screens and evaluation cases, and you review and accept the draft as a solution."
+        description="Describe an app over a project's Databricks or Snowflake tables: a model drafts its agent, tools, screens and evaluation cases, and you review and accept the draft as a solution."
       />
       <ProjectScopePicker org={org} />
       {!chosen ? (
@@ -138,12 +163,13 @@ function NewRequestForm({ org, ws, proj }: Scope) {
     <QueryGate query={connections} noun="connections">
       {(data) => {
         const options = data.items.filter(eligible);
+        const connectionError = errors.connection ?? connectionRefusal(action.error);
         if (options.length === 0)
           return (
             <div className="card p-0">
               <EmptyState>
-                Generating a solution needs an active, read-only Databricks connection in this
-                project. Add one on the{' '}
+                Generating a solution needs an active, read-only Databricks or Snowflake connection
+                in this project. Add one on the{' '}
                 <Link className="text-blue-800 underline" href={connectionsHref(org, ws, proj)}>
                   Connections
                 </Link>{' '}
@@ -162,18 +188,21 @@ function NewRequestForm({ org, ws, proj }: Scope) {
               <SelectField
                 label="Connection"
                 value={connectionId}
+                disabled={action.busy}
                 onChange={(v) => {
                   setConnectionId(v);
                   setTables([]);
+                  action.reset();
                 }}
                 options={[
                   { value: '', label: 'Select...' },
-                  ...options.map((c) => ({ value: c.id, label: c.name })),
+                  ...options.map((c) => ({
+                    value: c.id,
+                    label: `${c.name} (${platformLabel(c.adapter_key)})`,
+                  })),
                 ]}
               />
-              {errors.connection && (
-                <p className="mt-1 text-sm text-red-700">{errors.connection}</p>
-              )}
+              {connectionError && <p className="mt-1 text-sm text-red-700">{connectionError}</p>}
             </div>
             {connectionId !== '' && (
               <TablePicker
@@ -182,7 +211,7 @@ function NewRequestForm({ org, ws, proj }: Scope) {
                 connectionId={connectionId}
                 selected={tables}
                 onChange={setTables}
-                error={errors.tables}
+                error={errors.tables ?? tablesRefusal(action.error)}
               />
             )}
             <TextField
