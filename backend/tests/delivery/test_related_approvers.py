@@ -458,7 +458,19 @@ def test_an_unrelated_decision_still_needs_the_sealed_digest_in_time(
     key = lab.key(decider, other).id
     requested = approvals._request(lab.client, lab.world, people.owner_a, lab.owner_db)["id"]
     expired = _expired_plan(lab.owner_db, lab.world, lab.sealed.plan)
-    for plan, digest in ((plan_id, "e" * 64), (requested, None), (expired, None)):
+    closed = lab.plan(uuid7())  # its digest and its window, but no longer sealed
+    with lab.owner_db.session() as o:
+        o.execute(
+            text("UPDATE shifde.delivery_plans SET status = 'expired' WHERE id = :p"),
+            {"p": closed},
+        )
+        o.commit()
+    for plan, digest in (
+        (plan_id, "e" * 64),
+        (requested, None),
+        (expired, None),
+        (closed, None),
+    ):
         with pytest.raises(DBAPIError) as exc:
             lab.insert(plan, decider, key, digest=digest)
         assert _state(exc) == ("23514", NOT_SEALED)
