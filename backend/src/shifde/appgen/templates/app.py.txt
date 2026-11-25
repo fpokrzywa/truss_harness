@@ -1,6 +1,7 @@
 """The generated Databricks App: the agent at /api/ask, its tools at /api/tools/<name>, the React
 bundle at / and the health checks at /health (deep with ?deep=1). Configuration is the files of
-./config; the warehouse and the serving endpoint come from the app resources."""
+./config; the warehouse and the serving endpoint come from the app resources, and the agent loop
+reaches them through backend_databricks."""
 
 import json
 import os
@@ -11,6 +12,7 @@ from databricks.sdk.service.sql import ExecuteStatementRequestOnWaitTimeout, Sta
 from flask import Flask, jsonify, request, send_from_directory
 
 import agent_loop
+import backend_databricks
 
 HERE = Path(__file__).resolve().parent
 STATIC = HERE / "static"
@@ -54,6 +56,8 @@ def create_app(workspace_client=None):
     client = workspace_client or WorkspaceClient()
     warehouse_id = os.environ["DATABRICKS_WAREHOUSE_ID"]
     endpoint = os.environ["SERVING_ENDPOINT"]
+    call_model = backend_databricks.call_model(client, endpoint)
+    run_sql = backend_databricks.run_sql(client, warehouse_id)
     config = agent_loop.load_config(CONFIG)
     agent = config["agent"]
     app = Flask(__name__, static_folder=None)
@@ -82,7 +86,7 @@ def create_app(workspace_client=None):
         if not isinstance(message, str) or not 1 <= len(message) <= MAX_MESSAGE:
             return jsonify(error="invalid_request"), 400
         try:
-            answer = agent_loop.ask(client, config, warehouse_id, endpoint, message)
+            answer = agent_loop.ask(call_model, run_sql, config, message)
         except agent_loop.Stop as stop:
             return jsonify(error=stop.code), 422
         except agent_loop.UpstreamFailed:
@@ -106,7 +110,7 @@ def create_app(workspace_client=None):
         if not isinstance(params, dict):
             return jsonify(error="invalid_tool_call"), 422
         try:
-            return jsonify(agent_loop.run_tool(client, warehouse_id, found, params)), 200
+            return jsonify(agent_loop.run_tool(run_sql, found, params)), 200
         except agent_loop.Stop as stop:
             return jsonify(error=stop.code), 422
         except agent_loop.UpstreamFailed:

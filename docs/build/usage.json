@@ -1,36 +1,36 @@
 {
-  "generated": "2026-11-24T18:47:29+00:00",
+  "generated": "2026-11-25T00:16:26+00:00",
   "note": "est_usd is an estimate at list price, not a bill",
   "totals": {
     "all": "all",
-    "input": 81456,
-    "output": 26109579,
-    "cache_write_5m": 160866344,
-    "cache_write_1h": 21231713,
-    "cache_read": 4001993299,
-    "requests": 39823,
-    "est_usd": 2164.121
+    "input": 83034,
+    "output": 26953523,
+    "cache_write_5m": 169841205,
+    "cache_write_1h": 22485164,
+    "cache_read": 4087052607,
+    "requests": 40594,
+    "est_usd": 2252.4163
   },
   "by_model": [
     {
       "model": "claude-opus-5-5",
-      "input": 71206,
-      "output": 23047024,
-      "cache_write_5m": 132332798,
-      "cache_write_1h": 20459191,
-      "cache_read": 3687537034,
-      "requests": 34855,
-      "est_usd": 2024.0702
+      "input": 72718,
+      "output": 23882154,
+      "cache_write_5m": 141158654,
+      "cache_write_1h": 21712642,
+      "cache_read": 3772167725,
+      "requests": 35593,
+      "est_usd": 2111.8619
     },
     {
       "model": "claude-sonnet-5-5",
-      "input": 9484,
-      "output": 2367384,
-      "cache_write_5m": 26528685,
+      "input": 9550,
+      "output": 2376198,
+      "cache_write_5m": 26677690,
       "cache_write_1h": 354601,
-      "cache_read": 284858174,
-      "requests": 4587,
-      "est_usd": 119.9187
+      "cache_read": 285286791,
+      "requests": 4620,
+      "est_usd": 120.4224
     },
     {
       "model": "claude-fable-5-2",
@@ -56,23 +56,23 @@
   "by_agent_type": [
     {
       "agent_type": "builder",
-      "input": 22462,
-      "output": 8417077,
-      "cache_write_5m": 67788813,
+      "input": 22910,
+      "output": 8829335,
+      "cache_write_5m": 73345300,
       "cache_write_1h": 0,
-      "cache_read": 1221627426,
-      "requests": 11021,
-      "est_usd": 751.7009
+      "cache_read": 1248605682,
+      "requests": 11240,
+      "est_usd": 793.126
     },
     {
       "agent_type": "lead",
-      "input": 20320,
-      "output": 4277232,
+      "input": 20932,
+      "output": 4456312,
       "cache_write_5m": 0,
-      "cache_write_1h": 21231713,
-      "cache_read": 1466245864,
-      "requests": 9803,
-      "est_usd": 552.296
+      "cache_write_1h": 22485164,
+      "cache_read": 1514052766,
+      "requests": 10100,
+      "est_usd": 575.469
     },
     {
       "agent_type": "module-builder-critical",
@@ -86,23 +86,23 @@
     },
     {
       "agent_type": "spec-writer",
-      "input": 6582,
-      "output": 2780000,
-      "cache_write_5m": 12477102,
+      "input": 6616,
+      "output": 2813109,
+      "cache_write_5m": 12712082,
       "cache_write_1h": 0,
-      "cache_read": 161113467,
-      "requests": 3266,
-      "est_usd": 150.2345
+      "cache_read": 162140866,
+      "requests": 3283,
+      "est_usd": 152.2772
     },
     {
       "agent_type": "isolation-reviewer",
-      "input": 5060,
-      "output": 1839991,
-      "cache_write_5m": 12551945,
+      "input": 5154,
+      "output": 1907500,
+      "cache_write_5m": 13223436,
       "cache_write_1h": 0,
-      "cache_read": 128522070,
-      "requests": 2504,
-      "est_usd": 125.2842
+      "cache_read": 130612051,
+      "requests": 2549,
+      "est_usd": 130.4102
     },
     {
       "agent_type": "module-builder",
@@ -126,53 +126,53 @@
     },
     {
       "agent_type": "reviewer-code",
-      "input": 3088,
-      "output": 729056,
-      "cache_write_5m": 8869271,
+      "input": 3202,
+      "output": 775614,
+      "cache_write_5m": 9598531,
       "cache_write_1h": 0,
-      "cache_read": 45301167,
-      "requests": 1504,
-      "est_usd": 54.4714
+      "cache_read": 47594048,
+      "requests": 1559,
+      "est_usd": 59.5079
     },
     {
       "agent_type": "approver",
-      "input": 2326,
-      "output": 580737,
-      "cache_write_5m": 6331963,
+      "input": 2448,
+      "output": 638242,
+      "cache_write_5m": 7317001,
       "cache_write_1h": 0,
-      "cache_read": 27251463,
-      "requests": 1161,
-      "est_usd": 48.7342
+      "cache_read": 29726459,
+      "requests": 1222,
+      "est_usd": 55.3049
     },
     {
       "agent_type": "reviewer-security",
-      "input": 2264,
-      "output": 525727,
-      "cache_write_5m": 6007366,
+      "input": 2328,
+      "output": 552412,
+      "cache_write_5m": 6486269,
       "cache_write_1h": 0,
-      "cache_read": 30080081,
-      "requests": 1125,
-      "est_usd": 46.5764
+      "cache_read": 31471737,
+      "requests": 1157,
+      "est_usd": 49.7832
     },
     {
       "agent_type": "intake",
-      "input": 2080,
-      "output": 381571,
-      "cache_write_5m": 3177976,
+      "input": 2106,
+      "output": 385817,
+      "cache_write_5m": 3232342,
       "cache_write_1h": 0,
-      "cache_read": 12092716,
-      "requests": 1039,
-      "est_usd": 12.9741
+      "cache_read": 12248439,
+      "requests": 1052,
+      "est_usd": 13.1681
     },
     {
       "agent_type": "reviewer-ux",
-      "input": 420,
-      "output": 77980,
-      "cache_write_5m": 961689,
+      "input": 444,
+      "output": 90406,
+      "cache_write_5m": 1131386,
       "cache_write_1h": 0,
-      "cache_read": 4976490,
-      "requests": 202,
-      "est_usd": 6.8981
+      "cache_read": 5545110,
+      "requests": 214,
+      "est_usd": 8.109
     },
     {
       "agent_type": "frontend-builder",
@@ -196,23 +196,23 @@
     },
     {
       "agent_type": "reviewer-ui",
-      "input": 298,
-      "output": 59076,
-      "cache_write_5m": 646396,
+      "input": 318,
+      "output": 61761,
+      "cache_write_5m": 686364,
       "cache_write_1h": 0,
-      "cache_read": 2102655,
-      "requests": 140,
-      "est_usd": 1.4536
+      "cache_read": 2248909,
+      "requests": 150,
+      "est_usd": 1.5951
     },
     {
       "agent_type": "verifier",
-      "input": 92,
-      "output": 14883,
-      "cache_write_5m": 323665,
+      "input": 112,
+      "output": 16766,
+      "cache_write_5m": 378336,
       "cache_write_1h": 0,
-      "cache_read": 2119024,
-      "requests": 45,
-      "est_usd": 1.1701
+      "cache_read": 2245664,
+      "requests": 55,
+      "est_usd": 1.3383
     },
     {
       "agent_type": "claude-code-guide",
@@ -258,13 +258,13 @@
     },
     {
       "unit": "lead",
-      "input": 20320,
-      "output": 4277232,
+      "input": 20932,
+      "output": 4456312,
       "cache_write_5m": 0,
-      "cache_write_1h": 21231713,
-      "cache_read": 1466245864,
-      "requests": 9803,
-      "est_usd": 552.296
+      "cache_write_1h": 22485164,
+      "cache_read": 1514052766,
+      "requests": 10100,
+      "est_usd": 575.469
     },
     {
       "unit": "runtime",
@@ -437,6 +437,16 @@
       "est_usd": 16.4358
     },
     {
+      "unit": "172",
+      "input": 246,
+      "output": 127712,
+      "cache_write_5m": 2419669,
+      "cache_write_1h": 0,
+      "cache_read": 8425095,
+      "requests": 120,
+      "est_usd": 16.3386
+    },
+    {
       "unit": "sp3-5",
       "input": 332,
       "output": 124019,
@@ -475,6 +485,16 @@
       "cache_read": 29068723,
       "requests": 272,
       "est_usd": 14.0324
+    },
+    {
+      "unit": "178",
+      "input": 144,
+      "output": 95672,
+      "cache_write_5m": 2147200,
+      "cache_write_1h": 0,
+      "cache_read": 5619287,
+      "requests": 70,
+      "est_usd": 13.7188
     },
     {
       "unit": "f-03",
@@ -545,6 +565,16 @@
       "cache_read": 20731166,
       "requests": 161,
       "est_usd": 10.6246
+    },
+    {
+      "unit": "174",
+      "input": 146,
+      "output": 160585,
+      "cache_write_5m": 1240193,
+      "cache_write_1h": 0,
+      "cache_read": 6104359,
+      "requests": 72,
+      "est_usd": 10.4927
     },
     {
       "unit": "SP2-5",
@@ -627,6 +657,16 @@
       "est_usd": 8.7882
     },
     {
+      "unit": "175",
+      "input": 126,
+      "output": 98798,
+      "cache_write_5m": 989469,
+      "cache_write_1h": 0,
+      "cache_read": 8997286,
+      "requests": 62,
+      "est_usd": 8.7233
+    },
+    {
       "unit": "SP2-7",
       "input": 254,
       "output": 130118,
@@ -655,6 +695,16 @@
       "cache_read": 8753219,
       "requests": 115,
       "est_usd": 8.0761
+    },
+    {
+      "unit": "176",
+      "input": 90,
+      "output": 69008,
+      "cache_write_5m": 1097121,
+      "cache_write_1h": 0,
+      "cache_read": 3136032,
+      "requests": 45,
+      "est_usd": 7.4933
     },
     {
       "unit": "097",
@@ -817,6 +867,16 @@
       "est_usd": 4.6201
     },
     {
+      "unit": "179",
+      "input": 104,
+      "output": 70214,
+      "cache_write_5m": 518578,
+      "cache_write_1h": 0,
+      "cache_read": 3022520,
+      "requests": 50,
+      "est_usd": 4.5385
+    },
+    {
       "unit": "065",
       "input": 164,
       "output": 69930,
@@ -945,6 +1005,16 @@
       "cache_read": 3307558,
       "requests": 92,
       "est_usd": 3.8549
+    },
+    {
+      "unit": "173",
+      "input": 100,
+      "output": 41281,
+      "cache_write_5m": 541487,
+      "cache_write_1h": 0,
+      "cache_read": 1882321,
+      "requests": 50,
+      "est_usd": 3.7417
     },
     {
       "unit": "142",
@@ -1627,6 +1697,16 @@
       "est_usd": 0.0944
     },
     {
+      "unit": "177",
+      "input": 10,
+      "output": 1594,
+      "cache_write_5m": 21144,
+      "cache_write_1h": 0,
+      "cache_read": 65506,
+      "requests": 5,
+      "est_usd": 0.0754
+    },
+    {
       "unit": "173-sp8-1-kinds-claims",
       "input": 10,
       "output": 2177,
@@ -1690,23 +1770,23 @@
   "by_sub_project": [
     {
       "sub_project": "sp1",
-      "input": 61136,
-      "output": 21832347,
-      "cache_write_5m": 160866344,
+      "input": 62102,
+      "output": 22497211,
+      "cache_write_5m": 169841205,
       "cache_write_1h": 0,
-      "cache_read": 2535747435,
-      "requests": 30020,
-      "est_usd": 1611.825
+      "cache_read": 2572999841,
+      "requests": 30494,
+      "est_usd": 1676.9473
     },
     {
       "sub_project": "lead",
-      "input": 20320,
-      "output": 4277232,
+      "input": 20932,
+      "output": 4456312,
       "cache_write_5m": 0,
-      "cache_write_1h": 21231713,
-      "cache_read": 1466245864,
-      "requests": 9803,
-      "est_usd": 552.296
+      "cache_write_1h": 22485164,
+      "cache_read": 1514052766,
+      "requests": 10100,
+      "est_usd": 575.469
     }
   ],
   "by_day": [
@@ -1721,6 +1801,16 @@
       "est_usd": 464.4912
     },
     {
+      "day": "2026-11-24",
+      "input": 9608,
+      "output": 3403104,
+      "cache_write_5m": 27066755,
+      "cache_write_1h": 2828172,
+      "cache_read": 483700475,
+      "requests": 4709,
+      "est_usd": 314.1657
+    },
+    {
       "day": "2026-11-22",
       "input": 12170,
       "output": 3286528,
@@ -1729,16 +1819,6 @@
       "cache_read": 507941641,
       "requests": 5963,
       "est_usd": 272.2356
-    },
-    {
-      "day": "2026-11-24",
-      "input": 8082,
-      "output": 2572688,
-      "cache_write_5m": 18093530,
-      "cache_write_1h": 1610036,
-      "cache_read": 403122518,
-      "requests": 3964,
-      "est_usd": 227.3281
     },
     {
       "day": "2026-11-21",
@@ -1829,6 +1909,16 @@
       "cache_read": 97275410,
       "requests": 734,
       "est_usd": 64.2802
+    },
+    {
+      "day": "2026-11-25",
+      "input": 52,
+      "output": 13528,
+      "cache_write_5m": 1636,
+      "cache_write_1h": 35315,
+      "cache_read": 4481351,
+      "requests": 26,
+      "est_usd": 1.4577
     }
   ],
   "rounds_per_unit": [
@@ -2544,6 +2634,15 @@
       "other": 4
     },
     {
+      "unit": "172",
+      "build": 2,
+      "verify": 0,
+      "fix": 0,
+      "review": 4,
+      "inventory": 0,
+      "other": 4
+    },
+    {
       "unit": "172-sp6-5-appgen-render",
       "build": 0,
       "verify": 0,
@@ -2553,6 +2652,15 @@
       "other": 1
     },
     {
+      "unit": "173",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 2,
+      "inventory": 0,
+      "other": 4
+    },
+    {
       "unit": "173-sp8-1-kinds-claims",
       "build": 0,
       "verify": 0,
@@ -2560,6 +2668,60 @@
       "review": 0,
       "inventory": 0,
       "other": 1
+    },
+    {
+      "unit": "174",
+      "build": 2,
+      "verify": 0,
+      "fix": 0,
+      "review": 6,
+      "inventory": 0,
+      "other": 1
+    },
+    {
+      "unit": "175",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 2,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "176",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 2,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "177",
+      "build": 0,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 1
+    },
+    {
+      "unit": "178",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 1,
+      "inventory": 0,
+      "other": 4
+    },
+    {
+      "unit": "179",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 1,
+      "inventory": 0,
+      "other": 4
     },
     {
       "unit": "SP2-5",

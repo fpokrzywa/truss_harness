@@ -3,7 +3,9 @@ the exact file set, deterministic bytes and archive digest, the generator-versio
 `release.json` as `packaging.canonical`, `databricks.yml` as SP2's managed bundle, the committed
 lock and web bundle byte for byte, no SETH origin or credential pattern and no secret-scan finding,
 the 5 MB cap for sample and maximal inputs, and the R32 pins (the dev-group flask and
-databricks-sdk equal `templates/requirements.in`, and neither is a runtime dependency)."""
+databricks-sdk equal `templates/requirements.in`, and neither is a runtime dependency). SP6-5: the
+render dispatches on `target_kind` (a missing or unknown kind is refused), the split service
+carries `app/backend_databricks.py`, and a golden digest pins the Databricks render."""
 
 from __future__ import annotations
 
@@ -43,6 +45,7 @@ FIXED_KEYS = {
     "app/app.yaml",
     "app/app.py",
     "app/agent_loop.py",
+    "app/backend_databricks.py",
     "app/requirements.txt",
     "app/config/agent.json",
     "app/config/tools.json",
@@ -50,6 +53,8 @@ FIXED_KEYS = {
     "app/config/limits.json",
     "release.json",
 }
+# the post-split Databricks render of the SP5 fixture, static files excluded (DECISIONS B-3999)
+GOLDEN_DATABRICKS = "e6ec8d765ef3b88a8d566720605da502a1d908cb2c44029c51a779044ba6fe13"
 # a SETH origin or credential: the API prefix, SETH's settings, test hosts, key prefixes
 FORBIDDEN = [
     re.compile(re.escape(p))
@@ -79,6 +84,22 @@ def test_two_renders_give_equal_files_and_archive_bytes() -> None:
     assert render(SAMPLE_MANIFEST, SAMPLE_DIGEST, Resolved.model_validate(SAMPLE_RESOLVED)) == first
 
 
+def test_the_databricks_render_of_the_sp5_fixture_is_pinned() -> None:
+    """Golden digest (Call S6-B): the sha256 of the sorted file names and contents of the Databricks
+    render of `SAMPLE_MANIFEST`/`SAMPLE_RESOLVED`, the `app/static/` entries left out (the web
+    bundle is pinned byte for byte by the copy test and its `BUILD_DIGEST`). The files are hashed,
+    not the zip, whose bytes depend on the platform. Any change to the Databricks app's templates,
+    config files or `release.json` changes it; change this constant only with a logged decision in
+    `docs/build/DECISIONS.md`."""
+    rendered = {k: v for k, v in _render().items() if not k.startswith("app/static/")}
+    assert set(rendered) == FIXED_KEYS
+    golden = hashlib.sha256()
+    for name, content in sorted(rendered.items()):
+        for part in (name.encode("utf-8"), content):  # each part after its length
+            golden.update(len(part).to_bytes(8, "big") + part)
+    assert golden.hexdigest() == GOLDEN_DATABRICKS
+
+
 def test_the_rendered_keys_are_exactly_the_app_files() -> None:
     rendered = _render()
     assert set(rendered) == FIXED_KEYS | set(_web_files())
@@ -93,8 +114,19 @@ def test_the_rendered_keys_are_exactly_the_app_files() -> None:
         {**SAMPLE_MANIFEST, "app": {}},
         {**SAMPLE_MANIFEST, "app": {"generator_version": "shifde.appgen/0.9"}},
         {**SAMPLE_MANIFEST, "app": "shifde.appgen/1.0"},
+        {k: v for k, v in SAMPLE_MANIFEST.items() if k != "target_kind"},
+        {**SAMPLE_MANIFEST, "target_kind": "fabric.notebook/v1"},
+        {**SAMPLE_MANIFEST, "app": {"generator_version": "shifde.appgen.snowflake/1.0"}},
     ],
-    ids=["v1-no-app", "no-version", "other-version", "not-an-object"],
+    ids=[
+        "v1-no-app",
+        "no-version",
+        "other-version",
+        "not-an-object",
+        "no-target-kind",
+        "unknown-target-kind",
+        "snowflake-version",
+    ],
 )
 def test_another_generator_version_is_refused(manifest: dict[str, Any]) -> None:
     with pytest.raises(GeneratorVersionUnsupported) as caught:
@@ -119,6 +151,10 @@ def test_the_lock_service_and_web_bundle_are_copied_byte_for_byte() -> None:
     assert rendered["app/requirements.txt"] == TEMPLATES.joinpath("requirements.txt").read_bytes()
     assert rendered["app/app.py"] == TEMPLATES.joinpath("app.py.txt").read_bytes()
     assert rendered["app/agent_loop.py"] == TEMPLATES.joinpath("agent_loop.py.txt").read_bytes()
+    assert (
+        rendered["app/backend_databricks.py"]
+        == TEMPLATES.joinpath("backend_databricks.py.txt").read_bytes()
+    )
     assert rendered["app/app.yaml"] == TEMPLATES.joinpath("app.yaml.txt").read_bytes()
     assert {k: v for k, v in rendered.items() if k.startswith("app/static/")} == _web_files()
 

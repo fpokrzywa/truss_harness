@@ -19,9 +19,12 @@ V1_TOOLS: tuple[str, ...] = (
     "get_release",
     "list_deployments",
     "get_deployment",
+    "board_get",
+    "assist_ask",
+    "assist_get",
 )
-# `allowed_tools` NULL: every v1 tool except the one that spends (design 10 item 14)
-DEFAULT_TOOLS: tuple[str, ...] = tuple(t for t in V1_TOOLS if t != "start_run")
+# `allowed_tools` NULL: every v1 tool except the two that spend (design 10 item 14)
+DEFAULT_TOOLS: tuple[str, ...] = tuple(t for t in V1_TOOLS if t not in ("start_run", "assist_ask"))
 ToolName = Literal[
     "whoami",
     "list_projects",
@@ -32,6 +35,9 @@ ToolName = Literal[
     "get_release",
     "list_deployments",
     "get_deployment",
+    "board_get",
+    "assist_ask",
+    "assist_get",
 ]
 
 
@@ -50,7 +56,7 @@ class McpSettingsOut(BaseModel):
 
 class McpSettingsPut(BaseModel):
     """`PUT .../mcp/settings`: the whole settings document. `allowed_tools` null is the default
-    set (every v1 tool except `start_run`), an empty list allows no tool."""
+    set (every v1 tool except `start_run` and `assist_ask`), an empty list allows no tool."""
 
     model_config = ConfigDict(extra="forbid")
     enabled: bool

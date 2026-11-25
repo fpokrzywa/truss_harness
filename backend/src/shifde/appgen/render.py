@@ -1,18 +1,27 @@
-"""The deterministic Databricks App source of a sealed release (SP5 design 6.3).
+"""The deterministic app source of a sealed release (SP5 design 6.3, SP6 design 3 and 4).
 
 `render(manifest, release_digest, resolved) -> dict[str, bytes]` is pure: no clock, randomness,
 environment, network or database, and it reads only the package data under
-`shifde.appgen/templates` (the "appgen.render is pure" import contract). It refuses a manifest of
-another generator version with `GeneratorVersionUnsupported`, and renders the app bundle: the
-managed `databricks.yml`, `app/app.yaml`, the generated service (`app/app.py`,
-`app/agent_loop.py`) and its hashed lock, the four config files, the committed React bundle under
-`app/static/` and `release.json`. `Resolved` lives here, not in `appgen.schemas` (which re-exports
-it), because `appgen.schemas` imports `evaluation` and `packaging`, which render may not reach.
+`shifde.appgen/templates` (the "appgen.render is pure" import contract). It dispatches on the
+manifest's `target_kind`: `GENERATOR_VERSIONS` maps each kind to the generator version its
+release must carry in `app.generator_version` (`generator_version_for`), and a missing or unknown
+kind or another version is refused with `GeneratorVersionUnsupported`. `GENERATOR_VERSION` is the
+Databricks alias. Every version matches `GENERATOR_VERSION_PATTERN`,
+`shifde.appgen(.<kind>)?/<major>.<minor>`.
+
+`databricks.app/v1` renders the Databricks App bundle: the managed `databricks.yml`,
+`app/app.yaml`, the generated service (`app/app.py`, the platform-neutral `app/agent_loop.py` and
+`app/backend_databricks.py`) and its hashed lock, the four config files, the committed React
+bundle under `app/static/` and `release.json`. `snowflake.native-app/v1` renders the Native App
+package of `appgen.render_snowflake`. `Resolved` lives here, not in `appgen.schemas` (which
+re-exports it), because `appgen.schemas` imports `evaluation` and `packaging`, which render may
+not reach.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from importlib.resources import files
 from importlib.resources.abc import Traversable
@@ -21,9 +30,20 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
+from shifde.appgen import render_snowflake
 from shifde.core.errors import AppError
 
 GENERATOR_VERSION = "shifde.appgen/1.0"
+DATABRICKS_KIND = "databricks.app/v1"
+# the generator version a `/2` release of each target kind carries (SP6 design section 4)
+GENERATOR_VERSIONS = {
+    DATABRICKS_KIND: GENERATOR_VERSION,
+    render_snowflake.TARGET_KIND: render_snowflake.GENERATOR_VERSION,
+}
+# `shifde.appgen(.<kind>)?/<major>.<minor>`: a lowercase kind segment, integer major and minor
+GENERATOR_VERSION_PATTERN = re.compile(
+    r"\Ashifde\.appgen(\.[a-z][a-z0-9]*)?/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z"
+)
 
 # yaml.safe_dump(source_bundle(DatabricksApplicationSpec()), sort_keys=False) of SP2's template
 DATABRICKS_YML = b"""bundle:
@@ -96,6 +116,14 @@ class Resolved(BaseModel):
     screens: list[dict[str, Any]]
 
 
+def generator_version_for(target_kind: str) -> str:
+    """The generator version of `target_kind`; `GeneratorVersionUnsupported` for an unknown kind."""
+    version = GENERATOR_VERSIONS.get(target_kind)
+    if version is None:
+        raise GeneratorVersionUnsupported("no app generator renders this target kind")
+    return version
+
+
 def _json(value: Any) -> bytes:  # Any: a JSON value
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
@@ -117,12 +145,20 @@ def render(
     manifest: Mapping[str, Any], release_digest: str, resolved: Resolved | Mapping[str, Any]
 ) -> dict[str, bytes]:  # Any: the release manifest
     """The app source files of a `/2` release, keyed by relative POSIX path."""
+    kind = manifest.get("target_kind")
     app = manifest.get("app")
-    if not isinstance(app, Mapping) or app.get("generator_version") != GENERATOR_VERSION:
+    if (
+        not isinstance(kind, str)
+        or kind not in GENERATOR_VERSIONS
+        or not isinstance(app, Mapping)
+        or app.get("generator_version") != GENERATOR_VERSIONS[kind]
+    ):
         raise GeneratorVersionUnsupported(
             "the release was sealed for another app generator version; seal it again"
         )
     spec = resolved if isinstance(resolved, Resolved) else Resolved.model_validate(resolved)
+    if kind == render_snowflake.TARGET_KIND:
+        return render_snowflake.render_snowflake(manifest, release_digest, spec)
     templates = files("shifde.appgen").joinpath("templates")
     tables = sorted(
         {
@@ -156,6 +192,7 @@ def render(
         "app/app.yaml": templates.joinpath("app.yaml.txt").read_bytes(),
         "app/app.py": templates.joinpath("app.py.txt").read_bytes(),
         "app/agent_loop.py": templates.joinpath("agent_loop.py.txt").read_bytes(),
+        "app/backend_databricks.py": templates.joinpath("backend_databricks.py.txt").read_bytes(),
         "app/requirements.txt": templates.joinpath("requirements.txt").read_bytes(),
         "app/config/agent.json": _json(agent),
         "app/config/tools.json": _json(tools),

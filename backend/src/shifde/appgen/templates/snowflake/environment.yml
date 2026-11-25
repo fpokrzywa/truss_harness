@@ -1,0 +1,7 @@
+name: shifde_native_app
+channels:
+  - snowflake
+dependencies:
+  - python=3.11
+  - streamlit=1.52.2
+  - snowflake-snowpark-python=1.55.0

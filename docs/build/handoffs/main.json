@@ -1,8 +1,8 @@
 {
-  "session_id": "b10341d0-d311-4831-ada9-844f4835af2a",
-  "head_sha": "7cdce5d023cd3aa42e7e357cb9b7c69464ad0ca6",
+  "session_id": "3899de12-0fee-490d-94f5-1964121b9d2a",
+  "head_sha": "da6dbf80582aecb73763496e2f598d224bcded2c",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "Per docs/build/HANDOFF.md: job queue; approvers for 178 (#361, goes first) and 172; 175-merge gates (S-042); then 174, 176, 173 after 178 is on main",
-  "written_at": "2026-11-24T22:48:41Z"
+  "next_step": "Per docs/build/HANDOFF.md: job queue; sync 179 (#363, PR #365), green CI, job merge; then 176 per S-041, 173 (needs S-044), 177",
+  "written_at": "2026-11-25T00:17:27Z"
 }
