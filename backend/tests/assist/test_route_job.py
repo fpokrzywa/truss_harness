@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 from typing import Any  # Any: JSON bodies and row values
 from uuid import UUID
 
@@ -29,8 +30,11 @@ from shifde.adapters.model_providers import FakeProvider
 from shifde.assist import service as assist
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
+from shifde.core.settings import Settings
 from shifde.ledger import reservations
 from shifde.models_admin.repository import SHI_PROVIDER_ID
+from shifde.models_admin.service import ModelService
+from shifde.runtime.worker import Worker, _Job
 from tests._support.assist_fixtures import (
     PICKS_COST,
     PICKS_DEPLOYMENT,
@@ -70,6 +74,7 @@ PERMISSIONS = [
     "assist:request:write",
 ]
 PLATFORM_ADMIN = "platform@shifde.local"
+JOB_SECRET = "ocelot-tapir-5512"  # a marker of the request text, searched in the log
 
 
 @pytest.fixture
@@ -466,3 +471,54 @@ def test_the_api_handover_and_the_recovery_job_racing_make_one_run(
     actions = [a for a, _ in audit_of(owner_session, out["id"])]
     assert actions.count("assist.request.routed") == 1
     assert "assist.request.failed" not in actions
+
+
+def test_the_workers_error_log_of_a_route_job_holds_no_request_text(
+    admin: Hdr,
+    model_id: str,
+    owner_session: Session,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    c = admin.client
+    request = sent(c, admin, {"text": f"tell me a joke {JOB_SECRET}"}, 202)
+    job = UUID(str(request_row(owner_session, request["id"])["job_id"]))
+
+    def broken(self: ModelService, ref: Any, model: Any, call: Any, **_: Any) -> Any:
+        asked = call.messages[-1].content  # it holds the request's text
+        assert JOB_SECRET in asked
+        try:
+            raise LookupError(f"inner {asked}")
+        except LookupError as exc:
+            raise RuntimeError(f"outer {asked}") from exc
+
+    monkeypatch.setattr(ModelService, "invoke_at", broken)
+    caplog.set_level(logging.DEBUG)
+    app: Any = c.app  # Any: the FastAPI app behind the test client
+    worker = Worker(settings, worker_id="w-route-log", concurrency=1,
+                    runtime=app.state.integration,
+                    job_handlers=worker_main.job_handlers())  # fmt: skip
+    owner_session.execute(
+        text("UPDATE shifde.jobs SET status = 'leased', lease_owner = 'w-route-log', "
+             "lease_expires_at = now() + interval '1 hour' WHERE id = :j"),
+        {"j": job},
+    )  # fmt: skip
+    owner_session.commit()
+    capsys.readouterr()
+    caplog.clear()
+    try:
+        worker._work(_Job(job, tenant_id(owner_session, "demo-a"), None, assist.ROUTE_JOB_KIND))
+    finally:
+        worker.db.dispose()
+    logged = capsys.readouterr()
+    shown = logged.out + logged.err + caplog.text
+    assert "worker.job_failed" in shown and str(job) in shown
+    assert "RuntimeError" in shown and "in broken" in shown  # the type and a frame
+    assert "LookupError" not in shown and JOB_SECRET not in shown
+    for record in caplog.records:
+        assert JOB_SECRET not in str(record.__dict__)
+    # the lease is left to expire, as before
+    [(_, status, _)] = route_jobs(owner_session, request["id"])
+    assert status == "leased"

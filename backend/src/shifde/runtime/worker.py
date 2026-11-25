@@ -86,6 +86,7 @@ import socket
 import sys
 import threading
 import time
+import traceback
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -420,8 +421,18 @@ class Worker:
         outcome = "error"
         try:
             outcome = self._execute(job)
-        except Exception:  # noqa: BLE001 - leave the lease to expire; the reaper requeues it
-            log.error("worker.job_failed", job_id=str(job.id), exc_info=True)
+        except Exception as exc:  # noqa: BLE001 - leave the lease to expire; the reaper requeues it
+            if job.kind in self.job_handlers:
+                # the type and the frames only: a message can carry what the job was given (a
+                # request's text, SQL parameters)
+                log.error(
+                    "worker.job_failed",
+                    job_id=str(job.id),
+                    error=type(exc).__name__,
+                    frames=traceback.format_tb(exc.__traceback__),
+                )
+            else:
+                log.error("worker.job_failed", job_id=str(job.id), exc_info=True)
         finally:
             self._settle_job(job, outcome)
             with self._lock:

@@ -18,17 +18,19 @@ from uuid import UUID
 
 import pytest
 from sqlalchemy import text
+from structlog.testing import capture_logs
 
 from shifde import worker_main
 from shifde.adapters.runtime import IntegrationRuntime
 from shifde.appgen import service as appgen
 from shifde.assist import service as assist
+from shifde.connections import service as connections
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.runtime import worker as worker_mod
 from shifde.runtime.jobkinds import JobKindRegistry
-from shifde.runtime.worker import Worker
+from shifde.runtime.worker import Worker, _Job
 from tests.build.service_support import REGISTRY
 from tests.runtime.conftest import insert
 from tests.tenancy.conftest import World, world
@@ -138,3 +140,40 @@ def test_an_unregistered_kind_still_ends_dead_unrun(
     running("w-unknown", JobKindRegistry.of({"demo.ok": lambda *a: ran.append(a)}))
     assert _until_ended(owner_db, job) == ("dead", worker_mod.UNKNOWN_KIND)
     assert ran == []
+
+
+def test_the_error_log_of_a_registered_kind_is_the_type_and_the_frames(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(*_: Any) -> str | None:
+        raise RuntimeError("a message of the job's content")
+
+    monkeypatch.setattr(connections, "run_test_job", broken)
+    w = Worker(settings, worker_id="w-log", concurrency=1,
+               runtime=IntegrationRuntime(settings=settings, registry=REGISTRY),
+               job_handlers=JobKindRegistry.of({"demo.kind": broken}))  # fmt: skip
+    registered, built_in = uuid7(), uuid7()
+    try:
+        with capture_logs() as logs:
+            w._work(_Job(registered, uuid7(), None, "demo.kind"))
+            w._work(_Job(built_in, uuid7(), None, connections.TEST_JOB_KIND))
+    finally:
+        w.db.dispose()
+    failed = [dict(e) for e in logs if e["event"] == "worker.job_failed"]
+    frames = failed[0].pop("frames")
+    assert "in broken" in frames[-1]
+    assert failed == [
+        {
+            "event": "worker.job_failed",
+            "log_level": "error",
+            "job_id": str(registered),
+            "error": "RuntimeError",
+        },
+        # a built-in kind logs as before
+        {
+            "event": "worker.job_failed",
+            "log_level": "error",
+            "job_id": str(built_in),
+            "exc_info": True,
+        },
+    ]
