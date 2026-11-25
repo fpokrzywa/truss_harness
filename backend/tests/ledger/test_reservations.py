@@ -8,7 +8,7 @@ the schema owner on real runs (tests/ledger/util.py)."""
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
@@ -22,7 +22,7 @@ from shifde.core.clock import utcnow
 from shifde.core.ids import uuid7
 from shifde.ledger import budgeting, enforcement, reservations
 from shifde.ledger.enforcement import BudgetDenied, BudgetScope, ReserveDetail
-from tests.ledger.util import add_budget, add_model, add_run, add_tenant
+from tests.ledger.util import add_budget, add_model, add_run, add_tenant, daily_since
 
 INSERT = (
     "INSERT INTO shifde.budget_reservations (id, tenant_id, run_id, invocation_id, step_key, "
@@ -111,6 +111,40 @@ def test_the_app_role_may_set_the_marker_and_delete_only_through_the_retention_g
     assert [g[0] for g in table] == ["DELETE", "INSERT", "SELECT"]
 
 
+# ------------------------------------------------------------------ the window of the tests' sums
+def test_daily_since_is_the_day_of_the_rows_not_of_the_live_clock(
+    owner_session: Session, tenant: UUID, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #366: a usage row written at 23:59:59 UTC, summed at 00:00:01 of the next day."""
+    s = owner_session
+    written = datetime(2026, 3, 1, 23, 59, 59, tzinfo=UTC)
+    monkeypatch.setattr(
+        "shifde.ledger.budgeting.utcnow", lambda: datetime(2026, 3, 2, 0, 0, 1, tzinfo=UTC)
+    )
+    with pytest.raises(AssertionError):
+        daily_since(s, tenant)
+    ledger.record(
+        s,
+        {
+            "tenant_id": tenant,
+            "event_key": "before-midnight",
+            "event_type": "tool_call",
+            "input_tokens": 250,
+            "output_tokens": 0,
+            "occurred_at": written,
+        },
+    )
+    rule = {"scope_type": "tenant", "scope_id": tenant, "period": "daily", "currency": None}
+
+    def used(since: datetime | None) -> Decimal:
+        return budgeting.used_amount(s, tenant, None, rule, metric="tokens", since=since)
+
+    assert used(budgeting.period_start("daily")) == 0  # the reported failure
+    assert used(daily_since(s, tenant)) == 250
+    assert daily_since(s, tenant) == datetime(2026, 3, 1, tzinfo=UTC)
+    s.rollback()
+
+
 # ------------------------------------------------------------------ expiry and counting
 def test_an_unmarked_hold_past_its_ttl_expires_and_stops_counting_a_marked_one_does_not(
     owner_session: Session, tenant: UUID
@@ -125,7 +159,7 @@ def test_an_unmarked_hold_past_its_ttl_expires_and_stops_counting_a_marked_one_d
         text("UPDATE shifde.budget_reservations SET expires_at = now() - interval '1 second'")
     )
     rule = {"id": budget, "scope_type": "tenant", "scope_id": tenant, "period": "daily"}
-    since = budgeting.period_start("daily")
+    since = daily_since(s, tenant)
     # before the sweep the stale unmarked hold no longer counts; the marked one still does
     assert budgeting.used_and_held(s, tenant, None, rule, metric="tokens", since=since) == (0, 200)
     enforcement.evaluate(s, _scope(tenant), 1, ReserveDetail(est_output_tokens=1))
@@ -143,7 +177,7 @@ def test_a_direct_invocation_hold_counts_against_the_rules_it_names_only(
     other = add_budget(s, tenant, amount="1000")
     per_run = add_budget(s, tenant, amount="1000", period="run")
     hold = reservations.reserve_invocation(s, tenant, [named, per_run], 400, Decimal(0), None)
-    since = budgeting.period_start("daily")
+    since = daily_since(s, tenant)
 
     def held(budget: UUID, period: str = "daily") -> Decimal:
         rule = {"id": budget, "scope_type": "tenant", "scope_id": tenant, "period": period}
@@ -241,7 +275,7 @@ def test_settling_orphans_charges_a_marked_hold_once_and_releases_an_unmarked_on
     ]
     # spent once, as used, never also as held
     rule = {"id": budget, "scope_type": "tenant", "scope_id": tenant, "period": "daily"}
-    since = budgeting.period_start("daily")
+    since = daily_since(s, tenant)
     assert budgeting.used_and_held(s, tenant, None, rule, metric="tokens", since=since) == (700, 0)
     # a late settle of the real answer changes nothing (settle matches `held` only)
     reservations.settle(s, tenant, marked, 3, Decimal(0))
@@ -330,7 +364,7 @@ def test_settling_one_unknown_invocation_uses_the_callers_attribution_once(
         )  # fmt: skip
     ]
     rule = {"id": budget, "scope_type": "tenant", "scope_id": tenant, "period": "daily"}
-    since = budgeting.period_start("daily")
+    since = daily_since(s, tenant)
     assert budgeting.used_and_held(s, tenant, None, rule, metric="tokens", since=since) == (120, 0)
     s.rollback()
 
@@ -362,7 +396,7 @@ def test_the_invocation_sweep_charges_a_marked_expired_hold_with_the_scope_of_it
     run_hold = reservations.reserve_step(s, tenant, run, "m:1", [on_tenant], 40, Decimal(0), None)
     for h in (marked, live, run_hold):
         reservations.mark_provider_request(s, tenant, h)
-    since = budgeting.period_start("daily")
+    since = daily_since(s, tenant)
 
     def counted(budget: UUID, scope_type: str = "tenant", scope_id: UUID = tenant) -> object:
         rule = {"id": budget, "scope_type": scope_type, "scope_id": scope_id, "period": "daily"}

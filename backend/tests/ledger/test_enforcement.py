@@ -23,6 +23,7 @@ from tests.ledger.util import (
     add_rate,
     add_run,
     add_tenant,
+    daily_since,
 )
 
 
@@ -175,7 +176,7 @@ def test_another_tenants_usage_budgets_and_holds_are_ignored(owner_session: Sess
             "currency": None,
         },
         metric="tokens",
-        since=budgeting.period_start("daily"),
+        since=daily_since(s, a, b),
     )
     assert (used, held) == (Decimal(100), Decimal(0))
     _, held_b = budgeting.used_and_held(
@@ -190,7 +191,7 @@ def test_another_tenants_usage_budgets_and_holds_are_ignored(owner_session: Sess
             "currency": None,
         },
         metric="tokens",
-        since=budgeting.period_start("daily"),
+        since=daily_since(s, a, b),
     )
     assert held_b == Decimal(5000)  # the hold is real: B's own status counts it
     assert [x["id"] for x in enforcement.budgets_in_scope(s, _scope(a))] == [budget_a]

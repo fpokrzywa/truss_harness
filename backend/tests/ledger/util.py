@@ -1,10 +1,10 @@
 """Helpers shared by the ledger tests: direct inserts (as the schema owner) of runs, models, rate
-cards and budgets."""
+cards and budgets, and the daily window of the rows a test wrote."""
 
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from shifde.core.clock import utcnow
 from shifde.core.ids import uuid7
+from shifde.ledger import budgeting
 from tests._support import runs, tenants
 
 PAST = utcnow() - timedelta(days=30)
@@ -183,3 +184,22 @@ def add_budget(
         },
     )
     return budget
+
+
+def daily_since(s: Session, *tenant_ids: UUID) -> datetime:
+    """Start of the daily window of the earliest usage row or hold of `tenant_ids` that `s` sees.
+
+    A test that asks for the window of the live clock when it asserts sums nothing if UTC midnight
+    passed since its rows were written (issue #366); this window follows the rows."""
+    first = s.execute(
+        text(
+            "SELECT least("
+            "(SELECT min(occurred_at) FROM shifde.usage_events WHERE tenant_id = ANY (:t)), "
+            "(SELECT min(created_at) FROM shifde.budget_reservations WHERE tenant_id = ANY (:t)))"
+        ),
+        {"t": list(tenant_ids)},
+    ).scalar_one()
+    assert first is not None, "no visible usage row or hold of these clients"
+    since = budgeting.period_start("daily", first.astimezone(UTC))
+    assert since is not None
+    return since

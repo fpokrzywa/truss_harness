@@ -23,7 +23,14 @@ from shifde.core.db import Database, set_platform_admin, set_tenant
 from shifde.core.ids import uuid7
 from shifde.ledger import budgeting, enforcement, pricing
 from tests._support.tenants import add_tenants
-from tests.ledger.util import add_budget, add_rate, add_rate_card, add_run, add_version
+from tests.ledger.util import (
+    add_budget,
+    add_rate,
+    add_rate_card,
+    add_run,
+    add_version,
+    daily_since,
+)
 
 TABLES = (
     "usage_events",
@@ -219,9 +226,11 @@ def test_the_ledger_cannot_record_an_event_for_another_tenant(
 
 
 def test_ledger_service_queries_for_another_tenant_return_nothing_under_rls(
-    app_db: Database, world: World
+    app_db: Database, owner_db: Database, world: World
 ) -> None:
     scope_b = enforcement.BudgetScope(world.b, None, None, None, None)
+    with owner_db.session() as o:
+        since = daily_since(o, world.b)  # A cannot see B's rows
     with _as(app_db, world.a) as s:
         rec = ledger.reconcile(s, world.b, _today(), _today())
         assert (rec.events_sum, rec.rollup_sum, rec.consistent) == (0, 0, True)
@@ -233,7 +242,7 @@ def test_ledger_service_queries_for_another_tenant_return_nothing_under_rls(
             None,
             {"scope_type": "tenant", "scope_id": world.b, "period": "daily", "currency": None},
             metric="tokens",
-            since=budgeting.period_start("daily"),
+            since=since,
         )
         assert spent == 0
         # B's own override is not reachable: asking as B from A's context yields the global rate
@@ -260,7 +269,7 @@ def test_ledger_service_queries_filter_by_tenant_even_without_rls(
             None,
             {"scope_type": "tenant", "scope_id": world.a, "period": "daily", "currency": None},
             metric="tokens",
-            since=budgeting.period_start("daily"),
+            since=daily_since(s, world.a, world.b),
         )
         assert used == 100  # B's 7000 tokens are not counted
         own = pricing.resolve(s, world.a, "openai", "m1", utcnow())
