@@ -788,8 +788,10 @@ def dashboard(
     members = identity.count_members(scope.session, scope.tenant_id) if can_read_members else None
 
     is_admin = scope.pdp.authorize("tenant:admin", scope.tenant_ref).allowed
-    # Activity is per workspace, not per project: a workspace a key only reaches through its mask
-    # (`ancestor_workspace_ids`) counts only when the query is limited to one readable project.
+    # Unless the caller administers the client (B-4092), an event without a project needs
+    # `workspace:read` on its workspace and an event of a project `project:read` on that project,
+    # both within `activity_ws_only`. A workspace a key only reaches through its mask
+    # (`ancestor_workspace_ids`) counts there only when the query names one readable project.
     activity_ws_only = (
         ws_only
         if ws_filter.tenant_wide or project is not None
@@ -800,11 +802,22 @@ def dashboard(
         if is_admin
         else repository.workspace_ids(scope.session, scope.tenant_id, activity_ws_only)
     )
+    readable_project_ids = [
+        project_id
+        for project_id, ws_id in repository.project_refs(
+            scope.session, scope.tenant_id, visible_ws_ids
+        )
+        if scope.pdp.authorize(
+            "project:read", ResourceRef(scope.tenant_id, ws_id, project_id)
+        ).allowed
+    ]
     activity = audit.recent_activity(
         scope.session,
         tenant_id=scope.tenant_id,
         tenant_wide=is_admin,
-        visible_workspace_ids=visible_ws_ids,
+        visible_workspace_ids=[w for w in visible_ws_ids if ws_filter.covers_workspace(w)],
+        project_workspace_ids=visible_ws_ids,
+        readable_project_ids=readable_project_ids,
         workspace_id=ws.id if ws else None,
         project_id=project.id if project else None,
     )
