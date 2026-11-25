@@ -1,9 +1,11 @@
 """The runner on a Fabric, Palantir or Docker target (SP8-1): the dispatch table has the five
 platform kinds; the fake platform builds each new kind's adapter over one lazily built fake; a
 leased job of each new kind runs its broker check (a mismatch is `credential_unavailable`) and
-then fails closed (`execution_failed`) before any adapter or platform call and any journal intent.
+then fails closed (`execution_failed`) before any adapter or platform call and any journal intent:
+a Docker job because its plan has no generator version (SP8-9; `test_runner_docker.py` has the
+rest), a Fabric or Palantir job until SP8-5 and SP8-7.
 
-The gateway cannot yet give these targets' contexts (SP8-5, SP8-7 and SP8-9 map them), so
+The gateway cannot yet give a Fabric or Palantir target's context (SP8-5 and SP8-7 map them), so
 `Gateway` answers `context` with the mapped target and everything else through the in-process
 gateway; the plan job rows are `tests.delivery.sp8`'s."""
 

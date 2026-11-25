@@ -510,7 +510,14 @@ class JobResultSubmission(LeaseProof):
     status: Literal["succeeded", "failed"]
     value: dict[str, JsonValue] | None = None
     error_code: (
-        Literal["execution_failed", "credential_unavailable", "snowflake_patch_limit"] | None
+        Literal[
+            "execution_failed",
+            "credential_unavailable",
+            "snowflake_patch_limit",
+            "docker_host_mismatch",
+            "foreign_project",
+        ]
+        | None
     ) = None
 
     @model_validator(mode="after")

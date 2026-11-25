@@ -216,6 +216,15 @@ class DockerComposeAdapter:
             "daemon_id": daemon_id,
         }
 
+    def plan_details(self, artifact: BuildArtifact, ctx: ReadContext) -> dict[str, str | int]:
+        """The details `plan` seals for `artifact` on the target, without a daemon call."""
+        self._check_artifact(artifact, ctx)
+        match = DOCKER_HOST.fullmatch(ctx.target.host)
+        if not match:
+            raise ValueError("the target is not a Docker daemon address")
+        contents = read_archive(self.artifacts.read(artifact.archive, ctx.tenant_id))
+        return self._details(contents, match.group(1), ctx)
+
     def plan(self, request: PlanRequest, ctx: ReadContext) -> DeploymentPlan:
         artifact = request.artifact
         self._check_artifact(artifact, ctx)
@@ -423,6 +432,16 @@ class DockerComposeAdapter:
 
     def verify(self, request: VerifyRequest, ctx: ReadContext) -> VerificationReport:
         receipt = request.receipt
+        self._check_receipt(receipt, ctx)
+        if request.release_digest not in (None, receipt.operation_handles.get("release_digest")):
+            # the plan's release is not the one the receipt deployed
+            return VerificationReport(
+                checks=[
+                    Check(name="native-version", status="failed"),
+                    Check(name="runtime-health", status="skipped"),
+                    Check(name="app-deep-health", status="skipped"),
+                ]
+            )
         observed = self.observe(ObserveRequest(receipt=receipt), ctx)
         checks = [
             Check(
