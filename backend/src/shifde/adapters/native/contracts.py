@@ -155,7 +155,7 @@ class ValidationReport(Model):
 
 class Check(Model):
     name: Name
-    status: str = Field(pattern="^(passed|failed|skipped)$")
+    status: str = Field(pattern="^(passed|failed|skipped|not_run)$")
     required: bool = True
     evidence: Evidence = ""
 
@@ -514,6 +514,7 @@ class JobResultSubmission(LeaseProof):
             "execution_failed",
             "credential_unavailable",
             "snowflake_patch_limit",
+            "plan_stale",
             "docker_host_mismatch",
             "foreign_project",
         ]

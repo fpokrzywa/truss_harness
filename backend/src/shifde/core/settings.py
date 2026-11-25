@@ -34,6 +34,11 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
 from shifde.core.crypto import KeyRing
+from shifde.core.hostsuffixes import (
+    checked_palantir_suffixes,
+    checked_suffixes,
+    split_suffixes,
+)
 
 # backend/src/shifde/core/settings.py -> parents[4] is the repository root.
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -56,7 +61,6 @@ def _ephemeral(name: str, make: Callable[[], str]) -> str:
 # IPv6 unique-local range fc00::/7 are the widest legitimate private ranges.
 _MIN_PROXY_PREFIX = {4: 8, 6: 7}
 _PEPPER_ID = re.compile(r"[A-Za-z0-9_-]{1,16}")
-_HOST_SUFFIX = re.compile(r"[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63})+")
 
 
 def _new_pepper() -> str:
@@ -217,9 +221,10 @@ class Settings(BaseSettings):
     delivery_databricks_host_suffixes: Annotated[list[str], NoDecode] = []
     # Palantir Foundry stack host suffixes accepted for `palantir` deployment targets in addition
     # to the built-in palantirfoundry.com (SP8-1); same format as the Databricks list. A stack is
-    # exactly one label under a suffix, so a deeper site domain is listed here in full. Never list
-    # a vanity alias of a palantirfoundry.com stack: the alias and the stack's own host would give
-    # one stack two claim keys, and two organizations could each claim it.
+    # exactly one label under a suffix. An entry below another entry or below palantirfoundry.com
+    # (at any depth) is refused: one stack would get two claim keys, and two organizations could
+    # each claim it. Never list a vanity alias of a palantirfoundry.com stack either: the alias and
+    # the stack's own host would give one stack two claim keys in the same way.
     delivery_palantir_host_suffixes: Annotated[list[str], NoDecode] = []
     # Development switch (design 2026-11-22 7.5, B-2755): `databricks` and `snowflake` connections
     # reach the in-process fakes (`shifde.adapters.dataplatforms.fakes`) instead of the network,
@@ -287,20 +292,15 @@ class Settings(BaseSettings):
     @classmethod
     def _split_host_suffixes(cls, value: object) -> object:
         if isinstance(value, str):
-            return [part.strip().lower() for part in value.split(",") if part.strip()]
+            return split_suffixes(value)
         return value
 
     @field_validator("delivery_databricks_host_suffixes", "delivery_palantir_host_suffixes")
     @classmethod
     def _valid_host_suffixes(cls, value: list[str], info: ValidationInfo) -> list[str]:
-        suffixes = [entry.strip().lower() for entry in value]
-        for entry in suffixes:
-            if not _HOST_SUFFIX.fullmatch(entry):
-                raise ValueError(
-                    f"SHIFDE_{str(info.field_name).upper()} entries must be bare domains "
-                    "of two or more letter, digit or hyphen labels"
-                )
-        return suffixes
+        palantir = info.field_name == "delivery_palantir_host_suffixes"
+        check = checked_palantir_suffixes if palantir else checked_suffixes
+        return check(value, f"SHIFDE_{str(info.field_name).upper()}")
 
     @field_validator("mcp_allowed_hosts", mode="before")
     @classmethod

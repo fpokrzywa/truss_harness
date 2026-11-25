@@ -57,7 +57,6 @@ from shifde.adapters.native.contracts import (
     OwnedResource,
     PlanJobResult,
     ReconciliationResult,
-    Target,
     VerificationReport,
 )
 from shifde.core.errors import AppError, NotFound, ValidationFailed
@@ -246,7 +245,8 @@ def job_context(
     """What the job runs against: its target, its plan (sealed fields once sealed, its release
     digest and the release's app generator version, read in the executor's organization only),
     its deployment (receipt once applied) and the native resources the plan's application owns on
-    the target. Never a credential, the claim or address key, or the artifact bytes."""
+    the target. Never a credential, the claim or address key, or the artifact bytes. A target
+    whose stored bindings no longer validate is 409 `target_bindings_invalid`."""
     tenant_id = executor.tenant_id
     row = _leased(session, executor, job_id, proof)
     target = (
@@ -256,6 +256,7 @@ def job_context(
     )
     if target is None or target["status"] != "active":
         raise TargetUnavailable("the job's target is not available")
+    service.require_bindings(target)
     plan = (
         repository.get_plan(session, row["plan_id"], tenant_id=tenant_id)
         if row["plan_id"] is not None
@@ -275,19 +276,9 @@ def job_context(
         else []
     )
     session.commit()
-    bindings = target["bindings"]
-    if target["platform_kind"] == "docker":  # `Target.bindings` are strings
-        bindings = {**bindings, "port": str(bindings["port"])}
     return JobContext(
         job=_leased_job(row),
-        target=Target(
-            tenant_id=tenant_id,
-            id=target["id"],
-            revision=target["revision"],
-            environment=target["environment"],
-            host=target["address"],
-            bindings=bindings,
-        ),
+        target=service.adapter_target(target),
         platform_kind=target["platform_kind"],
         plan=None
         if plan is None

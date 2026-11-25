@@ -7,6 +7,7 @@ input is refused with `PermissionError` before any write. No database is used.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any  # Any: request and receipt values
@@ -50,12 +51,18 @@ from shifde.adapters.native.palantir.clients import INSTALLATIONS, JOBS
 from shifde.adapters.native.palantir.fake import FakeFoundryStack
 from shifde.adapters.native.palantir.receipts import job_payload
 from shifde.adapters.native.palantir.source import (
+    DELIVERY_SPEC,
     TOOLCHAIN_DIGEST,
+    Delivery,
+    delivery_files,
     files_for,
     installation_suffix,
     native_id,
+    read_delivery,
+    validate_source,
 )
-from shifde.adapters.native.planning import seal_plan
+from shifde.adapters.native.planning import bindings_digest, seal_plan
+from tests.adapters.native.origins import NON_PUBLIC_ORIGINS
 
 SPEC = FoundryMarketplaceSpec(frontend_asset_path="assets/health.txt")
 HOST = "https://enrollment.example.test"
@@ -64,6 +71,7 @@ OTHER_HOST = "https://other-enrollment.example.test"
 
 def make_stack(host: str = HOST) -> FakeFoundryStack:
     return FakeFoundryStack(
+        environment="test",
         host=host,
         frontend_origin="https://native-app.example.test",
         ontology_rid=f"ri.ontology.main.ontology.{uuid4()}",
@@ -240,6 +248,7 @@ def test_apply_observe_and_verify_on_the_fake(stage: Stage) -> None:
         ("native-version", "passed"),
         ("ontology-read", "passed"),
         ("frontend-asset", "passed"),
+        ("content-check", "not_run"),
     ]
     assert report.passed
 
@@ -291,6 +300,7 @@ def test_asset_mismatch_fails_the_frontend_check(stage: Stage) -> None:
         "native-version": "passed",
         "ontology-read": "passed",
         "frontend-asset": "failed",
+        "content-check": "not_run",
     }
     assert not report.passed
 
@@ -305,6 +315,7 @@ def test_a_failed_job_is_observed_failed_and_verify_skips_the_reads(stage: Stage
         ("native-version", "failed"),
         ("ontology-read", "skipped"),
         ("frontend-asset", "skipped"),
+        ("content-check", "not_run"),
     ]
 
 
@@ -704,3 +715,149 @@ def test_a_receipt_with_changed_handles_is_refused(stage: Stage) -> None:
         forged = receipt.model_copy(update={"operation_handles": handles})
         with pytest.raises(ValueError):
             stage.adapter.observe(ObserveRequest(receipt=forged, spec=SPEC), stage.read)
+
+
+# --------------------------------------------------------------------------- delivery (SP8-7)
+BOUND, RELEASED = "a" * 64, "b" * 64
+
+
+def _descriptor(**changes: Any) -> dict[str, bytes]:
+    """A delivered descriptor with `changes` (a `None` value drops the key), canonical JSON."""
+    value: dict[str, Any] = {
+        "spec": DELIVERY_SPEC.model_dump(mode="json"),
+        "bindings_digest": BOUND,
+        "release_digest": RELEASED,
+        **changes,
+    }
+    value = {key: item for key, item in value.items() if item is not None}
+    return {
+        "deployment.json": json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    }
+
+
+def test_the_delivered_descriptor_is_canonical_and_reads_back() -> None:
+    files = delivery_files(bindings_digest=BOUND, release_digest=RELEASED)
+    assert files == _descriptor()
+    assert read_delivery(files) == Delivery(bindings_digest=BOUND, release_digest=RELEASED)
+    validate_source(files, DELIVERY_SPEC)
+    validate_source(files_for(SPEC), SPEC)  # the spec-only form stays valid
+    with pytest.raises(ValueError):
+        read_delivery(files_for(DELIVERY_SPEC))  # but is no delivery
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {},
+        {"other.json": b"{}"},
+        {**_descriptor(), "extra.json": b"{}"},
+        {"deployment.json": b"[]\n"},
+        {"deployment.json": b"not json"},
+        {"deployment.json": b"\xff\xfe"},
+        {"deployment.json": _descriptor()["deployment.json"].rstrip(b"\n")},
+        {"deployment.json": _descriptor()["deployment.json"] + b"\n"},
+        {"deployment.json": b" " + _descriptor()["deployment.json"]},
+        {
+            "deployment.json": _descriptor()["deployment.json"].replace(
+                b"{", b'{"release_digest":"' + b"c" * 64 + b'",', 1
+            )
+        },
+        _descriptor(extra="x"),
+        _descriptor(spec=None),
+        _descriptor(spec=SPEC.model_dump(mode="json")),
+        _descriptor(bindings_digest=None),
+        _descriptor(release_digest=None),
+        _descriptor(bindings_digest="A" * 64),
+        _descriptor(bindings_digest="a" * 63),
+        _descriptor(release_digest=BOUND + "\n"),
+        _descriptor(release_digest=1),
+        _descriptor(release_digest=["b" * 64]),
+    ],
+)
+def test_a_tampered_delivery_descriptor_is_invalid(files: dict[str, bytes]) -> None:
+    with pytest.raises(ValueError):
+        validate_source(files, DELIVERY_SPEC)
+    with pytest.raises(ValueError):
+        read_delivery(files)
+
+
+def test_the_bindings_digest_covers_every_binding_and_the_revision(stage: Stage) -> None:
+    target = stage.read.target
+    seen = {bindings_digest(target)}
+    for key in target.bindings:
+        changed = {**target.bindings, key: target.bindings[key] + "x"}
+        seen.add(bindings_digest(target.model_copy(update={"bindings": changed})))
+    seen.add(bindings_digest(target.model_copy(update={"revision": 2})))
+    seen.add(bindings_digest(target.model_copy(update={"host": OTHER_HOST})))
+    assert len(seen) == len(target.bindings) + 3
+
+
+@pytest.mark.parametrize("environment", ["", "production", "staging"])
+def test_the_fake_stack_refuses_to_construct_outside_development_and_test(
+    environment: str,
+) -> None:
+    values = {
+        "host": HOST,
+        "frontend_origin": "https://native-app.example.test",
+        "ontology_rid": f"ri.ontology.main.ontology.{uuid4()}",
+    }
+    with pytest.raises(RuntimeError, match="only in development or test"):
+        FakeFoundryStack(environment=environment, **values)
+    with pytest.raises(TypeError):
+        FakeFoundryStack(**values)  # type: ignore[call-arg]
+    for allowed in ("development", "test"):
+        assert FakeFoundryStack(environment=allowed, **values).installations == {}
+
+
+def test_another_toolchain_is_refused_before_any_request(stage: Stage) -> None:
+    artifact, plan, deploy = stage.prepare()
+    stage.stack.requests.clear()
+    stage.stack.tokens.clear()
+    other = PalantirMarketplaceAdapter(
+        client_factory=stage.stack.client_factory, toolchain_digest="b" * 64
+    )
+    with pytest.raises(ValueError, match="toolchain"):
+        other.plan(PlanRequest(artifact=artifact), stage.read)
+    with pytest.raises(ValueError, match="toolchain"):
+        other.apply(ApplyRequest(artifact=artifact, plan=plan), deploy)
+    moved = artifact.model_copy(update={"toolchain_digest": "b" * 64})
+    with pytest.raises(ValueError, match="toolchain"):
+        other.apply(ApplyRequest(artifact=moved, plan=plan), deploy)
+    for sealed in (plan.toolchain_digest, None):
+        with pytest.raises(ValueError, match="toolchain"):
+            other.plan_details(sealed, stage.read)
+    assert stage.stack.requests == [] and stage.stack.tokens == set()
+    assert stage.adapter.plan_details(plan.toolchain_digest, stage.read) == plan.details
+
+
+def test_plan_details_refuses_a_target_without_preview(stage: Stage) -> None:
+    closed = stage.with_target(allow_preview_apis="false")
+    with pytest.raises(PermissionError):
+        closed.adapter.plan_details(TOOLCHAIN_DIGEST, closed.read)
+    assert stage.stack.requests == []
+
+
+def test_the_content_check_is_never_run_or_required(stage: Stage) -> None:
+    _, receipt = stage.receipt()
+    for failed in (False, True):
+        stage.stack.jobs[receipt.operation_handles["job_id"]]["status"] = (
+            "FAILED" if failed else "SUCCEEDED"
+        )
+        report = stage.adapter.verify(VerifyRequest(receipt=receipt, spec=SPEC), stage.read)
+        (check,) = [c for c in report.checks if c.name == "content-check"]
+        assert check.status == "not_run" and check.required is False
+        assert "not derived from the release" in check.evidence
+        assert "not checked" in check.evidence
+        assert report.passed is not failed
+
+
+@pytest.mark.parametrize("origin", NON_PUBLIC_ORIGINS)
+def test_a_non_public_frontend_origin_is_refused_before_any_request(
+    stage: Stage, origin: str
+) -> None:
+    artifact = stage.artifact()
+    broken = stage.with_target(frontend_origin=origin)
+    with pytest.raises(ValueError) as error:
+        broken.adapter.plan(PlanRequest(artifact=artifact), broken.read)
+    assert str(error.value) == "Foundry binding frontend_origin is missing or invalid"
+    assert stage.stack.requests == [] and stage.stack.tokens == set()

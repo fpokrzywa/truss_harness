@@ -3,7 +3,21 @@
 It installs the operator-approved product version named on the target (Call S8-H). Every write is
 attempted once and each accepted RID is checkpointed before the next request; nothing is ever
 aborted, uninstalled, deleted or rolled back, and an installation with an Ontology override is
-refused at plan, apply and observe.
+refused at plan, apply and observe. The client's `authorize` runs before every request. An apply
+asks for its token before the intent of each writing step too (`bearer`: `authorize`, and a mint
+when the credentials changed), so a refusal there leaves no intent; one that comes only at the
+write's own check, after the intent, leaves it open with no write sent.
+
+In verify the job fails, with no report, when `authorize` or the credential provider refuses, when
+the token endpoint answers anything but a token (a 4xx, a 5xx, an unreadable body) and when the
+credentials change while a token is minted. Any other error of the `ontology-read` or
+`frontend-asset` check is that check's failure, a timeout or lost connection of the token request
+included. Before those checks, in the reads of the observation, every error is the job's failure.
+
+The accepted toolchain digest is the caller's (the executor's names its platform, so a plan made on
+the fake is refused on a real stack before any request). Every verification report carries
+`content-check: not_run`: the product's content is not derived from the release, and no check here
+reads it.
 """
 
 from __future__ import annotations
@@ -82,6 +96,12 @@ from shifde.adapters.native.planning import (
 )
 
 RESOURCE_TYPE = "palantir.marketplace-installation"
+CONTENT_CHECK = Check(
+    name="content-check",
+    status="not_run",
+    required=False,
+    evidence="the product content is not derived from the release and was not checked",
+)
 RUNNING = frozenset({"PREPARING", "IN_PROGRESS", "BUILDING", "ABORTING"})
 
 
@@ -115,8 +135,14 @@ def _steps() -> list[PlanStep]:
 class PalantirMarketplaceAdapter:
     kind = "palantir.marketplace/v1"
 
-    def __init__(self, *, client_factory: Callable[[Target], PalantirClient]) -> None:
+    def __init__(
+        self,
+        *,
+        client_factory: Callable[[Target], PalantirClient],
+        toolchain_digest: str = TOOLCHAIN_DIGEST,
+    ) -> None:
         self.client_factory = client_factory
+        self.toolchain_digest = toolchain_digest
 
     def _client(self, ctx: ReadContext) -> PalantirClient:
         ctx.check_deadline()
@@ -213,7 +239,7 @@ class PalantirMarketplaceAdapter:
 
     def build(self, request: BuildRequest, ctx: BuildContext) -> BuildArtifact:
         spec = palantir_spec(request.spec)
-        if ctx.toolchain_digest != TOOLCHAIN_DIGEST or not self.validate(request, ctx).passed:
+        if ctx.toolchain_digest != self.toolchain_digest or not self.validate(request, ctx).passed:
             raise ValueError("Foundry descriptor/toolchain validation failed")
         # Nothing is built for the platform: the descriptor names an already published version.
         return BuildArtifact(
@@ -224,11 +250,10 @@ class PalantirMarketplaceAdapter:
             spec_digest=digest(spec),
             spec=spec,
             adapter_version=ADAPTER_VERSION,
-            toolchain_digest=TOOLCHAIN_DIGEST,
+            toolchain_digest=self.toolchain_digest,
         )
 
-    @staticmethod
-    def _artifact(artifact: BuildArtifact, ctx: ReadContext) -> FoundryMarketplaceSpec:
+    def _artifact(self, artifact: BuildArtifact, ctx: ReadContext) -> FoundryMarketplaceSpec:
         spec = palantir_spec(artifact.spec)
         if artifact.tenant_id != ctx.tenant_id or artifact.archive.tenant_id != ctx.tenant_id:
             raise PermissionError("artifact belongs to another tenant")
@@ -236,10 +261,19 @@ class PalantirMarketplaceAdapter:
             artifact.spec_digest != digest(spec)
             or artifact.source_digest != artifact.archive.digest
             or artifact.adapter_version != ADAPTER_VERSION
-            or artifact.toolchain_digest != TOOLCHAIN_DIGEST
+            or artifact.toolchain_digest != self.toolchain_digest
         ):
             raise ValueError("Foundry artifact identity/toolchain mismatch")
         return spec
+
+    def plan_details(self, toolchain_digest: str | None, ctx: ReadContext) -> dict[str, Any]:
+        """The details `plan` seals, read from the target's current state, for a plan sealed under
+        `toolchain_digest`; another toolchain's plan is refused before any request."""
+        if toolchain_digest != self.toolchain_digest:
+            raise ValueError("Foundry plan/toolchain mismatch")
+        b = bindings(ctx.target)
+        _preview(b)
+        return {"schema_digest": self._client(ctx).schema(b)}
 
     def plan(self, request: PlanRequest, ctx: ReadContext) -> DeploymentPlan:
         artifact = request.artifact
@@ -258,7 +292,7 @@ class PalantirMarketplaceAdapter:
                 spec_digest=artifact.spec_digest,
                 bindings_digest=bindings_digest(ctx.target),
                 adapter_version=ADAPTER_VERSION,
-                toolchain_digest=TOOLCHAIN_DIGEST,
+                toolchain_digest=self.toolchain_digest,
                 snapshot=EnvironmentSnapshot(
                     resources=list(ctx.owned_resources), fingerprint=digest(state)
                 ),
@@ -292,8 +326,8 @@ class PalantirMarketplaceAdapter:
             artifact.archive.digest,
             artifact.spec_digest,
             ADAPTER_VERSION,
-            TOOLCHAIN_DIGEST,
-            TOOLCHAIN_DIGEST,
+            self.toolchain_digest,
+            self.toolchain_digest,
         ):
             raise ValueError("Foundry plan/artifact/toolchain mismatch")
         if any(ctx.journal.has_intent(step.key) for step in plan.steps):
@@ -325,6 +359,7 @@ class PalantirMarketplaceAdapter:
                 ).model_dump(mode="json"),
             )
 
+        client.bearer()
         begin(CREATE)
         native = state["installation"] or client.create_installation(
             {
@@ -347,6 +382,7 @@ class PalantirMarketplaceAdapter:
         complete(CREATE, binding, {"installation": identity})
         _check_installation(client.get_installation(identity), b, identity)
         payload = job_payload(identity, b.version_id)
+        client.bearer()
         begin(SUBMIT)
         job = job_rid(client.submit_job(payload).get("rid"))
         handles = {"installation": identity, "job_id": job, "request_digest": digest(payload)}
@@ -422,6 +458,7 @@ class PalantirMarketplaceAdapter:
                     ),
                     Check(name="ontology-read", status="skipped"),
                     Check(name="frontend-asset", status="skipped"),
+                    CONTENT_CHECK,
                 ]
             )
         spec = palantir_spec(request.spec)
@@ -441,6 +478,8 @@ class PalantirMarketplaceAdapter:
                 Check(name="ontology-read", status="passed", evidence="one object read, read-only")
             )
         except Exception:
+            if client.refused:
+                raise
             checks.append(
                 Check(
                     name="ontology-read",
@@ -460,6 +499,8 @@ class PalantirMarketplaceAdapter:
                 )
             )
         except Exception:
+            if client.refused:
+                raise
             checks.append(
                 Check(
                     name="frontend-asset",
@@ -467,7 +508,7 @@ class PalantirMarketplaceAdapter:
                     evidence="frontend asset could not be fetched",
                 )
             )
-        return VerificationReport(checks=checks)
+        return VerificationReport(checks=[*checks, CONTENT_CHECK])
 
     def reconcile(self, request: ReconcileRequest, ctx: ReadContext) -> ReconciliationResult:
         if request.plan.tenant_id != ctx.tenant_id or request.plan.target_id != ctx.target.id:

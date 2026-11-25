@@ -16,16 +16,18 @@ organization (B-2737); a file whose entries name more than one is
 refused (issue #155). A credential is handed out only for a grant that names this job, executor
 and target, has not expired, whose audience is the entry's host normalized by its platform's
 normalizer, for an entry of the target's platform whose `tenant_id` is the target's organization.
-Every refusal is the same `CredentialUnavailable`, which names no token, key, path, host, user or
-reference. On POSIX a credentials file, a Snowflake key file or a secret file readable or
-writable by group or others is refused; Windows has no such mode bits and is not checked.
+The installation's extra Palantir host suffixes (`palantir_host_suffixes`) count only when a
+Palantir host is normalized. Every refusal is the same `CredentialUnavailable`, which names no
+token, key, path, host, user or reference. On POSIX a credentials file, a Snowflake key file or a
+secret file readable or writable by group or others is refused; Windows has no such mode bits and
+is not checked.
 """
 
 from __future__ import annotations
 
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal  # Any: one raw JSON entry
@@ -162,8 +164,11 @@ def snowflake_account(host: str) -> str:
 
 
 class CredentialBroker:
-    def __init__(self, entries: Mapping[str, Entry]) -> None:
+    def __init__(
+        self, entries: Mapping[str, Entry], *, palantir_host_suffixes: Iterable[str] = ()
+    ) -> None:
         self._entries = dict(entries)
+        self.palantir_host_suffixes = tuple(palantir_host_suffixes)
 
     def __repr__(self) -> str:
         return f"CredentialBroker({len(self._entries)} credentials)"
@@ -174,7 +179,9 @@ class CredentialBroker:
         return next((e.tenant_id for e in self._entries.values()), None)
 
     @classmethod
-    def from_file(cls, path: Path) -> CredentialBroker:
+    def from_file(
+        cls, path: Path, *, palantir_host_suffixes: Iterable[str] = ()
+    ) -> CredentialBroker:
         try:
             too_open = POSIX and bool(os.stat(path).st_mode & 0o077)
             text = path.read_text(encoding="utf-8")
@@ -197,7 +204,7 @@ class CredentialBroker:
             raise CredentialFileRefused("a credentials file entry is invalid") from None
         if len({e.tenant_id for e in entries.values()}) > 1:
             raise CredentialFileRefused("the credentials file must belong to one organization")
-        return cls(entries)
+        return cls(entries, palantir_host_suffixes=palantir_host_suffixes)
 
     def _checked(
         self,
@@ -223,8 +230,9 @@ class CredentialBroker:
         entry = self._entries.get(grant.credential_ref)
         if entry is None or entry.tenant_id != tenant_id or entry.platform != platform:
             raise CredentialUnavailable
+        suffixes = self.palantir_host_suffixes if platform == "palantir" else ()
         try:
-            host = normalize_address(platform, entry.host)
+            host = normalize_address(platform, entry.host, suffixes)
         except AddressRefused:
             raise CredentialUnavailable from None
         if host != grant.audience:

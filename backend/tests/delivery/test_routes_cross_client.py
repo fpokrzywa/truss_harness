@@ -24,16 +24,20 @@ unknown id gets and does not find it in the list. Generated Snowflake apps (SP6-
 directions, a plan on the other organization's target or of its release, its plan (an approval
 quoting the real digest included) and its deployment answer the unknown-id 404, its provider is
 `model_not_in_target_account`, its rows stay out of the lists and unreadable to `shifde_app`, and
-they never change. Generated Docker apps (SP8-9): the same 404s in both directions and for a member
-bound only to project P1; a plan on a workspace the other organization claims is
-`workspace_not_claimed`, byte for byte an unclaimed or released one's answer apart from the request
-id, also at approval; two organizations may bind one project and port on their own daemons; and
-B's executor leases none of A's Docker jobs.
+they never change. Palantir deliveries (SP8-7) the same in both directions, the other organization's
+target with preview off included (404, never the 409), and its executor leases none of my Palantir
+jobs and reads no context, artifact or grant of a leased one; within one organization an
+administrator of project P1 only gets the unknown-id 404 on P2's Palantir target, plan and
+deployment, and finds them in no list. Generated Docker apps (SP8-9): the same 404s in both
+directions and for a member bound only to project P1; a plan on a workspace the other organization
+claims is `workspace_not_claimed`, byte for byte an unclaimed or released one's answer apart from
+the request id, also at approval; two organizations may bind one project and port on their own
+daemons; and B's executor leases none of A's Docker jobs.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any  # Any: target, executor and plan rows, JSON bodies
 from uuid import UUID
 
@@ -56,6 +60,12 @@ from tests.connections.routes import as_user, org, system_role_user
 from tests.delivery.app_releases import AppRelease, add_provider
 from tests.delivery.conftest import make_executor
 from tests.delivery.docker import docker_release, docker_target, rows, workspace, workspace_target
+from tests.delivery.palantir import (
+    DEPLOYABLE,
+    palantir_release,
+    palantir_target,
+    project_administrator,
+)
 from tests.delivery.releases import release_for_target
 from tests.delivery.routes import (
     DOCKER_BINDINGS,
@@ -1348,6 +1358,315 @@ def test_shifde_app_in_as_context_selects_none_of_bs_snowflake_rows(
                 {"i": their_id},
             ).scalar_one()
             assert n == 0, table
+
+
+# ------------------------------------------------------------------ Palantir deliveries (SP8-7)
+@dataclass(frozen=True)
+class PalantirSide:
+    flow: Flow
+    target: str
+    preview_off: str  # a target of the same stack with preview off
+    release: str
+    sealed: dict[str, Any]  # a sealed plan
+    approved: dict[str, Any]  # another plan, approved
+    deployment: str  # its queued deployment
+
+
+def _palantir_side(flow: Flow, **scope: Any) -> PalantirSide:
+    """A Palantir target (and one with preview off on the same stack), a sealed, passed release in
+    its scope, a sealed plan and an approved one with its queued deployment."""
+    target = palantir_target(flow, **scope)
+    off = palantir_target(
+        flow, target["address"], bindings={**DEPLOYABLE, "allow_preview_apis": False}, **scope
+    )
+    release = palantir_release(flow, target["id"])
+    approved = flow.approve(flow.sealed(target["id"], "live-app", release_id=release.id))
+    sealed = flow.sealed(target["id"], release_id=release.id)
+    assert sealed["status"] == "sealed" and approved["deployment_id"]
+    return PalantirSide(
+        flow,
+        target["id"],
+        off["id"],
+        str(release.id),
+        sealed,
+        approved,
+        approved["deployment_id"],
+    )
+
+
+@pytest.fixture
+def two_palantir(
+    client: TestClient, world: World, people: People, owner_db: Database
+) -> dict[str, PalantirSide]:
+    """In each organization: a Palantir delivery of its own, through the routes."""
+    sides = {}
+    for name, c, email in (("b", world.b, people.owner_b), ("a", world.a, people.owner_a)):
+        flow = Flow(
+            client,
+            c.slug,
+            ws_slug(c),
+            c.tenant,
+            email,
+            system_role_user(owner_db, c.tenant, "tenant_administrator"),
+            make_executor(client, c, email).token,
+            owner_db,
+        )
+        sides[name] = _palantir_side(flow)
+    return sides
+
+
+def _palantir_rows(owner_db: Database, side: PalantirSide) -> list[list[tuple[Any, ...]]]:
+    """The organization's delivery rows and releases, read as the schema owner."""
+    tables = (*_SNOWFLAKE_TABLES, "delivery_jobs", "delivery_approvals", "releases")
+    with owner_db.session() as o:
+        return [
+            [
+                tuple(r)
+                for r in o.execute(
+                    # the table names are the literals above
+                    text(f"SELECT * FROM shifde.{table} WHERE tenant_id = :t ORDER BY id"),  # nosec B608
+                    {"t": side.flow.tenant},
+                )
+            ]
+            for table in tables
+        ]
+
+
+def _palantir_calls(side: PalantirSide) -> tuple[Any, ...]:
+    """(base URL, plan or deployment id attribute, [(method, suffix, body)]) of every item route,
+    as the caller of `side` sends them about another side's object."""
+    return (
+        (
+            plans(side.flow.slug),
+            "sealed",
+            (("GET", "", None), ("POST", "/approve", None), ("POST", "/reject", {})),
+        ),
+        (
+            deployments(side.flow.slug),
+            "deployment",
+            (
+                ("GET", "", None),
+                ("POST", "/reconcile", None),
+                ("POST", "/mark-failed", {"note": "intruder"}),
+                ("POST", "/cancel", None),
+            ),
+        ),
+    )
+
+
+def _unreachable(client: TestClient, h: dict[str, str], mine: Any, theirs: PalantirSide) -> None:
+    """Every plan and deployment item route: my own object first (an answer, never 404), then the
+    other side's, an approval quoting its real digest included, like an unknown id."""
+    nobody = str(uuid7())
+    for base, kind, calls in _palantir_calls(mine):
+        own_id = mine.sealed["id"] if kind == "sealed" else mine.deployment
+        their_id = theirs.sealed["id"] if kind == "sealed" else theirs.deployment
+        for method, suffix, payload in calls:
+            own, their = payload, payload
+            if suffix == "/approve":
+                own = {"plan_digest": mine.sealed["digest"]}
+                their = {"plan_digest": theirs.sealed["digest"]}
+            r = client.request(method, f"{base}/{own_id}{suffix}", headers=h, json=own)
+            assert r.status_code in (200, 403, 409), (suffix, r.text)  # own object first
+            _same_404(
+                client.request(method, f"{base}/{their_id}{suffix}", headers=h, json=their),
+                client.request(method, f"{base}/{nobody}{suffix}", headers=h, json=their),
+            )
+
+
+def _unplannable(
+    client: TestClient, h: dict[str, str], mine: PalantirSide, theirs: PalantirSide
+) -> None:
+    """A plan on the other side's target (preview on or off), or of its release: the unknown id's
+    404, never a 409."""
+    url, nobody = plans(mine.flow.slug), str(uuid7())
+    for named, unknown in (
+        (_plan_body(theirs.target, mine.release), _plan_body(nobody, mine.release)),
+        (_plan_body(theirs.preview_off, mine.release), _plan_body(nobody, mine.release)),
+        (_plan_body(theirs.target, theirs.release), _plan_body(nobody, theirs.release)),
+        (_plan_body(theirs.preview_off, theirs.release), _plan_body(nobody, theirs.release)),
+        (_plan_body(mine.target, theirs.release), _plan_body(mine.target, nobody)),
+        (_plan_body(mine.preview_off, theirs.release), _plan_body(mine.preview_off, nobody)),
+    ):
+        _same_404(
+            client.post(url, json=named, headers=h), client.post(url, json=unknown, headers=h)
+        )
+
+
+def _absent_from_lists(
+    client: TestClient, h: dict[str, str], mine: PalantirSide, theirs: PalantirSide
+) -> None:
+    slug = mine.flow.slug
+    listed = client.get(f"{targets(slug)}?limit=200", headers=h).json()["items"]
+    assert {t["id"] for t in listed} == {mine.target, mine.preview_off}
+    listed = client.get(f"{plans(slug)}?limit=200", headers=h).json()["items"]
+    assert {p["id"] for p in listed} == {mine.sealed["id"], mine.approved["id"]}
+    listed = client.get(f"{deployments(slug)}?limit=200", headers=h).json()["items"]
+    assert [d["id"] for d in listed] == [mine.deployment]
+    for url in (plans(slug), deployments(slug)):
+        own = client.get(url, params={"target": mine.target}, headers=h)
+        assert own.status_code == 200 and own.json()["items"], own.text
+        theirs_only = client.get(url, params={"target": theirs.target}, headers=h)
+        assert theirs_only.status_code == 200 and theirs_only.json()["items"] == []
+
+
+@pytest.mark.parametrize(("me", "other"), [("a", "b"), ("b", "a")])
+def test_a_cannot_plan_bs_palantir_target_or_release(
+    client: TestClient,
+    owner_db: Database,
+    two_palantir: dict[str, PalantirSide],
+    me: str,
+    other: str,
+) -> None:
+    mine, theirs = two_palantir[me], two_palantir[other]
+    flow = mine.flow
+    h = as_user(client, flow.requester)
+    request_plan(client, h, flow.slug, mine.target, mine.release, application_key="own")
+    off = request_plan(client, h, flow.slug, mine.preview_off, mine.release, 409)
+    assert off["code"] == "palantir_preview_not_allowed"  # own object first
+    before, own = _palantir_rows(owner_db, theirs), _palantir_rows(owner_db, mine)
+    _unplannable(client, h, mine, theirs)
+    assert _palantir_rows(owner_db, theirs) == before
+    assert _palantir_rows(owner_db, mine) == own
+
+
+@pytest.mark.parametrize(("me", "other"), [("a", "b"), ("b", "a")])
+def test_a_cannot_reach_bs_palantir_plan_or_deployment(
+    client: TestClient,
+    owner_db: Database,
+    two_palantir: dict[str, PalantirSide],
+    me: str,
+    other: str,
+) -> None:
+    mine, theirs = two_palantir[me], two_palantir[other]
+    h = as_user(client, mine.flow.requester)
+    before = _palantir_rows(owner_db, theirs)
+    _unreachable(client, h, mine, theirs)
+    _absent_from_lists(client, h, mine, theirs)
+    assert _palantir_rows(owner_db, theirs) == before
+
+
+@pytest.mark.parametrize(("me", "other"), [("a", "b"), ("b", "a")])
+def test_bs_executor_cannot_lease_or_read_as_palantir_jobs(
+    client: TestClient,
+    owner_db: Database,
+    two_palantir: dict[str, PalantirSide],
+    me: str,
+    other: str,
+) -> None:
+    mine, theirs = two_palantir[me], two_palantir[other]
+    h = as_user(client, mine.flow.requester)
+    request_plan(
+        client, h, mine.flow.slug, mine.target, mine.release, application_key="another-app"
+    )
+    client.cookies.clear()
+    # the other side's own queued apply job is the only one it can lease
+    r = lease(client, theirs.flow.token)
+    assert r.status_code == 200 and r.json()["job"]["deployment_id"] == theirs.deployment, r.text
+    before = _palantir_rows(owner_db, mine)
+    r = lease(client, theirs.flow.token)
+    assert r.status_code == 204, r.text
+    assert _palantir_rows(owner_db, mine) == before
+    for kind in ("plan", "apply"):
+        leased = lease_kind(client, mine.flow.token, kind)
+        job_id = leased["job"]["id"]
+        rows = _palantir_rows(owner_db, mine)
+        for method, action in (
+            ("GET", "context"),
+            ("GET", "artifact"),
+            ("POST", "credential-grant"),
+        ):
+            sent: dict[str, Any] = {"params" if method == "GET" else "json": proof(leased)}
+
+            def call(
+                job: object, token: str, sent: Any = sent, m: str = method, at: str = action
+            ) -> httpx.Response:
+                return client.request(m, job_url(job, at), headers=bearer(token), **sent)
+
+            _same_404(call(job_id, theirs.flow.token), call(uuid7(), theirs.flow.token))
+            assert call(job_id, mine.flow.token).status_code == 200, (kind, action)
+        assert _palantir_rows(owner_db, mine) == rows
+
+
+@pytest.mark.parametrize(("me", "other"), [("a", "b"), ("b", "a")])
+def test_shifde_app_in_as_context_selects_none_of_bs_palantir_rows(
+    app_db: Database, two_palantir: dict[str, PalantirSide], me: str, other: str
+) -> None:
+    mine, theirs = two_palantir[me], two_palantir[other]
+    with app_session(app_db, mine.flow.tenant) as s:
+        for table in (*_SNOWFLAKE_TABLES, "delivery_jobs", "delivery_approvals"):
+            # the table names are literals
+            found = s.execute(text(f"SELECT DISTINCT tenant_id FROM shifde.{table}"))  # nosec B608
+            assert set(found.scalars()) == {mine.flow.tenant}, table
+        for table, their_id in (
+            ("delivery_targets", theirs.target),
+            ("delivery_targets", theirs.preview_off),
+            ("delivery_artifacts", theirs.sealed["artifact_id"]),
+            ("delivery_plans", theirs.sealed["id"]),
+            ("delivery_deployments", theirs.deployment),
+        ):
+            n = s.execute(
+                text(f"SELECT count(*) FROM shifde.{table} WHERE id = :i"),  # nosec B608
+                {"i": their_id},
+            ).scalar_one()
+            assert n == 0, table
+
+
+def test_a_p1_only_member_cannot_reach_p2s_palantir_delivery(
+    client: TestClient, world: World, people: People, flow: Flow, owner_db: Database
+) -> None:
+    """Within one organization: an administrator of project P1 only gets on P2's Palantir target
+    (plan request, GET), plan and deployment the 404 an unknown id gets, finds none of them in a
+    list, and P2's rows never change."""
+    a = world.a
+    p2 = add_project(owner_db, a.tenant, a.ws)
+    p1_side = _palantir_side(flow, project=project_slug(a))
+    p2_side = _palantir_side(flow, project=f"p-{p2.hex}")
+    email = project_administrator(owner_db, a.tenant, a.project)
+    mine = replace(p1_side, flow=replace(flow, requester=email))
+    h = as_user(client, email)
+    request_plan(client, h, flow.slug, mine.target, mine.release, 201, application_key="own")
+    off = request_plan(client, h, flow.slug, mine.preview_off, mine.release, 409)
+    assert off["code"] == "palantir_preview_not_allowed"  # own project first
+    before = [
+        [row for row in rows if _in_p2(row, p2_side)] for rows in _palantir_rows(owner_db, p2_side)
+    ]
+    assert sum(len(rows) for rows in before) >= 4
+    _unplannable(client, h, mine, p2_side)
+    for target_id in (p2_side.target, p2_side.preview_off):
+        _same_404(
+            client.get(f"{targets(flow.slug)}/{target_id}", headers=h),
+            client.get(f"{targets(flow.slug)}/{uuid7()}", headers=h),
+        )
+    listed = client.get(f"{plans(flow.slug)}?limit=200", headers=h).json()["items"]
+    ids = {p["id"] for p in listed}
+    assert mine.sealed["id"] in ids
+    assert not ids & {p2_side.sealed["id"], p2_side.approved["id"]}
+    listed = client.get(f"{deployments(flow.slug)}?limit=200", headers=h).json()["items"]
+    assert [d["id"] for d in listed] == [mine.deployment]
+    listed = client.get(f"{targets(flow.slug)}?limit=200", headers=h).json()["items"]
+    assert {t["id"] for t in listed} == {mine.target, mine.preview_off}
+    for url in (plans(flow.slug), deployments(flow.slug)):
+        r = client.get(url, params={"target": p2_side.target}, headers=h)
+        assert r.status_code == 200 and r.json()["items"] == [], r.text
+    _unreachable(client, h, mine, p2_side)
+    after = [
+        [row for row in rows if _in_p2(row, p2_side)] for rows in _palantir_rows(owner_db, p2_side)
+    ]
+    assert after == before
+
+
+def _in_p2(row: tuple[Any, ...], side: PalantirSide) -> bool:
+    """A row that is, or names, the side's target, plan, deployment or release."""
+    named = {
+        side.target,
+        side.preview_off,
+        side.release,
+        side.deployment,
+        side.sealed["id"],
+        side.approved["id"],
+    }
+    return any(str(value) in named for value in row)
 
 
 # ------------------------------------------------------------------ generated Docker apps (SP8-9)
