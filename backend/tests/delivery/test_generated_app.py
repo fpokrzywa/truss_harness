@@ -231,14 +231,14 @@ def test_a_docker_release_is_planned_on_no_target(flow: Flow, platform: str, app
         target = register(flow.client, h, flow.slug, body)
         flow.client.cookies.clear()
     rel = _fake_release(flow, target, edit=on_docker(app))
-    _refused(flow, target, rel.id, "release_target_mismatch")
+    _refused(flow, target, rel.id, "target_kind_mismatch")
 
 
 def test_a_docker_release_past_the_kind_gate_is_not_rendered(
     flow: Flow, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """SP8-1: without the kind gate too, the render refuses a Docker release by name."""
-    monkeypatch.setattr(plans, "check_target_kind", lambda manifest: None)
+    monkeypatch.setattr(plans, "check_target_kind", lambda manifest, platform_kind: None)
     target = app_target(flow)
     for app in (a for a in DOCKER_SEALS.values() if a):
         rel = _fake_release(flow, target, edit=on_docker(app))

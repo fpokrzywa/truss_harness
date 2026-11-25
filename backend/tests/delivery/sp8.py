@@ -2,7 +2,7 @@
 kind, its plan and its plan job.
 
 No release of these kinds can be planned before SP8-5, SP8-7 and SP8-9 (the plan route refuses
-their targets with `release_target_mismatch`), so these rows are written here, as `shifde_app` in
+their targets with `target_kind_mismatch`), so these rows are written here, as `shifde_app` in
 the organization's context, through the same repository and `gateway.enqueue_job` calls the plan
 route uses (the pattern of `tests.delivery.snowflake`).
 """

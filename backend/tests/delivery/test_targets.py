@@ -727,5 +727,5 @@ def test_a_plan_request_on_an_sp8_target_is_refused_without_a_write(
 
     h = as_user(client, people.owner_a)
     refused = request_plan(client, h, world.a.slug, made["id"], release, status=409)
-    assert refused["code"] == "release_target_mismatch"
+    assert refused["code"] == "target_kind_mismatch"
     assert rows() == (0, 0, 0)

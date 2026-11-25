@@ -20,10 +20,10 @@ A plan deploys one sealed release (SP3 design sections 4 and 6, settled calls 3 
 names a release the caller can read (else `release not found`), not withdrawn (409
 `release_withdrawn`), in the target's workspace and project (409 `release_target_mismatch`), with a
 passing evaluation of its digests (409 `evaluation_required`) and of the target's kind (409
-`target_kind_mismatch`: the manifest's `target_kind` is not of the target's `platform_kind`). The
-plan stores the release, its digest and the passing run; the artifact carries `release.json` and the
-plan digest the release digest. Approval checks the release again after the plan row lock; reject
-does not.
+`target_kind_mismatch`: the manifest's `target_kind` is not of the target's `platform_kind`; only
+`databricks.app/v1` and `snowflake.native-app/v1` have a platform). The plan stores the release,
+its digest and the passing run; the artifact carries `release.json` and the plan digest the release
+digest. Approval checks the release again after the plan row lock; reject does not.
 
 A `/2` release (compiler `packaging.service.COMPILER_VERSION_APP`, SP5 design 6.6) on a Databricks
 target deploys the generated app instead of the SDK template. After the checks above it is refused
@@ -95,12 +95,16 @@ from shifde.evaluation.service import (
 )
 from shifde.models_admin.service import ModelService
 from shifde.packaging.canonical import canonical
-from shifde.packaging.schemas import TARGET_ADAPTERS
 from shifde.packaging.service import READ, release_record, scoped_release
 from shifde.tenancy.scope import TenantScope
 
 MAX_ARTIFACT_BYTES = 5 * 1024 * 1024  # 5 242 880, also the table CHECK
 APPROVAL_CONSTRAINT = "uq_delivery_approvals__tenant_plan"
+# the platform a release of each target kind is deployed to; any other kind is planned on no target
+PLATFORM_OF_KIND = {
+    "databricks.app/v1": "databricks",
+    "snowflake.native-app/v1": "snowflake",
+}
 
 
 class SelfApprovalForbidden(AppError):
@@ -158,7 +162,7 @@ class ModelNotInTargetAccount(AppError):
 def check_target_kind(manifest: Mapping[str, Any], platform_kind: str) -> None:
     """A release is deployed only to the kind of target its manifest names."""
     kind = manifest.get("target_kind")
-    if not isinstance(kind, str) or TARGET_ADAPTERS.get(kind) != platform_kind:
+    if not isinstance(kind, str) or PLATFORM_OF_KIND.get(kind) != platform_kind:
         raise TargetKindMismatch("The release is for another kind of target.")
 
 
