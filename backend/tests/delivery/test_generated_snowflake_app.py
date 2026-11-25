@@ -6,6 +6,7 @@ and organization B's executor leasing and reaching nothing of A's Snowflake jobs
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import hashlib
 from collections.abc import Callable
@@ -29,6 +30,7 @@ from shifde.executor.runner import Runner
 from tests.appgen.rendered import CORTEX_MODEL, SNOWFLAKE_KIND
 from tests.connections.routes import as_user
 from tests.delivery.app_releases import (
+    KINDS,
     AppRelease,
     add_provider,
     app_release_for_target,
@@ -263,6 +265,39 @@ def test_release_source_changed_and_render_refusals_write_nothing(flow: Flow) ->
         (two_part, "release_not_renderable"),
     ):
         _refused(flow, target, app_release(flow, target, edit=edit).id, code)
+
+
+def test_a_private_tool_is_not_named_by_release_not_renderable(
+    flow: Flow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tool the requester cannot see, its SQL using a `:name` it does not declare."""
+    made = KINDS[SNOWFLAKE_KIND]
+    draft = copy.deepcopy(made.draft)
+    tool = draft["tools"][0]
+    tool["sql"] += " limit :secret_param"
+    monkeypatch.setitem(KINDS, SNOWFLAKE_KIND, dataclasses.replace(made, draft=draft))
+    target = app_target(flow)
+    release = app_release(flow, target)
+    with flow.owner_db.session() as o:
+        owner = o.execute(
+            text(
+                "UPDATE shifde.artifacts SET visibility = 'private' WHERE tenant_id = :t AND id = "
+                "(SELECT artifact_id FROM shifde.artifact_versions WHERE id = :v) "
+                "RETURNING owner_principal_id"
+            ),
+            {"t": flow.tenant, "v": release.tools[tool["name"]][0]},
+        ).scalar_one()
+        requester = o.execute(
+            text("SELECT id FROM shifde.users WHERE primary_email = :e"), {"e": flow.requester}
+        ).scalar_one()
+        o.commit()
+    assert owner != requester
+    body = _refused(flow, target, release.id, "release_not_renderable")
+    assert body["detail"] == "The release cannot be rendered as a Native App."
+    answer = str(body).lower()
+    parameters = [p["name"] for p in tool["parameters"]]
+    for value in (tool["name"], "secret_param", *parameters, tool["sql"], "select", ORDERS):
+        assert value.lower() not in answer, value
 
 
 def test_a_pin_of_another_organization_is_release_source_changed(

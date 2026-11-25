@@ -45,7 +45,8 @@ the template. After the checks above it is refused with 409, in this order and b
 `cortex_model`) and `model_not_in_target_account` (the same provider rule against the target's
 account address, read from `Resolved.model.provider`; `Resolved` is gathered first, so a changed
 pin's `release_source_changed` may come before it). The render then refuses with
-`generator_version_unsupported` or `release_not_renderable`.
+`generator_version_unsupported` or `release_not_renderable` (a fixed detail: a pinned version may
+be one the requester cannot see).
 
 A plan is scoped by its target's workspace/project; a plan or target the caller cannot read gets
 the answer an unknown id gets. Every plan route first settles the organization's plans (the lost
@@ -77,6 +78,7 @@ from shifde.adapters.native.contracts import DatabricksApplicationSpec
 from shifde.adapters.native.databricks.source import scaffold_files
 from shifde.adapters.runtime import IntegrationRuntime
 from shifde.appgen.render import GeneratorVersionUnsupported, ResolvedProvider, render
+from shifde.appgen.render_snowflake import ReleaseNotRenderable
 from shifde.appgen.service import resolved_for_release
 from shifde.audit import service as audit
 from shifde.authz.service import ResourceRef
@@ -482,7 +484,12 @@ class PlanService:
             )
         if service.app_generator_version(manifest) is None:
             raise GeneratorVersionUnsupported("the release is not a generated app release")
-        return archive(render(manifest, release["digest"], resolved))
+        try:
+            files = render(manifest, release["digest"], resolved)
+        except ReleaseNotRenderable:
+            # the render's detail names a tool and its SQL, which the requester may not see
+            raise ReleaseNotRenderable("The release cannot be rendered as a Native App.") from None
+        return archive(files)
 
     def _in_account(self, provider: ResolvedProvider | None, address: str) -> bool:
         """The provider is an `openai_compatible` one whose `base_url` (scheme and host)
