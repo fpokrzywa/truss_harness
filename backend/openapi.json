@@ -8633,7 +8633,9 @@
                 "enum": [
                   "execution_failed",
                   "credential_unavailable",
-                  "snowflake_patch_limit"
+                  "snowflake_patch_limit",
+                  "docker_host_mismatch",
+                  "foreign_project"
                 ],
                 "type": "string"
               },

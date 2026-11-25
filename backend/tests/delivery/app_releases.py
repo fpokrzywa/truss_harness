@@ -4,6 +4,7 @@ like `releases.make_release`: a model provider (an `openai_compatible` one on `b
 `SAMPLE_DRAFT` and the agent pinning them (specs as accept makes them), a solution version with
 the draft's screens, a dataset and the release, whose manifest is the packaging `/2` manifest with
 one model binding. Each release gets a project of its own (artifact keys are unique per scope).
+`kind=DOCKER_KIND` (SP8-9) is the Databricks one for `docker.compose/v1`.
 `kind=SNOWFLAKE_KIND` (SP6-6) is the `snowflake.native-app/v1` release of `SNOWFLAKE_SAMPLE_DRAFT`,
 its data reads every table the tools read (`SNOWFLAKE_SAMPLE_TABLES`), bound to `CORTEX_MODEL`."""
 
@@ -19,6 +20,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from shifde.appgen.render import DATABRICKS_KIND, GENERATOR_VERSIONS
+from shifde.appgen.render_docker import TARGET_KIND as DOCKER_KIND
 from shifde.appgen.schemas import DraftTool
 from shifde.appgen.service import AGENT_LIMITS, tool_spec
 from shifde.core.db import Database, set_tenant
@@ -48,6 +50,7 @@ class Kind:
 
 KINDS = {
     DATABRICKS_KIND: Kind(SAMPLE_DRAFT, SAMPLE_TABLES, ENDPOINT, "databricks"),
+    DOCKER_KIND: Kind(SAMPLE_DRAFT, SAMPLE_TABLES, ENDPOINT, "databricks"),
     SNOWFLAKE_KIND: Kind(
         SNOWFLAKE_SAMPLE_DRAFT, SNOWFLAKE_SAMPLE_TABLES, CORTEX_MODEL, "snowflake"
     ),

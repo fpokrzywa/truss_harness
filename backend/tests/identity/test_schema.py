@@ -75,7 +75,9 @@ def test_a_head_named_in_depends_on_is_not_a_version_head() -> None:
     depends_on (issue #271), so it is the packaging version head (packaging_0003 stays a
     non-head). delivery_0008 follows delivery_0007 and packaging_0005 follows packaging_0004, both
     with no depends_on (issue #286), so they are the delivery and packaging version heads
-    (delivery_0007 and packaging_0004 stay non-heads)."""
+    (delivery_0007 and packaging_0004 stay non-heads). delivery_0009 (issue #352) follows
+    delivery_0008 with no depends_on, so it is the delivery head (delivery_0008 stays a
+    non-head)."""
     heads = code_heads()
     assert "assist_0003" in heads
     assert "assist_0002" not in heads
@@ -85,7 +87,8 @@ def test_a_head_named_in_depends_on_is_not_a_version_head() -> None:
     assert "mcp_0001" in heads
     assert "identity_0007" not in heads
     assert "identity_0006" not in heads
-    assert "delivery_0008" in heads
+    assert "delivery_0009" in heads
+    assert "delivery_0008" not in heads
     assert "delivery_0007" not in heads
     assert "delivery_0006" not in heads
     assert "evaluation_0001" not in heads

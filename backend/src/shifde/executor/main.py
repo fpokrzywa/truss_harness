@@ -68,8 +68,7 @@ EPILOG = f"""environment:
                                     client_id, client_secret_file}}
                                     Docker {{tenant_id, host, platform: "docker"}}
                                     (a secret file holds one value; on POSIX mode 0600;
-                                    Fabric, Palantir and Docker jobs fail closed until
-                                    SP8-5/7/9)
+                                    Fabric and Palantir jobs fail closed until SP8-5/7)
   SHIFDE_ENV                        development | test | production (default production)
   {HEALTH_HOST}       the /healthz and /readyz host (default 127.0.0.1)
   {HEALTH_PORT}       their port, 0..65535 (default 0: off)
@@ -104,8 +103,8 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "run against the in-memory fake Databricks, Snowflake, Fabric, Palantir and Docker "
-            "platforms (development and test only; Fabric, Palantir and Docker jobs fail closed "
-            "until SP8-5/7/9)"
+            "platforms (development and test only; Fabric and Palantir jobs fail closed until "
+            "SP8-5/7)"
         ),
     )
     return parser
