@@ -304,6 +304,9 @@ sudo systemctl enable --now seth-executor@<org>
 4. Migrate and check the revision.
 5. Start the services, then run the readiness checks of section (d).
 
+Upgrade every worker before any organization allows `assist_ask` (MCP settings): an older worker
+ignores `payload.max_cost` and so does not apply the call's spend cap.
+
 ```bash
 sudo systemctl start seth-backup.service
 sudo systemctl stop seth-worker
