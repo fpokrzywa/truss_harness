@@ -11,11 +11,11 @@ The job context's `platform_kind` picks the adapter through `DISPATCH`: `databri
 the broker re-checks and reads on every statement), `fabric` (`FabricAdapter`, Entra
 client-credentials tokens of one job, the grant and entry re-checked and the secret read before
 every request, a cached token's too), `palantir` (`PalantirMarketplaceAdapter`, client credentials
-the broker re-checks and reads before every request, a cached token's too) or `docker` (`DockerComposeAdapter` over the job's own artifact
-store, the grant and entry checked again before every runtime call, only for a plan of the Docker
-generator's version and a bundle of the plan's release). An entry of another platform is refused
-like any other mismatch, and so is a Fabric entry of another Entra tenant or workspace than the
-target's.
+the broker re-checks and reads before every request, a cached token's too) or `docker`
+(`DockerComposeAdapter` over the job's own artifact store, the grant and entry checked again before
+every runtime call, only for a plan of the Docker generator's version and a bundle of the plan's
+release). An entry of another platform is refused like any other mismatch, and so is a Fabric entry
+of another Entra tenant or workspace than the target's.
 
 A Fabric job of every kind builds its spec from the plan's sealed artifact: the bytes hash to the
 plan's artifact digest, `release.json` names the plan's release digest and the other files are the
