@@ -15,6 +15,7 @@ from sqlalchemy.exc import DBAPIError
 
 from shifde.core.db import Database
 from shifde.delivery import api as delivery_api
+from shifde.delivery import repository
 from tests.connections.routes import as_user
 from tests.delivery.routes import (
     FABRIC_BINDINGS,
@@ -153,6 +154,32 @@ def test_distinct_item_names_on_one_workspace_are_accepted(
     other = {**FABRIC_BINDINGS, "lakehouse_name": "Lake_2", "notebook_name": "Notebook_2"}
     register(client, h, world.a.slug, sp8_body("fabric", ws_slug(world.a), url, bindings=other))
     assert counts(owner_db, world.a.tenant) == (2, 1)
+
+
+def test_the_names_are_checked_under_the_claims_lock_in_the_callers_organization(
+    client: TestClient, world: World, people: People, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, Any, Any]] = []
+    for name in ("lock_claim", "fabric_binding_in_use"):
+        original = getattr(repository, name)
+
+        def recorded(
+            session: Any,
+            claim_id: Any,
+            *args: Any,
+            _name: str = name,
+            _f: Any = original,
+            **kw: Any,
+        ) -> Any:
+            calls.append((_name, claim_id, kw["tenant_id"]))
+            return _f(session, claim_id, *args, **kw)
+
+        monkeypatch.setattr(repository, name, recorded)
+    h = as_user(client, people.owner_a)
+    body = sp8_body("fabric", ws_slug(world.a), sp8_address("fabric"))
+    register(client, h, world.a.slug, body)
+    assert [c[0] for c in calls] == ["lock_claim", "fabric_binding_in_use"]
+    assert calls[0][1:] == calls[1][1:] and calls[0][2] == world.a.tenant
 
 
 def test_another_organizations_names_are_no_conflict_and_not_revealed(
