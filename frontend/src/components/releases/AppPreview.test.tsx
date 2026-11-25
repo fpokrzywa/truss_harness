@@ -1,6 +1,7 @@
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { SNOWFLAKE_TARGET_KIND, TARGET_KIND } from '@/lib/api/packaging-types';
 import { APP_PREVIEW, ORG } from '@/test/releases';
 import { stubApi } from '@/test/security';
 import { jsonResponse, problemResponse, renderWithClient, type Handler } from '@/test/utils';
@@ -10,9 +11,11 @@ afterEach(() => vi.unstubAllGlobals());
 
 const PREVIEW = `GET ${ORG}/releases/r-2/app-preview`;
 
-const show = (handler: Handler) => {
+const NOTE = 'Deployed as Streamlit in Snowflake; layout differs';
+
+const show = (handler: Handler, targetKind: unknown = TARGET_KIND) => {
   const fetchMock = stubApi({ [PREVIEW]: handler });
-  renderWithClient(<AppPreview org="acme" releaseId="r-2" />);
+  renderWithClient(<AppPreview org="acme" releaseId="r-2" targetKind={targetKind} />);
   return fetchMock;
 };
 
@@ -86,6 +89,29 @@ describe('AppPreview', () => {
     expect(await screen.findByText(/This is a preview/)).toBeInTheDocument();
     expect(fetchMock.calls.length).toBe(before);
     expect(fetchMock.calls.filter((c) => c.key === PREVIEW)).toHaveLength(1);
+  });
+
+  it('notes the Streamlit layout of a Snowflake release above its screens', async () => {
+    show(() => jsonResponse(APP_PREVIEW), SNOWFLAKE_TARGET_KIND);
+    const note = await screen.findByText(NOTE);
+    const nav = screen.getByRole('navigation', { name: 'Screens' });
+    expect(note.compareDocumentPosition(nav)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(screen.getByText(/sample data; nothing is sent/)).toBeInTheDocument();
+  });
+
+  it.each([TARGET_KIND, 'other.app/v1', undefined])(
+    'has no note for target kind %s',
+    async (kind) => {
+      show(() => jsonResponse(APP_PREVIEW), kind);
+      expect(await screen.findByRole('navigation', { name: 'Screens' })).toBeInTheDocument();
+      expect(screen.queryByText(NOTE)).not.toBeInTheDocument();
+    },
+  );
+
+  it('has no note on a 409 of a Snowflake release', async () => {
+    show(() => problemResponse(409, 'release_source_changed'), SNOWFLAKE_TARGET_KIND);
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(screen.queryByText(NOTE)).not.toBeInTheDocument();
   });
 
   it('shows an empty state when the screens cannot be parsed', async () => {

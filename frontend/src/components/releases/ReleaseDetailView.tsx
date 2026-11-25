@@ -136,7 +136,7 @@ function ReleaseBody({ org, release }: { org: string; release: ReleaseOut }) {
         )}
       </section>
       {release.manifest.compiler_version === COMPILER_VERSION_APP && (
-        <AppPreview org={org} releaseId={release.id} />
+        <AppPreview org={org} releaseId={release.id} targetKind={release.manifest.target_kind} />
       )}
       <Evaluations org={org} releaseId={release.id} />
       {withdrawing && (

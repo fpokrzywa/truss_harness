@@ -11,6 +11,7 @@ import {
   RELEASE,
   RELEASE_DIGEST,
   RELEASE_PERMS,
+  SNOWFLAKE_APP_RELEASE,
   stubReleases,
 } from '@/test/releases';
 import { ALL_PERMS, bodyOf } from '@/test/security';
@@ -21,6 +22,7 @@ vi.mock('next/navigation', () => ({ useParams: () => ({ org: 'acme' }) }));
 afterEach(() => vi.unstubAllGlobals());
 
 const R = `${ORG}/releases/r-1`;
+const NOTE = 'Deployed as Streamlit in Snowflake; layout differs';
 
 describe('ReleaseDetailView', () => {
   it('renders the digest, manifest, compatibility and the evaluations with links', async () => {
@@ -130,6 +132,24 @@ describe('ReleaseDetailView', () => {
     renderWithClient(<ReleaseDetailView id="r-2" />);
     const preview = await screen.findByRole('region', { name: 'App preview' });
     expect(await within(preview).findByText('app/app.py')).toBeInTheDocument();
+    expect(within(preview).getByRole('button', { name: 'Orders by region' })).toBeInTheDocument();
+    expect(screen.queryByText(NOTE)).not.toBeInTheDocument();
+  });
+
+  it('notes the Streamlit layout in the app preview of a Snowflake /2 release', async () => {
+    const R2 = `${ORG}/releases/r-2`;
+    stubReleases({
+      [`GET ${R2}`]: () => jsonResponse(SNOWFLAKE_APP_RELEASE),
+      [`GET ${R2}/evaluations`]: () => list([]),
+      [`GET ${R2}/app-preview`]: () => jsonResponse(APP_PREVIEW),
+    });
+    renderWithClient(<ReleaseDetailView id="r-2" />);
+    const preview = await screen.findByRole('region', { name: 'App preview' });
+    expect(await within(preview).findByText(NOTE)).toBeInTheDocument();
+    for (const f of APP_PREVIEW.files) {
+      expect(within(preview).getByText(f.path)).toBeInTheDocument();
+    }
+    expect(within(preview).getByRole('button', { name: 'Ask about sales' })).toBeInTheDocument();
     expect(within(preview).getByRole('button', { name: 'Orders by region' })).toBeInTheDocument();
   });
 
