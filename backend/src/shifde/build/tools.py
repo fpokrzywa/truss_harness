@@ -470,7 +470,8 @@ def _validate_sql(binding: dict[str, Any], side: str, props: set[str], report: R
 
 def _validate_platform_sql(binding: dict[str, Any], report: Report, adapter_key: str) -> None:
     """The SELECT-only statement rules, in the dialect of the connection's adapter, on the
-    template as the data platform receives it."""
+    template as the data platform receives it; on Snowflake also the rules of the raw `:word`s
+    the runtime check will read as code."""
     sql = binding.get("sql_template")
     if not isinstance(sql, str) or not sql.strip():
         return  # `_validate_sql` reported it
@@ -482,7 +483,10 @@ def _validate_platform_sql(binding: dict[str, Any], report: Report, adapter_key:
             "a %(name)s parameter must not be followed by a letter, digit or underscore",
         )
     dialect: sqlrules.Dialect = "snowflake" if adapter_key == "snowflake" else "databricks"
-    for issue in sqlrules.statement_rules(named_sql(sql), dialect=dialect):
+    issues = sqlrules.statement_rules(named_sql(sql), dialect=dialect)
+    if dialect == "snowflake":
+        issues += [i for i in sqlrules.raw_word_rules(positional_sql(sql)[0]) if i not in issues]
+    for issue in issues:
         report.error("binding.sql_template", issue.code, issue.message)
 
 

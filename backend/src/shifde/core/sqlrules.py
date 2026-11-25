@@ -6,8 +6,9 @@ It lives in `core` (it imports nothing from `shifde`) so every layer can share i
 `statement_rules` at tool publish on a `connection.sql` template converted to the `:name` form,
 with the dialect of the tool's connection, and the runtime read checks of `adapters` refuse any
 word of `WRITE_KEYWORDS` in a `read` invoke (the Snowflake one also shares `FLOW_OPERATOR`,
-`SYSTEM_PREFIX` and `SNOWFLAKE_REFUSED_WORDS`). Every function takes any string and never raises;
-every issue is an error (callers add severity and path).
+`SYSTEM_PREFIX`, `SNOWFLAKE_REFUSED_WORDS`, `SNOWFLAKE_REFUSED_FUNCTIONS` and the stage path
+constants). Every function takes any string and never raises; every issue is an error (callers add
+severity and path).
 
 `dialect="snowflake"` reads text as `adapters/dataplatforms/sqlapi._code_of` does for Snowflake:
 `'...'` takes backslash escapes, `$$...$$` is an opaque string, `"..."` is an identifier, `//` is
@@ -22,12 +23,16 @@ compared and reported uppercased. `table_name_supported` is the check behind the
 The Snowflake statement rules also refuse what the runtime check refuses (#358): the `->>` flow
 operator in code (`sql_flow_operator`), a word or a whole `"..."` identifier starting with
 `SYSTEM$` (`sql_system_function`), the word `procedure` (`sql_write_statement`) and an
-`IDENTIFIER(...)` whose argument is not one plain literal or name (`sql_dynamic_name`). Here they
-are stricter in two places: a bound `IDENTIFIER(:name)` is refused (no value is known yet) and
-`TABLE(...)` keeps the rule of `IDENTIFIER(...)`. A word directly after a single `:` is a
-parameter name, never one of these words. The Snowflake table rules (drafts and render) are
-stricter again: they accept neither call, and nothing in a FROM clause they cannot read as a
-table, a CTE or a subquery.
+`IDENTIFIER(...)` whose argument is not one plain literal or name (`sql_dynamic_name`). Since #375
+both also refuse a comment or quote mark in an unquoted stage path (`sql_stage_path`; how Snowflake
+reads one is unconfirmed) and the functions `get_ddl`, `get_presigned_url` and `nextval` by name
+(`sql_refused_function`). The function deny-list as a whole is best effort; the least-privileged
+credential (B-1507) is the limiting control. The statement rules are stricter in two places: a
+bound `IDENTIFIER(:name)` is refused (no value is known yet) and `TABLE(...)` keeps the rule of
+`IDENTIFIER(...)`. A word directly after a single `:` is a parameter name, never one of these
+words; in a published template a raw `:call` is no bound parameter, and `raw_word_rules` reads it
+as code. The Snowflake table rules (drafts and render) are stricter again: they accept neither
+call, and nothing in a FROM clause they cannot read as a table, a CTE or a subquery.
 """
 
 from __future__ import annotations
@@ -55,6 +60,14 @@ FLOW_OPERATOR = "->>"
 FLOW_OPERATOR_MESSAGE = "the ->> flow operator is not allowed"
 SYSTEM_PREFIX = "system$"
 SNOWFLAKE_REFUSED_WORDS = frozenset({"procedure"})
+# functions refused by name (#375): they read an object named by a string (or a stage file), or
+# move a sequence
+SNOWFLAKE_REFUSED_FUNCTIONS = frozenset({"get_ddl", "get_presigned_url", "nextval"})
+# an unquoted stage path runs from an `@` in code to the first of these characters; Snowflake may
+# read a comment or quote mark inside it as part of the path, so one is refused there (#375)
+STAGE_PATH_ENDS = " \t\r\n"
+STAGE_PATH_MARKS = ("--", "//", "/*", "'", '"', "$$")
+STAGE_PATH_MESSAGE = "a comment or quote mark in an unquoted stage path is not allowed"
 PUNCTUATION = frozenset(".,();")
 Dialect = Literal["databricks", "snowflake"]
 # the content of a Snowflake quoted identifier that names exactly what the unquoted name does
@@ -83,6 +96,16 @@ _SNOWFLAKE_ARGUMENT = re.compile(r"'[^'\\]*'|[A-Za-z_][A-Za-z0-9_$]*")
 class SqlIssue:
     code: str
     message: str
+
+
+_SYSTEM_FUNCTION = SqlIssue("sql_system_function", "system functions are not allowed")
+_REFUSED_FUNCTION = SqlIssue(
+    "sql_refused_function", "GET_DDL, GET_PRESIGNED_URL and NEXTVAL are not allowed"
+)
+_DYNAMIC_NAME = SqlIssue(
+    "sql_dynamic_name",
+    "IDENTIFIER(...) and TABLE(...) must hold one plain string literal or name",
+)
 
 
 @dataclass(frozen=True)
@@ -330,11 +353,12 @@ def statement_rules(sql: str, *, dialect: Dialect = "databricks") -> list[SqlIss
             refused = True
         if refused and t.value not in seen:
             seen.append(t.value)
-    for word in seen:
-        issues.append(
-            SqlIssue("sql_write_statement", f"{word.upper()} is not allowed in a read statement")
-        )
+    issues += [_write_statement(word) for word in seen]
     return issues
+
+
+def _write_statement(word: str) -> SqlIssue:
+    return SqlIssue("sql_write_statement", f"{word.upper()} is not allowed in a read statement")
 
 
 def _snowflake_word(sql: str, tokens: list[Token], i: int) -> str:
@@ -351,11 +375,18 @@ def _snowflake_word(sql: str, tokens: list[Token], i: int) -> str:
     return word.group().lower() if word else ""
 
 
-def _system_name(sql: str, tokens: list[Token], i: int) -> bool:
+def _code_name(sql: str, tokens: list[Token], i: int) -> str:
+    """The lowercased whole `"..."` identifier or word of code at `i`; empty for anything else."""
     t = tokens[i]
     quoted = t.kind == "quoted_unsupported" or t.quoted
-    name = t.value.lower() if quoted else _snowflake_word(sql, tokens, i)
-    return name.startswith(SYSTEM_PREFIX)
+    return t.value.lower() if quoted else _snowflake_word(sql, tokens, i)
+
+
+def holds_refused_name(text: str) -> bool:
+    """Whether `text`, a string that names an object, contains `SYSTEM_PREFIX` or a name of
+    `SNOWFLAKE_REFUSED_FUNCTIONS` in any case."""
+    lowered = text.lower()
+    return SYSTEM_PREFIX in lowered or any(name in lowered for name in SNOWFLAKE_REFUSED_FUNCTIONS)
 
 
 def _called(sql: str, word: Token, after: Token | None) -> bool:
@@ -367,10 +398,15 @@ def _called(sql: str, word: Token, after: Token | None) -> bool:
 
 def _dynamic_name(sql: str, tokens: list[Token], i: int) -> bool:
     """Whether the token at `i` is the word `identifier` or `table`, called with anything but one
-    plain literal (without `SYSTEM_PREFIX`) or one plain name. It reads the text between the
-    parentheses: operators and a lone `$` are no tokens, and a `$$...$$` is a `string` too."""
-    if _snowflake_word(sql, tokens, i) not in ("identifier", "table"):
-        return False
+    plain literal (without a refused name) or one plain name."""
+    return _snowflake_word(sql, tokens, i) in ("identifier", "table") and _dynamic_call(
+        sql, tokens, i
+    )
+
+
+def _dynamic_call(sql: str, tokens: list[Token], i: int) -> bool:
+    """`_dynamic_name` of the word at `i`. It reads the text between the parentheses: operators and
+    a lone `$` are no tokens, and a `$$...$$` is a `string` too."""
     opened, closed = _at(tokens, i + 1), _at(tokens, i + 3)  # a plain argument is one token
     if opened is None or not _called(sql, tokens[i], opened):
         return False
@@ -381,7 +417,21 @@ def _dynamic_name(sql: str, tokens: list[Token], i: int) -> bool:
     argument = sql[opened.end : closed.start].strip()
     if not _SNOWFLAKE_ARGUMENT.fullmatch(argument):
         return True
-    return argument.startswith("'") and SYSTEM_PREFIX in argument.lower()
+    return argument.startswith("'") and holds_refused_name(argument)
+
+
+def _stage_path_mark(sql: str, tokens: list[Token]) -> bool:
+    """Whether a comment or quote mark stands in an unquoted stage path. The `@` and the characters
+    that end a path are text between tokens, and every mark starts a token. One pass."""
+    path = False
+    end = 0
+    for t in tokens:
+        for ch in sql[end : t.start]:
+            path = ch == "@" or (path and ch not in STAGE_PATH_ENDS)
+        if path and sql.startswith(STAGE_PATH_MARKS, t.start):
+            return True
+        end = t.end
+    return False
 
 
 def _snowflake_rules(sql: str, tokens: list[Token]) -> list[SqlIssue]:
@@ -414,15 +464,38 @@ def _snowflake_rules(sql: str, tokens: list[Token]) -> list[SqlIssue]:
         )
     if any(t.kind == "flow" for t in tokens):
         issues.append(SqlIssue("sql_flow_operator", FLOW_OPERATOR_MESSAGE))
-    if any(_system_name(sql, tokens, i) for i in range(len(tokens))):
-        issues.append(SqlIssue("sql_system_function", "system functions are not allowed"))
+    names = [_code_name(sql, tokens, i) for i in range(len(tokens))]
+    if any(name.startswith(SYSTEM_PREFIX) for name in names):
+        issues.append(_SYSTEM_FUNCTION)
     if any(_dynamic_name(sql, tokens, i) for i in range(len(tokens))):
-        issues.append(
-            SqlIssue(
-                "sql_dynamic_name",
-                "IDENTIFIER(...) and TABLE(...) must hold one plain string literal or name",
-            )
-        )
+        issues.append(_DYNAMIC_NAME)
+    if any(name in SNOWFLAKE_REFUSED_FUNCTIONS for name in names):
+        issues.append(_REFUSED_FUNCTION)
+    if _stage_path_mark(sql, tokens):
+        issues.append(SqlIssue("sql_stage_path", STAGE_PATH_MESSAGE))
+    return issues
+
+
+def raw_word_rules(sql: str) -> list[SqlIssue]:
+    """The issues of the `:word`s in the code of a Snowflake statement whose bound parameters are
+    `?` (the text the runtime check reads): there each word is code, refused by the runtime check's
+    word rules (#375). A called `:identifier` keeps publish's rule of `IDENTIFIER(...)`."""
+    tokens = tokenize(sql, dialect="snowflake")
+    words: list[str] = []
+    dynamic = False
+    for i, t in enumerate(tokens):
+        word = _SNOWFLAKE_WORD.match(sql, t.start + 1) if t.kind == "param" else None
+        if word is not None:
+            words.append(word.group().lower())
+            dynamic = dynamic or (words[-1] == "identifier" and _dynamic_call(sql, tokens, i))
+    refused = WRITE_KEYWORDS | SNOWFLAKE_REFUSED_WORDS
+    issues = [_write_statement(word) for word in dict.fromkeys(words) if word in refused]
+    if any(word.startswith(SYSTEM_PREFIX) for word in words):
+        issues.append(_SYSTEM_FUNCTION)
+    if any(word in SNOWFLAKE_REFUSED_FUNCTIONS for word in words):
+        issues.append(_REFUSED_FUNCTION)
+    if dynamic:
+        issues.append(_DYNAMIC_NAME)
     return issues
 
 
@@ -685,7 +758,8 @@ def table_rules(
     """Snowflake names are compared and reported uppercased (Databricks: lowercased). The Snowflake
     rules (`_snowflake_references`) also refuse every `IDENTIFIER(...)` and `TABLE(...)`, a plain
     literal included. Neither dialect reads what a function names by a string or a one- or two-part
-    name outside a FROM clause (`get_ddl`, `seq.nextval`): the platform's grants limit those."""
+    name outside a FROM clause (a two-part UDF): the platform's grants limit those. The Snowflake
+    statement rules refuse `get_ddl`, `get_presigned_url` and `nextval` by name."""
     tokens = tokenize(sql, dialect=dialect)
     snowflake = dialect == "snowflake"
     norm = str.upper if snowflake else str.lower

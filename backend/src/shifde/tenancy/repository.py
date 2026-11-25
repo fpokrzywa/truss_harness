@@ -229,6 +229,18 @@ def list_projects(
     return list(session.scalars(stmt.order_by(Project.id).limit(limit)))
 
 
+def project_refs(
+    session: Session, tenant_id: UUID, workspace_ids_: Collection[UUID]
+) -> list[tuple[UUID, UUID]]:
+    """(project id, workspace id) of every project of the workspaces, archived ones included."""
+    if not workspace_ids_:
+        return []
+    stmt = select(Project.id, Project.workspace_id).where(
+        Project.tenant_id == tenant_id, Project.workspace_id.in_(list(workspace_ids_))
+    )
+    return [(r[0], r[1]) for r in session.execute(stmt)]
+
+
 def count_projects(
     session: Session,
     *,
