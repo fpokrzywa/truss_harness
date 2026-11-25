@@ -510,6 +510,30 @@ REFUSED_SQL = [
     "select 1 ->> execute immediate 'drop table x'",
     "select 1 ->> remove @s",
     "select 1 ->> undrop table x",
+    # a comment or quote mark in an unquoted stage path (#375)
+    "select $1 from @s//x ->> remove @s/y",
+    "select $1 from @s/a--b ->> remove @s/y",
+    "select $1 from @s/*x ->> remove @s/*/y",
+    "select $1 from @s/it's ->> remove @s/o'x",
+    'select $1 from @s/a"b ->> remove @s/c"d',
+    "select $1 from @s/$$a ->> remove @s/b$$",
+    "select $1 from @~//x ->> remove @~/y",
+    "select $1 from @%t//x",
+    'select $1 from @"S"//x',
+    "select $1 from @db.sc.s//x",
+    "select $1 from @s/a)//x ->> remove @s/y",
+    "select $1 from @s/a,'b'",
+    "select $1 from @s\u00a0//x",
+    # a function refused by name, also in an IDENTIFIER literal (#375)
+    "select get_ddl('table', 't')",
+    "select snowflake.x.Get_Ddl('table','t')",
+    "select \"GET_DDL\"('table','t')",
+    "select get_presigned_url(@s, 'f')",
+    "select seq . nextval",
+    'select "SEQ"."NEXTVAL"',
+    "select identifier('GET_DDL')('table','t')",
+    "select identifier('sc.seq.nextval')",
+    "select :nextval",
 ]
 ACCEPTED_SQL = [
     "SELECT $$hello$$",
@@ -557,6 +581,22 @@ ACCEPTED_SQL = [
     'SELECT "->>" FROM t',
     "SELECT 1 -- ->> x",
     "SELECT filter(a, x -> x > 1), a >> b, a - >> b FROM t",
+    # no mark in an unquoted stage path (#375)
+    "select $1 from @s/x -- c",
+    "select $1 from @s/x // c",
+    "select $1 from @s /* c */",
+    "select $1 from @s (file_format => 'f')",
+    "select $1 from @~",
+    "select $1 from @%t",
+    "select 'a@b'||'c'",
+    "select '@s//x'",
+    "select $$@s//x$$",
+    'select "a@b" from t -- c',
+    "select 1 -- @s\n, 'x'",
+    # names that are not a refused function (#375)
+    "select my_get_ddl, nextval_at from t",
+    "select 'get_ddl', $$nextval$$",
+    "select $nextval",
 ]
 
 
@@ -619,6 +659,9 @@ REFUSED_BOUND = [
     ("SELECT IDENTIFIER( ? )(1)", ["SYSTEM$X"]),
     ("SELECT IDENTIFIER(?)(?)", ["ordinary", "SYSTEM$X"]),
     ("SELECT * FROM TABLE(IDENTIFIER(:fn))", {"fn": "SYSTEM$X"}),
+    ("select identifier(?)", ["SEQ.NEXTVAL"]),
+    ("select identifier(?)('table', ?)", ["Get_Ddl", "t"]),
+    ("select identifier(:fn)(1)", {"fn": "get_presigned_url"}),
 ]
 
 
@@ -656,6 +699,14 @@ def test_a_system_string_without_a_bound_identifier_is_accepted(sf: FakeSnowflak
     _invoke(sf, {"sql": "SELECT ?", "params": ["SYSTEM$X"]})
     (body,) = sf.bodies()
     assert body["bindings"]["1"]["value"] == "SYSTEM$X"
+
+
+def test_a_refused_function_name_without_a_bound_identifier_is_accepted(
+    sf: FakeSnowflakeAccount,
+) -> None:
+    _invoke(sf, {"sql": "select ?", "params": ["get_ddl"]})
+    (body,) = sf.bodies()
+    assert body["bindings"]["1"]["value"] == "get_ddl"
 
 
 def test_write_skips_the_bound_value_check(sf: FakeSnowflakeAccount) -> None:
