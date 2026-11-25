@@ -147,6 +147,17 @@ def test_a_read_sql_tool_on_an_active_snowflake_read_connection_publishes(
         ("select 1 from DEMO_DB.PUBLIC.X where x = 1 or delete", "sql_write_statement"),
         ("select 1; select 2", "sql_multiple_statements"),
         ("select a$$b$$ from DEMO_DB.PUBLIC.X", "sql_syntax"),
+        # the rules shared with the runtime check (#358)
+        ("select system$wait(5)", "sql_system_function"),
+        ('select "SYSTEM$WAIT"(5)', "sql_system_function"),
+        ("select * from identifier(%(customer_id)s||'x')", "sql_dynamic_name"),
+        ("select * from identifier(:region||'x')", "sql_dynamic_name"),
+        ("select * from table(:region)", "sql_dynamic_name"),
+        (
+            "with p as procedure () returns varchar language sql as $$ select 1 $$ select 1",
+            "sql_write_statement",
+        ),
+        ("select 1 ->> execute immediate 'drop table x'", "sql_flow_operator"),
         (
             "select o.id from DEMO_DB.PUBLIC.ORDERS o where o.id = %(customer_id)s_x",
             "invalid_template",

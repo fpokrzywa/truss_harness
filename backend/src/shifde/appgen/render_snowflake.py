@@ -14,7 +14,10 @@ under `ui/config/` and `release.json`. `agent.json` names the release's single m
 A release the app may not run is refused before any byte is rendered (`ReleaseNotRenderable`, 409
 `release_not_renderable`): a data-read table that is not `database.schema.table` of plain names
 (deep health puts it into SQL that runs under the application owner's rights), or a tool whose SQL
-breaks the Snowflake statement rules or uses a `:name` the tool does not declare.
+is longer than a draft's may be, breaks the Snowflake statement rules, uses a `:name` the tool does
+not declare or breaks the Snowflake table rules over the release's data reads (#358: anything but a
+declared table, a CTE or a subquery in a FROM clause, any other three-part name, any
+`IDENTIFIER(...)` or `TABLE(...)`).
 """
 
 from __future__ import annotations
@@ -25,7 +28,13 @@ from importlib.resources import files
 from typing import TYPE_CHECKING, Any  # Any: JSON documents
 
 from shifde.core.errors import AppError
-from shifde.core.sqlrules import statement_rules, table_name_supported, tokenize
+from shifde.core.sqlrules import (
+    MAX_TOOL_SQL_CHARS,
+    statement_rules,
+    table_name_supported,
+    table_rules,
+    tokenize,
+)
 
 if TYPE_CHECKING:
     from shifde.appgen.render import Resolved, ResolvedTool
@@ -83,16 +92,25 @@ def _tables(manifest: Mapping[str, Any]) -> list[str]:  # Any: the release manif
     return sorted(tables)
 
 
-def _tool_sql(tool: ResolvedTool) -> tuple[str, list[str]]:
-    """`positional` of the tool's SQL; refused unless it keeps the Snowflake statement rules (a
-    tool published before them may not) and uses only declared parameters (SETH binds
-    `%(name)s`, so another `:name` is SQL text there, not a parameter)."""
+def _tool_sql(tool: ResolvedTool, tables: list[str]) -> tuple[str, list[str]]:
+    """`positional` of the tool's SQL; refused unless it is no longer than a draft's may be (a
+    hand-published tool's may; checked before any rule, since rendering runs in the API process),
+    keeps the Snowflake statement rules (a tool published before them may not), uses only declared
+    parameters (SETH binds `%(name)s`, so another `:name` is SQL text there, not a parameter) and
+    keeps `table_rules` over `tables`, the data reads the plan's approver sees. Those rules fail
+    closed on FROM clauses but read no object a function names (`table_rules`): the installed
+    app's grants limit those."""
+    refused = f"the SQL of tool {tool.name!r} is refused"
+    if len(tool.sql) > MAX_TOOL_SQL_CHARS:
+        raise ReleaseNotRenderable(f"{refused}: it is longer than {MAX_TOOL_SQL_CHARS} characters")
     issues = [issue.message for issue in statement_rules(tool.sql, dialect="snowflake")]
     sql, order = positional(tool.sql)
     declared = {p.name for p in tool.parameters}
     issues += [f":{n} is not a declared parameter" for n in order if n not in declared]
+    if not issues:
+        issues = [issue.message for issue in table_rules(tool.sql, tables, dialect="snowflake")]
     if issues:
-        raise ReleaseNotRenderable(f"the SQL of tool {tool.name!r} is refused: {issues[0]}")
+        raise ReleaseNotRenderable(f"{refused}: {issues[0]}")
     return sql, order
 
 
@@ -102,17 +120,18 @@ def render_snowflake(
     """The Native App package files of a `snowflake.native-app/v1` release, by package path."""
     templates = files("shifde.appgen").joinpath("templates")
     snowflake = templates.joinpath("snowflake")
+    tables = _tables(manifest)
     agent = {
         "name": resolved.agent.name,
         "instructions": resolved.agent.instructions,
         "cortex_model": resolved.model.serving_endpoint,
         "generator_version": GENERATOR_VERSION,
         "release_digest": release_digest,
-        "tables": _tables(manifest),
+        "tables": tables,
     }
     tools = []
     for t in sorted(resolved.tools, key=lambda t: t.name):
-        sql, order = _tool_sql(t)
+        sql, order = _tool_sql(t, tables)
         tools.append(
             {
                 "name": t.name,
