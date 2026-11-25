@@ -8,33 +8,43 @@ export interface TargetBindings {
   serving_endpoint?: string | null;
 }
 
-export interface TargetCreate {
+export interface SnowflakeBindings {
+  package: string;
+  application: string;
+  warehouse: string;
+  cortex_model: string;
+}
+
+/** A target's platform and the bindings of that platform. */
+export type PlatformBindings =
+  | { platform_kind: 'databricks'; bindings: TargetBindings }
+  | { platform_kind: 'snowflake'; bindings: SnowflakeBindings };
+
+export type PlatformKind = PlatformBindings['platform_kind'];
+
+export type TargetCreate = PlatformBindings & {
   workspace: string;
   project?: string | null;
   name: string;
-  platform_kind: 'databricks';
   address: string;
   environment: DeliveryEnvironment;
-  bindings: TargetBindings;
   credential_ref: string;
-}
+};
 
-export interface TargetOut {
+export type TargetOut = PlatformBindings & {
   id: string;
   name: string;
   workspace: string | null;
   project: string | null;
-  platform_kind: string;
   address: string;
   environment: string;
-  bindings: TargetBindings;
   credential_ref: string;
   status: string;
   revision: number;
   created_by: string;
   created_at: string;
   updated_at: string | null;
-}
+};
 
 export type ExecutorStatus = 'active' | 'disabled';
 

@@ -2,6 +2,7 @@ import type { AppPreviewOut } from '@/lib/api/appgen-types';
 import type { DatasetOut, EvaluationRunOut } from '@/lib/api/evaluation-types';
 import {
   COMPILER_VERSION_APP,
+  SNOWFLAKE_TARGET_KIND,
   type ReleaseOut,
   type SolutionOut,
   type SolutionVersionOut,
@@ -127,6 +128,12 @@ export const APP_RELEASE: ReleaseOut = {
   ...RELEASE,
   id: 'r-2',
   manifest: { ...RELEASE.manifest, compiler_version: COMPILER_VERSION_APP },
+};
+
+/** A generated-app release for a Snowflake target. */
+export const SNOWFLAKE_APP_RELEASE: ReleaseOut = {
+  ...APP_RELEASE,
+  manifest: { ...APP_RELEASE.manifest, target_kind: SNOWFLAKE_TARGET_KIND },
 };
 
 export const APP_PREVIEW: AppPreviewOut = {

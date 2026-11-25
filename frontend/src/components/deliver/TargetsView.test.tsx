@@ -1,7 +1,14 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { D, DELIVERY_READ_PERMS, list, stubDelivery, TARGET } from '@/test/delivery';
+import {
+  D,
+  DELIVERY_READ_PERMS,
+  list,
+  SNOWFLAKE_TARGET,
+  stubDelivery,
+  TARGET,
+} from '@/test/delivery';
 import { bodyOf } from '@/test/security';
 import { jsonResponse, problemResponse, renderWithClient } from '@/test/utils';
 import { TargetsView } from './TargetsView';
@@ -79,6 +86,41 @@ describe('TargetsView list', () => {
     const headers = within(table).getAllByRole('columnheader');
     const column = headers.findIndex((h) => h.textContent === 'Serving endpoint');
     expect(cells[column]).toHaveTextContent(/^-$/);
+  });
+
+  it('shows the bindings of each platform in their columns, and - for the other platform', async () => {
+    stubDelivery({ [`GET ${D}/targets`]: () => list([TARGET, SNOWFLAKE_TARGET]) });
+    renderWithClient(<TargetsView />);
+    const table = await screen.findByRole('table', { name: 'Deployment targets' });
+    const headers = within(table)
+      .getAllByRole('columnheader')
+      .map((h) => h.textContent);
+    const cellsOf = (name: string) => {
+      const row = within(table).getByRole('cell', { name }).closest('tr')!;
+      const cells = within(row).getAllByRole('cell');
+      return Object.fromEntries(headers.map((h, i) => [h, cells[i]?.textContent]));
+    };
+    expect(cellsOf('Finance prod')).toMatchObject({
+      Kind: 'SnowflakeExperimental',
+      Address: 'https://acme-fin.snowflakecomputing.com',
+      Warehouse: 'APP_WH',
+      'Serving endpoint': '-',
+      Package: 'SALES_PKG',
+      Application: 'SALES_APP',
+      'Cortex model': 'llama3.1-70b',
+      'Credential reference': 'sf.prod',
+    });
+    expect(cellsOf('Analytics prod')).toMatchObject({
+      Kind: 'DatabricksExperimental',
+      Warehouse: 'wh-0042',
+      'Serving endpoint': '-',
+      Package: '-',
+      Application: '-',
+      'Cortex model': '-',
+      'Credential reference': 'dbx.prod',
+    });
+    expect(headers).not.toContain('Warehouse ID');
+    expect(screen.queryByText('Validated')).not.toBeInTheDocument();
   });
 
   it('shows an empty state', async () => {
@@ -200,6 +242,180 @@ describe('TargetsView register', () => {
     const alert = await within(dialog).findByText(CLAIMED);
     expect(alert.closest('[role="alert"]')).toHaveTextContent('Could not register the target');
     expect(within(dialog).getByText('platform_already_registered')).toBeInTheDocument();
+  });
+});
+
+describe('TargetsView register on Snowflake', () => {
+  const IDENTIFIER_RULE = 'Use 1-255 letters, digits, _ or $, starting with a letter or _.';
+  const CORTEX_MODEL_RULE =
+    'Use 1-64 lowercase letters, digits, dots, underscores or hyphens, starting with a letter or digit.';
+  const FIELDS = {
+    'Account address': 'https://Acme-Fin.snowflakecomputing.com',
+    Package: 'Sales_Pkg',
+    Application: 'SALES_APP$1',
+    Warehouse: '_app_wh',
+    'Cortex model': 'llama3.1-70b',
+  };
+
+  async function choose(platform: string) {
+    await userEvent.selectOptions(screen.getByLabelText('Platform'), platform);
+  }
+
+  async function fillSnowflake(over: Partial<typeof FIELDS> = {}) {
+    await userEvent.click(await screen.findByRole('button', { name: 'Register target' }));
+    const dialog = screen.getByRole('dialog');
+    await choose('Snowflake');
+    await userEvent.type(within(dialog).getByLabelText('Name'), 'Finance prod');
+    await within(dialog).findByRole('option', { name: 'Engineering' });
+    await userEvent.selectOptions(within(dialog).getByLabelText('Workspace'), 'eng');
+    for (const [label, value] of Object.entries({ ...FIELDS, ...over })) {
+      await userEvent.type(within(dialog).getByLabelText(label), value);
+    }
+    await userEvent.type(within(dialog).getByLabelText('Credential reference'), ' sf.prod ');
+    return dialog;
+  }
+
+  const submit = (dialog: HTMLElement) =>
+    userEvent.click(within(dialog).getByRole('button', { name: 'Register target' }));
+
+  it('swaps the platform fields, keeps the shared values and clears the shown errors', async () => {
+    stubDelivery(WORKSPACES);
+    renderWithClient(<TargetsView />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Register target' }));
+    const dialog = screen.getByRole('dialog');
+    const d = within(dialog);
+    expect(d.getByLabelText('Platform')).toHaveDisplayValue('Databricks');
+    expect(d.getByText('Experimental')).toBeInTheDocument();
+    for (const label of Object.keys(FIELDS)) {
+      expect(d.queryByLabelText(label)).not.toBeInTheDocument();
+    }
+    await userEvent.type(d.getByLabelText('Name'), 'Finance prod');
+    await d.findByRole('option', { name: 'Engineering' });
+    await userEvent.selectOptions(d.getByLabelText('Workspace'), 'eng');
+    await d.findByRole('option', { name: 'API' });
+    await userEvent.selectOptions(d.getByLabelText('Project (optional)'), 'api');
+    await userEvent.selectOptions(d.getByLabelText('Environment'), 'prod');
+    await submit(dialog);
+    expect(await d.findByText('Warehouse ID is required.')).toBeInTheDocument();
+    expect(d.getByText('Credential reference is required.')).toBeInTheDocument();
+
+    await choose('Snowflake');
+    expect(d.queryByText(/is required/)).not.toBeInTheDocument();
+    for (const label of Object.keys(FIELDS)) {
+      expect(d.getByLabelText(label)).toHaveValue('');
+    }
+    expect(d.getByText(/https:\/\/<account>\.snowflakecomputing\.com/)).toBeInTheDocument();
+    expect(d.getByText('Experimental')).toBeInTheDocument();
+    for (const label of ['Address', 'Warehouse ID', 'Serving endpoint (optional)']) {
+      expect(d.queryByLabelText(label)).not.toBeInTheDocument();
+    }
+    expect(d.getByLabelText('Name')).toHaveValue('Finance prod');
+    expect(d.getByLabelText('Workspace')).toHaveValue('eng');
+    expect(d.getByLabelText('Project (optional)')).toHaveValue('api');
+    expect(d.getByLabelText('Environment')).toHaveValue('prod');
+  });
+
+  it('posts exactly the Snowflake body, trimmed, closes the dialog and refreshes the list', async () => {
+    const fetchMock = stubDelivery({
+      ...WORKSPACES,
+      [`POST ${D}/targets`]: () => jsonResponse(SNOWFLAKE_TARGET, { status: 201 }),
+    });
+    renderWithClient(<TargetsView />);
+    const dialog = await fillSnowflake(
+      Object.fromEntries(Object.entries(FIELDS).map(([k, v]) => [k, `  ${v} `])),
+    );
+    await submit(dialog);
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(bodyOf(fetchMock, `POST ${D}/targets`)).toEqual({
+      workspace: 'eng',
+      name: 'Finance prod',
+      platform_kind: 'snowflake',
+      address: 'https://Acme-Fin.snowflakecomputing.com',
+      environment: 'dev',
+      bindings: {
+        package: 'Sales_Pkg',
+        application: 'SALES_APP$1',
+        warehouse: '_app_wh',
+        cortex_model: 'llama3.1-70b',
+      },
+      credential_ref: 'sf.prod',
+    });
+    await waitFor(() =>
+      expect(fetchMock.calls.filter((c) => c.key === `GET ${D}/targets`).length).toBe(2),
+    );
+  });
+
+  it('posts no value typed for the other platform', async () => {
+    const fetchMock = stubDelivery({
+      ...WORKSPACES,
+      [`POST ${D}/targets`]: () => jsonResponse(TARGET, { status: 201 }),
+    });
+    renderWithClient(<TargetsView />);
+    const dialog = await fillSnowflake();
+    await choose('Databricks');
+    expect(within(dialog).getByLabelText('Address')).toHaveValue('');
+    await userEvent.type(within(dialog).getByLabelText('Address'), 'https://adb-1.example');
+    await userEvent.type(within(dialog).getByLabelText('Warehouse ID'), 'wh-1');
+    await submit(dialog);
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(bodyOf(fetchMock, `POST ${D}/targets`)).toEqual({
+      workspace: 'eng',
+      name: 'Finance prod',
+      platform_kind: 'databricks',
+      address: 'https://adb-1.example',
+      environment: 'dev',
+      bindings: { warehouse_id: 'wh-1' },
+      credential_ref: 'sf.prod',
+    });
+  });
+
+  it('asks for each Snowflake field before calling the API', async () => {
+    const fetchMock = stubDelivery(WORKSPACES);
+    renderWithClient(<TargetsView />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Register target' }));
+    const dialog = screen.getByRole('dialog');
+    await choose('Snowflake');
+    await userEvent.type(within(dialog).getByLabelText('Package'), '   ');
+    await submit(dialog);
+    for (const label of Object.keys(FIELDS)) {
+      expect(within(dialog).getByLabelText(label)).toHaveAccessibleDescription(
+        new RegExp(`${label} is required\\.$`),
+      );
+    }
+    expect(fetchMock.calls.some((c) => c.key.startsWith('POST'))).toBe(false);
+  });
+
+  it.each([
+    ['Package', '1bad', IDENTIFIER_RULE],
+    ['Application', 'a-b', IDENTIFIER_RULE],
+    ['Warehouse', 'has space', IDENTIFIER_RULE],
+    ['Cortex model', 'Llama', CORTEX_MODEL_RULE],
+  ])('refuses the %s %j before calling the API', async (label, value, rule) => {
+    const fetchMock = stubDelivery(WORKSPACES);
+    renderWithClient(<TargetsView />);
+    const dialog = await fillSnowflake({ [label]: value });
+    await submit(dialog);
+    expect(await within(dialog).findByText(rule)).toBeInTheDocument();
+    expect(within(dialog).getByLabelText(label)).toHaveAccessibleDescription(rule);
+    expect(fetchMock.calls.some((c) => c.key.startsWith('POST'))).toBe(false);
+  });
+
+  it.each([
+    ['platform_already_registered', CLAIMED],
+    ['binding_in_use', 'This package or application is already bound to a target.'],
+  ])('shows a 409 %s in the dialog until the platform changes', async (code, detail) => {
+    stubDelivery({
+      ...WORKSPACES,
+      [`POST ${D}/targets`]: () => problemResponse(409, code, { detail }),
+    });
+    renderWithClient(<TargetsView />);
+    const dialog = await fillSnowflake();
+    await submit(dialog);
+    const alert = await within(dialog).findByText(detail);
+    expect(alert.closest('[role="alert"]')).toHaveTextContent('Could not register the target');
+    expect(within(dialog).getByText(code)).toBeInTheDocument();
+    await choose('Databricks');
+    expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument();
   });
 });
 
