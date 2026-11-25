@@ -551,6 +551,11 @@ REFUSED_SQL = [
     "select get_ddl\u3164('a')",
     "select get_d\u200bdl('a')",
     "select\u00a0a from t",
+    # a blank letter in code (#425)
+    "select get_ddl\U00013441('a')",
+    "select get_ddl\U00013442('a')",
+    "select get_\U00013441ddl('a')",
+    "select :\U00013442call",
 ]
 ACCEPTED_SQL = [
     "SELECT $$hello$$",
@@ -627,6 +632,8 @@ ACCEPTED_SQL = [
     "select :call\u00e9",
     "select gr\u00f6\u00dfe from t",
     "select '\u3164', \"\u200b\" from t -- \u3164",
+    "select '\U00013441\U00013442', \"\U00013441\U00013442\" from t -- \U00013441\U00013442",
+    "select $$\U00013441\U00013442$$ /* \U00013441\U00013442 */",
 ]
 
 
