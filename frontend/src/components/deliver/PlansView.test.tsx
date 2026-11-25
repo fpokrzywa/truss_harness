@@ -38,6 +38,22 @@ const HINTS = {
     detail: "The release's model provider is not in the target's workspace.",
     hint: "The release's model provider is not in the target's Databricks workspace. Use a release whose model provider is in the target's workspace (its address matches the target's address).",
   },
+  target_kind_mismatch: {
+    detail: 'The release target kind is not the platform of the target.',
+    hint: "The release is built for another platform than the target. Choose a target of the release's platform (Databricks or Snowflake), or a release built for this target's platform.",
+  },
+  cortex_model_mismatch: {
+    detail: "The release's model binding is not the target's Cortex model.",
+    hint: "The target's Cortex model is not the model the release is bound to. Use a target whose Cortex model matches the release's model binding, or a release bound to that model.",
+  },
+  model_not_in_target_account: {
+    detail: "The release's model provider is not in the target's account.",
+    hint: "The release's model provider is not in the target's Snowflake account. Use a release whose model provider is in the target's account (its address matches the target's address).",
+  },
+  snowflake_patch_limit: {
+    detail: 'The package of the target is full.',
+    hint: 'This package has no free patch. Register a target with a new package and request the plan again.',
+  },
 };
 const LATER = ['Project', 'Solution', 'Version', 'Release'];
 const TARGETS = {

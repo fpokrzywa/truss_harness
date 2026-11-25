@@ -8,6 +8,9 @@ import {
   DEPLOYMENT,
   DEPLOYMENT_DETAIL,
   PLAN,
+  SNOWFLAKE_DEPLOYMENT_DETAIL,
+  SNOWFLAKE_STEPS,
+  SNOWFLAKE_TARGET,
   stubDelivery,
   TARGET,
 } from '@/test/delivery';
@@ -179,7 +182,7 @@ describe('DeploymentDetailView content', () => {
     renderWithClient(<DeploymentDetailView id="dep-1" />);
     const summary = await loaded();
     expect(within(summary).getByText('verified')).toHaveClass('badge');
-    expect(within(summary).getByText('Experimental')).toBeInTheDocument();
+    expect(await within(summary).findByText('Experimental')).toBeInTheDocument();
     expect(within(summary).getByRole('link', { name: 'p-1' })).toHaveAttribute(
       'href',
       '/o/acme/deliver/plans/p-1',
@@ -226,6 +229,55 @@ describe('DeploymentDetailView content', () => {
     const { container } = renderWithClient(<DeploymentDetailView id="dep-1" />);
     expect(await screen.findByText(evil)).toBeInTheDocument();
     expect(container.querySelector('img')).toBeNull();
+  });
+});
+
+describe('DeploymentDetailView platform', () => {
+  const targets = { [`GET ${D}/targets`]: () => list([TARGET, SNOWFLAKE_TARGET]) };
+  const kind = async () => {
+    const summary = await loaded();
+    return within(summary).getByText('Kind').nextElementSibling as HTMLElement;
+  };
+
+  it.each([
+    ['Databricks', 't-1'],
+    ['Snowflake', 't-sf'],
+  ])('shows %s and Experimental for a deployment on that platform', async (label, target_id) => {
+    stubDelivery({ ...targets, ...detail({ target_id }) });
+    renderWithClient(<DeploymentDetailView id="dep-1" />);
+    const row = await kind();
+    await waitFor(() => expect(row).toHaveTextContent(new RegExp(`^${label} Experimental$`)));
+  });
+
+  it('shows - and no platform name for a target that is not in the list', async () => {
+    const fetchMock = stubDelivery({ ...targets, ...detail({ target_id: 't-gone' }) });
+    renderWithClient(<DeploymentDetailView id="dep-1" />);
+    const row = await kind();
+    // once the list of targets has been answered
+    await waitFor(() =>
+      expect(fetchMock.calls.some((c) => c.key === `GET ${D}/targets`)).toBe(true),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(row).toHaveTextContent(/^-$/);
+    for (const word of ['Databricks', 'Snowflake', 'Experimental']) {
+      expect(screen.queryByText(new RegExp(word))).not.toBeInTheDocument();
+    }
+  });
+
+  it('lists the eight Snowflake steps of the journal in server order', async () => {
+    stubDelivery({ ...targets, [GET_DETAIL]: () => jsonResponse(SNOWFLAKE_DEPLOYMENT_DETAIL) });
+    renderWithClient(<DeploymentDetailView id="dep-1" />);
+    const journal = await screen.findByRole('region', { name: 'Journal' });
+    const entries = within(journal)
+      .getAllByRole('listitem')
+      .map((li) => Array.from(li.querySelectorAll('span'), (s) => s.textContent).slice(0, 2));
+    expect(entries).toEqual(
+      SNOWFLAKE_STEPS.flatMap((step) => [
+        [step, 'intent'],
+        [step, 'complete'],
+      ]),
+    );
+    expect(SNOWFLAKE_STEPS).toHaveLength(8);
   });
 });
 

@@ -23,19 +23,12 @@ import {
 } from '../admin/ui';
 import { StatusBadge } from '../integrate/Maturity';
 import { useOrgParam } from '../security/useOrg';
+import { refusalHint } from './refusalHints';
 import { targetName } from './targetName';
 
 const COLUMNS = ['Display name', 'Application key', 'Target', 'Status', 'Expires', 'Created'];
 const APPLICATION_KEY = /^[a-z][a-z0-9-]{0,62}$/;
 const SELECT = { value: '', label: 'Select...' };
-const REFUSAL_HINTS: Record<string, string> = {
-  serving_endpoint_required:
-    "This release is a generated app, and the target has no serving endpoint. Use a target registered with a serving endpoint, the model serving endpoint named in the release's model binding.",
-  serving_endpoint_mismatch:
-    "The target's serving endpoint is not the model the release is bound to. Use a target whose serving endpoint matches the release's model binding, or a release bound to that endpoint.",
-  model_not_in_target_workspace:
-    "The release's model provider is not in the target's Databricks workspace. Use a release whose model provider is in the target's workspace (its address matches the target's address).",
-};
 
 /** Deployment plans: list and request. Server text renders as plain React text only. */
 export function PlansView() {
@@ -189,10 +182,7 @@ function RequestPlanDialog({ org, onClose }: { org: string; onClose: () => void 
     : [];
   const evaluationRequired =
     action.error instanceof ApiError && action.error.code === 'evaluation_required';
-  const refusalHint =
-    action.error instanceof ApiError && Object.hasOwn(REFUSAL_HINTS, action.error.code)
-      ? REFUSAL_HINTS[action.error.code]
-      : undefined;
+  const hint = action.error instanceof ApiError ? refusalHint(action.error.code) : undefined;
 
   return (
     <Modal title="Request plan" onClose={onClose} busy={action.busy}>
@@ -327,7 +317,7 @@ function RequestPlanDialog({ org, onClose }: { org: string; onClose: () => void 
           maxLength={200}
         />
         <ActionError error={action.error} title="Could not request the plan" />
-        {refusalHint && <p className="text-sm">{refusalHint}</p>}
+        {hint && <p className="text-sm">{hint}</p>}
         {evaluationRequired && (
           <p className="text-sm">
             <Link className="text-blue-800 underline" href={releaseHref(org, submittedRelease)}>

@@ -42,6 +42,28 @@ describe('PlanDetailView', () => {
     expect(screen.queryByRole('timer')).not.toBeInTheDocument();
   });
 
+  it.each([
+    ['plan_failed', 'plan job failed: snowflake_patch_limit', 1],
+    ['plan_failed', 'plan job failed: execution_failed', 0],
+    ['plan_failed', 'snowflake_patch_limit', 0],
+    ['rejected', 'plan job failed: snowflake_patch_limit', 0],
+  ])(
+    'shows the raw reason of a %s plan (%s) with %i patch limit hints',
+    async (status, status_reason, hints) => {
+      stubDelivery({
+        [`GET ${D}/plans/p-1`]: () => jsonResponse({ ...PLAN, status, status_reason }),
+      });
+      renderWithClient(<PlanDetailView id="p-1" />);
+      expect(await screen.findByText(status_reason)).toBeInTheDocument();
+      expect(
+        screen.queryAllByText(
+          'This package has no free patch. Register a target with a new package and request the plan again.',
+        ),
+      ).toHaveLength(hints);
+      expect(screen.queryAllByText(/no free patch/)).toHaveLength(hints);
+    },
+  );
+
   it('shows the decision and links to the deployment', async () => {
     stubDelivery({
       [`GET ${D}/plans/p-1`]: () =>
