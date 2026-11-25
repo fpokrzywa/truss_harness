@@ -627,6 +627,93 @@ def test_a_rotated_palantir_secret_mints_a_new_token_mid_apply(mid: Mid, tmp_pat
     assert mid.sent[:2] == [TOKEN_PATH, INSTALLATIONS] and mid.sent.count(TOKEN_PATH) == 1
 
 
+def _rotate(tmp_path: Path) -> None:
+    (tmp_path / "palantir.json.secret").write_text("rotated-fixture-secret", encoding="utf-8")
+
+
+def _verify_refused(
+    mid: Mid, owner_db: Database, change: Callable[[Mid], None], path: str, nth: int
+) -> None:
+    """Verify with its second client refused a token: the job fails and no report is stored."""
+    deployment = _approved(mid.flow, mid.target, mid.runner)
+    for _ in ("apply", "observe"):
+        mid.job(deployment)
+    mid.after(path, change, nth)
+    row = mid.job(deployment)
+    assert mid.changed
+    (job,) = deployment_jobs(owner_db, deployment, "verify")
+    assert job["result"] == {"status": "failed", "error_code": "execution_failed"}
+    assert (row["status"], row["status_reason"]) == ("failed", "verification failed")
+    assert row["verification"] is None
+
+
+def test_a_palantir_secret_rotated_inside_verifys_second_mint_is_the_jobs_failure(
+    mid: Mid, owner_db: Database, tmp_path: Path
+) -> None:
+    """Not a failed `ontology-read`; nothing is sent after the mint."""
+    _verify_refused(mid, owner_db, lambda _mid: _rotate(tmp_path), TOKEN_PATH, 2)
+    assert mid.sent == []
+
+
+NO_TOKEN = {
+    "4xx": (401, b""),
+    "5xx": (503, b""),
+    "not-json": (200, b"not json"),
+    "no-access-token": (200, b'{"token_type": "bearer"}'),
+}
+
+
+@pytest.mark.parametrize("answer", NO_TOKEN)
+def test_a_token_endpoint_refusing_verifys_second_mint_is_the_jobs_failure(
+    mid: Mid, owner_db: Database, monkeypatch: pytest.MonkeyPatch, answer: str
+) -> None:
+    """Not a failed `ontology-read`; nothing is sent after the refused token request."""
+    status, content = NO_TOKEN[answer]
+
+    def refuse(mid: Mid) -> None:
+        monkeypatch.setattr(
+            mid.stack, "_token", lambda _request: httpx.Response(status, content=content)
+        )
+
+    _verify_refused(mid, owner_db, refuse, ONTOLOGIES, 2)  # the first client's last read
+    assert mid.sent == [TOKEN_PATH]
+
+
+@pytest.mark.parametrize(
+    ("path", "nth", "posts", "steps"),
+    [
+        (ONTOLOGIES, 4, [], []),  # the next request is the first write
+        (INSTALLATIONS, 2, [INSTALLATIONS], STEPS[:1]),  # the next request submits the job
+    ],
+)
+def test_a_palantir_token_refused_before_a_write_leaves_no_open_intent(
+    mid: Mid,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    path: str,
+    nth: int,
+    posts: list[str],
+    steps: tuple[str, ...],
+) -> None:
+    """The secret is rotated between two steps and the stack refuses the new one."""
+
+    def change(mid: Mid) -> None:
+        _rotate(tmp_path)
+        monkeypatch.setattr(mid.stack, "_token", lambda _request: httpx.Response(401))
+
+    deployment = _approved(mid.flow, mid.target, mid.runner)
+    mid.after(path, change, nth)
+    row = mid.job(deployment)
+    assert mid.changed and mid.sent == [TOKEN_PATH]
+    assert [p for p, _ in mid.stack.posts] == posts
+    journal = {s["step_key"]: s["state"] for s in mid.flow.get(deployment)["journal"]}
+    assert journal == dict.fromkeys(steps, "complete")
+    reason = "apply failed after a platform write may have happened: execution_failed"
+    assert (row["status"], row["status_reason"]) == (
+        ("unknown_outcome", reason) if steps else ("failed", "no platform write was attempted")
+    )
+
+
 # ------------------------------------------------------------------ the descriptor
 class Tampered(GatewayClient):
     """The in-process gateway, serving another artifact, whose digest the context agrees with."""

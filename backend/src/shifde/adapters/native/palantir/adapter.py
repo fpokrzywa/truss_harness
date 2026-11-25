@@ -3,12 +3,21 @@
 It installs the operator-approved product version named on the target (Call S8-H). Every write is
 attempted once and each accepted RID is checkpointed before the next request; nothing is ever
 aborted, uninstalled, deleted or rolled back, and an installation with an Ontology override is
-refused at plan, apply and observe. The client's `authorize` runs before every request, and in an
-apply before the intent of each writing step too, so a refusal leaves no intent; in verify a refusal
-is the job's failure, never a failed check. The accepted toolchain digest is the caller's (the
-executor's names its platform, so a plan made on the fake is refused on a real stack before any
-request). Every verification report carries `content-check: not_run`: the product's content is not
-derived from the release, and no check here reads it.
+refused at plan, apply and observe. The client's `authorize` runs before every request. An apply
+asks for its token before the intent of each writing step too (`bearer`: `authorize`, and a mint
+when the credentials changed), so a refusal there leaves no intent; one that comes only at the
+write's own check, after the intent, leaves it open with no write sent.
+
+In verify the job fails, with no report, when `authorize` or the credential provider refuses, when
+the token endpoint answers anything but a token (a 4xx, a 5xx, an unreadable body) and when the
+credentials change while a token is minted. Any other error of the `ontology-read` or
+`frontend-asset` check is that check's failure, a timeout or lost connection of the token request
+included. Before those checks, in the reads of the observation, every error is the job's failure.
+
+The accepted toolchain digest is the caller's (the executor's names its platform, so a plan made on
+the fake is refused on a real stack before any request). Every verification report carries
+`content-check: not_run`: the product's content is not derived from the release, and no check here
+reads it.
 """
 
 from __future__ import annotations
@@ -350,7 +359,7 @@ class PalantirMarketplaceAdapter:
                 ).model_dump(mode="json"),
             )
 
-        client.authorize()
+        client.bearer()
         begin(CREATE)
         native = state["installation"] or client.create_installation(
             {
@@ -373,7 +382,7 @@ class PalantirMarketplaceAdapter:
         complete(CREATE, binding, {"installation": identity})
         _check_installation(client.get_installation(identity), b, identity)
         payload = job_payload(identity, b.version_id)
-        client.authorize()
+        client.bearer()
         begin(SUBMIT)
         job = job_rid(client.submit_job(payload).get("rid"))
         handles = {"installation": identity, "job_id": job, "request_digest": digest(payload)}

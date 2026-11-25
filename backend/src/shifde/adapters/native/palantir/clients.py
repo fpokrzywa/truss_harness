@@ -61,7 +61,7 @@ class PalantirClient:
         self._authorize = authorize
         self._token: str | None = None
         self._minted: FoundryCredentials | None = None  # the credentials `_token` is of
-        self.refused = False  # this client was refused a check or a credential
+        self.refused = False  # this client was refused a check, a credential or a token
 
     def __repr__(self) -> str:
         return f"PalantirClient(host={self.target.host!r}, platform={self.platform!r})"
@@ -121,7 +121,13 @@ class PalantirClient:
             self.refused = True
             raise
 
-    def _bearer(self) -> str:
+    def _refusal(self) -> PermissionError:
+        """The error of a token the stack did not give or that is of other credentials; marks the
+        client `refused`."""
+        self.refused = True
+        return PermissionError("Foundry native credential unavailable")
+
+    def bearer(self) -> str:
         """A client-credentials token of the credentials the job may use now: minted on first use
         and again when they changed. Nothing is sent between the last check and the request the
         token is for."""
@@ -142,13 +148,13 @@ class PalantirClient:
                     )
                 )
             except (RuntimeError, ValueError):
-                raise PermissionError("Foundry native credential unavailable") from None
+                raise self._refusal() from None
             token = body.get("access_token")
             if not isinstance(token, str) or not token:
-                raise PermissionError("Foundry native credential unavailable")
+                raise self._refusal()
             self._token, self._minted = token, credentials
             if self.authorize() != credentials:
-                raise PermissionError("Foundry native credential unavailable")
+                raise self._refusal()
         return self._token
 
     def request(
@@ -169,7 +175,7 @@ class PalantirClient:
             self._send(
                 method,
                 self.target.host + path,
-                headers={"Authorization": "Bearer " + self._bearer()},
+                headers={"Authorization": "Bearer " + self.bearer()},
                 params=query or None,
                 body=body,
             )
