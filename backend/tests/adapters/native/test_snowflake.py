@@ -25,7 +25,7 @@ from shifde.adapters.native.contracts import (
 from shifde.adapters.native.snowflake import LIVE_VALIDATED, MATURITY
 from shifde.adapters.native.snowflake.adapter import STEPS, SnowflakePatchLimit
 from shifde.adapters.native.snowflake.source import identifier, validate_source
-from tests.adapters.native.conftest import SF_FILES, Setup, SfSetup
+from tests.adapters.native.conftest import SF_FILES, SF_RELEASE, Setup, SfSetup
 
 PKG, APP = '"SHIFDE_PKG"', '"SHIFDE_APP"'
 
@@ -165,7 +165,7 @@ def test_deploy_follows_the_eight_steps_then_observes_and_verifies(sf: SfSetup) 
     staged = sf.account.stages["SHIFDE_PKG"]["files"]
     assert {path.removeprefix(f"{digest}/") for path in staged} == set(SF_FILES)
     assert sf.adapter.observe(ObserveRequest(receipt=receipt), sf.read).state == "succeeded"
-    report = sf.adapter.verify(VerifyRequest(receipt=receipt), sf.read)
+    report = sf.adapter.verify(VerifyRequest(receipt=receipt, release_digest=SF_RELEASE), sf.read)
     assert report.passed
     assert [(c.name, c.status) for c in report.checks] == [
         ("native-version", "passed"),
@@ -198,7 +198,9 @@ def test_a_second_release_is_patch_1_and_an_upgrade(sf: SfSetup) -> None:
     assert {r.key: r for r in receipt.resources} == original  # identities preserved
     assert receipt.operation_handles["patch"] == "1"
     assert sf.account.applications["SHIFDE_APP"]["patch"] == 1
-    assert nxt.adapter.verify(VerifyRequest(receipt=receipt), nxt.read).passed
+    assert nxt.adapter.verify(
+        VerifyRequest(receipt=receipt, release_digest=SF_RELEASE), nxt.read
+    ).passed
     assert not any("DROP " in entry for entry in sf.platform.log)
 
 

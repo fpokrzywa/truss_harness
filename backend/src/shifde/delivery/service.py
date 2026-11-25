@@ -868,6 +868,12 @@ APPLY_MAX_ATTEMPTS = 1  # a platform write is never retried
 POLL_DELAY = timedelta(seconds=15)  # settled call 5: the next observe/verify job
 REQUIRED_CHECKS = ("native-runtime", "runtime-warehouse")
 APP_REQUIRED_CHECKS = (*REQUIRED_CHECKS, "app-deep-health")  # a generated app (SP5 6.6)
+SNOWFLAKE_REQUIRED_CHECKS = ("native-version", "runtime-health", "app-deep-health")  # SP6 6.4
+# target platform -> the checks of (a plan without, a plan with a generated app); None: no such plan
+REQUIRED_BY_PLATFORM: dict[str, tuple[tuple[str, ...] | None, tuple[str, ...]]] = {
+    "databricks": (REQUIRED_CHECKS, APP_REQUIRED_CHECKS),
+    "snowflake": (None, SNOWFLAKE_REQUIRED_CHECKS),
+}
 
 
 def enqueue_job(
@@ -1119,10 +1125,12 @@ def on_observe_result(session: Session, job: Mapping[str, Any], body: JobResultS
 
 
 def on_verify_result(session: Session, job: Mapping[str, Any], body: JobResultSubmission) -> None:
-    """The `verify` kind's result hook: `verified` only when `native-runtime` and
-    `runtime-warehouse` both passed, and for a generated app (the plan's release is `/2`, SP5 6.6)
-    `app-deep-health` too, even when the report omits it; otherwise `failed`. It fails closed: a
-    plan that cannot be read, or a plan release that cannot be read, is `failed`."""
+    """The `verify` kind's result hook. On a Databricks target: `verified` only when
+    `native-runtime` and `runtime-warehouse` both passed, and for a generated app (the plan's
+    release is `/2`, SP5 6.6) `app-deep-health` too, even when the report omits it. On a Snowflake
+    target (SP6 6.4): only when `native-version`, `runtime-health` and `app-deep-health` all
+    passed. Otherwise `failed`. It fails closed: a target, plan or plan release that cannot be
+    read, or a Snowflake deployment whose plan has no generated-app release, is `failed`."""
     row = _deployment(session, job, ("verifying",))
     if row is None:
         return
@@ -1150,17 +1158,20 @@ def on_verify_result(session: Session, job: Mapping[str, Any], body: JobResultSu
 
 def _required_checks(session: Session, row: Mapping[str, Any]) -> tuple[str, ...] | None:
     """The checks the deployment's verification needs, read in its organization only; None
-    when its plan, or the plan's release, cannot be read."""
+    (never verified) when its target, plan or the plan's release cannot be read, or a Snowflake
+    target's plan has no generated-app release."""
+    target = repository.get_target(session, row["target_id"], tenant_id=row["tenant_id"])
     plan = repository.get_plan(session, row["plan_id"], tenant_id=row["tenant_id"])
-    if plan is None:
+    if target is None or plan is None or target["platform_kind"] not in REQUIRED_BY_PLATFORM:
         return None
+    plain, app = REQUIRED_BY_PLATFORM[target["platform_kind"]]
     if plan["release_id"] is None:
-        return REQUIRED_CHECKS
+        return plain
     release = release_record(session, plan["release_id"], tenant_id=plan["tenant_id"])
     if release is None:
         return None
     generated = app_generator_version(release["manifest"]) is not None
-    return APP_REQUIRED_CHECKS if generated else REQUIRED_CHECKS
+    return app if generated else plain
 
 
 def on_reconcile_result(
