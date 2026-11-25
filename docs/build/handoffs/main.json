@@ -1,8 +1,8 @@
 {
-  "session_id": "51a7f901-7f73-4c21-84af-1b3840fb90e8",
-  "head_sha": "3fa6a0e04e984ffc23ad2dc894e85056276bd942",
+  "session_id": "c6c40eef-db8d-4fa2-9bd9-f86c31ef3b87",
+  "head_sha": "1d6acd32cb2459b56ec75d1b0f8ee939c00a8cd7",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "Per docs/build/HANDOFF.md: gate and merge batch 5 (PR #388, eabbd42d), 173 approver and ruling, SP6 demo, intake #374 #375 #384 #385",
-  "written_at": "2026-11-25T06:45:01Z"
+  "next_step": "Per docs/build/HANDOFF.md: reviewers for 189, 190, 191 (at review round 1); start #290, #292, #294, #352; batch 6 with 192 (PR #389, approved)",
+  "written_at": "2026-11-25T08:16:10Z"
 }
