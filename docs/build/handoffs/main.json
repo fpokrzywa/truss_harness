@@ -1,8 +1,8 @@
 {
-  "session_id": "c6c40eef-db8d-4fa2-9bd9-f86c31ef3b87",
-  "head_sha": "1d6acd32cb2459b56ec75d1b0f8ee939c00a8cd7",
+  "session_id": "d5e47c45-37ec-4982-9385-4e60efec2a2e",
+  "head_sha": "87fe7bac93fddc4aa9d79343383fd9e489b99712",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "Per docs/build/HANDOFF.md: reviewers for 189, 190, 191 (at review round 1); start #290, #292, #294, #352; batch 6 with 192 (PR #389, approved)",
-  "written_at": "2026-11-25T08:16:10Z"
+  "next_step": "Per docs/build/HANDOFF.md: reviewers for 191 (r2), 193, 194, 195, 196 (all at review, gates PASS); then batch 7; start #390, #394, #398, #401",
+  "written_at": "2026-11-25T10:18:53Z"
 }
