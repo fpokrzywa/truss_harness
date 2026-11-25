@@ -43,11 +43,22 @@ cuts a platform write mid-call: an executor that passes its grace with a write i
 and the write is left to the unknown-outcome path.
 
 A `worker.sweep_still_running` warning (`worker_id`, `elapsed_seconds`) with a "stale"
-`reaper.status` in platform health (`GET /api/v1/platform/health-details`) means a client sweep of
-that worker is stuck or very long: it has run longer than twice the lease, at least 60 s. The worker
-stays ready and keeps claiming and reaping leases. It only stops recording its reaps, until the
-sweep ends. With several workers a healthy one keeps the status "ok", so the log line is the
+`reaper.status` in platform health (`GET /api/v1/platform/health-details`) means the client sweep of
+that worker is stuck: no client finished for twice the lease, at least 60 s (`elapsed_seconds`
+counts from the last finished one). A long sweep that progresses does not log it. The worker stays
+ready and keeps claiming and reaping leases. It only stops recording its reaps, until the sweep
+progresses or ends. With several workers a healthy one keeps the status "ok", so the log line is the
 per-worker signal.
+
+Only one worker sweeps at a time (a PostgreSQL session advisory lock). A worker whose sweep comes
+due meanwhile skips it, logs nothing and tries again at its next reap. A sweeping worker uses one
+extra database connection, outside its pool, while it sweeps (another worker opens one for a moment
+to try the lock); like LISTEN, it needs `SHIFDE_DATABASE_URL` to be a direct or session-pooled
+connection. A `worker.sweep_lock_lost` warning (`worker_id`) means the server ended that connection
+during the sweep: it was idle for the bound above because a client's step was stuck, it was
+terminated, or the database restarted. The worker ends its sweep after the step in progress; another
+worker, or its own next reap, sweeps again. When the connection cannot be opened, nothing is swept,
+`worker.sweep_failed` is logged and the next reap tries again.
 
 ## Restart policy
 
