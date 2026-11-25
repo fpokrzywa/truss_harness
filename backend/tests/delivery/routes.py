@@ -261,8 +261,8 @@ def make_deployment(owner_db: Database, tenant: UUID) -> UUID:
                 "INSERT INTO shifde.delivery_targets (tenant_id, id, workspace_id, name, "
                 "platform_kind, address, environment, bindings, credential_ref, status, "
                 "created_by) SELECT :t, :g, w.id, 'helper target', 'databricks', :a, 'dev', "
-                "'{}'::jsonb, 'databricks-dev', 'archived', :u FROM shifde.workspaces w "
-                "WHERE w.tenant_id = :t ORDER BY w.id LIMIT 1"
+                "'{\"warehouse_id\": \"abc123def456\"}'::jsonb, 'databricks-dev', 'archived', :u "
+                "FROM shifde.workspaces w WHERE w.tenant_id = :t ORDER BY w.id LIMIT 1"
             ),
             {"t": tenant, "g": target, "a": address(), "u": uuid7()},
         )
