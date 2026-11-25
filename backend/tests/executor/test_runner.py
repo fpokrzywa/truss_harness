@@ -274,6 +274,58 @@ def test_a_lease_lost_after_the_first_intent_stops_every_further_write(
     assert deploy_actions(fake, "deploy") == 1 and deploy_actions(fake, "run") == 0
 
 
+def test_a_target_archived_before_the_first_intent_fails_the_apply_without_a_write(
+    flow: Flow, tmp_path: Path, owner_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = fake_platform()
+    plan, deployment_id, creds = _approved(flow, tmp_path, fake)
+    checkpoint = GatewayClient.checkpoint
+    asked: list[str] = []
+
+    def archive_first(self: GatewayClient, lease: JobLease, **step: Any) -> Any:
+        if not asked:
+            flow.archive(plan["target_id"])  # after the context and the credential grant
+        asked.append(step["step_key"])
+        return checkpoint(self, lease, **step)
+
+    monkeypatch.setattr(GatewayClient, "checkpoint", archive_first)
+    runner = make_runner(flow.client, flow.token, creds, fake)
+    assert runner.run_once()
+    assert asked == ["bundle-deploy"]
+    assert deploy_actions(fake, "deploy") == 0 and deploy_actions(fake, "run") == 0
+    (apply_job,) = deployment_jobs(owner_db, deployment_id)
+    assert apply_job["result"] == {"status": "failed", "error_code": "execution_failed"}
+    row = deployment_row(owner_db, deployment_id)
+    assert row["status"] == "failed"
+    assert row["status_reason"] == "no platform write was attempted"
+
+
+def test_a_target_archived_during_a_write_keeps_its_receipt_and_stops_the_next_write(
+    flow: Flow, tmp_path: Path, owner_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = fake_platform()
+    plan, deployment_id, creds = _approved(flow, tmp_path, fake)
+    execute = fake.execute
+
+    def archive_during(action: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        if action == "deploy":
+            flow.archive(plan["target_id"])  # while the write is in flight
+        return execute(action, *args, **kwargs)
+
+    monkeypatch.setattr(fake, "execute", archive_during)
+    runner = make_runner(flow.client, flow.token, creds, fake)
+    assert runner.run_once()
+    assert deploy_actions(fake, "deploy") == 1 and deploy_actions(fake, "run") == 0
+    journal = flow.get(deployment_id)["journal"]
+    assert [(s["step_key"], s["state"]) for s in journal] == [("bundle-deploy", "complete")]
+    (apply_job,) = deployment_jobs(owner_db, deployment_id)
+    assert apply_job["result"] == {"status": "failed", "error_code": "execution_failed"}
+    assert deployment_row(owner_db, deployment_id)["status"] == "unknown_outcome"
+    assert not runner.run_once()
+    assert deploy_actions(fake, "deploy") == 1 and deploy_actions(fake, "run") == 0
+    assert deployment_row(owner_db, deployment_id)["status"] == "unknown_outcome"
+
+
 def test_the_write_guard_refuses_once_the_lease_is_lost_or_ran_out() -> None:
     lease = JobLease(
         job=LeasedJob(

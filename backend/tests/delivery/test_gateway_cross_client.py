@@ -28,25 +28,32 @@ from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
 from shifde.delivery import gateway_api, repository
 from shifde.identity import apikeys
-from tests.connections.routes import as_user
+from tests.connections.routes import as_user, system_role_user
 from tests.delivery.conftest import ExecutorSide, make_executor
 from tests.delivery.routes import (
     LEASE,
     WHOAMI,
+    Flow,
     bearer,
+    checkpoint,
     deployment_row,
     enqueue,
+    enqueue_on_target,
     expire,
     job_row,
     job_url,
     journal_rows,
     lease,
+    lease_kind,
     make_deployment,
     owner_sql,
     proof,
+    register,
+    target_body,
+    targets,
 )
 from tests.tenancy.conftest import World, app_session
-from tests.tenancy.routes import People
+from tests.tenancy.routes import People, ws_slug
 
 _VARYING = {"instance", "request_id"}
 DIGEST = "c" * 64
@@ -90,7 +97,7 @@ def two(
 ) -> Two:
     a = make_executor(client, world.a, people.owner_a)
     b = make_executor(client, world.b, people.owner_b)
-    job_a = enqueue(app_db, a.tenant, "observe", deployment_id=make_deployment(owner_db, a.tenant))
+    job_a = enqueue_on_target(app_db, a.tenant, "observe", make_deployment(owner_db, a.tenant))
     job_b = enqueue(
         app_db,
         b.tenant,
@@ -189,6 +196,65 @@ def test_b_cannot_reach_as_job(client: TestClient, two: Two, owner_db: Database)
         job_url(two.job_a, "heartbeat"), json=proof(leased), headers=bearer(two.a.token)
     )
     assert r.status_code == 200, r.text
+
+
+def test_bs_intent_on_as_archived_target_gets_the_unknown_jobs_404(
+    client: TestClient, people: People, two: Two, owner_db: Database
+) -> None:
+    """The state of A's target is no oracle: B's intent with A's lease proof gets the 404 an
+    unknown job id gets, never A's 409 `target_unavailable`."""
+    leased = lease(client, two.a.token).json()
+    assert leased["job"]["id"] == str(two.job_a)
+    target = job_row(owner_db, two.job_a)["target_id"]
+    h = as_user(client, people.owner_a)
+    r = client.post(f"{targets(two.a.slug)}/{target}/archive", headers=h)
+    client.cookies.clear()
+    assert r.status_code == 200, r.text
+    before = dict(job_row(owner_db, two.job_a))
+    missing = checkpoint(client, two.b.token, {**leased, "job": {"id": uuid7()}}, 1, "intent")
+    _same_404(checkpoint(client, two.b.token, leased, 1, "intent"), missing)
+    own = checkpoint(client, two.a.token, leased, 1, "intent")
+    assert own.status_code == 409 and own.json()["code"] == "target_unavailable", own.text
+    assert dict(job_row(owner_db, two.job_a)) == before
+    assert journal_rows(owner_db, two.a.tenant) == journal_rows(owner_db, two.b.tenant) == []
+
+
+def test_as_intent_is_refused_once_b_registered_the_freed_address(
+    client: TestClient, world: World, people: People, flow: Flow, owner_db: Database
+) -> None:
+    """A holds a leased apply and archives its target; B registers the same address and applies
+    there. A's new intent is refused, B's is recorded, and neither journal gains the other's row."""
+    target = flow.target()
+    _, deployment_a = flow.deployment(target["id"])
+    leased_a = lease_kind(client, flow.token, "apply")
+    assert leased_a["job"]["deployment_id"] == deployment_a
+    flow.archive(target["id"])
+    b = Flow(
+        client,
+        world.b.slug,
+        ws_slug(world.b),
+        world.b.tenant,
+        people.owner_b,
+        system_role_user(owner_db, world.b.tenant, "tenant_administrator"),
+        make_executor(client, world.b, people.owner_b).token,
+        owner_db,
+    )
+    body = target_body(b.workspace, target["address"])
+    taken = register(client, as_user(client, b.requester), b.slug, body)
+    client.cookies.clear()
+    assert taken["address"] == target["address"]
+    _, deployment_b = b.deployment(taken["id"])
+    leased_b = lease_kind(client, b.token, "apply")
+    assert leased_b["job"]["deployment_id"] == deployment_b
+    r = checkpoint(client, flow.token, leased_a, 1, "intent")
+    assert r.status_code == 409 and r.json()["code"] == "target_unavailable", r.text
+    r = checkpoint(client, b.token, leased_b, 1, "intent")
+    assert r.status_code == 200, r.text
+    assert journal_rows(owner_db, flow.tenant) == []
+    (row,) = journal_rows(owner_db, b.tenant)
+    assert row[:2] == (b.tenant, UUID(deployment_b))
+    assert deployment_row(owner_db, deployment_a)["status"] == "leased"
+    assert deployment_row(owner_db, deployment_b)["status"] == "applying"
 
 
 def test_b_cannot_replay_as_request_id(client: TestClient, two: Two, owner_db: Database) -> None:
