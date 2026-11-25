@@ -1,7 +1,8 @@
 """Deployment targets and the one-platform-per-organization rule (design sections 3 and 9,
 DECISIONS B-2501, lead ruling B-2524; SP6 design 6.4).
 
-A target is a Databricks workspace or a Snowflake account (`platform_kind`). Its address is
+A target is a Databricks workspace, a Snowflake account, a Fabric workspace, a Palantir Foundry
+stack or a Docker daemon (`platform_kind`). Its address is
 normalized and allow-listed by that platform's normalizer in `adapters.native.addresses` before
 anything is written (this module makes no outbound request). On one Snowflake claim, each package
 and each application is bound by at most one active target (`409 binding_in_use`, checked under
@@ -123,16 +124,23 @@ def claim_key(platform_kind: str, address: str) -> str:
     """The claim key of a normalized target address, per platform (the one place it is made). A
     Snowflake claim keys on the account's claim identity, so every URL form of one account has one
     key (B-3942); an egress host that does not reduce to an identity (an account-locator form) is
-    `SnowflakeAddressRefused`."""
+    `SnowflakeAddressRefused`. Fabric, Palantir and Docker claims key on the normalized address
+    itself."""
     if platform_kind == "snowflake":
         return address_key(snowflake_claim_identity(address))
     return address_key(address)
 
 
 class TargetService:
-    def __init__(self, scope: TenantScope, host_suffixes: Iterable[str] = ()) -> None:
+    def __init__(
+        self,
+        scope: TenantScope,
+        host_suffixes: Iterable[str] = (),
+        palantir_host_suffixes: Iterable[str] = (),
+    ) -> None:
         self.sc = scope
         self.host_suffixes = tuple(host_suffixes)
+        self.palantir_host_suffixes = tuple(palantir_host_suffixes)
 
     # ================================================================== helpers
     def _ref(self, row: Mapping[str, Any]) -> ResourceRef:
@@ -276,7 +284,12 @@ class TargetService:
         self.sc.pdp.require("delivery:target:write", ref)
         self._active_scope(body.workspace, body.project)
         try:
-            address = normalize_address(body.platform_kind, body.address, self.host_suffixes)
+            suffixes = (
+                self.palantir_host_suffixes
+                if body.platform_kind == "palantir"
+                else self.host_suffixes
+            )
+            address = normalize_address(body.platform_kind, body.address, suffixes)
             key = claim_key(body.platform_kind, address)
         except AddressRefused as exc:
             raise ValidationFailed(
@@ -314,7 +327,7 @@ class TargetService:
                 "address": address,
                 "claim_id": claim_id,
                 "environment": body.environment,
-                "bindings": body.bindings.model_dump(exclude_none=True),
+                "bindings": body.bindings.model_dump(mode="json", exclude_none=True),
                 "credential_ref": body.credential_ref,
                 "created_by": self.sc.principal.principal_id,
             },

@@ -4,7 +4,10 @@ As `shifde_app` with a client context, a `solutions` row takes `target_kind`
 `databricks.app/v1` or `snowflake.native-app/v1` (`ck_solutions__target_kind`) and any other kind
 is 23514. The downgrade to `packaging_0003` is refused while any client has a Snowflake solution,
 naming only the count, and otherwise restores the original single-value CHECK under its generated
-name, on a scratch database built from this run's template.
+name, on a scratch database built from this run's template. `packaging_0005` (issue #286, SP8-1)
+adds `fabric.solution/v1`, `palantir.marketplace/v1` and `docker.compose/v1`; its downgrade to
+`packaging_0004` is refused while any client has a solution of one, and otherwise restores the
+two-value named CHECK.
 """
 
 from __future__ import annotations
@@ -30,6 +33,12 @@ from tests.conftest import DB_PREFIX, _create_database, _drop_database, _with_db
 from tests.tenancy.conftest import app_session
 
 SNOWFLAKE = "snowflake.native-app/v1"
+SP8_KINDS = ("fabric.solution/v1", "palantir.marketplace/v1", "docker.compose/v1")
+_TWO = (
+    "CHECK ((target_kind = ANY (ARRAY['databricks.app/v1'::text, "
+    "'snowflake.native-app/v1'::text])))"
+)
+_FIVE = _TWO.replace("])))", "".join(f", '{k}'::text" for k in SP8_KINDS) + "])))")
 _INSERT = text(
     "INSERT INTO shifde.solutions (tenant_id, id, workspace_id, project_id, name, target_kind, "
     "created_by) VALUES (:t, :i, :w, :p, :n, :k, :t)"
@@ -49,9 +58,10 @@ def _row(tenant: UUID, ws: UUID, project: UUID, kind: str) -> dict[str, object]:
     return {"t": tenant, "i": uuid7(), "w": ws, "p": project, "n": uuid7().hex, "k": kind}
 
 
-def test_the_check_takes_the_two_kinds_and_refuses_another(
+def test_the_check_takes_the_five_kinds_and_refuses_another(
     world: World, owner_session: Session, app_db: Database
 ) -> None:
+    """packaging_0005 (issue #286) widens the same named CHECK to five kinds."""
     tenant, ws, project = owner_session.execute(
         text(
             "SELECT t.id, w.id, p.id FROM shifde.tenants t "
@@ -61,23 +71,23 @@ def test_the_check_takes_the_two_kinds_and_refuses_another(
         )
     ).one()
     owner_session.rollback()
-    for kind in ("databricks.app/v1", SNOWFLAKE):
+    for kind in ("databricks.app/v1", SNOWFLAKE, *SP8_KINDS):
         with app_session(app_db, tenant) as app:
             app.execute(_INSERT, _row(tenant, ws, project, kind))
             app.commit()
-    for kind in ("snowflake.app/v1", "databricks.native-app/v1", ""):
+    for kind in (
+        "snowflake.app/v1",
+        "databricks.native-app/v1",
+        "palantir.superrepo/v1",
+        "fabric.iq/v1",
+        "",
+    ):
         with app_session(app_db, tenant) as app, pytest.raises(DBAPIError) as err:
             app.execute(_INSERT, _row(tenant, ws, project, kind))
         assert getattr(err.value.orig, "sqlstate", None) == "23514", err.value
     checks = owner_session.execute(text(_CHECKS)).all()
     owner_session.rollback()
-    assert [tuple(c) for c in checks] == [
-        (
-            "ck_solutions__target_kind",
-            "CHECK ((target_kind = ANY (ARRAY['databricks.app/v1'::text, "
-            "'snowflake.native-app/v1'::text])))",
-        )
-    ]
+    assert [tuple(c) for c in checks] == [("ck_solutions__target_kind", _FIVE)]
 
 
 @contextlib.contextmanager
@@ -157,5 +167,56 @@ def test_the_downgrade_restores_the_original_check_without_snowflake_solutions(
             command.upgrade(cfg, "heads")
             with engine.begin() as c:
                 _solution(c, SNOWFLAKE)
+        finally:
+            engine.dispose()
+
+
+@pytest.mark.parametrize("kind", SP8_KINDS)
+def test_the_0005_downgrade_is_refused_while_a_new_kind_solution_exists(
+    run_id: str, admin_url: str, owner_url: str, app_url: str, kind: str
+) -> None:
+    with _scratch(run_id, admin_url, owner_url, app_url, f"pkg5{kind[:3]}") as url:
+        cfg = alembic_config(url)
+        engine = create_engine(url, poolclass=NullPool)
+        try:
+            with engine.begin() as c:
+                made = _solution(c, kind)
+            with engine.begin() as c:
+                _solution(c, SNOWFLAKE)
+            with pytest.raises(DBAPIError) as err:
+                command.downgrade(cfg, "packaging_0004")
+            message = str(err.value.orig).splitlines()[0]
+            assert message == "packaging_0005: 1 Fabric, Palantir or Docker solution row(s) exist"
+            assert str(made) not in str(err.value)
+            with engine.connect() as c:  # the downgrade was refused as a whole
+                assert [tuple(r) for r in c.execute(text(_CHECKS))] == [
+                    ("ck_solutions__target_kind", _FIVE)
+                ]
+        finally:
+            engine.dispose()
+
+
+def test_the_0005_downgrade_restores_the_two_value_check(
+    run_id: str, admin_url: str, owner_url: str, app_url: str
+) -> None:
+    with _scratch(run_id, admin_url, owner_url, app_url, "pkg5down") as url:
+        cfg = alembic_config(url)
+        engine = create_engine(url, poolclass=NullPool)
+        try:
+            with engine.begin() as c:
+                _solution(c, SNOWFLAKE)
+            command.downgrade(cfg, "packaging_0004")
+            with engine.connect() as c:
+                assert [tuple(r) for r in c.execute(text(_CHECKS))] == [
+                    ("ck_solutions__target_kind", _TWO)
+                ]
+            for kind in SP8_KINDS:
+                with pytest.raises(DBAPIError) as err, engine.begin() as c:
+                    _solution(c, kind)
+                assert getattr(err.value.orig, "sqlstate", None) == "23514", err.value
+            command.upgrade(cfg, "heads")
+            for kind in SP8_KINDS:
+                with engine.begin() as c:
+                    _solution(c, kind)
         finally:
             engine.dispose()

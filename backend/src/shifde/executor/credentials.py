@@ -6,14 +6,19 @@ executor's own file (`SHIFDE_EXECUTOR_CREDENTIALS_FILE`) maps it to an entry of 
 platform: Databricks `{"tenant_id": "<organization id>", "host": "<https url>", "token":
 "<secret>", "service_principal": "<workspace user name>"}` (`"platform": "databricks"` may be
 given), or Snowflake `{"tenant_id", "host", "platform": "snowflake", "user", "role",
-"private_key_file"}` (an unencrypted PKCS#8 PEM, read on every use and never kept). A credentials
-file belongs to exactly one organization (B-2737); a file whose entries name more than one is
+"private_key_file"}` (an unencrypted PKCS#8 PEM, read on every use and never kept), Fabric
+`{"tenant_id", "host", "platform": "fabric", "entra_tenant_id", "client_id",
+"client_secret_file"}`, Palantir `{"tenant_id", "host", "platform": "palantir", "client_id",
+"client_secret_file"}` or Docker `{"tenant_id", "host", "platform": "docker"}` (SP8-1). A secret
+file holds one value (surrounding whitespace stripped), read on every use and never kept; a
+missing, unreadable or empty one is refused. A credentials file belongs to exactly one
+organization (B-2737); a file whose entries name more than one is
 refused (issue #155). A credential is handed out only for a grant that names this job, executor
 and target, has not expired, whose audience is the entry's host normalized by its platform's
 normalizer, for an entry of the target's platform whose `tenant_id` is the target's organization.
 Every refusal is the same `CredentialUnavailable`, which names no token, key, path, host, user or
-reference. On POSIX a credentials file or a Snowflake key file readable or writable by group or
-others is refused; Windows has no such mode bits and is not checked.
+reference. On POSIX a credentials file, a Snowflake key file or a secret file readable or
+writable by group or others is refused; Windows has no such mode bits and is not checked.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal  # Any: one raw JSON entry
 from uuid import UUID
@@ -33,11 +39,13 @@ from shifde.adapters.native.addresses import (
     snowflake_claim_identity,
 )
 from shifde.adapters.native.contracts import CredentialGrant, utcnow
+from shifde.adapters.native.palantir.clients import FoundryCredentials
 from shifde.adapters.native.snowflake.clients import SnowflakeKeyPair
 
 POSIX = os.name == "posix"
+GUID = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 
-PlatformKind = Literal["databricks", "snowflake"]
+PlatformKind = Literal["databricks", "snowflake", "fabric", "palantir", "docker"]
 
 
 class CredentialUnavailable(PermissionError):
@@ -74,13 +82,76 @@ class SnowflakeEntry(BaseModel):
     private_key_file: str = Field(min_length=1, repr=False)
 
 
-Entry = CredentialEntry | SnowflakeEntry
+class FabricEntry(BaseModel):
+    """A Fabric Entra client-credentials entry; no `repr` shows the secret file's path."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    tenant_id: UUID
+    host: str = Field(min_length=1)
+    platform: Literal["fabric"]
+    entra_tenant_id: str = Field(pattern=GUID)
+    client_id: str = Field(pattern=GUID)
+    client_secret_file: str = Field(min_length=1, repr=False)
+
+
+class PalantirEntry(BaseModel):
+    """A Palantir Foundry OAuth2 client-credentials entry; no `repr` shows the secret file's
+    path."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    tenant_id: UUID
+    host: str = Field(min_length=1)
+    platform: Literal["palantir"]
+    client_id: str = Field(min_length=1)
+    client_secret_file: str = Field(min_length=1, repr=False)
+
+
+class DockerEntry(BaseModel):
+    """A Docker daemon entry (`host` is `docker://<daemon id>`); it carries no secret."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    tenant_id: UUID
+    host: str = Field(min_length=1)
+    platform: Literal["docker"]
+
+
+Entry = CredentialEntry | SnowflakeEntry | FabricEntry | PalantirEntry | DockerEntry
+ENTRY_MODELS: dict[str, type[Entry]] = {
+    "snowflake": SnowflakeEntry,
+    "fabric": FabricEntry,
+    "palantir": PalantirEntry,
+    "docker": DockerEntry,
+}
+
+
+@dataclass(frozen=True)
+class FabricCredentials:
+    """A Fabric entry's Entra tenant and client ids and its secret; `repr` hides the secret."""
+
+    entra_tenant_id: str
+    client_id: str
+    client_secret: str = field(repr=False)
 
 
 def _entry(raw: Any) -> Entry:  # Any: one raw JSON entry
-    if isinstance(raw, dict) and raw.get("platform") == "snowflake":
-        return SnowflakeEntry.model_validate(raw)
-    return CredentialEntry.model_validate(raw)
+    platform = raw.get("platform") if isinstance(raw, dict) else None
+    model = ENTRY_MODELS.get(platform) if isinstance(platform, str) else None
+    return (model or CredentialEntry).model_validate(raw)
+
+
+def _secret(name: str) -> str:
+    """The secret in file `name`, read now, surrounding whitespace stripped; a missing,
+    unreadable or empty file, or on POSIX one open to group or others, is
+    `CredentialUnavailable`."""
+    path = Path(name)
+    try:
+        too_open = POSIX and bool(os.stat(path).st_mode & 0o077)
+        value = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        raise CredentialUnavailable from None
+    if too_open or not value:
+        raise CredentialUnavailable
+    return value
 
 
 def snowflake_account(host: str) -> str:
@@ -215,6 +286,110 @@ class CredentialBroker:
             tenant_id=tenant_id,
         )
         if not isinstance(entry, SnowflakeEntry):
+            raise CredentialUnavailable
+        return entry
+
+    def fabric_entry_for(
+        self,
+        grant: CredentialGrant,
+        *,
+        job_id: UUID,
+        executor_id: UUID,
+        target_id: UUID,
+        tenant_id: UUID,
+    ) -> FabricEntry:
+        """The grant's Fabric entry (the checks of `_checked`), else `CredentialUnavailable`."""
+        entry = self._checked(
+            grant,
+            "fabric",
+            job_id=job_id,
+            executor_id=executor_id,
+            target_id=target_id,
+            tenant_id=tenant_id,
+        )
+        if not isinstance(entry, FabricEntry):
+            raise CredentialUnavailable
+        return entry
+
+    def fabric_credentials_for(
+        self,
+        grant: CredentialGrant,
+        *,
+        job_id: UUID,
+        executor_id: UUID,
+        target_id: UUID,
+        tenant_id: UUID,
+    ) -> FabricCredentials:
+        """The grant's Fabric Entra tenant and client ids and its secret, the secret file read
+        now (`_secret`), else `CredentialUnavailable`."""
+        entry = self.fabric_entry_for(
+            grant, job_id=job_id, executor_id=executor_id, target_id=target_id, tenant_id=tenant_id
+        )
+        return FabricCredentials(
+            entra_tenant_id=entry.entra_tenant_id,
+            client_id=entry.client_id,
+            client_secret=_secret(entry.client_secret_file),
+        )
+
+    def palantir_entry_for(
+        self,
+        grant: CredentialGrant,
+        *,
+        job_id: UUID,
+        executor_id: UUID,
+        target_id: UUID,
+        tenant_id: UUID,
+    ) -> PalantirEntry:
+        """The grant's Palantir entry (the checks of `_checked`), else `CredentialUnavailable`."""
+        entry = self._checked(
+            grant,
+            "palantir",
+            job_id=job_id,
+            executor_id=executor_id,
+            target_id=target_id,
+            tenant_id=tenant_id,
+        )
+        if not isinstance(entry, PalantirEntry):
+            raise CredentialUnavailable
+        return entry
+
+    def foundry_credentials_for(
+        self,
+        grant: CredentialGrant,
+        *,
+        job_id: UUID,
+        executor_id: UUID,
+        target_id: UUID,
+        tenant_id: UUID,
+    ) -> FoundryCredentials:
+        """The grant's Foundry client credentials, the secret file read now (`_secret`), else
+        `CredentialUnavailable`."""
+        entry = self.palantir_entry_for(
+            grant, job_id=job_id, executor_id=executor_id, target_id=target_id, tenant_id=tenant_id
+        )
+        return FoundryCredentials(
+            client_id=entry.client_id, client_secret=_secret(entry.client_secret_file)
+        )
+
+    def docker_entry_for(
+        self,
+        grant: CredentialGrant,
+        *,
+        job_id: UUID,
+        executor_id: UUID,
+        target_id: UUID,
+        tenant_id: UUID,
+    ) -> DockerEntry:
+        """The grant's Docker entry (the checks of `_checked`), else `CredentialUnavailable`."""
+        entry = self._checked(
+            grant,
+            "docker",
+            job_id=job_id,
+            executor_id=executor_id,
+            target_id=target_id,
+            tenant_id=tenant_id,
+        )
+        if not isinstance(entry, DockerEntry):
             raise CredentialUnavailable
         return entry
 

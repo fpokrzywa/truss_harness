@@ -2,8 +2,9 @@
 7, 11 and 12): the routes as a tenant administrator, a developer and a viewer of demo-a, the
 database guard (immutable versions, a published entrypoint of the row's kind), the `ON DELETE
 RESTRICT` entrypoint key, `spec_hash` and decimal normalization, `resolve_pins` and
-`packaging.canonical`. A `snowflake.native-app/v1` solution is created like a Databricks one
-(SP6-4), and any other target kind is 422."""
+`packaging.canonical`. A solution of each of the five target kinds is created the same way (SP6-4,
+SP8-1); `palantir.superrepo/v1` and `fabric.iq/v1` are refused by name (`release_incompatible`,
+nothing written) and any other target kind is the generic 422."""
 
 from __future__ import annotations
 
@@ -151,19 +152,68 @@ def test_developer_lifecycle(client: TestClient, world: World, owner_session: Se
     _lifecycle(user_session(client, world.passwords, DEVELOPER), s)
 
 
-def test_a_snowflake_solution_is_created_and_an_unknown_kind_is_422(
+KINDS = (
+    "databricks.app/v1",
+    "snowflake.native-app/v1",
+    "fabric.solution/v1",
+    "palantir.marketplace/v1",
+    "docker.compose/v1",
+)
+UNSUPPORTED = {
+    "palantir.superrepo/v1": "palantir.superrepo/v1 is not supported: it needs an enrollment CLI "
+    "that does not exist here",
+    "fabric.iq/v1": "fabric.iq/v1 is not supported: Fabric ontology items are a preview feature",
+}
+
+
+def test_a_solution_of_each_kind_is_created_and_an_unknown_kind_is_422(
     client: TestClient, world: World
 ) -> None:
     h = user_session(client, world.passwords, ADMIN)
-    made = solution(h.client, h, "Warehouse app", target_kind="snowflake.native-app/v1")
-    assert made["target_kind"] == "snowflake.native-app/v1" and made["status"] == "active"
-    got = h.client.get(f"{solutions()}/{made['id']}", headers=h)
-    assert got.status_code == 200 and got.json()["target_kind"] == "snowflake.native-app/v1"
-    for kind in ("snowflake.app/v1", "databricks.native-app/v1", ""):
+    for kind in KINDS:
+        made = solution(h.client, h, kind, target_kind=kind)
+        assert made["target_kind"] == kind and made["status"] == "active"
+        got = h.client.get(f"{solutions()}/{made['id']}", headers=h)
+        assert got.status_code == 200 and got.json()["target_kind"] == kind
+    for kind in ("snowflake.app/v1", "databricks.native-app/v1", "docker.compose/v2", ""):
         r = h.client.post(solutions(), headers=h, json={"name": "Other", "target_kind": kind})
         assert r.status_code == 422, (kind, r.text)
+        assert r.json()["code"] == "validation_error", (kind, r.text)
     listed = h.client.get(solutions(), headers=h).json()["items"]
-    assert [s["name"] for s in listed] == ["Warehouse app"]
+    assert {s["name"] for s in listed} == set(KINDS)
+
+
+@pytest.mark.parametrize("kind", UNSUPPORTED)
+def test_an_unsupported_kind_is_refused_by_name_and_writes_nothing(
+    client: TestClient, world: World, owner_session: Session, kind: str
+) -> None:
+    def rows() -> tuple[int, int]:
+        row = owner_session.execute(
+            text(
+                "SELECT (SELECT count(*) FROM shifde.solutions), "
+                "(SELECT count(*) FROM shifde.audit_events WHERE action LIKE 'packaging.%')"
+            )
+        ).one()
+        owner_session.rollback()
+        return int(row[0]), int(row[1])
+
+    h = user_session(client, world.passwords, ADMIN)
+    before = rows()
+    r = h.client.post(solutions(), headers=h, json={"name": "Other", "target_kind": kind})
+    assert r.status_code == 422 and r.json()["code"] == "release_incompatible", r.text
+    assert r.json()["errors"] == [
+        {
+            "loc": ["compatibility", "target_kind"],
+            "msg": UNSUPPORTED[kind],
+            "type": "unsupported",
+            "path": "target_kind",
+            "status": "unsupported",
+            "reason": UNSUPPORTED[kind],
+            "mandatory": True,
+        }
+    ]
+    assert h.client.get(solutions(), headers=h).json()["items"] == []
+    assert rows() == before
 
 
 def test_viewer_is_refused_on_every_route(client: TestClient, world: World) -> None:
