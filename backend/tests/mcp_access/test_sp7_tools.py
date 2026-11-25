@@ -37,6 +37,7 @@ from tests._support.assist_fixtures import (
     set_status,
 )
 from tests._support.fullapp import World
+from tests._support.p2util import post
 from tests._support.p4util import set_tenant_setting
 from tests._support.p5util import Hdr, user_session
 from tests._support.p8util import budget, project_scope, rate_card, rate_version
@@ -284,7 +285,18 @@ def _p1_member_key(
     return secret
 
 
-@pytest.mark.parametrize("who", ["scoped key", "p1 member"])
+def _binding_scopes(owner: Session, email: str) -> list[str]:
+    """The scope types of every role binding of the person with `email`."""
+    found = rows(
+        owner,
+        "SELECT DISTINCT b.scope_type FROM shifde.role_bindings b "
+        "JOIN shifde.users u ON u.id = b.subject_id WHERE u.primary_email = :e ORDER BY 1",
+        e=email,
+    )
+    return [str(r[0]) for r in found]
+
+
+@pytest.mark.parametrize("who", ["scoped key", "organization grants only", "p1 member"])
 def test_a_p1_key_gets_not_found_for_p2(
     mcp: TestClient,
     world: World,
@@ -307,12 +319,14 @@ def test_a_p1_key_gets_not_found_for_p2(
         owner_session, ORG_A, "evaluation_run", payload, project="other"
     )
     if who == "scoped key":
-        # the workspace of a project-scoped key is readable only as the ancestor of a project or
-        # workspace grant (`pdp.ancestor_workspace_ids`): the administrator gets one at P1
+        # a key whose owner holds both kinds of grant: organization-level and one at P1
         [(admin_id,)] = rows(
             owner_session, "SELECT id FROM shifde.users WHERE primary_email = :e", e=ADMIN_A
         )
         grant(owner_db, a, admin_id, ["project:read"], scope_type="project", scope_id=p1)
+    if who == "organization grants only":
+        assert _binding_scopes(owner_session, ADMIN_A) == ["tenant"]
+    if who != "p1 member":
         scope = {"workspace_ids": [], "project_ids": [str(p1)]}
         key = _key(mcp, world, resource_scope=scope)
     else:
@@ -335,6 +349,44 @@ def test_a_p1_key_gets_not_found_for_p2(
     ids_2 = {str(p2), request_2, proposal_2, *theirs.values()}
     shown = json.dumps(results)
     assert {i for i in ids_2 if i in shown} == set()
+
+
+def test_a_p1_key_gets_not_found_for_another_workspace_and_a_workspace_level_target(
+    mcp: TestClient,
+    world: World,
+    admin: Hdr,
+    model_id: str,
+    owner_session: Session,
+    owner_db: Database,
+) -> None:
+    """Issue #359: the key's owner holds only organization-level grants; P1 is the control."""
+    second = {"slug": "second", "name": "second"}
+    ws2 = UUID(post(admin.client, f"{A}/workspaces", admin, second)["id"])
+    body = {"slug": "far", "name": "far"}
+    far = UUID(post(admin.client, f"{A}/workspaces/second/projects", admin, body)["id"])
+    installed(admin, model_id, project="/workspaces/second/projects/far", keys=["cost"])
+    a = tenant(owner_session, ORG_A)
+    ws, p1 = (UUID(i) for i in project_of(owner_session, ORG_A))
+    shared = target(owner_db, a, ws)  # a target of the workspace, in no project
+    theirs = _objects(owner_db, a, ws2, far)
+    assert _binding_scopes(owner_session, ADMIN_A) == ["tenant"]
+    key = _key(mcp, world, resource_scope={"workspace_ids": [], "project_ids": [str(p1)]})
+    _allow(mcp, world)
+    before = _counts(owner_session)
+    unknown, ask = str(uuid7()), {"text": COST_TEXT, "specialist": "cost"}
+    for project_id in (str(far), unknown):
+        for tool, args in (("board_get", {}), ("assist_ask", ask)):
+            got = call(mcp, key, tool, {"project_id": project_id, **args})
+            assert got == (True, NOT_FOUND), (tool, project_id)
+    for kind, oid in (("target", str(shared)), *theirs.items(), ("target", unknown)):
+        context = {"context": {"kind": kind, "id": oid}}
+        got = call(mcp, key, "assist_ask", {"project_id": str(p1), **ask, **context})
+        assert got == (True, NOT_FOUND), (kind, oid)
+    assert _counts(owner_session) == before
+    board = ok(mcp, key, "board_get", {"project_id": str(p1)})
+    assert [p["project"]["id"] for p in board["projects"]] == [str(p1)]
+    assert str(shared) not in json.dumps(board)
+    assert ok(mcp, key, "assist_ask", {"project_id": str(p1), **ask})["status"] == "routed"
 
 
 def test_a_context_of_p2_is_not_found_in_p1_though_the_key_reads_both(

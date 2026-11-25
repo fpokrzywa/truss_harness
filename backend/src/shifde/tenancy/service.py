@@ -776,8 +776,17 @@ def dashboard(
     members = identity.count_members(scope.session, scope.tenant_id) if can_read_members else None
 
     is_admin = scope.pdp.authorize("tenant:admin", scope.tenant_ref).allowed
+    # Activity is per workspace, not per project: a workspace a key only reaches through its mask
+    # (`ancestor_workspace_ids`) counts only when the query is limited to one readable project.
+    activity_ws_only = (
+        ws_only
+        if ws_filter.tenant_wide or project is not None
+        else ws_filter.workspace_ids | scope.pdp.granted_workspace_ids()
+    )
     visible_ws_ids = (
-        [] if is_admin else repository.workspace_ids(scope.session, scope.tenant_id, ws_only)
+        []
+        if is_admin
+        else repository.workspace_ids(scope.session, scope.tenant_id, activity_ws_only)
     )
     activity = audit.recent_activity(
         scope.session,
