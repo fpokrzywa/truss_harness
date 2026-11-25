@@ -12,6 +12,7 @@ direct-invocation holds past their TTL (issue #91), each in its own client.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -33,7 +34,7 @@ from shifde.runtime.settle import settle_terminal
 from shifde.runtime.worker import Worker
 from tests.build.service_support import REGISTRY
 from tests.conftest import CLEAN_TABLES
-from tests.ledger.util import add_budget, add_model
+from tests.ledger.util import add_budget, add_model, daily_since
 from tests.runtime.conftest import app_session
 from tests.runtime.test_lifecycle import C, advance, fake, two
 
@@ -121,7 +122,7 @@ def _used_and_held(app_db: Database, c: C, budget: UUID) -> tuple[Decimal, Decim
     rule = {"id": budget, "scope_type": "tenant", "scope_id": c.tenant, "period": "daily"}
     with app_session(app_db, c.tenant) as s:
         return budgeting.used_and_held(
-            s, c.tenant, None, rule, metric="tokens", since=budgeting.period_start("daily")
+            s, c.tenant, None, rule, metric="tokens", since=daily_since(s, c.tenant)
         )
 
 
@@ -168,6 +169,34 @@ def test_a_marked_hold_survives_a_crash_and_its_ttl_until_the_reaper_charges_it_
         assert _usage_count(o, a.tenant) == 1
         assert _usage_count(o, b.tenant) == 0
     assert _used_and_held(app_db, a, budget) == (AMOUNT, 0)  # now used, no longer held
+
+
+def test_usage_charged_just_before_midnight_still_counts_when_summed_just_after_it(
+    two: tuple[C, C],
+    app_db: Database,
+    owner_db: Database,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #366: the reaper charges the hold at 23:59:59 UTC and the sum runs at 00:00:01."""
+    a, _ = two
+    with owner_db.session() as o:
+        budget = add_budget(o, a.tenant, amount="100000")
+        hold = _attempt(o, a, budget, marked=True)
+        _lose_lease(o, a)
+        o.commit()
+    before = utcnow().replace(hour=23, minute=59, second=59, microsecond=0)
+    after = before + timedelta(seconds=2)
+    monkeypatch.setattr("shifde.ledger.usage.utcnow", lambda: before)
+    w = _worker(settings)
+    try:
+        w._reap()
+    finally:
+        w.db.dispose()
+    with owner_db.session() as o:
+        assert _hold(o, hold) == ("settled_unknown", AMOUNT)
+    monkeypatch.setattr("shifde.ledger.budgeting.utcnow", lambda: after)
+    assert _used_and_held(app_db, a, budget) == (AMOUNT, 0)
 
 
 def test_without_the_marker_the_reaper_releases_the_hold_and_writes_no_usage(

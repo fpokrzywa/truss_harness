@@ -17,9 +17,39 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 Strict = ConfigDict(extra="forbid")
 TARGET_KIND = "databricks.app/v1"
 SNOWFLAKE_TARGET_KIND = "snowflake.native-app/v1"
-TARGET_KINDS = (TARGET_KIND, SNOWFLAKE_TARGET_KIND)
-# the connection adapter a solution's tools and bindings use, by its target kind (SP6 design 4)
-TARGET_ADAPTERS = {TARGET_KIND: "databricks", SNOWFLAKE_TARGET_KIND: "snowflake"}
+FABRIC_TARGET_KIND = "fabric.solution/v1"
+PALANTIR_TARGET_KIND = "palantir.marketplace/v1"
+DOCKER_TARGET_KIND = "docker.compose/v1"
+TARGET_KINDS = (
+    TARGET_KIND,
+    SNOWFLAKE_TARGET_KIND,
+    FABRIC_TARGET_KIND,
+    PALANTIR_TARGET_KIND,
+    DOCKER_TARGET_KIND,
+)
+TargetKind = Literal[
+    "databricks.app/v1",
+    "snowflake.native-app/v1",
+    "fabric.solution/v1",
+    "palantir.marketplace/v1",
+    "docker.compose/v1",
+]
+# named kinds a solution create refuses with a `release_incompatible` report (SP8 design 10)
+UNSUPPORTED_TARGET_KINDS = {
+    "palantir.superrepo/v1": (
+        "palantir.superrepo/v1 is not supported: it needs an enrollment CLI that does not exist "
+        "here"
+    ),
+    "fabric.iq/v1": "fabric.iq/v1 is not supported: Fabric ontology items are a preview feature",
+}
+UnsupportedTargetKind = Literal["palantir.superrepo/v1", "fabric.iq/v1"]
+# the connection adapter a solution's tools and bindings use, by its target kind (SP6 design 4);
+# a Docker app queries Databricks; Fabric and Palantir releases bind no connection (none here)
+TARGET_ADAPTERS = {
+    TARGET_KIND: "databricks",
+    SNOWFLAKE_TARGET_KIND: "snowflake",
+    DOCKER_TARGET_KIND: "databricks",
+}
 DECIMAL = r"^[0-9]{1,12}(\.[0-9]{1,12})?$"
 
 TableName = Annotated[str, Field(min_length=1, max_length=256)]
@@ -41,7 +71,7 @@ def normalize_decimal(value: str) -> str:
 class SolutionCreate(BaseModel):
     model_config = Strict
     name: str = Field(min_length=1, max_length=200)
-    target_kind: Literal["databricks.app/v1", "snowflake.native-app/v1"]
+    target_kind: TargetKind | UnsupportedTargetKind
 
 
 class SolutionOut(BaseModel):

@@ -14,6 +14,13 @@ For Snowflake the egress host and the claim identity are different strings. The 
 claim identity (`snowflake_claim_identity`) is the organization-account name only, so every URL
 form of one account gives one claim key: a Snowflake claim must use `address_key` of the identity,
 never of the egress host.
+
+Fabric, Palantir and Docker (SP8 design section 2): a Fabric workspace normalizes to its REST
+collection URL `https://api.fabric.microsoft.com/v1/workspaces/<lowercase guid>`; a Palantir
+Foundry stack to `https://<label>.palantirfoundry.com` or `https://<label>.<installation suffix>`
+(one label, so a sub-host of a stack is no second claim key); a Docker daemon to
+`docker://<daemon id>` (`contracts.DOCKER_HOST`), unchanged. Each claim keys on `address_key` of
+the normalized address.
 """
 
 from __future__ import annotations
@@ -24,6 +31,8 @@ import re
 from collections.abc import Iterable
 from urllib.parse import urlsplit
 
+from shifde.adapters.native.contracts import DOCKER_HOST
+
 DATABRICKS_HOST_SUFFIXES = ("cloud.databricks.com", "azuredatabricks.net", "gcp.databricks.com")
 
 _LABEL = re.compile(r"[a-z0-9-]{1,63}")
@@ -32,6 +41,13 @@ SNOWFLAKE_HOST_SUFFIX = "snowflakecomputing.com"
 # The labels `dataplatforms.snowflake.ACCOUNT` allows, after lowercasing and "_" -> "-".
 _SNOWFLAKE_LOCATOR = re.compile(r"[a-z0-9][a-z0-9-]{0,254}")
 _SNOWFLAKE_LABEL = re.compile(r"[a-z0-9-]{1,64}")
+
+_FABRIC_API_ORIGIN = "https://api.fabric.microsoft.com"
+_FABRIC_APP_ORIGIN = "https://app.fabric.microsoft.com"
+FABRIC_API_WORKSPACES = f"{_FABRIC_API_ORIGIN}/v1/workspaces/"
+_GUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+PALANTIR_HOST_SUFFIX = "palantirfoundry.com"
 
 
 class AddressRefused(ValueError):
@@ -50,6 +66,34 @@ class SnowflakeAddressRefused(AddressRefused):
             self,
             "the address is not a Snowflake account URL (https://<account>.snowflakecomputing.com)",
         )
+
+
+class FabricAddressRefused(AddressRefused):
+    """The address is not a Fabric workspace (one fixed reason, never the input)."""
+
+    def __init__(self) -> None:
+        ValueError.__init__(
+            self,
+            "the address is not a Fabric workspace id or "
+            "https://app.fabric.microsoft.com/groups/<workspace id> URL",
+        )
+
+
+class PalantirAddressRefused(AddressRefused):
+    """The address is not a Palantir Foundry stack URL (one fixed reason, never the input)."""
+
+    def __init__(self) -> None:
+        ValueError.__init__(
+            self,
+            "the address is not a Palantir Foundry stack URL (https://<stack>.palantirfoundry.com)",
+        )
+
+
+class DockerAddressRefused(AddressRefused):
+    """The address is not a Docker daemon address (one fixed reason, never the input)."""
+
+    def __init__(self) -> None:
+        ValueError.__init__(self, "the address is not a Docker daemon address (docker://<id>)")
 
 
 def _host_labels(host: str) -> list[str]:
@@ -71,13 +115,13 @@ def _https_host(url: str, refused: type[AddressRefused]) -> str:
     """The lowercased host of an `https://<host>[:443][/]` URL, else `refused`."""
     if not url.isascii() or any(ch.isspace() or not ch.isprintable() for ch in url):
         raise refused
-    if "?" in url or "#" in url:
+    if any(ch in url for ch in "?#[]"):  # `urlsplit` raises on some bracketed hosts
         raise refused
     parts = urlsplit(url)
     if parts.scheme.lower() != "https" or parts.path not in ("", "/"):
         raise refused
     netloc = parts.netloc
-    if "@" in netloc or netloc.startswith("["):
+    if "@" in netloc:
         raise refused
     host, colon, port = netloc.partition(":")
     if colon and port != "443":
@@ -137,13 +181,77 @@ def snowflake_claim_identity(url: str) -> str:
     return f"https://{account[0]}.{SNOWFLAKE_HOST_SUFFIX}"
 
 
+def normalize_fabric_address(value: str) -> str:
+    """`https://api.fabric.microsoft.com/v1/workspaces/<lowercase guid>` for a workspace GUID
+    (hyphenated `8-4-4-4-12`, any case), `https://app.fabric.microsoft.com/groups/<guid>` with an
+    optional `/...` path, or the normalized form; else `FabricAddressRefused`. Refused: any other
+    GUID form (braces, `urn:uuid:`, no hyphens), any other scheme or host, a port other than 443,
+    user info, a query or fragment (even empty), whitespace or control characters and non-ASCII."""
+    if not value.isascii() or any(ch.isspace() or not ch.isprintable() for ch in value):
+        raise FabricAddressRefused
+    if _GUID.fullmatch(value):
+        return FABRIC_API_WORKSPACES + value.lower()
+    if any(ch in value for ch in "?#[]"):  # `urlsplit` raises on some bracketed hosts
+        raise FabricAddressRefused
+    parts = urlsplit(value)
+    if parts.scheme.lower() != "https" or "@" in parts.netloc:
+        raise FabricAddressRefused
+    host, colon, port = parts.netloc.partition(":")
+    if colon and port != "443":
+        raise FabricAddressRefused
+    origin, path = f"https://{host.lower()}", parts.path
+    if origin == _FABRIC_APP_ORIGIN and path.startswith("/groups/"):
+        guid = path.removeprefix("/groups/").split("/", 1)[0]
+    elif origin == _FABRIC_API_ORIGIN and path.startswith("/v1/workspaces/"):
+        guid = path.removeprefix("/v1/workspaces/")
+    else:
+        raise FabricAddressRefused
+    if not _GUID.fullmatch(guid):
+        raise FabricAddressRefused
+    return FABRIC_API_WORKSPACES + guid.lower()
+
+
+def normalize_palantir_address(url: str, extra_suffixes: Iterable[str] = ()) -> str:
+    """`https://<host>` for `https://<label>.palantirfoundry.com` or `<label>.<extra suffix>`
+    (the host lowercased, `:443` dropped), else `PalantirAddressRefused`. Refused as the Databricks
+    normalizer refuses: any other port, a path other than `/`, a query or fragment, IP literals,
+    malformed labels and any other suffix (a bare suffix included). Also refused: two or
+    more labels before the suffix, so a sub-host of a stack never gets a claim key of its own; a
+    deeper site domain is listed as an extra suffix."""
+    host = _https_host(url, PalantirAddressRefused)
+    try:
+        _host_labels(host)
+    except AddressRefused:
+        raise PalantirAddressRefused from None
+    suffixes = (PALANTIR_HOST_SUFFIX, *(s.lower() for s in extra_suffixes))
+    if host.partition(".")[2] not in suffixes:  # `_host_labels` refused an empty first label
+        raise PalantirAddressRefused
+    return f"https://{host}"
+
+
+def normalize_docker_address(value: str) -> str:
+    """The value, unchanged, when it fully matches `contracts.DOCKER_HOST` (`docker://` and a
+    lowercase UUID or uppercase base32 daemon id; never case-folded), else
+    `DockerAddressRefused`."""
+    if not DOCKER_HOST.fullmatch(value):
+        raise DockerAddressRefused
+    return value
+
+
 def normalize_address(platform: str, url: str, extra_suffixes: Iterable[str] = ()) -> str:
-    """The platform's normalizer: `databricks` (with the installation's extra suffixes) or
-    `snowflake` (no extra suffixes); `ValueError` for any other platform."""
+    """The platform's normalizer: `databricks` or `palantir` (each with the caller's extra
+    suffixes), `snowflake`, `fabric` or `docker` (no extra suffixes); `ValueError` for any other
+    platform."""
     if platform == "databricks":
         return normalize_databricks_address(url, extra_suffixes)
     if platform == "snowflake":
         return normalize_snowflake_address(url)
+    if platform == "fabric":
+        return normalize_fabric_address(url)
+    if platform == "palantir":
+        return normalize_palantir_address(url, extra_suffixes)
+    if platform == "docker":
+        return normalize_docker_address(url)
     raise ValueError("unknown platform kind")
 
 

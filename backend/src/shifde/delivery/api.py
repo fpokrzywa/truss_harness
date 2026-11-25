@@ -21,7 +21,11 @@ router = APIRouter(prefix="/api/v1")
 
 
 def _targets(scope: ScopeDep, settings: SettingsDep) -> TargetService:
-    return TargetService(scope, settings.delivery_databricks_host_suffixes)
+    return TargetService(
+        scope,
+        settings.delivery_databricks_host_suffixes,
+        settings.delivery_palantir_host_suffixes,
+    )
 
 
 Targets = Annotated[TargetService, Depends(_targets)]

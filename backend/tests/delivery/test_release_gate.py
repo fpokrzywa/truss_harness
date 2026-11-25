@@ -10,7 +10,7 @@ from __future__ import annotations
 import io
 import json
 import zipfile
-from typing import Any  # Any: JSON bodies, rows
+from typing import Any, get_args  # Any: JSON bodies, rows
 from uuid import UUID
 
 import pytest
@@ -20,7 +20,9 @@ from sqlalchemy import text
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.delivery import plans as plan_service
+from shifde.delivery.schemas import PlatformKind
 from shifde.packaging.canonical import canonical
+from shifde.packaging.schemas import TARGET_KINDS
 from tests.connections.routes import as_user
 from tests.delivery.releases import SealedRelease, insert_run, make_release, withdraw
 from tests.delivery.routes import (
@@ -197,6 +199,30 @@ def test_the_target_kind_must_be_the_releases() -> None:
             plan_service.check_target_kind(manifest, platform)
         assert (refused.value.status, refused.value.code) == (409, "target_kind_mismatch")
         assert refused.value.detail == "The release is for another kind of target."
+
+
+PLANNABLE = {("databricks.app/v1", "databricks"), ("snowflake.native-app/v1", "snowflake")}
+
+
+def test_the_plan_gate_cases_are_five_kinds_by_five_platforms() -> None:
+    assert (len(TARGET_KINDS), len(get_args(PlatformKind))) == (5, 5)
+    assert {kind for kind, _ in PLANNABLE} < set(TARGET_KINDS)
+
+
+@pytest.mark.parametrize("platform", get_args(PlatformKind))
+@pytest.mark.parametrize("kind", TARGET_KINDS)
+def test_only_a_databricks_or_snowflake_release_is_planned_on_its_own_platform(
+    kind: str, platform: str
+) -> None:
+    """SP8-1: a Docker release is refused everywhere, also on the Databricks target whose data
+    adapter it uses (`TARGET_ADAPTERS` is not the deployment platform)."""
+    if (kind, platform) in PLANNABLE:
+        plan_service.check_target_kind({"target_kind": kind}, platform)
+        return
+    with pytest.raises(plan_service.TargetKindMismatch) as refused:
+        plan_service.check_target_kind({"target_kind": kind}, platform)
+    assert (refused.value.status, refused.value.code) == (409, "target_kind_mismatch")
+    assert refused.value.detail == "The release is for another kind of target."
 
 
 def test_a_release_the_caller_cannot_read_is_an_unknown_one(

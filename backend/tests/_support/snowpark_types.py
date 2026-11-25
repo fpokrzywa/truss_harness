@@ -2,12 +2,31 @@
 B-4000: no Snowflake distribution enters the backend's dependencies): `Row`, the data types, whose
 class names `backend_snowflake.py` maps to SQL API `rowType` names, and `StructField`, whose `name`
 follows Snowpark 1.55.0: a name arrives quoted (`quoted`) and loses the quotes only when it is a
-plain uppercase identifier (`ID`, `A$1`) or `$<digits>`."""
+plain uppercase identifier (`ID`, `A$1`) or `$<digits>`. `COLUMN_NAMES` is the table it follows:
+the names Snowpark `SNOWPARK_VERSION`'s own `StructField` gave for the same input."""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+
+# the Snowpark version `COLUMN_NAMES` was read from; `ui/environment.yml` pins the same one, and
+# another pin needs the table compared again (the live test of `test_snowflake_native_live.py`)
+SNOWPARK_VERSION = "1.55.0"
+# a column name, and the name of Snowpark's `StructField` for it
+COLUMN_NAMES: list[tuple[str, str]] = [
+    ("ID", "ID"),
+    ("_X", "_X"),
+    ("A$1", "A$1"),
+    ("$1", "$1"),
+    ("id", '"id"'),
+    ("1A", '"1A"'),
+    ("$A", '"$A"'),
+    ("A B", '"A B"'),
+    ("COUNT(*)", '"COUNT(*)"'),
+    ('a "b" c', '"a ""b"" c"'),
+    ('ID"', '"ID"""'),
+]
 
 _UNNECESSARY_QUOTES = re.compile(r'"([_A-Z]+[_A-Z0-9$]*|\$\d+)"')
 

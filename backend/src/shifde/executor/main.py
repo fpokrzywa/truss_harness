@@ -62,6 +62,14 @@ EPILOG = f"""environment:
                                     Snowflake {{tenant_id, host, platform: "snowflake", user,
                                     role, private_key_file}} (unencrypted PKCS#8 PEM; on POSIX
                                     the file and the key file mode 0600)
+                                    Fabric {{tenant_id, host, platform: "fabric",
+                                    entra_tenant_id, client_id, client_secret_file}}
+                                    Palantir {{tenant_id, host, platform: "palantir",
+                                    client_id, client_secret_file}}
+                                    Docker {{tenant_id, host, platform: "docker"}}
+                                    (a secret file holds one value; on POSIX mode 0600;
+                                    Fabric, Palantir and Docker jobs fail closed until
+                                    SP8-5/7/9)
   SHIFDE_ENV                        development | test | production (default production)
   {HEALTH_HOST}       the /healthz and /readyz host (default 127.0.0.1)
   {HEALTH_PORT}       their port, 0..65535 (default 0: off)
@@ -95,8 +103,9 @@ def _parser() -> argparse.ArgumentParser:
         "--fake-platform",
         action="store_true",
         help=(
-            "run against the in-memory fake Databricks and Snowflake platforms "
-            "(development and test only)"
+            "run against the in-memory fake Databricks, Snowflake, Fabric, Palantir and Docker "
+            "platforms (development and test only; Fabric, Palantir and Docker jobs fail closed "
+            "until SP8-5/7/9)"
         ),
     )
     return parser
@@ -148,7 +157,7 @@ def configure(argv: Sequence[str] | None, environ: Mapping[str, str]) -> Config:
     platform: Platform = RealPlatform()
     if args.fake_platform:
         fake = FakePlatform()
-        # the Snowflake fake refuses to run unless this is development or test
+        # the Snowflake and Docker fakes refuse to run unless this is development or test
         fake.environment = environ.get("SHIFDE_ENV") or "production"
         platform = fake
     return Config(

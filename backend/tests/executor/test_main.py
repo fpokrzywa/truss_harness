@@ -151,7 +151,11 @@ def test_help_shows_both_credentials_entry_shapes() -> None:
     assert (
         'Snowflake {tenant_id, host, platform: "snowflake", user, role, private_key_file}' in text
     )
-    assert "fake Databricks and Snowflake platforms" in text
+    assert 'Fabric {tenant_id, host, platform: "fabric", entra_tenant_id, client_id, ' in text
+    assert "client_secret_file}" in text
+    assert 'Palantir {tenant_id, host, platform: "palantir", client_id, client_secret_file}' in text
+    assert 'Docker {tenant_id, host, platform: "docker"}' in text
+    assert "fake Databricks, Snowflake, Fabric, Palantir and Docker platforms" in text
 
 
 @pytest.mark.parametrize("shifde_env", ["development", "test"])
