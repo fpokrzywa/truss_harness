@@ -30,6 +30,7 @@ from shifde.adapters.base import AdapterFailure, ErrorClass, ExecContext
 from shifde.adapters.httputil import classify_exception
 from shifde.core.egress import EgressViolation
 from shifde.core.sqlrules import (
+    CALL_GAP,
     FLOW_OPERATOR,
     FLOW_OPERATOR_MESSAGE,
     SNOWFLAKE_REFUSED_WORDS,
@@ -219,6 +220,7 @@ def _check_identifier_calls(code: str) -> bool:
     """Refuse (CAPABILITY) a Snowflake `IDENTIFIER(` word of code whose argument, trimmed, is
     not one `'...'` literal without a backslash or `system$`, `?`, `:name` or a plain name
     (#312): `_code_of` blanks the literal, so `IDENTIFIER('SYSTEM$X')` passes the word rule.
+    A character that is neither visible ASCII nor whitespace before the `(` is refused too (#358).
     Returns True when some call's argument is bound (`?` or `:name`), so the caller checks the
     bound values (#339)."""
     bound = False
@@ -227,10 +229,12 @@ def _check_identifier_calls(code: str) -> bool:
         if token.lower() != "identifier":
             continue
         k = at + 1
-        while k < len(tokens) and tokens[k].isspace():
+        while k < len(tokens) and CALL_GAP.fullmatch(tokens[k]):
             k += 1
         if k >= len(tokens) or tokens[k] != "(":
             continue
+        if "".join(tokens[at + 1 : k]).strip():  # neither whitespace nor anything visible
+            raise AdapterFailure(ErrorClass.CAPABILITY, _NOT_READ)
         k += 1
         argument: list[str] = []
         while k < len(tokens) and tokens[k] not in ("(", ")"):

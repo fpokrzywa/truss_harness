@@ -17,6 +17,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shifde.appgen.render import Resolved as Resolved  # re-exported: render may not import here
+from shifde.core.sqlrules import MAX_TOOL_SQL_CHARS
 from shifde.evaluation.schemas import Assertion
 from shifde.packaging.schemas import DECIMAL, PARAMETER_NAME, TOOL_NAME, Screen, normalize_decimal
 
@@ -63,7 +64,7 @@ class DraftTool(BaseModel):
     model_config = Strict
     name: str = Field(pattern=TOOL_NAME)
     description: str = Field(min_length=1, max_length=500)
-    sql: str = Field(min_length=1, max_length=8000)
+    sql: str = Field(min_length=1, max_length=MAX_TOOL_SQL_CHARS)
     parameters: list[DraftParameter] = Field(default_factory=list, max_length=10)
     max_rows: int = Field(default=200, ge=1, le=1000)
 

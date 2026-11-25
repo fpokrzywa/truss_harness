@@ -2,7 +2,9 @@
 and accepting cases for the tokenizer, the statement, table and parameter rules and
 `table_name_supported`; the same texts under the default dialect keep their Databricks outcome;
 no function raises on odd input; and the rules shared with the runtime check (#358: the flow
-operator, `SYSTEM$`, `procedure`, `IDENTIFIER(...)`) refuse what it refuses."""
+operator, `SYSTEM$`, `procedure`, `IDENTIFIER(...)`) refuse what it refuses; and the table rules
+fail closed on FROM clauses (every list, parentheses, stages, `IDENTIFIER`/`TABLE` literals) in one
+pass."""
 
 from __future__ import annotations
 
@@ -13,6 +15,7 @@ import pytest
 
 from shifde.adapters.base import AdapterFailure
 from shifde.adapters.dataplatforms.sqlapi import _POSITIONAL_BIND, check_read_only
+from shifde.core import sqlrules
 from shifde.core.sqlrules import (
     FLOW_OPERATOR_MESSAGE,
     Token,
@@ -68,6 +71,11 @@ STATEMENTS = [
     ('"SELECT" from t', ["sql_not_select"], ["sql_not_select"]),
     ("select 1; select 2", ["sql_multiple_statements"], ["sql_multiple_statements"]),
     ("select 1;", [], []),
+    ("select 1; \n\t", [], []),
+    # text after the `;` that makes no token (Databricks: unchanged)
+    ("select 1;1", ["sql_multiple_statements"], []),
+    ("select 1; + ", ["sql_multiple_statements"], []),
+    ("select 1;\u200b", ["sql_multiple_statements"], []),
     ("select 'a", ["sql_unterminated_quote"], ["sql_unterminated_quote"]),
     ('select "A', ["sql_unterminated_quote"], ["sql_unterminated_quote"]),
     ("select $$a", ["sql_unterminated_quote"], []),
@@ -148,7 +156,16 @@ def test_snowflake_publish_and_the_runtime_check_agree_on_accepted_text(sql: str
     check_read_only(sql, dialect="snowflake")
 
 
-@pytest.mark.parametrize("sql", ["select a$$b$$ from t", "select 1; delete from t"])
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "select a$$b$$ from t",
+        "select 1; delete from t",
+        "select 1;1",
+        "select 1; +",
+        "select 1;\u200b",
+    ],
+)
 def test_snowflake_publish_and_the_runtime_check_agree_on_refused_text(sql: str) -> None:
     assert _codes(sql) != []
     with pytest.raises(AdapterFailure):
@@ -260,6 +277,11 @@ READ_RULES = [
     ("select * from table('a'||:t)", ["sql_dynamic_name"]),
     ("select * from table(concat('a','b'))", ["sql_dynamic_name"]),
     ("select * from table(identifier('t'))", ["sql_dynamic_name"]),
+    # a character before the parenthesis that is neither visible ASCII nor whitespace
+    ("select * from identifier\u200b(:t||'x')", ["sql_dynamic_name"]),
+    ("select * from identifier \u200b ('t')", ["sql_dynamic_name"]),
+    ("select * from identifier\x01('t')", ["sql_dynamic_name"]),
+    ("select * from table\u2060(my_table)", ["sql_dynamic_name"]),
     ("select * from identifier('db.s.t')", []),
     ("select * from identifier( 'MY_TABLE' )", []),
     ("select * from IDENTIFIER\t(\n'MY_TABLE'\n)", []),
@@ -346,6 +368,8 @@ RUNTIME_REFUSED = [
     "SELECT a.IDENTIFIER('SYS' || 'TEM$X')()",
     "SELECT IDENTIFIER\u00a0(:a || 'TEM$X')()",
     "SELECT IDENTIFIER(:a || 'TEM$X')()",
+    "SELECT IDENTIFIER\u200b(:a || 'TEM$X')()",
+    "SELECT IDENTIFIER \u200b\x01 ('t')",
     "SELECT IDENTIFIER('a''b')",
     "SELECT * FROM IDENTIFIER($t)",
     "SELECT * FROM IDENTIFIER()",
@@ -492,6 +516,138 @@ def test_snowflake_table_rules_compare_uppercased() -> None:
 )
 def test_snowflake_table_rules_golden(sql: str, expected: list[tuple[str, str]]) -> None:
     assert _tables(sql, ALLOWED) == expected
+
+
+CUSTOMERS, ORDERS = "DEMO_DB.PUBLIC.CUSTOMERS", "DEMO_DB.PUBLIC.ORDERS"
+JOINED = f"select * from {CUSTOMERS} c join {ORDERS} o on o.customer_id = c.id"
+SECRETS = "'DEMO_DB.PUBLIC.SECRETS'"
+NAMED, FUNCTION = "sql_table_not_qualified", "sql_table_function"
+OTHER, SYNTAX = "sql_table_not_allowed", "sql_syntax"
+# every form passes the statement rules: only the table rules stand between it and the app
+TABLE_RULES_REFUSE = [
+    # IDENTIFIER( and TABLE( anywhere, a plain literal or name included
+    (f"select * from (identifier({SECRETS})) s", FUNCTION),
+    (f"{JOINED}, identifier({SECRETS}) s", FUNCTION),
+    (f"{JOINED}, table({SECRETS}) s", FUNCTION),
+    (f"select * from {CUSTOMERS} sample (10), identifier({SECRETS})", FUNCTION),
+    (f"select * from {CUSTOMERS} at(offset => -60), identifier({SECRETS})", FUNCTION),
+    (f"select * from (table({SECRETS}) s)", FUNCTION),
+    (f"select * from {CUSTOMERS} c (a), table({SECRETS})", FUNCTION),
+    (f'with "LATERAL" as (select 1) {JOINED}, lateral table({SECRETS}) s', FUNCTION),
+    (f"select identifier('DEMO_DB.PUBLIC.UDF')(1) from {CUSTOMERS}", FUNCTION),
+    (f"select (identifier ({SECRETS})) from {CUSTOMERS}", FUNCTION),
+    (f"select identifier(my_var) from {CUSTOMERS}", FUNCTION),
+    # every entry of a list of tables
+    (f"select s.* from {CUSTOMERS} c, (APP_DATA.USAGE) s", NAMED),
+    (f"{JOINED}, APP_DATA.USAGE u", NAMED),
+    (f"{JOINED}, (select 1) s, secrets u where o.id = 1", NAMED),
+    (f"{JOINED} join ({CUSTOMERS} d, secrets) on true", NAMED),
+    ("select * from (secrets)", NAMED),
+    ("select * from ((secrets s))", NAMED),
+    ("select * from ((select 1 a) x join secrets s on true)", NAMED),
+    (f"select * from ({CUSTOMERS}, secrets)", NAMED),
+    (f"select * from {CUSTOMERS} c (a, b), secrets s", NAMED),
+    (f"select * from {CUSTOMERS} sample (10), secrets s", NAMED),
+    (f"select * from {CUSTOMERS} at(offset => -60), secrets s", NAMED),
+    (f"select * from {CUSTOMERS} x, {ORDERS} pivot(sum(a) for q in ('b', 'c')), secrets", NAMED),
+    (f"select id from {CUSTOMERS} where id in (select id from (secrets))", NAMED),
+    (f'with "LATERAL" as (select 1) select * from {CUSTOMERS}, lateral secrets s', NAMED),
+    (f"select * from {CUSTOMERS} c lateral flatten(input => c.x)", NAMED),
+    # no alias and no member name ends the list
+    (f"select * from {CUSTOMERS} as limit, secrets", NAMED),
+    (f"select * from {CUSTOMERS} offset, secrets", NAMED),
+    (f"select * from {CUSTOMERS} as start, secrets", NAMED),
+    (f"select * from {CUSTOMERS} c join {ORDERS} o on o.where = c.id, secrets", NAMED),
+    # a CTE name counts only after its own definition
+    ("with a as (select * from b), b as (select 1 x) select * from a", NAMED),
+    ("with b as (select * from b) select * from b", NAMED),
+    ("select * from (with b as (select 1 x) select * from b)", NAMED),
+    # a name with an empty part
+    ("select * from OTHER..SECRETS", OTHER),
+    ("select * from (OTHER..SECRETS)", OTHER),
+    ("with other as (select 1 a) select * from other..secrets", OTHER),
+    (f"select other..fn(1) from {CUSTOMERS}", NAMED),
+    # a name glued to a number
+    ("select *, 1from APP_DATA.USAGE u", SYNTAX),
+    ("select 1from secrets", SYNTAX),
+    ("select 1e5from secrets", SYNTAX),
+    ("select $1from secrets", SYNTAX),
+    # stages and anything else that is no name
+    ("select $1 from '@DEMO_DB.PUBLIC.STG/secrets.csv'", OTHER),
+    ("select $1 from $$@DEMO_DB.PUBLIC.STG/secrets.csv$$", OTHER),
+    (f"select $1 from @{CUSTOMERS}", OTHER),
+    ("select $1 from @~", OTHER),
+    (f"{JOINED}, '@s'", OTHER),
+    (f"{JOINED} join @s on true", OTHER),
+    (f"select * from {CUSTOMERS}@s", OTHER),
+    ("select * from $t", OTHER),
+    ("select * from :t", OTHER),
+    ("select * from (", OTHER),
+    (f"select * from {CUSTOMERS},", OTHER),
+    (f"select * from {CUSTOMERS}.", OTHER),
+    (f"select * from {CUSTOMERS} c join", OTHER),
+    # characters the platform may read as part of a name or skip
+    (f"select * from {CUSTOMERS}\u00e9", SYNTAX),
+    ("select * from\u200bsecrets", OTHER),
+    (f"select * from {CUSTOMERS} c jo\u0131n secrets", SYNTAX),
+    (f"select * from {CUSTOMERS} c, jo\x01in secrets", SYNTAX),
+]
+
+
+@pytest.mark.parametrize(("sql", "code"), TABLE_RULES_REFUSE)
+def test_the_snowflake_table_rules_fail_closed(sql: str, code: str) -> None:
+    assert statement_rules(sql, dialect="snowflake") == []
+    assert code in [c for c, _ in _tables(sql, ALLOWED)]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        f"select c.id, c.name from {CUSTOMERS} c, {ORDERS} as o where c.region in (1, 2) "
+        "group by c.id, c.name having count(*) > 1 order by c.id, c.name limit 10 offset 5",
+        f"select * from ({CUSTOMERS} c join {ORDERS} o on o.customer_id = c.id)",
+        f"select * from (select id from {ORDERS}) s, {CUSTOMERS} c",
+        "select * from ((select 1 a) union all (select 2 a)) u",
+        f"with recent as (select * from {ORDERS}), big (n, m) as (select n, 1 from recent) "
+        "select * from recent r join big b on true",
+        f"with a as (select 1 x), b as (select * from a) select * from (select * from b), {ORDERS}",
+        f"select a, b from {CUSTOMERS} union select a, b from {ORDERS} order by 1, 2",
+        f"select a, b from {CUSTOMERS} except select a, b from {ORDERS}",
+        f"select * from {CUSTOMERS} c (a, b), {ORDERS} o (x, y)",
+        f"select * from {CUSTOMERS} tablesample bernoulli (10), {ORDERS}",
+        f"select * from {CUSTOMERS} at(offset => -60) c",
+        f"select * from {ORDERS} pivot(sum(amount) for q in ('a', 'b')) p",
+        f"select 1e5, 1.5e-3, 1e+5, .5, $1, t.$2 from {CUSTOMERS} t",
+        f"select listagg(name, ',') within group (order by name, id) from {CUSTOMERS}",
+        f"select row_number() over (partition by a order by b, c) r from {CUSTOMERS} qualify r = 1",
+        f"select c.*from {CUSTOMERS} c left outer join {ORDERS} o using (id, day), {ORDERS}",
+        f"select * from {CUSTOMERS} c start with c.id = 1 connect by c.id = prior c.parent",
+        f"select 'from secrets, caf\u00e9', \"IDENTIFIER\" from {CUSTOMERS};",
+        f"select identifier + (c.a), c.table from {CUSTOMERS} c",
+    ],
+)
+def test_the_snowflake_table_rules_accept_ordinary_reads(sql: str) -> None:
+    assert check(sql, ALLOWED, [], dialect="snowflake") == []
+
+
+@pytest.mark.parametrize("part", ["from a,", "from(", "join a,", "from (a,"])
+def test_the_snowflake_table_rules_take_one_pass(
+    part: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The work and the issues grow with the text, not with its square."""
+    calls = 0
+    real = sqlrules._punct
+
+    def counted(token: Token | None, value: str) -> bool:
+        nonlocal calls
+        calls += 1
+        return real(token, value)
+
+    monkeypatch.setattr(sqlrules, "_punct", counted)
+    sql = "select " + part * 500
+    issues = table_rules(sql, ALLOWED, dialect="snowflake")
+    count = len(tokenize(sql, dialect="snowflake"))
+    assert 0 < len(issues) <= count and calls <= 20 * count
 
 
 def test_snowflake_table_rules_leave_the_databricks_default_unchanged() -> None:

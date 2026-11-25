@@ -503,6 +503,9 @@ REFUSED_SQL = [
     'SELECT * FROM IDENTIFIER("t")',
     "SELECT * FROM IDENTIFIER('a', 'b')",
     "SELECT * FROM IDENTIFIER(CONCAT('a', 'b'))",
+    # a character that is neither visible ASCII nor whitespace before the parenthesis (#358)
+    "SELECT * FROM IDENTIFIER\u200b(:t || 'x')",
+    "SELECT * FROM IDENTIFIER \u200b ('t')",
     # the `->>` flow operator chains a second statement (#358)
     "select 1 ->> execute immediate 'drop table x'",
     "select 1 ->> remove @s",

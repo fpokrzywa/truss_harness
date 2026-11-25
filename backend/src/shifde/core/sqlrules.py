@@ -25,7 +25,9 @@ operator in code (`sql_flow_operator`), a word or a whole `"..."` identifier sta
 `IDENTIFIER(...)` whose argument is not one plain literal or name (`sql_dynamic_name`). Here they
 are stricter in two places: a bound `IDENTIFIER(:name)` is refused (no value is known yet) and
 `TABLE(...)` keeps the rule of `IDENTIFIER(...)`. A word directly after a single `:` is a
-parameter name, never one of these words.
+parameter name, never one of these words. The Snowflake table rules (drafts and render) are
+stricter again: they accept neither call, and nothing in a FROM clause they cannot read as a
+table, a CTE or a subquery.
 """
 
 from __future__ import annotations
@@ -60,6 +62,16 @@ _SNOWFLAKE_PLAIN = re.compile(r"[A-Z_][A-Z0-9_$]*")
 _SNOWFLAKE_TABLE_PART = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
 # a word as the runtime check reads it: a maximal run of letters, digits, `_` and `$`
 _SNOWFLAKE_WORD = re.compile(r"[\w$]+")
+_SNOWFLAKE_WORD_CHAR = re.compile(r"[\w$]")
+# what a word and its `(` may have between them and still be a call: no visible ASCII character
+# (whitespace, or a character the platform may skip and `\s` does not match)
+CALL_GAP = re.compile(r"[^!-~]*")
+# the longest SQL a drafted tool may have, and a Snowflake render accepts
+MAX_TOOL_SQL_CHARS = 8000
+_SNOWFLAKE_PLAIN_GAP = re.compile(r"[\s!-~]*", re.ASCII)
+# a number with the name characters that follow it, and the only run that is a number alone
+_NUMBER_RUN = re.compile(r"[0-9][A-Za-z0-9_$]*")
+_NUMBER = re.compile(r"[0-9]+(?:[eE][0-9]*)?")
 # the one argument `IDENTIFIER(...)` and `TABLE(...)` may hold: a literal without a backslash or a
 # doubled quote, or a plain name
 _SNOWFLAKE_ARGUMENT = re.compile(r"'[^'\\]*'|[A-Za-z_][A-Za-z0-9_$]*")
@@ -80,8 +92,8 @@ class Token:
     name, its content as written), `positional` (a `?`), `positional_bind` (a `:` directly
     followed by a digit, the second `:` of `::` included), `flow` (the `->>` operator) and
     `syntax` (a backtick, or a `$$` right after a name character). A `param`, and in the
-    Snowflake dialect a `string`, `punct` and unquoted `ident`, also carries its span in the text
-    (`start`, `end`), outside equality."""
+    Snowflake dialect every token, also carries its span in the text (`start`, `end`), outside
+    equality; operators, numbers and whitespace are the text between two spans."""
 
     kind: str
     value: str
@@ -203,7 +215,7 @@ def _tokenize_snowflake(sql: str) -> list[Token]:
         if ch in ("'", '"'):
             end = _quoted(sql, i, ch, escapes=ch == "'")
             if end < 0:
-                tokens.append(Token("unterminated", ch))
+                tokens.append(Token("unterminated", ch, start=i, end=n))
                 return tokens
             inner = sql[i + 1 : end - 1]
             if ch == "'":
@@ -211,45 +223,48 @@ def _tokenize_snowflake(sql: str) -> list[Token]:
             else:
                 name = inner.replace('""', '"')
                 if _SNOWFLAKE_PLAIN.fullmatch(name):  # the same name as unquoted, never a keyword
-                    tokens.append(Token("ident", name.lower(), quoted=True))
+                    tokens.append(Token("ident", name.lower(), quoted=True, start=i, end=end))
                 else:
-                    tokens.append(Token("quoted_unsupported", name))
+                    tokens.append(Token("quoted_unsupported", name, start=i, end=end))
             i = end
         elif ch == "$" and nxt == "$":
             if i and (sql[i - 1].isalnum() or sql[i - 1] in "_$"):
-                tokens.append(Token("syntax", "$$"))
+                tokens.append(Token("syntax", "$$", start=i, end=i + 2))
                 i += 2
                 continue
             end = sql.find("$$", i + 2)
             if end < 0:
-                tokens.append(Token("unterminated", "$$"))
+                tokens.append(Token("unterminated", "$$", start=i, end=n))
                 return tokens
             tokens.append(Token("string", sql[i + 2 : end], start=i, end=end + 2))
             i = end + 2
         elif (ch == "-" and nxt == "-") or (ch == "/" and nxt == "/"):
-            tokens.append(Token("comment", ch + nxt))
             ends = [e for e in (sql.find("\n", i), sql.find("\r", i)) if e >= 0]
-            i = min(ends) + 1 if ends else n
+            end = min(ends) + 1 if ends else n
+            tokens.append(Token("comment", ch + nxt, start=i, end=end))
+            i = end
         elif ch == "/" and nxt == "*":
-            tokens.append(Token("comment", "/*"))
             end = sql.find("*/", i + 2)
-            i = n if end < 0 else end + 2
+            end = n if end < 0 else end + 2
+            tokens.append(Token("comment", "/*", start=i, end=end))
+            i = end
         elif sql.startswith(FLOW_OPERATOR, i):
-            tokens.append(Token("flow", FLOW_OPERATOR))
-            i += len(FLOW_OPERATOR)
+            end = i + len(FLOW_OPERATOR)
+            tokens.append(Token("flow", FLOW_OPERATOR, start=i, end=end))
+            i = end
         elif ch == "`":
-            tokens.append(Token("syntax", "`"))
+            tokens.append(Token("syntax", "`", start=i, end=i + 1))
             i += 1
         elif ch == "?":
-            tokens.append(Token("positional", "?"))
+            tokens.append(Token("positional", "?", start=i, end=i + 1))
             i += 1
         elif ch == ":":
             if nxt == ":":  # a cast (`x::int`), never a parameter
                 if "0" <= sql[i + 2 : i + 3] <= "9":  # `x::1`, refused as the runtime check does
-                    tokens.append(Token("positional_bind", ":"))
+                    tokens.append(Token("positional_bind", ":", start=i, end=i + 2))
                 i += 2
             elif "0" <= nxt <= "9":
-                tokens.append(Token("positional_bind", ":"))
+                tokens.append(Token("positional_bind", ":", start=i, end=i + 1))
                 i += 1
             elif _is_name_start(nxt):
                 j = _snowflake_name_end(sql, i + 1)
@@ -294,7 +309,10 @@ def statement_rules(sql: str, *, dialect: Dialect = "databricks") -> list[SqlIss
     if any(t.kind == "comment" for t in tokens):
         comments = "--, // or /*" if snowflake else "-- or /*"
         issues.append(SqlIssue("sql_comment", f"comments ({comments}) are not allowed"))
-    if any(_punct(t, ";") for t in tokens[:-1]):
+    several = any(_punct(t, ";") for t in tokens[:-1])
+    if dialect == "snowflake" and tokens and _punct(tokens[-1], ";"):
+        several = several or sql[tokens[-1].end :].strip() != ""  # text that makes no token
+    if several:
         issues.append(SqlIssue("sql_multiple_statements", "exactly one statement is allowed"))
     first = next((t for t in tokens if t.kind == "ident"), None)
     if not _bare(first, "select", "with"):
@@ -325,7 +343,7 @@ def _snowflake_word(sql: str, tokens: list[Token], i: int) -> str:
         return ""
     before = _at(tokens, i - 1)
     after_string = before is not None and before.kind == "string" and before.end == t.start
-    if t.start and not after_string and _SNOWFLAKE_WORD.match(sql, t.start - 1):
+    if t.start and not after_string and _SNOWFLAKE_WORD_CHAR.match(sql, t.start - 1):
         return ""
     word = _SNOWFLAKE_WORD.match(sql, t.start)
     return word.group().lower() if word else ""
@@ -338,6 +356,13 @@ def _system_name(sql: str, tokens: list[Token], i: int) -> bool:
     return name.startswith(SYSTEM_PREFIX)
 
 
+def _called(sql: str, word: Token, after: Token | None) -> bool:
+    """Whether `after` is the `(` of a call of `word`."""
+    if after is None or not _punct(after, "("):
+        return False
+    return CALL_GAP.fullmatch(sql, word.end, after.start) is not None
+
+
 def _dynamic_name(sql: str, tokens: list[Token], i: int) -> bool:
     """Whether the token at `i` is the word `identifier` or `table`, called with anything but one
     plain literal (without `SYSTEM_PREFIX`) or one plain name. It reads the text between the
@@ -345,8 +370,10 @@ def _dynamic_name(sql: str, tokens: list[Token], i: int) -> bool:
     if _snowflake_word(sql, tokens, i) not in ("identifier", "table"):
         return False
     opened, closed = _at(tokens, i + 1), _at(tokens, i + 3)  # a plain argument is one token
-    if opened is None or not _punct(opened, "(") or sql[tokens[i].end : opened.start].strip():
+    if opened is None or not _called(sql, tokens[i], opened):
         return False
+    if sql[tokens[i].end : opened.start].strip():
+        return True  # neither whitespace nor anything visible
     if closed is None or not _punct(closed, ")"):
         return True
     argument = sql[opened.end : closed.start].strip()
@@ -445,18 +472,138 @@ def _ctes(tokens: list[Token]) -> set[str]:
     return names
 
 
-def table_rules(
-    sql: str, tables: Iterable[str], *, dialect: Dialect = "databricks"
-) -> list[SqlIssue]:
-    """Snowflake names are compared and reported uppercased (Databricks: lowercased)."""
-    tokens = tokenize(sql, dialect=dialect)
-    snowflake = dialect == "snowflake"
-    norm = str.upper if snowflake else str.lower
-    allowed = {norm(str(t)) for t in tables}
-    qualified = "database.schema.table" if snowflake else "catalog.schema.table"
+def _snowflake_ctes(tokens: list[Token]) -> dict[str, int]:
+    """The names the statement's leading `with` list defines, each with the index of the first
+    token after its definition: before it, the name is whatever the schema holds."""
+    names: dict[str, int] = {}
+    if not _bare(_at(tokens, 0), "with"):
+        return names
+    i = 2 if _bare(_at(tokens, 1), "recursive") else 1
+    while (t := _at(tokens, i)) is not None and t.kind == "ident":
+        i += 1
+        if _punct(_at(tokens, i), "("):
+            i = _close(tokens, i)
+        if not (_bare(_at(tokens, i), "as") and _punct(_at(tokens, i + 1), "(")):
+            break
+        i = _close(tokens, i + 1)
+        names.setdefault(t.value, i)
+        if not _punct(_at(tokens, i), ","):
+            break
+        i += 1
+    return names
+
+
+def _ends_from(tokens: list[Token], i: int) -> bool:
+    """Whether the token at `i` starts a clause after the FROM clause. Only words Snowflake
+    reserves count, so no alias ends the list of tables; a comma after any other word (`limit`,
+    `offset`) is still read as one between tables."""
+    t = tokens[i]
+    if _punct(_at(tokens, i - 1), ".") or _bare(_at(tokens, i - 1), "as"):
+        return False
+    if _bare(t, "group", "order", "connect"):
+        return _bare(_at(tokens, i + 1), "by")
+    if _bare(t, "start"):
+        return _bare(_at(tokens, i + 1), "with")
+    return _bare(t, "where", "having", "qualify", "select")
+
+
+def _snowflake_references(
+    sql: str, tokens: list[Token], allowed: set[str]
+) -> tuple[list[SqlIssue], set[int]]:
+    """The issues of a Snowflake statement's table references, and the token index of each
+    reference's first part. One pass that fails closed (#358): after FROM, JOIN and every comma of
+    a FROM clause (a join's and a parenthesized list's included) only an allowed name, a CTE
+    defined before it or a subquery may stand, with nothing but whitespace around it."""
+    issues: list[SqlIssue] = []
+    referenced: set[int] = set()
+    ctes = _snowflake_ctes(tokens)
+    n = len(tokens)
+    # `gaps[i]` is the text before token `i`; the last one is the text after all of them
+    ends = [0, *(t.end for t in tokens)]
+    starts = [*(t.start for t in tokens), len(sql)]
+    gaps = [sql[end:start] for end, start in zip(ends, starts, strict=True)]
+    blank = [not gap.strip() for gap in gaps]
+    source = SqlIssue(
+        "sql_table_not_allowed",
+        "only a table name or a subquery is allowed after FROM, JOIN or a comma between tables",
+    )
+    if not all(_SNOWFLAKE_PLAIN_GAP.fullmatch(gap) for gap in gaps):
+        issues.append(
+            SqlIssue("sql_syntax", "only ASCII characters are allowed outside quoted text")
+        )
+    if not all(_NUMBER.fullmatch(run) for gap in gaps for run in _NUMBER_RUN.findall(gap)):
+        issues.append(SqlIssue("sql_syntax", "a name directly after a number is not allowed"))
+
+    def function(name: str) -> SqlIssue:
+        return SqlIssue("sql_table_function", f"table function {name} is not allowed")
+
+    def unqualified(name: str) -> SqlIssue:
+        return SqlIssue("sql_table_not_qualified", f"{name} must be named as database.schema.table")
+
+    def entry(i: int) -> int:
+        """Check the name at `i`, where a table is expected; the index after it."""
+        parts, end = _name(tokens, i)
+        referenced.add(i)
+        name = ".".join(parts).upper()
+        after = _at(tokens, end)
+        follows = after is None or (after.kind in ("ident", "punct") and not _punct(after, "."))
+        if not follows or not all(blank[i : end + 1]):
+            issues.append(source)
+        elif _punct(after, "("):
+            issues.append(function(name))
+        elif len(parts) >= 3:
+            if name not in allowed:
+                issues.append(SqlIssue("sql_table_not_allowed", f"{name} is not allowed"))
+        elif len(parts) == 2 or _bare(tokens[i], "lateral") or ctes.get(parts[0], n) > i:
+            issues.append(unqualified(name))
+        return end
+
+    # one entry per open parenthesis: "table" (a table is expected), "from" (inside a FROM clause)
+    # or "" (anything else)
+    stack = [""]
+    i = 0
+    while i < n:
+        t, after = tokens[i], _at(tokens, i + 1)
+        if stack[-1] == "table":
+            stack[-1] = "from"
+            if blank[i] and _punct(t, "("):
+                query = _bare(after, "select", "with") and blank[i + 1]
+                stack.append("" if query else "table")
+                i += 1
+                continue
+            if blank[i] and t.kind == "ident":
+                i = entry(i)
+                continue
+            issues.append(source)
+        if _punct(t, "("):
+            stack.append("")
+        elif _punct(t, ")"):
+            if len(stack) > 1:
+                stack.pop()
+        elif _bare(t, "from", "join") or (_punct(t, ",") and stack[-1] == "from"):
+            stack[-1] = "table"
+        elif _bare(t, "identifier", "table") and _called(sql, t, after):
+            issues.append(function(t.value.upper()))
+        elif _punct(t, ".") and _punct(after, ".") and blank[i + 1]:
+            issues.append(
+                SqlIssue("sql_table_not_qualified", "a name with an empty part is not allowed")
+            )
+        elif stack[-1] == "from" and _bare(t, "lateral"):
+            issues.append(unqualified("LATERAL"))
+        elif stack[-1] == "from" and _ends_from(tokens, i):
+            stack[-1] = ""
+        i += 1
+    if "table" in stack:
+        issues.append(source)
+    return issues, referenced
+
+
+def _references(tokens: list[Token], allowed: set[str]) -> tuple[list[SqlIssue], set[int]]:
+    """The issues of a Databricks statement's table references, and the token index of each
+    reference's first part."""
     ctes = _ctes(tokens)
     issues: list[SqlIssue] = []
-    referenced: set[int] = set()  # token index of each table reference's first part
+    referenced: set[int] = set()
 
     def reference(i: int) -> int:
         """Check the table entry at `i`; the index after it and its alias."""
@@ -467,7 +614,7 @@ def table_rules(
             if not parts:
                 return i
             referenced.add(i)
-            name = norm(".".join(parts))
+            name = ".".join(parts).lower()
             if _punct(_at(tokens, end), "("):
                 issues.append(
                     SqlIssue("sql_table_function", f"table function {name} is not allowed")
@@ -478,7 +625,9 @@ def table_rules(
                     issues.append(SqlIssue("sql_table_not_allowed", f"{name} is not allowed"))
             elif len(parts) == 2 or parts[0] not in ctes:
                 issues.append(
-                    SqlIssue("sql_table_not_qualified", f"{name} must be named as {qualified}")
+                    SqlIssue(
+                        "sql_table_not_qualified", f"{name} must be named as catalog.schema.table"
+                    )
                 )
             i = end
         if _bare(_at(tokens, i), "as"):
@@ -495,6 +644,24 @@ def table_rules(
             j = reference(i + 1)
             while _punct(_at(tokens, j), ","):
                 j = reference(j + 1)
+    return issues, referenced
+
+
+def table_rules(
+    sql: str, tables: Iterable[str], *, dialect: Dialect = "databricks"
+) -> list[SqlIssue]:
+    """Snowflake names are compared and reported uppercased (Databricks: lowercased). The Snowflake
+    rules (`_snowflake_references`) also refuse every `IDENTIFIER(...)` and `TABLE(...)`, a plain
+    literal included. Neither dialect reads what a function names by a string or a one- or two-part
+    name outside a FROM clause (`get_ddl`, `seq.nextval`): the platform's grants limit those."""
+    tokens = tokenize(sql, dialect=dialect)
+    snowflake = dialect == "snowflake"
+    norm = str.upper if snowflake else str.lower
+    allowed = {norm(str(t)) for t in tables}
+    if snowflake:
+        issues, referenced = _snowflake_references(sql, tokens, allowed)
+    else:
+        issues, referenced = _references(tokens, allowed)
 
     i = 0
     while i < len(tokens):

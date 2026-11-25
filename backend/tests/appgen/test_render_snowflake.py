@@ -7,8 +7,9 @@ handler), `agent.json` and `tools.json` (positional SQL and `param_order`), `RUN
 the Streamlit pin equal in `environment.yml` and the dev group, Snowpark pinned in
 `environment.yml` only (Call S6-G, DECISIONS B-3998), no SETH origin, account address, key material
 or secret-scan finding, the artifact cap, the generator version of the other platform refused both
-ways, and a data-read table, tool SQL the app may not run or a tool that reads a table outside the
-data reads (#358) refused before any byte (`release_not_renderable`)."""
+ways, and a data-read table, tool SQL the app may not run, a tool that reads a table outside the
+data reads and tool SQL longer than a draft's (#358) refused before any byte
+(`release_not_renderable`)."""
 
 from __future__ import annotations
 
@@ -25,8 +26,10 @@ from typing import Any  # Any: JSON documents
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from shifde.adapters.native.base import create_archive, read_archive
+from shifde.appgen import render_snowflake
 from shifde.appgen.render import (
     GENERATOR_VERSION,
     GENERATOR_VERSIONS,
@@ -34,6 +37,8 @@ from shifde.appgen.render import (
     render,
 )
 from shifde.appgen.render_snowflake import ReleaseNotRenderable
+from shifde.appgen.schemas import DraftTool
+from shifde.core.sqlrules import MAX_TOOL_SQL_CHARS
 from shifde.delivery.plans import MAX_ARTIFACT_BYTES
 from shifde.packaging.canonical import canonical, digest
 from tests._support.appgen_fixtures import SNOWFLAKE_SAMPLE_DRAFT
@@ -333,6 +338,105 @@ def test_tool_sql_the_app_may_not_run_is_refused(sql: str, reason: str) -> None:
     resolved["tools"][0]["sql"] = sql
     detail = _refused(SNOWFLAKE_MANIFEST, resolved)
     assert "invoiced_by_region" in detail and reason in detail
+
+
+JOINED = "select s.* from DEMO_DB.PUBLIC.CUSTOMERS c join DEMO_DB.PUBLIC.ORDERS o on o.customer_id = c.id"
+SECRETS = "'DEMO_DB.PUBLIC.SECRETS'"
+NOT_A_TABLE = "only a table name or a subquery is allowed"
+
+
+@pytest.mark.parametrize(
+    ("sql", "reason"),
+    [
+        # a literal in IDENTIFIER( or TABLE( names any object
+        (f"select * from (identifier({SECRETS})) s where s.r = :region", "table function IDENT"),
+        (f"{JOINED}, identifier({SECRETS}) s where c.region = :region", "table function IDENT"),
+        (f"{JOINED}, table({SECRETS}) s where c.region = :region", "table function TABLE"),
+        (
+            f"select * from DEMO_DB.PUBLIC.CUSTOMERS sample (10), identifier({SECRETS})",
+            "table function IDENT",
+        ),
+        (
+            f"select * from DEMO_DB.PUBLIC.CUSTOMERS at(offset => -60), identifier({SECRETS})",
+            "table function IDENT",
+        ),
+        (f"select * from (table({SECRETS}) s)", "table function TABLE"),
+        (
+            f'with "LATERAL" as (select 1) {JOINED}, lateral table({SECRETS}) s',
+            "LATERAL must be named as database.schema.table",
+        ),
+        (
+            "select identifier('DEMO_DB.PUBLIC.UDF')(1) from DEMO_DB.PUBLIC.CUSTOMERS",
+            "table function IDENT",
+        ),
+        # one- and two-part names anywhere in a FROM clause (the app creates APP_DATA.USAGE)
+        ("select s.* from DEMO_DB.PUBLIC.CUSTOMERS c, (APP_DATA.USAGE) s", "APP_DATA.USAGE must"),
+        (f"{JOINED}, APP_DATA.USAGE u", "APP_DATA.USAGE must"),
+        ("select * from (secrets)", "SECRETS must"),
+        ("select * from (DEMO_DB.PUBLIC.CUSTOMERS, secrets)", "SECRETS must"),
+        ("select * from DEMO_DB.PUBLIC.CUSTOMERS c (a, b), secrets s", "SECRETS must"),
+        ("select * from DEMO_DB.PUBLIC.CUSTOMERS sample (10), secrets s", "SECRETS must"),
+        ("select * from DEMO_DB.PUBLIC.CUSTOMERS at(offset => -60), secrets s", "SECRETS must"),
+        ("with a as (select * from b), b as (select 1 x) select * from a", "B must"),
+        ("select *, 1from APP_DATA.USAGE u", "a name directly after a number"),
+        ("select * from (OTHER..SECRETS)", NOT_A_TABLE),
+        # stages
+        ("select $1 from '@DEMO_DB.PUBLIC.STG/secrets.csv'", NOT_A_TABLE),
+        ("select $1 from $$@DEMO_DB.PUBLIC.STG/secrets.csv$$", NOT_A_TABLE),
+        ("select $1 from @~", NOT_A_TABLE),
+        ("select $1 from @DEMO_DB.PUBLIC.CUSTOMERS", NOT_A_TABLE),
+        # statement rules (notes of the isolation review)
+        ("select * from identifier\u200b(:region||'x')", "must hold one plain string literal"),
+        ("select c.id from DEMO_DB.PUBLIC.CUSTOMERS c;1", "exactly one statement"),
+    ],
+)
+def test_a_read_the_data_reads_do_not_list_is_refused(sql: str, reason: str) -> None:
+    resolved = copy.deepcopy(SNOWFLAKE_RESOLVED)
+    resolved["tools"][0]["sql"] = sql
+    detail = _refused(SNOWFLAKE_MANIFEST, resolved)
+    assert "invoiced_by_region" in detail and reason in detail
+
+
+def _never(*args: object, **kwargs: object) -> Any:  # Any: never returns
+    raise AssertionError("not reached")
+
+
+@pytest.mark.parametrize("part", ["from a,", "from("])
+def test_tool_sql_longer_than_a_drafts_is_refused_before_any_rule(
+    part: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hand-published tool has no length limit of its own; the API process renders it."""
+    for rule in ("statement_rules", "table_rules", "tokenize"):
+        monkeypatch.setattr(render_snowflake, rule, _never)
+    resolved = copy.deepcopy(SNOWFLAKE_RESOLVED)
+    resolved["tools"][0]["sql"] = "select " + part * 8000
+    detail = _refused(SNOWFLAKE_MANIFEST, resolved)
+    assert detail.endswith("is refused: it is longer than 8000 characters")
+    resolved["tools"][0]["sql"] = "select 1".ljust(MAX_TOOL_SQL_CHARS + 1)
+    assert "longer than 8000 characters" in _refused(SNOWFLAKE_MANIFEST, resolved)
+
+
+def test_the_render_limit_is_the_draft_limit() -> None:
+    tool = {"name": "tool", "description": "d", "sql": "x" * MAX_TOOL_SQL_CHARS}
+    assert len(DraftTool.model_validate(tool).sql) == MAX_TOOL_SQL_CHARS == 8000
+    with pytest.raises(ValidationError, match="at most 8000 characters"):
+        DraftTool.model_validate({**tool, "sql": tool["sql"] + "x"})
+    resolved = copy.deepcopy(SNOWFLAKE_RESOLVED)
+    sql = "select c.id from DEMO_DB.PUBLIC.CUSTOMERS c where c.region = :region"
+    resolved["tools"][0]["sql"] = sql.ljust(MAX_TOOL_SQL_CHARS)
+    assert "ui/config/tools.json" in _render(resolved)
+
+
+@pytest.mark.parametrize(
+    "sql", ["select system$x() from a", "select a.doc:field from DEMO_DB.PUBLIC.SECRETS a"]
+)
+def test_the_table_rules_run_only_without_an_earlier_issue(
+    sql: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(render_snowflake, "table_rules", _never)
+    resolved = copy.deepcopy(SNOWFLAKE_RESOLVED)
+    resolved["tools"][0]["sql"] = sql
+    assert "invoiced_by_region" in _refused(SNOWFLAKE_MANIFEST, resolved)
 
 
 def test_a_declared_table_in_another_letter_case_renders() -> None:
