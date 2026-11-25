@@ -1,0 +1,95 @@
+"""The Databricks backend of the generated app's agent loop (databricks-sdk only): `call_model`
+queries the serving endpoint and `run_sql` runs a tool's named-parameter SQL on the SQL warehouse,
+both through a `WorkspaceClient`. Any failure is `agent_loop.UpstreamFailed`, with no exception
+text."""
+
+from __future__ import annotations
+
+from typing import Any  # Any: the workspace client and JSON
+
+from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
+from databricks.sdk.service.sql import (
+    ExecuteStatementRequestOnWaitTimeout,
+    StatementParameterListItem,
+    StatementState,
+)
+
+import agent_loop
+
+WAIT_TIMEOUT = "30s"
+
+
+def sql_type(prop: Any) -> str:  # Any: an input schema property
+    kind = prop.get("type") if isinstance(prop, dict) else None
+    if kind == "integer":
+        return "BIGINT"
+    if kind == "number":
+        return "DOUBLE"
+    if kind == "boolean":
+        return "BOOLEAN"
+    if kind == "string" and prop.get("format") == "date":
+        return "DATE"
+    return "STRING"
+
+
+def call_model(client: Any, endpoint: str) -> agent_loop.CallModel:  # Any: the workspace client
+    """`call_model(messages) -> (text, prompt_tokens, completion_tokens)` on `endpoint`."""
+
+    def call(convo: list[dict[str, str]]) -> tuple[str, int, int]:
+        messages = [
+            ChatMessage(role=ChatMessageRole(m["role"]), content=m["content"]) for m in convo
+        ]
+        try:
+            response = client.serving_endpoints.query(name=endpoint, messages=messages)
+            text = response.choices[0].message.content
+        except Exception as exc:
+            raise agent_loop.UpstreamFailed() from exc
+        if not isinstance(text, str):
+            raise agent_loop.UpstreamFailed()
+        usage = response.usage
+        prompt = int(usage.prompt_tokens or 0) if usage is not None else 0
+        completion = int(usage.completion_tokens or 0) if usage is not None else 0
+        return text, prompt, completion
+
+    return call
+
+
+def run_sql(client: Any, warehouse_id: str) -> agent_loop.RunSql:  # Any: the workspace client
+    """`run_sql(tool, arguments) -> result` on the warehouse: `{columns, rows, row_count}` and
+    `truncated` when more than the tool's `max_rows` came back."""
+
+    def run(tool: dict[str, Any], arguments: dict[str, Any]) -> dict[str, Any]:  # Any: JSON
+        props = tool["input_schema"].get("properties") or {}
+        parameters = [
+            StatementParameterListItem(
+                name=p["name"],
+                value=None if arguments.get(p["name"]) is None else str(arguments[p["name"]]),
+                type=sql_type(props.get(p["name"])),
+            )
+            for p in tool["parameters"]
+        ]
+        max_rows = int(tool["max_rows"])
+        try:
+            response = client.statement_execution.execute_statement(
+                warehouse_id=warehouse_id,
+                statement=tool["sql"],
+                parameters=parameters,
+                row_limit=max_rows,
+                wait_timeout=WAIT_TIMEOUT,
+                on_wait_timeout=ExecuteStatementRequestOnWaitTimeout.CANCEL,
+            )
+        except Exception as exc:
+            raise agent_loop.UpstreamFailed() from exc
+        if response.status is None or response.status.state != StatementState.SUCCEEDED:
+            raise agent_loop.UpstreamFailed()
+        manifest = response.manifest
+        schema = manifest.schema if manifest is not None else None
+        columns = [str(c.name) for c in (schema.columns if schema is not None else None) or []]
+        data = (response.result.data_array if response.result is not None else None) or []
+        rows = data[:max_rows]
+        result: dict[str, Any] = {"columns": columns, "rows": rows, "row_count": len(rows)}
+        if len(data) > max_rows or (manifest is not None and manifest.truncated):
+            result["truncated"] = True
+        return result
+
+    return run

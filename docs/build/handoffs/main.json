@@ -1,8 +1,8 @@
 {
-  "session_id": "93ea764f-a005-4af6-a703-fc95416e9392",
-  "head_sha": "224216c039c0adc4ce13ad372c817282bf4d979a",
+  "session_id": "3899de12-0fee-490d-94f5-1964121b9d2a",
+  "head_sha": "da6dbf80582aecb73763496e2f598d224bcded2c",
   "branch": "main",
   "unit_in_progress": "none",
-  "next_step": "Per docs/build/HANDOFF.md: job queue; start builders 172 (round 2), 174, 175, 176 (round 1); spawn approver for 173 with its BLOCKED isolation review, then feedback round 2",
-  "written_at": "2026-11-24T18:48:07Z"
+  "next_step": "Per docs/build/HANDOFF.md: job queue; sync 179 (#363, PR #365), green CI, job merge; then 176 per S-041, 173 (needs S-044), 177",
+  "written_at": "2026-11-25T00:17:27Z"
 }

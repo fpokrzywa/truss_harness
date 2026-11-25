@@ -1,0 +1,7 @@
+manifest_version: 1
+version:
+  name: V1
+  label: SHIFDE V1
+artifacts:
+  setup_script: setup.sql
+  default_streamlit: APP_PUBLIC.UI

@@ -13,6 +13,7 @@ describe('navigation config (FR-UI-003)', () => {
   it('contains only Phase 1-8 areas', () => {
     const ids = NAV_ITEMS.map((i) => i.id).sort();
     expect(ids).toEqual([
+      'assist',
       'build-agents',
       'build-ontologies',
       'build-orchestrations',
@@ -68,6 +69,7 @@ describe('navigation config (FR-UI-003)', () => {
       'security-secrets',
       'security-service-accounts',
       'security-users',
+      'settings-assist',
       'settings-mcp',
       'workspaces',
     ]);
@@ -515,6 +517,37 @@ describe('permission-aware navigation (FR-UI-004)', () => {
       expect(connectionHref('acme', 'c1')).toBe('/o/acme/connections/c1');
       expect(connectionHref('acme', 'c 1', 'tests')).toBe('/o/acme/connections/c%201/tests');
     });
+  });
+});
+
+describe('Ask SETH (SP7-7)', () => {
+  const find = (id: string, path: string, perms: string[]) =>
+    visibleNav(parseScope(path), { isPlatformAdmin: false, permissions: new Set(perms) }).find(
+      (i) => i.id === id,
+    );
+
+  it('shows Ask SETH only inside a project, with assist:request:read', () => {
+    expect(find('assist', '/o/acme/w/eng/p/api', ['assist:request:read'])).toMatchObject({
+      label: 'Ask SETH',
+      group: 'Operate',
+      href: '/o/acme/w/eng/p/api/assist',
+    });
+    expect(find('assist', '/o/acme/w/eng', ['assist:request:read'])).toBeUndefined();
+    expect(find('assist', '/o/acme', ['assist:request:read'])).toBeUndefined();
+    expect(find('assist', '/o/acme/w/eng/p/api', ['assist:request:write'])).toBeUndefined();
+  });
+
+  it.each(['assist:admin', 'assist:install'])('shows Assist settings with %s', (permission) => {
+    for (const path of ['/o/acme', '/o/acme/w/eng/p/api'])
+      expect(find('settings-assist', path, [permission])).toMatchObject({
+        label: 'Assist settings',
+        group: 'Administer',
+        href: '/o/acme/assist/settings',
+      });
+  });
+
+  it('hides Assist settings without either permission', () => {
+    expect(find('settings-assist', '/o/acme', ['assist:request:read'])).toBeUndefined();
   });
 });
 
