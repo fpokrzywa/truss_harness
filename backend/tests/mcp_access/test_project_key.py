@@ -9,6 +9,7 @@ delivery target and activity. The full app of `tests/mcp_access` serves both HTT
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any  # Any: JSON bodies and row values
 from uuid import UUID
@@ -18,11 +19,14 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from shifde.audit import service as audit
+from shifde.core.context import RequestContext
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from tests._support.fullapp import World
 from tests._support.p2util import bearer, post
 from tests._support.p5util import Hdr, user_session
+from tests._support.statements import statement_log
 from tests.assist.helpers import add_project, rows
 from tests.board.conftest import owner_run, same_404, solution, target
 from tests.connections.routes import connection, grant
@@ -49,12 +53,15 @@ MAIN, SECOND = f"{A}/workspaces/main", f"{A}/workspaces/zulu-w2"
 P1, P2 = f"{MAIN}/projects/sample", f"{MAIN}/projects/zulu-p2"
 FAR = f"{SECOND}/projects/zulu-far"
 NO_ORG = "/api/v1/orgs/no-such-org"
+# what `layout` names outside P1 (P1's own connection is `zulu-one`)
+HIDDEN_NAMES = ("zulu-p2", "zulu-two", "zulu-main", "zulu-w2", "zulu-far", "zulu-second")
 # the mask, not a missing key scope, is what refuses the writes and the organization-wide reads
 KEY_SCOPES = [
     *TOOL_SCOPES,
     "connection:read",
     "workspace:manage",
     "project:create",
+    "project:manage",
     "member:read",
     "tenant:admin",
 ]
@@ -274,7 +281,44 @@ def test_the_key_writes_neither_its_workspace_nor_another(
     assert c.post(f"{MAIN}/projects", headers=key, json=new).status_code == 403
     assert c.patch(SECOND, headers=key, json=change).status_code == 404
     assert c.post(f"{SECOND}/projects", headers=key, json=new).status_code == 404
+    # a hidden workspace answers as an unknown slug, whatever the write (issue #374, B-4093)
+    nope = f"{A}/workspaces/nope"
+    same_404(c.patch(SECOND, headers=key, json=change), c.patch(nope, headers=key, json=change))
+    same_404(
+        c.post(f"{SECOND}/projects", headers=key, json=new),
+        c.post(f"{nope}/projects", headers=key, json=new),
+    )
+    unknown = c.patch(f"{nope}/projects/nope", headers=key, json=change)
+    for hidden in (FAR, f"{SECOND}/projects/nope"):
+        same_404(c.patch(hidden, headers=key, json=change), unknown)
     assert state() == before
+
+
+def test_a_refused_write_on_a_hidden_workspace_is_still_recorded_as_denied(
+    key: Hdr, layout: Layout, owner_session: Session
+) -> None:
+    def denied(action: str, resource: UUID) -> list[tuple[Any, ...]]:
+        return rows(
+            owner_session,
+            "SELECT decision, reason_codes FROM shifde.policy_decisions "
+            "WHERE tenant_id = :t AND action = :a AND resource_id = :r",
+            t=layout.tenant,
+            a=action,
+            r=str(resource),
+        )
+
+    [(ws2, far)] = rows(
+        owner_session,
+        "SELECT w.id, p.id FROM shifde.workspaces w JOIN shifde.projects p "
+        "ON p.workspace_id = w.id WHERE w.tenant_id = :t AND w.slug = 'zulu-w2'",
+        t=layout.tenant,
+    )
+    assert denied("workspace:manage", ws2) == denied("project:manage", far) == []
+    change = {"name": "renamed", "row_version": 1}
+    for url in (SECOND, FAR):
+        assert key.client.patch(url, headers=key, json=change).status_code == 404
+    refused = [("deny", ["resource_scope"])]
+    assert denied("workspace:manage", ws2) == denied("project:manage", far) == refused
 
 
 # ------------------------------------------------------------------ dashboard
@@ -304,7 +348,7 @@ def test_the_dashboard_of_the_key_shows_no_activity_beyond_its_project(
     same_404(refused, unknown)
 
 
-def test_the_dashboard_activity_of_an_administrator_and_of_a_project_member_is_unchanged(
+def test_the_dashboard_activity_of_a_project_member_is_its_project_and_of_an_administrator_all(
     mcp: TestClient, world: World, layout: Layout, owner_session: Session, owner_db: Database
 ) -> None:
     email = f"p1-{uuid7().hex[-8:]}@demo-a.local"
@@ -316,12 +360,168 @@ def test_the_dashboard_activity_of_an_administrator_and_of_a_project_member_is_u
     everything = _recorded(owner_session, "workspace_id = :w", w=layout.ws)
     in_p1 = _recorded(owner_session, "project_id = :p", p=layout.p1)
     assert len(everything) > len(in_p1) > 0
-    assert _activity(member) == _activity(member, workspace="main") == everything
+    assert _activity(member) == _activity(member, workspace="main") == in_p1
     assert _activity(member, workspace="main", project="sample") == in_p1
     admin = user_session(mcp, world.passwords, ADMIN_A)
     assert _activity(admin) == _recorded(owner_session, "true")
     assert _activity(admin, workspace="main") == everything
     assert _activity(admin, workspace="main", project="sample") == in_p1
+
+
+@pytest.fixture
+def member(
+    mcp: TestClient, layout: Layout, owner_session: Session, owner_db: Database
+) -> Callable[..., Hdr]:
+    """A signed-in member of demo-a with exactly `permissions` at the scope."""
+
+    def make(*permissions: str, **scope: Any) -> Hdr:
+        email = f"member-{uuid7().hex[-8:]}@demo-a.local"
+        uid = person(owner_session, email)
+        owner_membership(owner_session, layout.tenant, uid)
+        owner_session.commit()
+        grant(owner_db, layout.tenant, uid, list(permissions), **scope)
+        return user_session(mcp, {email: PASSWORD}, email)
+
+    return make
+
+
+def _in_p1(owner: Session, layout: Layout) -> list[tuple[Any, ...]]:
+    """P1's recorded rows; P2 and `main` itself have rows too, so there is something to hide."""
+    shown = _recorded(owner, "project_id = :p", p=layout.p1)
+    for part in ("project_id = :p2", "project_id IS NULL"):
+        hidden = _recorded(owner, f"workspace_id = :w AND {part}", w=layout.ws, p2=layout.p2)
+        assert hidden and not set(hidden) & set(shown), part
+    assert shown
+    return shown
+
+
+def test_the_dashboard_of_a_project_member_names_no_sibling_project(
+    member: Callable[..., Hdr], layout: Layout, owner_session: Session
+) -> None:
+    in_p1 = _in_p1(owner_session, layout)
+    c = member("project:read", scope_type="project", scope_id=layout.p1)
+    main = {"workspace": "main"}
+    for params in ({}, main, {**main, "project": "sample"}):
+        assert _activity(c, **params) == in_p1, params
+        text = json.dumps(_json(c, f"{A}/dashboard", **params))
+        assert [n for n in HIDDEN_NAMES if n in text] == []
+        assert ("tenancy.workspace.updated", "workspace:main") not in _activity(c, **params)
+
+
+@pytest.mark.parametrize("owner_grant", ["project", "workspace"])
+def test_the_dashboard_of_a_key_whose_owner_holds_a_narrower_grant_too_stops_at_its_project(
+    key: Hdr, layout: Layout, owner_session: Session, owner_db: Database, owner_grant: str
+) -> None:
+    [(uid,)] = rows(
+        owner_session, "SELECT id FROM shifde.users WHERE primary_email = :e", e=ADMIN_A
+    )
+    reads = ["workspace:read", "project:read"]
+    if owner_grant == "project":
+        for p in (layout.p1, layout.p2):
+            grant(owner_db, layout.tenant, uid, reads, scope_type="project", scope_id=p)
+    else:
+        grant(owner_db, layout.tenant, uid, reads, scope_type="workspace", scope_id=layout.ws)
+    in_p1 = _in_p1(owner_session, layout)
+    main = {"workspace": "main"}
+    for params in ({}, main, {**main, "project": "sample"}):
+        assert _activity(key, **params) == in_p1, params
+        text = json.dumps(_json(key, f"{A}/dashboard", **params))
+        assert [n for n in HIDDEN_NAMES if n in text] == []
+
+
+def test_the_dashboard_of_a_key_whose_owner_holds_only_a_workspace_grant_shows_its_project(
+    key: Hdr, layout: Layout, owner_session: Session, owner_db: Database
+) -> None:
+    """A workspace grant with a project mask: `visible_scopes("project:read")` is empty, while
+    `authorize` allows P1."""
+    [(uid,)] = rows(
+        owner_session, "SELECT id FROM shifde.users WHERE primary_email = :e", e=ADMIN_A
+    )
+    owner_run(owner_db, "DELETE FROM shifde.role_bindings WHERE subject_id = :u", u=uid)
+    reads = ["workspace:read", "project:read"]
+    grant(owner_db, layout.tenant, uid, reads, scope_type="workspace", scope_id=layout.ws)
+    in_p1 = _in_p1(owner_session, layout)
+    for params in ({}, {"workspace": "main"}, {"workspace": "main", "project": "sample"}):
+        assert _activity(key, **params) == in_p1, params
+
+
+def test_the_dashboard_of_a_workspace_member_shows_all_of_its_workspace(
+    member: Callable[..., Hdr], layout: Layout, owner_session: Session
+) -> None:
+    _in_p1(owner_session, layout)
+    everything = _recorded(owner_session, "workspace_id = :w", w=layout.ws)
+    c = member("workspace:read", "project:read", scope_type="workspace", scope_id=layout.ws)
+    assert _activity(c) == _activity(c, workspace="main") == everything
+    assert "zulu-w2" not in json.dumps(_json(c, f"{A}/dashboard"))
+
+
+def test_the_dashboard_of_an_organization_reader_shows_its_active_workspaces(
+    member: Callable[..., Hdr], admin: Hdr, layout: Layout, owner_session: Session
+) -> None:
+    old = f"{A}/workspaces/zulu-old"
+    post(admin.client, f"{A}/workspaces", admin, {"slug": "zulu-old", "name": "zulu-old"})
+    for kind in ("sleeping", "awake"):  # an archived project of an active workspace counts
+        post(admin.client, f"{MAIN}/projects", admin, {"slug": f"zulu-{kind}", "name": kind})
+    body = {"status": "archived", "row_version": 1}
+    for url in (old, f"{MAIN}/projects/zulu-sleeping"):
+        assert admin.client.patch(url, headers=admin, json=body).status_code == 200
+    c = member("workspace:read", "project:read")
+    active = "workspace_id IN (SELECT id FROM shifde.workspaces WHERE status = 'active')"
+    expected = _recorded(owner_session, active)
+    assert ("tenancy.project.archived", "project:main/zulu-sleeping") in expected
+    assert _recorded(owner_session, "workspace_id IS NULL") != []
+    assert _recorded(owner_session, f"workspace_id IS NOT NULL AND NOT {active}") != []
+    assert _activity(c) == expected
+    assert "zulu-old" not in json.dumps(_json(c, f"{A}/dashboard"))
+
+
+def test_the_dashboard_without_project_read_shows_no_row_of_a_project(
+    member: Callable[..., Hdr], layout: Layout, owner_session: Session
+) -> None:
+    _in_p1(owner_session, layout)
+    own = _recorded(owner_session, "workspace_id = :w AND project_id IS NULL", w=layout.ws)
+    c = member("workspace:read", scope_type="workspace", scope_id=layout.ws)
+    assert _activity(c) == _activity(c, workspace="main") == own != []
+
+
+def test_newer_rows_of_a_sibling_project_do_not_use_up_the_dashboards_limit(
+    member: Callable[..., Hdr], layout: Layout, owner_session: Session
+) -> None:
+    in_p1 = _in_p1(owner_session, layout)
+    for _ in range(25):
+        audit.record(
+            owner_session,
+            RequestContext(request_id="limit"),
+            action="tenancy.project.updated",
+            tenant_id=layout.tenant,
+            target_label="project:main/zulu-p2",
+            workspace_id=layout.ws,
+            project_id=layout.p2,
+        )
+    owner_session.commit()
+    newest = _recorded(owner_session, "workspace_id = :w", w=layout.ws)
+    assert newest == [("tenancy.project.updated", "project:main/zulu-p2")] * 20
+    c = member("project:read", scope_type="project", scope_id=layout.p1)
+    for params in ({}, {"workspace": "main"}):
+        assert _activity(c, **params) == in_p1, params
+
+
+def test_the_dashboards_statement_count_does_not_grow_with_the_projects(
+    member: Callable[..., Hdr], admin: Hdr, layout: Layout
+) -> None:
+    c = member("workspace:read", "project:read", scope_type="workspace", scope_id=layout.ws)
+
+    def statements() -> int:
+        with statement_log("shifde_app") as log:
+            _json(c, f"{A}/dashboard")
+        return len(log.statements)
+
+    statements()  # the first request of the session may do more
+    before = statements()
+    assert before > 0
+    for i in range(3):
+        post(admin.client, f"{MAIN}/projects", admin, {"slug": f"more-{i}", "name": f"more {i}"})
+    assert statements() == before
 
 
 # ------------------------------------------------------------------ another client

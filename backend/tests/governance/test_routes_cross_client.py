@@ -492,6 +492,20 @@ def test_usage_reads_and_exports_hold_only_as_own(
         USAGE_MARKER_B_TWO,
     ]
     assert USAGE_MARKER_A not in client.get(f"{two.b.base}/usage/export", headers=hb).text
+    # the raw `b-run` row has no rollup yet: B rebuilds its own before its summary is read
+    b_rebuilt = client.post(f"{two.b.base}/usage/rollups/rebuild", headers=hb)
+    assert b_rebuilt.status_code == 200, b_rebuilt.text
+    read = client.get(f"{two.b.base}/usage/summary?group_by=workspace", headers=hb)
+    assert read.status_code == 200, read.text
+    b_summary = read.json()
+    assert [g["key"] for g in b_summary["groups"]] == [str(world.b.ws)]
+    # B's two events of 100 tokens and 1 call, plus the defaults of `b-run` (0 tokens, 1 call)
+    assert b_summary["totals"]["input_tokens"] == 200 and b_summary["totals"]["calls"] == 3
+    # `consistent` stays true when a leak reaches both sides, so the sums are checked too
+    b_rec = b_summary["reconciliation"]
+    assert b_rec["consistent"] is True
+    assert b_rec["events_sum"] == 200 and b_rec["rollup_sum"] == 200
+    assert b_rec["mismatched_rows"] == 0 and b_rec["detail"] == []
     h = as_user(client, two.a.email)
     missing = org(f"no-such-{uuid7().hex[-12:]}")
     for path in ("usage/events", "usage/summary", f"usage/runs/{run_b}", "usage/export"):
