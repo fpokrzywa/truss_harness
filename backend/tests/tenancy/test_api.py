@@ -204,6 +204,9 @@ def test_a_write_under_a_hidden_workspace_answers_as_under_an_unknown_one(
     assert send("PATCH", own, patch).status_code == 200
     missing = send("PATCH", f"{own}/projects/nope", patch)
     assert (missing.status_code, missing.json()["detail"]) == (404, "project not found")
+    # a project of the hidden workspace, asked under the caller's workspace
+    same_404(send("PATCH", f"{own}/projects/{project_slug(world.a)}", patch), missing)
+    assert state() == before
 
 
 def test_a_hidden_workspace_keeps_the_success_and_the_403_of_a_readable_project(
@@ -240,6 +243,7 @@ def test_a_project_read_under_a_hidden_workspace_answers_as_under_an_unknown_one
         same_404(client.get(f"{hidden}/projects/{slug}"), unknown)
     missing = client.get(f"{own}/projects/nope")
     assert (missing.status_code, missing.json()["detail"]) == (404, "project not found")
+    same_404(client.get(f"{own}/projects/{project_slug(world.a)}"), missing)
 
 
 def test_a_readable_project_of_a_hidden_workspace_stays_readable(
