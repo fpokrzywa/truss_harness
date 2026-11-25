@@ -76,6 +76,38 @@ def test_a_snowflake_only_refusal_shows_only_in_the_snowflake_dialect(sql: str, 
     assert code not in {d.code for d in default}, default
 
 
+@pytest.mark.parametrize(
+    ("sql", "code"),
+    [
+        ("select id from DEMO_DB.PUBLIC.ORDERS where id = @s'x'", "sql_stage_path"),
+        ("select get_ddl('table', 't') from DEMO_DB.PUBLIC.ORDERS", "sql_refused_function"),
+        ("select get_presigned_url('s', 'f') from DEMO_DB.PUBLIC.ORDERS", "sql_refused_function"),
+        ("select seq.nextval from DEMO_DB.PUBLIC.ORDERS", "sql_refused_function"),
+    ],
+)
+def test_the_shared_read_rules_are_forwarded_in_the_snowflake_dialect(sql: str, code: str) -> None:
+    value = copy.deepcopy(SNOWFLAKE_SAMPLE_DRAFT)
+    value["tools"][1]["sql"] = sql
+    value["tools"][1]["parameters"] = []
+    found = sqlcheck.validate(
+        Draft.model_validate(value), SNOWFLAKE_SAMPLE_TABLES, dialect="snowflake"
+    )
+    assert [(d.path, d.code) for d in found] == [("tools.1.sql", code)]
+
+
+def test_a_snowflake_draft_parameter_named_call_has_no_diagnostic() -> None:
+    value = copy.deepcopy(SNOWFLAKE_SAMPLE_DRAFT)
+    value["tools"][1]["sql"] = "select id from DEMO_DB.PUBLIC.ORDERS where id = :call"
+    value["tools"][1]["parameters"] = [{"name": "call", "type": "integer", "required": True}]
+    draft = Draft.model_validate(value)
+    tools = [
+        d
+        for d in sqlcheck.validate(draft, SNOWFLAKE_SAMPLE_TABLES, dialect="snowflake")
+        if d.path.startswith("tools.")
+    ]
+    assert tools == []
+
+
 def test_the_hash_is_the_canonical_digest() -> None:
     draft = Draft.model_validate(SAMPLE_DRAFT)
     assert sqlcheck.draft_hash(draft) == digest(draft.model_dump(mode="json"))
