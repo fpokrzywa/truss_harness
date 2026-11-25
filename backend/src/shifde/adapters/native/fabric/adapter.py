@@ -9,6 +9,12 @@ not own is never adopted (`ForeignItem`).
 The executor drives it (SP8-5): `toolchain_digest` is the digest of the executing platform, which
 every artifact, plan and deploy context must carry, and `plan_details` rebuilds a sealed plan's
 details without a platform request.
+
+An apply asks the client for its token (with the executor's re-check, and a mint when there is none)
+before the intent of every step, so a refusal there leaves no intent: before the first one the
+deployment is `failed`, not an unknown outcome. A refusal that comes only at the step's own request,
+after the intent, leaves it open with no write sent and is an unknown outcome. In plan, observe and
+verify a refused check or token is the job's failure, never a check that failed.
 """
 
 from __future__ import annotations
@@ -220,8 +226,10 @@ class FabricAdapter:
         client_factory: Callable[[Target], FabricClient],
         env: str | None = None,
         toolchain_digest: str = TOOLCHAIN_DIGEST,
+        token_provider: Callable[[], str] | None = None,
     ) -> None:
         self.client_factory = client_factory
+        self.token_provider = token_provider  # in place of the factory's (the fake's) own
         self.env = env or environment()
         self.toolchain_digest = toolchain_digest
 
@@ -229,6 +237,8 @@ class FabricAdapter:
         ctx.check_deadline()
         client = self.client_factory(ctx.target)
         client.deadline = ctx.deadline
+        if self.token_provider is not None:
+            client.token_provider = self.token_provider
         return client
 
     def capabilities(self, ctx: ReadContext) -> CapabilityReport:
@@ -558,6 +568,7 @@ class FabricAdapter:
 
         def begin(key: str) -> None:
             ctx.check_deadline()
+            client.token_provider()
             if not ctx.journal.intent(key, {"plan": plan.digest}):
                 raise NeedsAttention("Fabric native step was already submitted")
 

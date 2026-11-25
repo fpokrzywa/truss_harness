@@ -3,6 +3,12 @@
 Egress is limited to the Fabric REST origin and the Entra token endpoint; redirects are never
 followed, the process environment's proxy settings are ignored and a long-running operation's
 `Location` header is never requested (FDE SDK `shifde_fabric/clients.py`, 1fd902b).
+
+The executor's token callable is `CheckedTokens`: its `authorize` raises unless the job may still
+use the target, and runs before every use of a token, a cached one included, and again before a new
+one is kept. A token is used only while the credentials are those it was minted with. A token
+request that gives no usable token is `FabricAuthError`, and no error of this module carries a
+secret, a token or the text of an answer.
 """
 
 from __future__ import annotations
@@ -29,6 +35,8 @@ LOGIN_ORIGIN = "https://login.microsoftonline.com"
 SCOPE = "https://api.fabric.microsoft.com/.default"
 TOKEN_MARGIN_SECONDS = 60
 TOKEN_RESPONSE_MAX = 64 * 1024
+TOKEN_SECONDS_MAX = 24 * 3600.0  # a token is kept no longer, whatever its answer says
+_TOKEN = re.compile(r"[\x21-\x7e]+")  # what an Authorization header takes
 _GUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
@@ -48,7 +56,8 @@ class FabricAuthError(RuntimeError):
 
 
 class EntraTokenProvider:
-    """Entra client-credentials tokens for the Fabric API, cached in memory until near expiry."""
+    """Entra client-credentials tokens for the Fabric API, cached in memory until near expiry. It
+    checks nothing when it answers the cached one: an executor uses it behind `CheckedTokens`."""
 
     def __init__(
         self,
@@ -92,29 +101,56 @@ class EntraTokenProvider:
             if response.status_code != 200:
                 raise FabricAuthError
             data = bytearray()
-            for block in response.iter_bytes():
-                data.extend(block)
-                if len(data) > TOKEN_RESPONSE_MAX:
-                    raise FabricAuthError
+            try:
+                for block in response.iter_bytes():
+                    data.extend(block)
+                    if len(data) > TOKEN_RESPONSE_MAX:
+                        raise FabricAuthError
+            except httpx.DecodingError:
+                raise FabricAuthError from None
         try:
             body = json.loads(data)
-        except ValueError:
+        except (ValueError, RecursionError):
             raise FabricAuthError from None
         token = body.get("access_token") if isinstance(body, dict) else None
         lifetime = body.get("expires_in") if isinstance(body, dict) else None
         if (
             not isinstance(token, str)
-            or not token
+            or not _TOKEN.fullmatch(token)
             or isinstance(lifetime, bool)
             or not isinstance(lifetime, int | float)
-            or lifetime <= 0
+            or not lifetime > 0  # NaN is refused too
         ):
             raise FabricAuthError
-        return token, float(lifetime)
+        return token, float(min(lifetime, TOKEN_SECONDS_MAX))
+
+
+class CheckedTokens[T]:
+    """Tokens for one job: `authorize` answers the credentials the job may use now, or raises. It is
+    asked before every use, cached token or not, and again after the token was got; the provider of
+    other credentials (`provider_of`), and one whose second check did not pass, is never used
+    again."""
+
+    def __init__(
+        self, authorize: Callable[[], T], provider_of: Callable[[T], Callable[[], str]]
+    ) -> None:
+        self._authorize, self._provider_of = authorize, provider_of
+        self._kept: tuple[T, Callable[[], str]] | None = None
+
+    def __call__(self) -> str:
+        kept, self._kept = self._kept, None
+        allowed = self._authorize()
+        provider = kept[1] if kept and kept[0] == allowed else self._provider_of(allowed)
+        token = provider()
+        if self._authorize() != allowed:
+            raise FabricAuthError
+        self._kept = (allowed, provider)
+        return token
 
 
 class FabricClient:
-    """Fabric REST calls on `ORIGIN` with a bearer token from `token_provider`."""
+    """Fabric REST calls on `ORIGIN` with a bearer token from `token_provider`, asked again for
+    every request: each attempt, poll turn and page."""
 
     def __init__(
         self,
@@ -178,7 +214,10 @@ class FabricClient:
                 if not operation and not execution:
                     raise NeedsAttention("Fabric accepted a request without an operation ID")
                 operation = str(UUID(operation)) if operation else None
-            decoded = json.loads(data) if data else {}
+            try:
+                decoded = json.loads(data) if data else {}
+            except (ValueError, RecursionError):  # a decode error carries the body
+                decoded = None
             if not isinstance(decoded, dict):
                 raise ValueError("unexpected Fabric response body")
             return {

@@ -9,9 +9,9 @@ adapter call. The deploying service principal comes from the credential entry, n
 The job context's `platform_kind` picks the adapter through `DISPATCH`: `databricks`
 (`DatabricksAdapter`, tokens from the broker), `snowflake` (`SnowflakeNativeAdapter`, a key pair
 the broker re-checks and reads on every statement), `fabric` (`FabricAdapter`, Entra
-client-credentials tokens of one job, the secret re-checked and read on every token request),
-`palantir` (`PalantirMarketplaceAdapter`, client credentials the broker re-checks and reads before
-every request, a cached token's too) or `docker` (`DockerComposeAdapter` over the job's own artifact
+client-credentials tokens of one job, the grant and entry re-checked and the secret read before
+every request, a cached token's too), `palantir` (`PalantirMarketplaceAdapter`, client credentials
+the broker re-checks and reads before every request, a cached token's too) or `docker` (`DockerComposeAdapter` over the job's own artifact
 store, the grant and entry checked again before every runtime call, only for a plan of the Docker
 generator's version and a bundle of the plan's release). An entry of another platform is refused
 like any other mismatch, and so is a Fabric entry of another Entra tenant or workspace than the
@@ -139,7 +139,11 @@ from shifde.adapters.native.docker.fake import FakeContainerRuntime, prepare_ren
 from shifde.adapters.native.docker.runtime import MIN_ENGINE, DockerCliRuntime, DockerRefused
 from shifde.adapters.native.fabric import source as fabric_source
 from shifde.adapters.native.fabric.adapter import FabricAdapter, ForeignItem
-from shifde.adapters.native.fabric.clients import EntraTokenProvider, FabricClient
+from shifde.adapters.native.fabric.clients import (
+    CheckedTokens,
+    EntraTokenProvider,
+    FabricClient,
+)
 from shifde.adapters.native.fabric.fake import FakeFabricWorkspace
 from shifde.adapters.native.palantir import source as palantir_source
 from shifde.adapters.native.palantir.adapter import PalantirMarketplaceAdapter
@@ -322,12 +326,14 @@ class RealPlatform:
     def fabric_adapter(
         self, target: Target, credential_provider: FabricCredentialProvider
     ) -> FabricAdapter:
-        """Fabric REST calls with Entra client-credentials tokens; the secret is read from the
-        broker again whenever a token is fetched. The token provider belongs to the returned
-        adapter, so to one job: nothing keeps it here."""
-        ids = credential_provider()
-        tokens = EntraTokenProvider(
-            ids.entra_tenant_id, ids.client_id, lambda: credential_provider().client_secret
+        """Fabric REST calls with Entra client-credentials tokens; the grant and the entry are
+        checked, and the secret read, before every use of a token. The tokens belong to the returned
+        adapter, so to one job: nothing keeps them here."""
+        tokens = CheckedTokens(
+            credential_provider,
+            lambda now: EntraTokenProvider(
+                now.entra_tenant_id, now.client_id, lambda: now.client_secret
+            ),
         )
         return FabricAdapter(
             client_factory=lambda t: FabricClient(t, tokens),
@@ -437,10 +443,13 @@ class FakePlatform:
             raise RuntimeError("the Fabric fake runs only in development or test, switched on")
         if self.fabric is None:
             self.fabric = FakeFabricWorkspace()
-        if target.bindings["workspace"] not in self.fabric.workspaces:
-            self.fabric.add_workspace(target.bindings["workspace"])
+        fabric = self.fabric
+        if target.bindings["workspace"] not in fabric.workspaces:
+            fabric.add_workspace(target.bindings["workspace"])
+        tokens = CheckedTokens(credential_provider, lambda _now: lambda: "fake-token")
         return FabricAdapter(
-            client_factory=self.fabric.client_factory,
+            client_factory=fabric.client_factory,
+            token_provider=tokens,
             env=self.environment,
             toolchain_digest=toolchain_digest(self.kind, "fabric"),
         )
@@ -750,35 +759,24 @@ class Runner:
 
     def _fabric_provider(self, state: LeaseState, target: Target) -> FabricCredentialProvider:
         """The Fabric client credentials, re-checked by the broker and against the target (and the
-        secret file read) on every call; an expired grant is refreshed first."""
+        secret file read) on every call; an expired grant is refreshed first. `CheckedTokens`
+        calls it before every use of a token."""
+
+        def checked(grant: CredentialGrant, **ids: UUID) -> FabricCredentials:
+            self._fabric_entry(target, grant, ids)
+            return self.broker.fabric_credentials_for(grant, **ids)
 
         def credentials() -> FabricCredentials:
-            grant = state.grant
-            if grant is None or grant.expires_at <= utcnow():
-                grant = state.grant = self.client.credential_grant(state.lease)
-            self._fabric_entry(state, target, grant)
-            return self.broker.fabric_credentials_for(
-                grant,
-                job_id=state.lease.job.id,
-                executor_id=self.executor_id,
-                target_id=target.id,
-                tenant_id=target.tenant_id,
-            )
+            return self._recheck(state, target, checked)
 
         return credentials
 
     def _fabric_entry(
-        self, state: LeaseState, target: Target, grant: CredentialGrant
+        self, target: Target, grant: CredentialGrant, ids: dict[str, UUID]
     ) -> FabricEntry:
-        """The grant's Fabric entry (the broker's checks), of the target's Entra tenant and
-        workspace; else `CredentialUnavailable`."""
-        entry = self.broker.fabric_entry_for(
-            grant,
-            job_id=state.lease.job.id,
-            executor_id=self.executor_id,
-            target_id=target.id,
-            tenant_id=target.tenant_id,
-        )
+        """The grant's Fabric entry (the broker's checks of `ids`), of the target's Entra tenant
+        and workspace; else `CredentialUnavailable`."""
+        entry = self.broker.fabric_entry_for(grant, **ids)
         workspace = target.bindings.get("workspace", "")
         if (
             entry.entra_tenant_id.lower() != target.bindings.get("entra_tenant_id")
@@ -984,7 +982,7 @@ class Runner:
         self, state: LeaseState, ctx: JobContext, grant: CredentialGrant, app_id: UUID
     ) -> Prepared:
         target = ctx.target
-        self._fabric_entry(state, target, grant)
+        self._fabric_entry(target, grant, self._grant_ids(state, ctx))
         spec = self._fabric_spec(state, ctx)
         adapter = self.platform.fabric_adapter(target, self._fabric_provider(state, target))
         return Prepared(
