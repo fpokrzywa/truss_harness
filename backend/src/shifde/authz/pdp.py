@@ -366,10 +366,11 @@ class PDP:
         return frozenset(workspaces)
 
     def _mask_workspace_ids(self, tenant_id: UUID, mask: ResourceScope) -> set[UUID]:
-        """The mask's workspaces and the workspaces, in this client, of the mask's projects."""
-        return set(mask.workspace_ids) | repository.workspace_ids_of_projects(
-            self._session, tenant_id, mask.project_ids
-        )
+        """The mask's workspaces and those of the mask's projects, in this client only: an id of
+        another client or of nothing gives no workspace (DECISIONS B-4094)."""
+        return repository.workspace_ids_of_client(
+            self._session, tenant_id, mask.workspace_ids
+        ) | repository.workspace_ids_of_projects(self._session, tenant_id, mask.project_ids)
 
     def ancestor_workspace_ids(self) -> frozenset[UUID]:
         """Workspaces that contain something the principal holds *any* grant on. The principal

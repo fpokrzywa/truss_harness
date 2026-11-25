@@ -10,8 +10,10 @@ runtime with the `workers` table (carry_forward, DECISIONS B-1020).
 from __future__ import annotations
 
 from collections.abc import Iterator
+from typing import Any  # Any: JSON bodies, rows and binding scopes
 from uuid import UUID
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
@@ -20,8 +22,10 @@ from sqlalchemy.orm import Session
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from shifde.core.settings import Settings
-from tests.identity.harness import login
-from tests.tenancy.conftest import World
+from tests.board.conftest import same_404
+from tests.connections.routes import grant
+from tests.identity.harness import login, person
+from tests.tenancy.conftest import World, owner_member
 from tests.tenancy.routes import (
     People,
     make_people,
@@ -144,6 +148,81 @@ def test_workspace_scoped_role_sees_only_its_workspace(
     assert dash["counts"]["workspaces"] == 1
     # the organization itself stays readable through the workspace grant (B-1019)
     assert client.get(f"/api/v1/orgs/{world.a.slug}").status_code == 200
+
+
+def _member(owner_db: Database, world: World, permissions: list[str], **scope: Any) -> str:
+    """A member of A whose only role holds `permissions` at the scope (e-mail)."""
+    email = f"only-{uuid7().hex[-12:]}@route.test"
+    with owner_db.session() as owner:
+        uid = person(owner, email)
+        owner_member(owner, world.a.tenant, uid)
+        owner.commit()
+    grant(owner_db, world.a.tenant, uid, permissions, **scope)
+    return email
+
+
+def test_a_write_under_a_hidden_workspace_answers_as_under_an_unknown_one(
+    client: TestClient, world: World, owner_db: Database
+) -> None:
+    """Issue #374 (DECISIONS B-4093): the person's only role is at the other workspace."""
+    manage = ["workspace:read", "workspace:manage", "project:read", "project:create"]
+    email = _member(
+        owner_db,
+        world,
+        [*manage, "project:manage"],
+        scope_type="workspace",
+        scope_id=world.a.ws2,
+    )
+
+    def state() -> list[Any]:
+        sql = (
+            "SELECT w.name, w.row_version, p.id, p.name, p.row_version FROM shifde.workspaces w "
+            "LEFT JOIN shifde.projects p ON p.workspace_id = w.id WHERE w.id = :w ORDER BY p.id"
+        )
+        with owner_db.session() as owner:
+            return list(owner.execute(text(sql), {"w": world.a.ws}).all())
+
+    before = state()
+    headers = login(client, email)
+    ws = _ws(world)
+    hidden, own, nope = f"{ws}/{ws_slug(world.a)}", f"{ws}/{ws2_slug(world.a)}", f"{ws}/nope"
+    patch, new = {"name": "x", "row_version": 1}, {"slug": "x", "name": "X"}
+
+    def send(method: str, url: str, body: dict[str, Any]) -> httpx.Response:
+        return client.request(method, url, json=body, headers=headers)
+
+    same_404(send("PATCH", hidden, patch), send("PATCH", nope, patch))
+    same_404(send("POST", f"{hidden}/projects", new), send("POST", f"{nope}/projects", new))
+    unknown = send("PATCH", f"{nope}/projects/nope", patch)
+    assert unknown.json()["detail"] == "workspace not found"
+    for slug in (project_slug(world.a), "nope"):
+        same_404(send("PATCH", f"{hidden}/projects/{slug}", patch), unknown)
+    assert state() == before
+    # its own workspace: every write succeeds, and an unknown project there is named as before
+    assert send("POST", f"{own}/projects", new).status_code == 201
+    assert send("PATCH", f"{own}/projects/x", patch).status_code == 200
+    assert send("PATCH", own, patch).status_code == 200
+    missing = send("PATCH", f"{own}/projects/nope", patch)
+    assert (missing.status_code, missing.json()["detail"]) == (404, "project not found")
+
+
+def test_a_hidden_workspace_keeps_the_success_and_the_403_of_a_readable_project(
+    client: TestClient, world: World, owner_db: Database
+) -> None:
+    ws = _ws(world)
+    hidden = f"{ws}/{ws_slug(world.a)}"
+    mine = f"{hidden}/projects/{project_slug(world.a)}"
+    patch = {"name": "x", "row_version": 1}
+    headers = login(client, _member(owner_db, world, ["project:read"]))
+    assert client.get(hidden).status_code == 404
+    assert client.patch(mine, json=patch, headers=headers).status_code == 403
+    headers = login(client, _member(owner_db, world, ["project:read", "project:manage"]))
+    assert client.get(hidden).status_code == 404  # no `workspace:read`
+    assert client.patch(mine, json=patch, headers=headers).status_code == 200
+    same_404(
+        client.patch(f"{hidden}/projects/nope", json=patch, headers=headers),
+        client.patch(f"{ws}/nope/projects/nope", json=patch, headers=headers),
+    )
 
 
 def test_org_creation_and_scope_all_are_platform_admin_only(
