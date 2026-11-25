@@ -13,9 +13,10 @@ Databricks alias. Every version matches `GENERATOR_VERSION_PATTERN`,
 `app/app.yaml`, the generated service (`app/app.py`, the platform-neutral `app/agent_loop.py` and
 `app/backend_databricks.py`) and its hashed lock, the four config files, the committed React
 bundle under `app/static/` and `release.json`. `snowflake.native-app/v1` renders the Native App
-package of `appgen.render_snowflake`. `Resolved` lives here, not in `appgen.schemas` (which
-re-exports it), because `appgen.schemas` imports `evaluation` and `packaging`, which render may
-not reach.
+package of `appgen.render_snowflake`. A `docker.compose/v1` release has a generator version but no
+renderer until SP8-9: `render` refuses it whatever its manifest carries. `Resolved` lives here,
+not in `appgen.schemas` (which re-exports it), because `appgen.schemas` imports `evaluation` and
+`packaging`, which render may not reach.
 """
 
 from __future__ import annotations
@@ -35,10 +36,12 @@ from shifde.core.errors import AppError
 
 GENERATOR_VERSION = "shifde.appgen/1.0"
 DATABRICKS_KIND = "databricks.app/v1"
+DOCKER_KIND = "docker.compose/v1"
 # the generator version a `/2` release of each target kind carries (SP6 design section 4)
 GENERATOR_VERSIONS = {
     DATABRICKS_KIND: GENERATOR_VERSION,
     render_snowflake.TARGET_KIND: render_snowflake.GENERATOR_VERSION,
+    DOCKER_KIND: "shifde.appgen.docker/1.0",  # sealed only: `render` refuses it until SP8-9
 }
 # `shifde.appgen(.<kind>)?/<major>.<minor>`: a lowercase kind segment, integer major and minor
 GENERATOR_VERSION_PATTERN = re.compile(
@@ -147,6 +150,8 @@ def render(
     """The app source files of a `/2` release, keyed by relative POSIX path."""
     kind = manifest.get("target_kind")
     app = manifest.get("app")
+    if kind == DOCKER_KIND:  # first: nothing else in the manifest lets a Docker release through
+        raise GeneratorVersionUnsupported("no app generator renders a Docker release")
     if (
         not isinstance(kind, str)
         or kind not in GENERATOR_VERSIONS

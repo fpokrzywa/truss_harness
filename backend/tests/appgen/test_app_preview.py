@@ -15,6 +15,7 @@ from typing import Any  # Any: JSON bodies and manifests
 from uuid import UUID
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -28,7 +29,7 @@ from tests._support.p2util import new_user, post, tenant_id
 from tests._support.p3util import ADMIN, ADMIN_B, A, B
 from tests._support.p5util import Hdr, user_session
 from tests.appgen.helpers import PROJECT
-from tests.appgen.rendered import SNOWFLAKE_KIND
+from tests.appgen.rendered import DOCKER_SEALS, SNOWFLAKE_KIND, on_docker
 from tests.delivery.app_releases import AppRelease, add_provider, make_app_release
 from tests.delivery.releases import make_release
 
@@ -140,6 +141,20 @@ def test_a_snowflake_release_with_a_bad_table_name_is_not_renderable(
     assert r.status_code == 409, r.text
     assert r.json()["code"] == "release_not_renderable"
     assert "files" not in r.json()
+
+
+@pytest.mark.parametrize("app", DOCKER_SEALS.values(), ids=DOCKER_SEALS)
+def test_a_docker_release_is_refused_by_name_however_it_was_sealed(
+    client: TestClient, world: World, owner_db: Database, owner_session: Session, app: Any
+) -> None:
+    """SP8-1: no generator renders a `docker.compose/v1` release until SP8-9."""
+    rel = _app_release(owner_db, owner_session, edit=on_docker(app))
+    r = _preview(user_session(client, world.passwords, ADMIN), rel.id)
+    assert r.status_code == 409, r.text
+    assert r.json()["code"] == "generator_version_unsupported"
+    assert r.json()["detail"] == "no app generator renders a Docker release"
+    assert "files" not in r.json()
+    _same_as_missing(user_session(client, world.passwords, ADMIN_B), rel.id, B)
 
 
 def _refused_hidden(r: httpx.Response, rel: AppRelease) -> None:

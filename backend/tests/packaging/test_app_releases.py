@@ -31,7 +31,7 @@ from shifde.appgen import render
 from shifde.packaging import service as packaging
 from shifde.packaging.canonical import digest
 from tests._support.fullapp import World
-from tests._support.p3util import ADMIN_B, B, fake_model_stack
+from tests._support.p3util import ADMIN_B, A, B, fake_model_stack
 from tests._support.p4util import agent_spec, art, builtin_tool_spec, make_user, publish
 from tests._support.p5util import Hdr, user_session
 from tests.appgen.helpers import add_project, databricks, snowflake, wire, wire_snowflake
@@ -511,6 +511,22 @@ def test_a_docker_version_with_screens_seals_under_compiler_2(
     assert manifest["screens"] == screens
     assert release["digest"] == digest(manifest)
     assert all(d["status"] == "supported" for d in release["compatibility"])
+
+
+def test_a_sealed_docker_release_has_no_preview(client: TestClient, world: World) -> None:
+    wire(client)
+    h, s, _ = _setup(client, world)
+    sid = solution(h.client, h, "Container app", target_kind=DOCKER_KIND)["id"]
+    lake = databricks(h.client, h)
+    agent = _agent(h, s, "app", [_dbx_tool(h, s, lake)])
+    body = _with(version_body(agent, dataset=s.dataset), [CHAT])
+    version = new_version(h.client, h, sid, body)
+    r = seal(h.client, h, sid, version["id"], bindings({s.model: s.provider}, {lake: lake}))
+    assert r.status_code == 201, r.text
+    r = h.client.get(f"{A}/releases/{r.json()['id']}/app-preview", headers=h)
+    assert r.status_code == 409, r.text
+    assert r.json()["code"] == "generator_version_unsupported"
+    assert r.json()["detail"] == "no app generator renders a Docker release"
 
 
 def test_a_docker_version_without_screens_is_refused(
