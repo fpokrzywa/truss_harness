@@ -3,6 +3,7 @@
 import type { Screen } from './appgen-types';
 
 export const TARGET_KIND = 'databricks.app/v1';
+export const SNOWFLAKE_TARGET_KIND = 'snowflake.native-app/v1';
 
 export type SolutionStatus = 'active' | 'archived';
 

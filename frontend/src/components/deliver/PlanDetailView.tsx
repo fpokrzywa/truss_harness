@@ -9,7 +9,11 @@ import { useNow } from '@/lib/use-now';
 import { EmptyState, formatDate, PageHeader, QueryGate } from '../admin/ui';
 import { StatusBadge } from '../integrate/Maturity';
 import { useOrgParam } from '../security/useOrg';
+import { refusalHint } from './refusalHints';
 import { targetName } from './targetName';
+
+/** The reason of a plan whose target's package has no free patch. */
+const PATCH_LIMIT_REASON = 'plan job failed: snowflake_patch_limit';
 
 /** One deployment plan: its sealed digest, steps and decision. Server text is plain React text. */
 export function PlanDetailView({ id }: { id: string }) {
@@ -35,6 +39,9 @@ function PlanBody({ org, plan }: { org: string; plan: PlanOut }) {
           <dd>
             <StatusBadge status={plan.status} />
             {plan.status_reason && <span className="ml-2">{plan.status_reason}</span>}
+            {plan.status === 'plan_failed' && plan.status_reason === PATCH_LIMIT_REASON && (
+              <p className="mt-1">{refusalHint('snowflake_patch_limit')}</p>
+            )}
           </dd>
           {plan.status === 'sealed' && (
             <>

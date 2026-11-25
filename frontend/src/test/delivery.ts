@@ -2,6 +2,7 @@ import type {
   CredentialOut,
   DeliveryExecutorOut,
   DeploymentDetail,
+  DeploymentJournalStep,
   DeploymentOut,
   PlanOut,
   TargetOut,
@@ -41,6 +42,21 @@ export const TARGET: TargetOut = {
   created_by: 'u-me',
   created_at: '2026-11-01T10:00:00Z',
   updated_at: null,
+};
+
+export const SNOWFLAKE_TARGET: TargetOut = {
+  ...TARGET,
+  id: 't-sf',
+  name: 'Finance prod',
+  platform_kind: 'snowflake',
+  address: 'https://acme-fin.snowflakecomputing.com',
+  bindings: {
+    package: 'SALES_PKG',
+    application: 'SALES_APP',
+    warehouse: 'APP_WH',
+    cortex_model: 'llama3.1-70b',
+  },
+  credential_ref: 'sf.prod',
 };
 
 export const EXECUTOR: DeliveryExecutorOut = {
@@ -137,6 +153,33 @@ export const DEPLOYMENT_DETAIL: DeploymentDetail = {
       recorded_at: '2026-11-18T10:03:00Z',
     },
   ],
+};
+
+/** The steps of a Snowflake deployment (SP6 6.2), in order. */
+export const SNOWFLAKE_STEPS = [
+  'package-create',
+  'schema-create',
+  'stage-create',
+  'stage-upload',
+  'setup-validate',
+  'version-create',
+  'application-apply',
+  'application-access',
+];
+
+/** A verified deployment on `SNOWFLAKE_TARGET`: every step with its intent and complete entry. */
+export const SNOWFLAKE_DEPLOYMENT_DETAIL: DeploymentDetail = {
+  ...DEPLOYMENT,
+  target_id: 't-sf',
+  journal: SNOWFLAKE_STEPS.flatMap((step_key, i) =>
+    (['intent', 'complete'] as const).map((state, j): DeploymentJournalStep => ({
+      step_key,
+      state,
+      input_digest: 'd'.repeat(64),
+      receipt: null,
+      recorded_at: `2026-11-18T10:02:${String(i * 2 + j).padStart(2, '0')}Z`,
+    })),
+  ),
 };
 
 /** A withdrawn release of the same version as `RELEASE`, never offered for a plan. */

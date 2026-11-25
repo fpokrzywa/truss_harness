@@ -72,7 +72,7 @@ from shifde.models_admin.service import ModelService
 from shifde.packaging.service import SolutionService, scoped_release
 from shifde.runtime.governance import GovernanceHooks, TokenBudgetHooks
 from shifde.runtime.schemas import RunCreate
-from shifde.runtime.service import RunService, run_committed
+from shifde.runtime.service import RUN_KEY_PREFIX, RunService, run_committed
 from shifde.tenancy import service as tenancy
 from shifde.tenancy.scope import TenantScope
 
@@ -274,7 +274,7 @@ def _candidates(row: Mapping[str, Any]) -> tuple[str, ...]:
 
 def _run_key(row: Mapping[str, Any]) -> str:
     """The idempotency key of the request's run."""
-    return f"assist:{row['id']}"
+    return f"{RUN_KEY_PREFIX}{row['id']}"
 
 
 def _router_call(row: Mapping[str, Any]) -> model_schemas.InvokeIn:

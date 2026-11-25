@@ -64,6 +64,9 @@ NORMAL_DECISIONS = ("approve", "reject")
 PREVIEW_BYTES = 4096
 MAX_PARAMS_BYTES = 200_000
 ARTIFACT_BYTES = 1_000_000
+# the idempotency key of an assist handover's run (`assist:{request id}`); reserved on the HTTP
+# routes that create runs
+RUN_KEY_PREFIX = "assist:"
 STATUS_GROUPS = {
     "pending": ["pending"],
     "decided": ["approved", "rejected"],

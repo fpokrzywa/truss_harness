@@ -114,7 +114,7 @@ function RequestBody({
     <>
       <PageHeader
         title="App request"
-        description="A drafted app over a project's Databricks tables. Review the draft, edit it, and accept it as a solution."
+        description="A drafted app over a project's Databricks or Snowflake tables. Review the draft, edit it, and accept it as a solution."
         actions={
           canWrite && (
             <>

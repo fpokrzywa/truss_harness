@@ -24,6 +24,7 @@ from shifde.adapters.dataplatforms.fakes import ROWS_STATEMENT, SELECT_ONE, Fake
 from shifde.adapters.dataplatforms.snowflake import SnowflakeAdapter
 from shifde.adapters.dataplatforms.suites import SnowflakeSqlSuite
 from shifde.core.ids import uuid7
+from shifde.core.sqlrules import statement_rules
 from tests.adapters.dataplatforms.helpers import (
     SF_PAT,
     SF_PEM,
@@ -502,6 +503,13 @@ REFUSED_SQL = [
     'SELECT * FROM IDENTIFIER("t")',
     "SELECT * FROM IDENTIFIER('a', 'b')",
     "SELECT * FROM IDENTIFIER(CONCAT('a', 'b'))",
+    # a character that is neither visible ASCII nor whitespace before the parenthesis (#358)
+    "SELECT * FROM IDENTIFIER\u200b(:t || 'x')",
+    "SELECT * FROM IDENTIFIER \u200b ('t')",
+    # the `->>` flow operator chains a second statement (#358)
+    "select 1 ->> execute immediate 'drop table x'",
+    "select 1 ->> remove @s",
+    "select 1 ->> undrop table x",
 ]
 ACCEPTED_SQL = [
     "SELECT $$hello$$",
@@ -543,6 +551,12 @@ ACCEPTED_SQL = [
     "SELECT 'IDENTIFIER($$x$$)'",
     "SELECT 1 -- IDENTIFIER('SYSTEM$X')",
     "SELECT \"IDENTIFIER('SYSTEM$X')\" FROM t",
+    # `->>` only in quoted text or a comment, or not the operator (#358)
+    "SELECT '->>'",
+    "SELECT $$->>$$",
+    'SELECT "->>" FROM t',
+    "SELECT 1 -- ->> x",
+    "SELECT filter(a, x -> x > 1), a >> b, a - >> b FROM t",
 ]
 
 
@@ -565,6 +579,24 @@ def test_a_positional_bind_reference_gets_its_own_message() -> None:
     with pytest.raises(AdapterFailure) as raised:
         sqlapi.check_read_only("SELECT :1", dialect="snowflake")
     assert raised.value.message == sqlapi._POSITIONAL_BIND
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "select 1 ->> execute immediate 'drop table x'",
+        "select 1 ->> remove @s",
+        "select 1 ->> undrop table x",
+        "SHOW TABLES->>SELECT * FROM $1",
+    ],
+)
+def test_check_read_only_refuses_the_flow_operator_with_the_publish_message(sql: str) -> None:
+    with pytest.raises(AdapterFailure) as raised:
+        sqlapi.check_read_only(sql, dialect="snowflake")
+    assert raised.value.error_class is ErrorClass.CAPABILITY
+    assert raised.value.message == "the ->> flow operator is not allowed"
+    issues = statement_rules(sql, dialect="snowflake")
+    assert raised.value.message in [i.message for i in issues if i.code == "sql_flow_operator"]
 
 
 def test_an_accepted_dollar_quoted_select_reaches_the_account(sf: FakeSnowflakeAccount) -> None:

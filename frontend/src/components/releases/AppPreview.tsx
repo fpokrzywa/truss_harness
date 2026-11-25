@@ -4,6 +4,7 @@ import { parseScreens, ScreenRenderer, type AppApi, type ToolResult } from '@shi
 import type { AppPreviewOut, AppPreviewTool } from '@/lib/api/appgen-types';
 import { useMemo } from 'react';
 import { ApiError } from '@/lib/api/errors';
+import { SNOWFLAKE_TARGET_KIND } from '@/lib/api/packaging-types';
 import { useAppPreview } from '@/lib/release-hooks';
 import { EmptyState, QueryGate } from '../admin/ui';
 
@@ -45,8 +46,19 @@ export function previewApi(tools: AppPreviewTool[]): AppApi {
   };
 }
 
-/** The app a `/2` release generates: its files (metadata only) and its screens over sample data. */
-export function AppPreview({ org, releaseId }: { org: string; releaseId: string }) {
+/**
+ * The app a `/2` release generates: its files (metadata only) and its screens over sample data.
+ * `targetKind` is the release manifest's `target_kind`.
+ */
+export function AppPreview({
+  org,
+  releaseId,
+  targetKind,
+}: {
+  org: string;
+  releaseId: string;
+  targetKind: unknown;
+}) {
   const preview = useAppPreview(org, releaseId, true);
   const conflict =
     preview.error instanceof ApiError && preview.error.status === 409 ? preview.error : null;
@@ -59,14 +71,14 @@ export function AppPreview({ org, releaseId }: { org: string; releaseId: string 
         </p>
       ) : (
         <QueryGate query={preview} noun="app preview">
-          {(p) => <PreviewBody preview={p} />}
+          {(p) => <PreviewBody preview={p} targetKind={targetKind} />}
         </QueryGate>
       )}
     </section>
   );
 }
 
-function PreviewBody({ preview }: { preview: AppPreviewOut }) {
+function PreviewBody({ preview, targetKind }: { preview: AppPreviewOut; targetKind: unknown }) {
   const screens = parseScreens(preview.screens);
   const api = useMemo(() => previewApi(preview.tools), [preview.tools]);
   return (
@@ -99,6 +111,9 @@ function PreviewBody({ preview }: { preview: AppPreviewOut }) {
         </table>
       </div>
       <h3 className="text-sm font-semibold">Screens</h3>
+      {targetKind === SNOWFLAKE_TARGET_KIND && (
+        <p className="text-sm text-slate-600">Deployed as Streamlit in Snowflake; layout differs</p>
+      )}
       {screens === null ? (
         <EmptyState>The screens of this release cannot be shown.</EmptyState>
       ) : (

@@ -38,7 +38,7 @@ from sqlalchemy.orm import Session
 from shifde.authz import repository
 from shifde.core import db
 from shifde.core.clock import utcnow
-from shifde.core.context import Principal
+from shifde.core.context import Principal, ResourceScope
 from shifde.core.errors import Forbidden, NotFound
 from shifde.core.hooks import add_close_hook
 from shifde.core.ids import uuid7
@@ -349,10 +349,9 @@ class PDP:
             )
         return ScopeFilter(tenant_wide, frozenset(workspaces), frozenset(projects))
 
-    def ancestor_workspace_ids(self) -> frozenset[UUID]:
-        """Workspaces that contain something the principal holds *any* grant on. The principal
-        may read those workspaces (metadata only) so selectors can show the path to its grants;
-        nothing else is implied (P1 gap fix)."""
+    def granted_workspace_ids(self) -> frozenset[UUID]:
+        """Workspaces that contain something the principal holds any workspace- or project-scope
+        grant on, within the key's mask."""
         if self._tenant_id is None:
             return frozenset()
         grants = self._load()
@@ -363,8 +362,33 @@ class PDP:
         )
         mask = self._principal.resource_scope
         if mask is not None:
-            allowed = set(mask.workspace_ids) | repository.workspace_ids_of_projects(
-                self._session, self._tenant_id, mask.project_ids
-            )
-            workspaces &= allowed
+            workspaces &= self._mask_workspace_ids(self._tenant_id, mask)
         return frozenset(workspaces)
+
+    def _mask_workspace_ids(self, tenant_id: UUID, mask: ResourceScope) -> set[UUID]:
+        """The mask's workspaces and the workspaces, in this client, of the mask's projects."""
+        return set(mask.workspace_ids) | repository.workspace_ids_of_projects(
+            self._session, tenant_id, mask.project_ids
+        )
+
+    def ancestor_workspace_ids(self) -> frozenset[UUID]:
+        """Workspaces that contain something the principal holds *any* grant on. The principal
+        may read those workspaces (metadata only) so selectors can show the path to its grants;
+        nothing else is implied (P1 gap fix).
+
+        A masked principal (a key with a resource scope) that holds `workspace:read` at
+        organization level also gets the mask's workspaces and those of the mask's projects, so it
+        reads its own project by slug. It must be `workspace:read`, not any grant: a key never
+        reads a workspace its owner cannot read (DECISIONS B-4040)."""
+        workspaces = self.granted_workspace_ids()
+        mask = self._principal.resource_scope
+        if (
+            self._tenant_id is not None
+            and mask is not None
+            and any(
+                g.permission_key == "workspace:read" and g.scope_type == "tenant"
+                for g in self._load()
+            )
+        ):
+            workspaces |= self._mask_workspace_ids(self._tenant_id, mask)
+        return workspaces

@@ -18,17 +18,28 @@ from fastapi import APIRouter, Depends, Header, Path, Query, Request
 from fastapi.responses import JSONResponse
 
 from shifde.adapters.deps import RuntimeDep
-from shifde.core.errors import ValidationFailed
+from shifde.core.errors import IdempotencyKeyReserved, ValidationFailed
 from shifde.core.pagination import DEFAULT_LIMIT, Page
 from shifde.runtime import schemas as s
 from shifde.runtime.action import start_action_run
 from shifde.runtime.governance import GovernanceHooks
 from shifde.runtime.schedules import ScheduleService
-from shifde.runtime.service import ApprovalService, RunService
+from shifde.runtime.service import RUN_KEY_PREFIX, ApprovalService, RunService
 from shifde.tenancy.dependencies import CursorQuery, LimitQuery, ScopeDep
 
 router = APIRouter(prefix="/api/v1/orgs/{org}", tags=["operate"])
 IDEMPOTENCY_KEY = re.compile(r"^[\x21-\x7e]{1,200}$")
+
+
+def _check_idempotency_key(key: str | None) -> None:
+    """The `Idempotency-Key` of a route that creates a run: well formed, and not a key of the
+    platform's own runs (refused before any lookup or replay, #373)."""
+    if key is None:
+        return
+    if not IDEMPOTENCY_KEY.match(key):
+        raise ValidationFailed("Idempotency-Key must be 1-200 printable ASCII characters")
+    if key.startswith(RUN_KEY_PREFIX):
+        raise IdempotencyKeyReserved(f"Idempotency-Key must not start with {RUN_KEY_PREFIX}")
 
 
 def _hooks(request: Request) -> GovernanceHooks:
@@ -54,8 +65,7 @@ def create_run(
     body: s.RunCreate,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> JSONResponse:
-    if idempotency_key is not None and not IDEMPOTENCY_KEY.match(idempotency_key):
-        raise ValidationFailed("Idempotency-Key must be 1-200 printable ASCII characters")
+    _check_idempotency_key(idempotency_key)
     run, created = svc.create(body, idempotency_key)
     return JSONResponse(run.model_dump(mode="json"), status_code=202 if created else 200)
 
@@ -69,8 +79,7 @@ def invoke_ontology_action(
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> JSONResponse:
     """Registered ontology action: creates a run of kind `ontology_action` (contract section 4)."""
-    if idempotency_key is not None and not IDEMPOTENCY_KEY.match(idempotency_key):
-        raise ValidationFailed("Idempotency-Key must be 1-200 printable ASCII characters")
+    _check_idempotency_key(idempotency_key)
     run, created = start_action_run(svc, ontology_id, action_key, body, idempotency_key)
     return JSONResponse(run.model_dump(mode="json"), status_code=202 if created else 200)
 

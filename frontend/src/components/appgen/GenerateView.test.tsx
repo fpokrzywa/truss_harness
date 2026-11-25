@@ -1,7 +1,16 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { APPGEN_PERMS, AR, connection, ORG, request, stubAppgen, SUMMARY } from '@/test/appgen';
+import {
+  APPGEN_PERMS,
+  AR,
+  connection,
+  DISCOVERY,
+  ORG,
+  request,
+  stubAppgen,
+  SUMMARY,
+} from '@/test/appgen';
 import { ALL_PERMS, bodyOf, list } from '@/test/security';
 import { jsonResponse, problemResponse, renderWithClient } from '@/test/utils';
 import { GenerateView } from './GenerateView';
@@ -20,6 +29,8 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 const CREATE = `POST ${AR}`;
+const PLAIN_NAMES =
+  'A generated app can use a Snowflake table only when its database, schema and table names contain just letters, digits, _ and $, and do not start with a digit or $.';
 
 async function fillForm() {
   const form = await screen.findByRole('form', { name: 'New app request' });
@@ -39,7 +50,7 @@ describe('GenerateView new request', () => {
     expect(fetchMock.calls.some((c) => c.key.includes('app-requests'))).toBe(false);
   });
 
-  it('offers only active, read-only Databricks connections of the project', async () => {
+  it('offers only active, read-only Databricks and Snowflake connections of the project', async () => {
     const fetchMock = stubAppgen({
       [`GET ${ORG}/connections`]: () =>
         list([
@@ -47,6 +58,7 @@ describe('GenerateView new request', () => {
           connection({ id: 'c-rw', name: 'Writer', access_mode: 'read_write' }),
           connection({ id: 'c-sf', name: 'Snow', adapter_key: 'snowflake' }),
           connection({ id: 'c-off', name: 'Off', status: 'disabled' }),
+          connection({ id: 'c-pg', name: 'Post', adapter_key: 'postgres' }),
         ]),
     });
     renderWithClient(<GenerateView />);
@@ -54,7 +66,7 @@ describe('GenerateView new request', () => {
     const options = within(select)
       .getAllByRole('option')
       .map((o) => o.textContent);
-    expect(options).toEqual(['Select...', 'Sales warehouse']);
+    expect(options).toEqual(['Select...', 'Sales warehouse (Databricks)', 'Snow (Snowflake)']);
     const url = fetchMock.calls.find((c) => c.key === `GET ${ORG}/connections`)!.url;
     expect(url).toContain('workspace=eng');
     expect(url).toContain('project=api');
@@ -66,13 +78,13 @@ describe('GenerateView new request', () => {
       [`GET ${ORG}/connections`]: () =>
         list([
           connection({ id: 'c-rw', access_mode: 'read_write' }),
-          connection({ id: 'c-sf', adapter_key: 'snowflake' }),
+          connection({ id: 'c-pg', adapter_key: 'postgres' }),
           connection({ id: 'c-off', status: 'disabled' }),
         ]),
     });
     renderWithClient(<GenerateView />);
     expect(
-      await screen.findByText(/needs an active, read-only Databricks connection/),
+      await screen.findByText(/needs an active, read-only Databricks or Snowflake connection/),
     ).toBeInTheDocument();
     expect(screen.queryByLabelText('Connection')).not.toBeInTheDocument();
   });
@@ -140,6 +152,78 @@ describe('GenerateView new request', () => {
     expect(within(form).getByLabelText('Brief')).toHaveValue('Sales by region');
     expect(within(form).getByLabelText('Main.Sales.Orders')).toBeChecked();
     expect(nav.push).not.toHaveBeenCalled();
+  });
+
+  it('names the tables of a 422 table_name_unsupported under the table list, until another connection is chosen', async () => {
+    stubAppgen({
+      [`GET ${ORG}/connections`]: () =>
+        list([connection(), connection({ id: 'conn-sf', name: 'Snow', adapter_key: 'snowflake' })]),
+      [`GET ${ORG}/connections/conn-sf/discoveries/latest`]: () => jsonResponse(DISCOVERY),
+      [CREATE]: () =>
+        problemResponse(422, 'table_name_unsupported', {
+          detail: 'a table name cannot be used on this connection',
+          errors: [
+            {
+              loc: ['body', 'tables', 'main.sales.orders'],
+              msg: 'main.sales.orders is not a plain table name on this connection',
+            },
+            { loc: ['body', 'tables', 'main.sales.my list'], msg: 'not a plain table name' },
+            { loc: ['body', 'brief'], msg: 'an error of another field' },
+          ],
+        }),
+    });
+    renderWithClient(<GenerateView />);
+    const form = await fillForm();
+    await userEvent.click(within(form).getByRole('button', { name: 'Generate draft' }));
+    const alert = await within(form).findByRole('alert');
+    expect(alert).toHaveTextContent('table_name_unsupported');
+    expect(alert).toHaveTextContent('req-123');
+    const tables = within(form).getByRole('group', { name: 'Tables' });
+    expect(
+      within(tables).getByText(
+        `These tables cannot be used: main.sales.orders, main.sales.my list. ${PLAIN_NAMES}`,
+      ),
+    ).toBeInTheDocument();
+    expect(within(form).getByLabelText('Brief')).toHaveValue('Sales by region');
+    expect(within(form).getByLabelText('Main.Sales.Orders')).toBeChecked();
+    expect(nav.push).not.toHaveBeenCalled();
+
+    await userEvent.selectOptions(within(form).getByLabelText('Connection'), 'conn-sf');
+    expect(await within(form).findByLabelText('Main.Sales.Orders')).not.toBeChecked();
+    expect(within(form).queryByText(/cannot be used/)).not.toBeInTheDocument();
+    expect(within(form).queryByRole('alert')).not.toBeInTheDocument();
+    expect(within(form).getByLabelText('Brief')).toHaveValue('Sales by region');
+  });
+
+  it('shows a 422 table_name_unsupported without field errors, naming no table', async () => {
+    stubAppgen({ [CREATE]: () => problemResponse(422, 'table_name_unsupported') });
+    renderWithClient(<GenerateView />);
+    const form = await fillForm();
+    await userEvent.click(within(form).getByRole('button', { name: 'Generate draft' }));
+    expect(await within(form).findByRole('alert')).toHaveTextContent('table_name_unsupported');
+    const tables = within(form).getByRole('group', { name: 'Tables' });
+    expect(
+      within(tables).getByText(`A selected table cannot be used. ${PLAIN_NAMES}`),
+    ).toBeInTheDocument();
+  });
+
+  it('shows a 422 connection_platform_unsupported under the connection', async () => {
+    stubAppgen({ [CREATE]: () => problemResponse(422, 'connection_platform_unsupported') });
+    renderWithClient(<GenerateView />);
+    const form = await fillForm();
+    await userEvent.click(within(form).getByRole('button', { name: 'Generate draft' }));
+    const alert = await within(form).findByRole('alert');
+    expect(alert).toHaveTextContent('connection_platform_unsupported');
+    const message = within(form).getByText(
+      "This connection's platform cannot be used. Choose a Databricks or Snowflake connection.",
+    );
+    const select = within(form).getByLabelText('Connection');
+    expect(message.parentElement).toContainElement(select);
+    expect(select).toHaveValue('conn-dbx');
+    expect(within(form).getByLabelText('Brief')).toHaveValue('Sales by region');
+    await userEvent.selectOptions(select, '');
+    expect(within(form).queryByText(/platform cannot be used/)).not.toBeInTheDocument();
+    expect(within(form).queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('shows a 403 on create and keeps the inputs', async () => {

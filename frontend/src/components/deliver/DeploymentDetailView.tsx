@@ -6,6 +6,7 @@ import { endpoints } from '@/lib/api/endpoints';
 import type { DeploymentDetail, VerificationCheck } from '@/lib/api/delivery-types';
 import { useDeployment, usePlan, useRefreshDelivery, useTargets } from '@/lib/delivery-hooks';
 import { useCan } from '@/lib/hooks';
+import { platformLabel } from '@/lib/platforms';
 import { useRelease } from '@/lib/release-hooks';
 import { deliverHref } from '@/lib/scope';
 import { ConfirmDialog } from '../ConfirmDialog';
@@ -70,6 +71,7 @@ function DeploymentBody({ org, deployment: d }: { org: string; deployment: Deplo
   const [markingFailed, setMarkingFailed] = useState(false);
   const canResolve = can('delivery:deployment:resolve');
   const checks = verificationChecks(d);
+  const target = targets.data?.items.find((t) => t.id === d.target_id);
 
   async function confirmCancel() {
     const res = await cancel.run(() => endpoints.cancelDeployment(org, d.id));
@@ -144,7 +146,13 @@ function DeploymentBody({ org, deployment: d }: { org: string; deployment: Deplo
           <dd>{d.status_reason ?? '-'}</dd>
           <dt className="text-slate-600">Kind</dt>
           <dd className="flex flex-wrap items-center gap-2">
-            Databricks <MaturityBadge maturity="experimental" />
+            {target ? (
+              <>
+                {platformLabel(target.platform_kind)} <MaturityBadge maturity="experimental" />
+              </>
+            ) : (
+              '-'
+            )}
           </dd>
           <dt className="text-slate-600">Application key</dt>
           <dd className="font-mono text-xs">{d.application_key}</dd>
