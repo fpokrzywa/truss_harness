@@ -343,6 +343,7 @@ def test_tool_sql_the_app_may_not_run_is_refused(sql: str, reason: str) -> None:
 JOINED = "select s.* from DEMO_DB.PUBLIC.CUSTOMERS c join DEMO_DB.PUBLIC.ORDERS o on o.customer_id = c.id"
 SECRETS = "'DEMO_DB.PUBLIC.SECRETS'"
 NOT_A_TABLE = "only a table name or a subquery is allowed"
+GLUED = "a name directly after a number"
 
 
 @pytest.mark.parametrize(
@@ -380,6 +381,26 @@ NOT_A_TABLE = "only a table name or a subquery is allowed"
         ("with a as (select * from b), b as (select 1 x) select * from a", "B must"),
         ("select *, 1from APP_DATA.USAGE u", "a name directly after a number"),
         ("select * from (OTHER..SECRETS)", NOT_A_TABLE),
+        # the same through a decimal point and an exponent
+        ("select u.*, 1.e5from APP_DATA.USAGE u where u.x = :region", GLUED),
+        ("select 1.e5from secrets", GLUED),
+        ("select 1.E5FROM secrets", GLUED),
+        ("select 1.e5from(SECRETS)", GLUED),
+        ("select 1.e0from lateral flatten(1)", GLUED),
+        ("select $1, 1.e0from '@DEMO_DB.PUBLIC.STG/secrets.csv'", GLUED),
+        ("select $1, 1.e0from @~", GLUED),
+        ("select $1, 1.e0from @~/x", GLUED),
+        (f"{JOINED} and 1 = 1.e1join secrets", GLUED),
+        (f"{JOINED} and 1 = 1.e0join APP_DATA.USAGE s on s.x = :region", GLUED),
+        ("select 1 from DEMO_DB.PUBLIC.ORDERS where 1=1.e1union select 1.e1from secrets", GLUED),
+        ("select 1.e5.e5from secrets", GLUED),
+        ("select 1.5.e5from secrets", GLUED),
+        ("select 1..e5from secrets", GLUED),
+        # a clause word that starts no clause does not end the list of tables
+        ("select * from DEMO_DB.PUBLIC.CUSTOMERS qualify, secrets", "SECRETS must"),
+        ("select * from DEMO_DB.PUBLIC.CUSTOMERS where, secrets", "SECRETS must"),
+        (f"{JOINED} and $where = 1, SECRETS s where s.x = :region", "SECRETS must"),
+        (f"{JOINED} and c.x::where, SECRETS s", "SECRETS must"),
         # stages
         ("select $1 from '@DEMO_DB.PUBLIC.STG/secrets.csv'", NOT_A_TABLE),
         ("select $1 from $$@DEMO_DB.PUBLIC.STG/secrets.csv$$", NOT_A_TABLE),

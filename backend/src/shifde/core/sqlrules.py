@@ -69,9 +69,11 @@ CALL_GAP = re.compile(r"[^!-~]*")
 # the longest SQL a drafted tool may have, and a Snowflake render accepts
 MAX_TOOL_SQL_CHARS = 8000
 _SNOWFLAKE_PLAIN_GAP = re.compile(r"[\s!-~]*", re.ASCII)
-# a number with the name characters that follow it, and the only run that is a number alone
-_NUMBER_RUN = re.compile(r"[0-9][A-Za-z0-9_$]*")
-_NUMBER = re.compile(r"[0-9]+(?:[eE][0-9]*)?")
+# a number with the dots and name characters that follow it (they can be an `ident` token, as in
+# `1.e5from`), and the only run that is a number alone
+_DIGIT = re.compile(r"[0-9]")
+_NUMBER_RUN = re.compile(r"[0-9][A-Za-z0-9_$.]*")
+_NUMBER = re.compile(r"[0-9]+(?:\.[0-9]*)?(?:[eE][0-9]*)?")
 # the one argument `IDENTIFIER(...)` and `TABLE(...)` may hold: a literal without a backslash or a
 # doubled quote, or a plain name
 _SNOWFLAKE_ARGUMENT = re.compile(r"'[^'\\]*'|[A-Za-z_][A-Za-z0-9_$]*")
@@ -493,18 +495,47 @@ def _snowflake_ctes(tokens: list[Token]) -> dict[str, int]:
     return names
 
 
-def _ends_from(tokens: list[Token], i: int) -> bool:
-    """Whether the token at `i` starts a clause after the FROM clause. Only words Snowflake
-    reserves count, so no alias ends the list of tables; a comma after any other word (`limit`,
-    `offset`) is still read as one between tables."""
-    t = tokens[i]
-    if _punct(_at(tokens, i - 1), ".") or _bare(_at(tokens, i - 1), "as"):
+def _glued_number(sql: str, spans: list[tuple[int, int]]) -> bool:
+    """Whether a number in the code text between tokens (`spans`) has a name directly after it,
+    its decimal point and exponent included (`1from`, `1.e5from`). It looks past the span because
+    the `e5from` is an `ident` token; one pass, as no run is read twice."""
+    at = 0
+    for start, end in spans:
+        at = max(at, start)
+        while (digit := _DIGIT.search(sql, at, end)) is not None:
+            run = _NUMBER_RUN.match(sql, digit.start())
+            if run is None or not _NUMBER.fullmatch(run.group()):
+                return True
+            at = run.end()
+    return False
+
+
+def _ends_from(sql: str, tokens: list[Token], i: int) -> bool:
+    """Whether the token at `i` (never the first) starts a clause after the FROM clause. Only words
+    Snowflake reserves count, SELECT only after a set operator, and none directly before a comma or
+    after an operator, `::` or `$`, so no alias, type or variable ends the list of tables; a comma
+    after any other word (`limit`, `offset`) is still read as one between tables."""
+    t, last = tokens[i], tokens[i - 1]
+    if _punct(last, ".") or _bare(last, "as"):
         return False
-    if _bare(t, "group", "order", "connect"):
-        return _bare(_at(tokens, i + 1), "by")
-    if _bare(t, "start"):
-        return _bare(_at(tokens, i + 1), "with")
-    return _bare(t, "where", "having", "qualify", "select")
+    before = sql[last.end : t.start].rstrip()[-1:]
+    if before and not (before.isalnum() or before in "]}"):  # no end of a number, `x[0]` or `{}`
+        return False
+    if _bare(t, "where", "having", "qualify"):  # no comma is valid in these, after a number too
+        return not _punct(_at(tokens, i + 1), ",")
+    if _bare(t, "select"):
+        if not _bare(last, "union", "except", "intersect", "minus", "all", "distinct", "name"):
+            return False
+    elif _bare(t, "group", "order", "connect", "start"):
+        i += 1
+        if not _bare(_at(tokens, i), "with" if t.value == "start" else "by"):
+            return False
+    else:
+        return False
+    after = _at(tokens, i + 1)
+    if after is None or not _punct(after, ","):
+        return True
+    return sql[tokens[i].end : after.start].strip() != ""  # `order by 1, 2`
 
 
 def _snowflake_references(
@@ -521,7 +552,8 @@ def _snowflake_references(
     # `gaps[i]` is the text before token `i`; the last one is the text after all of them
     ends = [0, *(t.end for t in tokens)]
     starts = [*(t.start for t in tokens), len(sql)]
-    gaps = [sql[end:start] for end, start in zip(ends, starts, strict=True)]
+    spans = list(zip(ends, starts, strict=True))
+    gaps = [sql[end:start] for end, start in spans]
     blank = [not gap.strip() for gap in gaps]
     source = SqlIssue(
         "sql_table_not_allowed",
@@ -531,7 +563,7 @@ def _snowflake_references(
         issues.append(
             SqlIssue("sql_syntax", "only ASCII characters are allowed outside quoted text")
         )
-    if not all(_NUMBER.fullmatch(run) for gap in gaps for run in _NUMBER_RUN.findall(gap)):
+    if _glued_number(sql, spans):
         issues.append(SqlIssue("sql_syntax", "a name directly after a number is not allowed"))
 
     def function(name: str) -> SqlIssue:
@@ -590,7 +622,7 @@ def _snowflake_references(
             )
         elif stack[-1] == "from" and _bare(t, "lateral"):
             issues.append(unqualified("LATERAL"))
-        elif stack[-1] == "from" and _ends_from(tokens, i):
+        elif stack[-1] == "from" and _ends_from(sql, tokens, i):
             stack[-1] = ""
         i += 1
     if "table" in stack:
