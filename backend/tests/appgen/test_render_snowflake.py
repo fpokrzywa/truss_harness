@@ -7,8 +7,8 @@ handler), `agent.json` and `tools.json` (positional SQL and `param_order`), `RUN
 the Streamlit pin equal in `environment.yml` and the dev group, Snowpark pinned in
 `environment.yml` only (Call S6-G, DECISIONS B-3998), no SETH origin, account address, key material
 or secret-scan finding, the artifact cap, the generator version of the other platform refused both
-ways, and a data-read table or tool SQL the app may not run refused before any byte
-(`release_not_renderable`)."""
+ways, and a data-read table, tool SQL the app may not run or a tool that reads a table outside the
+data reads (#358) refused before any byte (`release_not_renderable`)."""
 
 from __future__ import annotations
 
@@ -117,6 +117,9 @@ def test_the_manifest_is_the_same_text_for_every_release() -> None:
     other = copy.deepcopy(SNOWFLAKE_MANIFEST)
     other["data_reads"][0]["tables"] = ["DEMO_DB.PUBLIC.ORDERS"]
     other_resolved = copy.deepcopy(SNOWFLAKE_RESOLVED)
+    other_resolved["tools"] = [
+        t for t in other_resolved["tools"] if t["name"] == "orders_by_customer"
+    ]
     other_resolved["agent"]["instructions"] = "Something else."
     other_resolved["model"]["serving_endpoint"] = "llama3.1-70b"
     mine, theirs = _render()["manifest.yml"], render(other, digest(other), other_resolved)
@@ -271,9 +274,16 @@ def test_a_data_read_that_is_not_a_plain_table_name_is_refused(table: str) -> No
 def test_a_plain_table_name_renders_uppercased(table: str) -> None:
     manifest = copy.deepcopy(SNOWFLAKE_MANIFEST)
     manifest["data_reads"][0]["tables"] = [table]
-    agent = json.loads(
-        render(manifest, digest(manifest), SNOWFLAKE_RESOLVED)["ui/config/agent.json"]
-    )
+    resolved = copy.deepcopy(SNOWFLAKE_RESOLVED)
+    resolved["tools"] = [
+        {
+            **resolved["tools"][0],
+            "sql": f"select id from {table}",
+            "parameters": [],
+            "input_schema": input_schema([]),
+        }
+    ]
+    agent = json.loads(render(manifest, digest(manifest), resolved)["ui/config/agent.json"])
     assert agent["tables"] == [table.upper()]
 
 
@@ -294,6 +304,26 @@ def test_a_plain_table_name_renders_uppercased(table: str) -> None:
         ("select c.id from DEMO_DB.PUBLIC.CUSTOMERS c where c.region = ?", "positional ?"),
         ('select c."id" from DEMO_DB.PUBLIC.CUSTOMERS c', '"quoted" identifier'),
         ("select 'x from DEMO_DB.PUBLIC.CUSTOMERS c", "is not closed"),
+        # the rules shared with the runtime check (#358)
+        ("select system$wait(5)", "system functions are not allowed"),
+        ('select "SYSTEM$WAIT"(5)', "system functions are not allowed"),
+        ("select * from identifier(:region||'x')", "must hold one plain string literal or name"),
+        ("select * from identifier(:region)", "must hold one plain string literal or name"),
+        (
+            "select 1 ->> execute immediate 'drop table x'",
+            "the ->> flow operator is not allowed",
+        ),
+        # a table outside the data reads (#358)
+        (
+            "select s.id from DEMO_DB.PUBLIC.SECRETS s",
+            "DEMO_DB.PUBLIC.SECRETS is not allowed",
+        ),
+        ("select c.id from customers c", "CUSTOMERS must be named as database.schema.table"),
+        (
+            "select c.id from DEMO_DB.PUBLIC.CUSTOMERS c where c.id in "
+            "(select s.id from DEMO_DB.PUBLIC.SECRETS s)",
+            "DEMO_DB.PUBLIC.SECRETS is not allowed",
+        ),
     ],
 )
 def test_tool_sql_the_app_may_not_run_is_refused(sql: str, reason: str) -> None:
@@ -303,6 +333,43 @@ def test_tool_sql_the_app_may_not_run_is_refused(sql: str, reason: str) -> None:
     resolved["tools"][0]["sql"] = sql
     detail = _refused(SNOWFLAKE_MANIFEST, resolved)
     assert "invoiced_by_region" in detail and reason in detail
+
+
+def test_a_declared_table_in_another_letter_case_renders() -> None:
+    resolved = copy.deepcopy(SNOWFLAKE_RESOLVED)
+    sql = "select c.id from Demo_Db.public.CUSTOMERS c where c.region = :region"
+    resolved["tools"][0]["sql"] = sql
+    [tool, _] = json.loads(_render(resolved)["ui/config/tools.json"])
+    assert tool["sql"] == sql.replace(":region", "?")
+
+
+def test_a_table_of_any_data_read_is_declared() -> None:
+    """A resolved tool names no connection: its tables are compared with every data read's."""
+    manifest = copy.deepcopy(SNOWFLAKE_MANIFEST)
+    manifest["data_reads"].append(
+        {
+            "connection_id": "00000000-0000-0000-0000-00000000c003",
+            "tables": ["demo_db.public.more"],
+        }
+    )
+    resolved = copy.deepcopy(SNOWFLAKE_RESOLVED)
+    resolved["tools"][0]["sql"] = "select m.id from DEMO_DB.PUBLIC.MORE m where m.r = :region"
+    assert "ui/config/tools.json" in render(manifest, digest(manifest), resolved)
+    assert "DEMO_DB.PUBLIC.MORE is not allowed" in _refused(SNOWFLAKE_MANIFEST, resolved)
+
+
+def test_refusals_keep_their_order() -> None:
+    """A data-read name first; then, per tool, the statement, the parameters, the tables."""
+    resolved = copy.deepcopy(SNOWFLAKE_RESOLVED)
+    resolved["tools"][0]["sql"] = "select s.doc:field, system$x() from DEMO_DB.PUBLIC.SECRETS s"
+    manifest = copy.deepcopy(SNOWFLAKE_MANIFEST)
+    manifest["data_reads"][0]["tables"].append("ORDERS")
+    assert "is not database.schema.table" in _refused(manifest, resolved)
+    assert "system functions are not allowed" in _refused(SNOWFLAKE_MANIFEST, resolved)
+    resolved["tools"][0]["sql"] = "select s.doc:field from DEMO_DB.PUBLIC.SECRETS s"
+    assert ":field is not a declared parameter" in _refused(SNOWFLAKE_MANIFEST, resolved)
+    resolved["tools"][0]["sql"] = "select s.doc from DEMO_DB.PUBLIC.SECRETS s"
+    assert "DEMO_DB.PUBLIC.SECRETS is not allowed" in _refused(SNOWFLAKE_MANIFEST, resolved)
 
 
 def _environment() -> dict[str, str]:

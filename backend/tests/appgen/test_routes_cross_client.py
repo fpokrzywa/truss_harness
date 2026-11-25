@@ -280,7 +280,6 @@ def test_a_cannot_preview_bs_release(
 def _on_snowflake(manifest: dict[str, Any]) -> None:
     manifest["target_kind"] = SNOWFLAKE_KIND
     manifest["app"] = {"generator_version": GENERATOR_VERSIONS[SNOWFLAKE_KIND]}
-    manifest["data_reads"][0]["tables"] = list(SF_TABLES)
 
 
 @DIRECTIONS
