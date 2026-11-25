@@ -55,10 +55,18 @@ def wire(
     return fake
 
 
-def wire_snowflake(client: TestClient) -> tuple[FakeSnowflakeAccount, FakeDatabricksWorkspace]:
-    """Route the app's data-platform calls to a fresh sample-data Snowflake account (its host)
-    and a fresh sample-data Databricks workspace (every other host)."""
-    sf = FakeSnowflakeAccount(account=SF_ACCOUNT, user="reader", pat=SF_TOKEN, sample_data=True)
+def wire_snowflake(
+    client: TestClient,
+    *,
+    account: str = SF_ACCOUNT,
+    cortex: dict[str, list[dict[str, str]]] | None = None,
+) -> tuple[FakeSnowflakeAccount, FakeDatabricksWorkspace]:
+    """Route the app's data-platform calls to a fresh sample-data Snowflake account (its host,
+    answering the `cortex` models' scripts, if given) and a fresh sample-data Databricks workspace
+    (every other host)."""
+    sf = FakeSnowflakeAccount(
+        account=account, user="reader", pat=SF_TOKEN, sample_data=True, cortex=cortex or {}
+    )
     dbx = FakeDatabricksWorkspace(host=HOST, warehouse_id="wh-0001", sample_data=True)
 
     def handle(request: httpx.Request) -> httpx.Response:
@@ -82,6 +90,7 @@ def snowflake(
     *,
     scope: dict[str, str] | None = None,
     discover: bool = True,
+    account: str = SF_ACCOUNT,
 ) -> str:
     """An active Snowflake read connection of `org` (organization-wide unless `scope`) on the
     `wire_snowflake` account, discovered unless told otherwise."""
@@ -92,7 +101,7 @@ def snowflake(
             "name": name,
             "connection_type": "data_platform",
             "adapter_key": "snowflake",
-            "config": {"account": SF_ACCOUNT, "user": "reader", "warehouse": "COMPUTE_WH"},
+            "config": {"account": account, "user": "reader", "warehouse": "COMPUTE_WH"},
             "auth_method": "bearer",
             "credential": {"value": SF_TOKEN},
             "access_mode": "read",
