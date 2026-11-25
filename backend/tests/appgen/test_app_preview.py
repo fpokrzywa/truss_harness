@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from shifde.appgen.render import GENERATOR_VERSION, render
+from shifde.appgen.render import GENERATOR_VERSION, GENERATOR_VERSIONS, render
 from shifde.core.db import Database
 from shifde.core.ids import uuid7
 from tests._support.appgen_fixtures import SAMPLE_DRAFT
@@ -28,6 +28,7 @@ from tests._support.p2util import new_user, post, tenant_id
 from tests._support.p3util import ADMIN, ADMIN_B, A, B
 from tests._support.p5util import Hdr, user_session
 from tests.appgen.helpers import PROJECT
+from tests.appgen.rendered import SNOWFLAKE_KIND
 from tests.delivery.app_releases import AppRelease, add_provider, make_app_release
 from tests.delivery.releases import make_release
 
@@ -122,6 +123,23 @@ def test_a_changed_pin_is_release_source_changed(
     r = _preview(user_session(client, world.passwords, ADMIN), rel.id)
     assert r.status_code == 409, r.text
     assert r.json()["code"] == "release_source_changed"
+
+
+def test_a_snowflake_release_with_a_bad_table_name_is_not_renderable(
+    client: TestClient, world: World, owner_db: Database, owner_session: Session
+) -> None:
+    """SP6-5: a sealed Snowflake release whose data read is SQL text renders nothing."""
+
+    def edit(manifest: dict[str, Any]) -> None:
+        manifest["target_kind"] = SNOWFLAKE_KIND
+        manifest["app"] = {"generator_version": GENERATOR_VERSIONS[SNOWFLAKE_KIND]}
+        manifest["data_reads"][0]["tables"] = ["(SELECT 1) --"]
+
+    rel = _app_release(owner_db, owner_session, edit=edit)
+    r = _preview(user_session(client, world.passwords, ADMIN), rel.id)
+    assert r.status_code == 409, r.text
+    assert r.json()["code"] == "release_not_renderable"
+    assert "files" not in r.json()
 
 
 def _refused_hidden(r: httpx.Response, rel: AppRelease) -> None:

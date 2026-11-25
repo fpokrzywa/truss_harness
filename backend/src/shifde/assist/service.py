@@ -65,6 +65,7 @@ from shifde.delivery.schemas import PlanCreate
 from shifde.delivery.service import TargetService
 from shifde.evaluation.schemas import EvaluationRequest
 from shifde.evaluation.service import EvaluationService
+from shifde.ledger import enforcement, estimate
 from shifde.models_admin import schemas as model_schemas
 from shifde.models_admin.service import ModelService
 from shifde.packaging.service import SolutionService, scoped_release
@@ -105,6 +106,7 @@ CONTEXT_NOT_FOUND = "context not found"
 DONE = frozenset({"routed", "refused", "failed"})
 ROUTER_MAX_TOKENS = 300
 INVALID_OUTPUT = "invalid_model_output"
+BUDGET_DENIED = "budget_denied"
 INSTALL_AGAIN = "the specialist differs from its catalog entry; run install again"
 ACCEPT = "assist:proposal:accept"
 PROPOSAL_TARGET = "assist_proposal"
@@ -266,6 +268,20 @@ def _candidates(row: Mapping[str, Any]) -> tuple[str, ...]:
     if not row["text"]:
         return ()
     return routing.route(row["text"], row["requested_specialist"], _context_kind(row)).candidates
+
+
+def _router_call(row: Mapping[str, Any]) -> model_schemas.InvokeIn:
+    """The router model call of a stored request: its text and its candidates, nothing else."""
+    return model_schemas.InvokeIn(
+        messages=[
+            model_schemas.ChatMessageIn(role="system", content=ROUTER_PROMPT),
+            model_schemas.ChatMessageIn(
+                role="user",
+                content=json.dumps({"text": row["text"], "candidates": list(_candidates(row))}),
+            ),
+        ],
+        max_tokens=ROUTER_MAX_TOKENS,
+    )
 
 
 def _choice(reply: str, allowed: Sequence[str]) -> tuple[str | None, str | None]:
@@ -751,14 +767,18 @@ class AssistService:
             "api_key_id": str(p.api_key_id) if p.api_key_id else None,
         }
 
-    def _enqueue(self, request_id: UUID, job_id: UUID) -> None:
+    def _enqueue(self, request_id: UUID, job_id: UUID, max_cost: Decimal | None) -> None:
         repository.enqueue_job(
             self._session,
             tenant_id=self.sc.tenant_id,
             kind=ROUTE_JOB_KIND,
             job_id=job_id,
             dedupe_key=f"{ROUTE_JOB_KIND}:{request_id}",
-            payload={"request_id": str(request_id), **self._requester_fields()},
+            payload={
+                "request_id": str(request_id),
+                **self._requester_fields(),
+                **({"max_cost": format(max_cost, "f")} if max_cost is not None else {}),
+            },
         )
 
     def _active_project(self, ws: str, proj: str) -> None:
@@ -872,10 +892,18 @@ class AssistService:
         return fresh
 
     def _hand_over(
-        self, row: Mapping[str, Any], spec: Mapping[str, Any], settings: Mapping[str, Any]
+        self,
+        row: Mapping[str, Any],
+        spec: Mapping[str, Any],
+        settings: Mapping[str, Any],
+        max_cost: Decimal | None,
     ) -> Mapping[str, Any]:
         """Design 5.4 steps 4 (after `handing_over` is committed) and 5: the run of the project's
-        own specialist as the requester; a repeat returns the same run (idempotency key)."""
+        own specialist as the requester; a repeat returns the same run (idempotency key).
+        `max_cost` (a caller's cap) only lowers the organization's `specialist_max_cost`."""
+        run_cost = Decimal(settings["specialist_max_cost"])
+        if max_cost is not None:
+            run_cost = min(run_cost, max_cost)
         ws_slugs, proj_slugs = tenancy.scope_slug_map(
             self.sc, [row["workspace_id"]], [row["project_id"]]
         )
@@ -891,11 +919,7 @@ class AssistService:
         )
         runs = RunService(self.sc, self.runtime, self.hooks)
         try:
-            created, _ = runs.create(
-                body,
-                f"assist:{row['id']}",
-                max_cost=Decimal(settings["specialist_max_cost"]),
-            )
+            created, _ = runs.create(body, f"assist:{row['id']}", max_cost=run_cost)
             run = runs.get(created.id)  # by (tenant_id, run_id) under the requester's scope
         except AppError as exc:
             self._session.rollback()
@@ -910,9 +934,15 @@ class AssistService:
             )
         return self._transition(row, ["handing_over"], "routed", run_id=run.id)
 
-    def create_request(self, ws: str, proj: str, body: s.AssistRequestIn) -> s.AssistRequestOut:
+    def create_request(
+        self, ws: str, proj: str, body: s.AssistRequestIn, *, max_cost: Decimal | None = None
+    ) -> s.AssistRequestOut:
         """Store and route a request (design 5.1 to 5.4): rule or explicit routing hands over at
-        once; an undecided request is queued for the model (`queued`, answered 202) or refused."""
+        once; an undecided request is queued for the model (`queued`, answered 202) or refused.
+
+        `max_cost` is service-level only (never part of an HTTP body): the router call and the
+        specialist's run together stay within it, whichever path starts the run (the job's
+        payload carries it)."""
         project = self._project(ws, proj)
         self.sc.pdp.require(WRITE, project)
         self._active_project(ws, proj)
@@ -960,7 +990,7 @@ class AssistService:
         repository.insert_request(self._session, values)
         if values["job_id"] is not None:
             # queued: the model fallback; handing_over: the recovery of an interrupted handover
-            self._enqueue(request_id, job_id)
+            self._enqueue(request_id, job_id, max_cost)
         row = repository.get_request(
             self._session, tenant_id=self.sc.tenant_id, request_id=request_id
         )
@@ -977,7 +1007,7 @@ class AssistService:
             _record_request(self._session, ctx, tenant, "assist.request.handing_over", row)
         self._session.commit()
         if spec is not None:
-            row = self._hand_over(row, spec, settings)
+            row = self._hand_over(row, spec, settings, max_cost)
         out = self._out(row, refusal.missing if refusal is not None else None)
         self._session.rollback()
         return out
@@ -1235,7 +1265,27 @@ class AssistService:
         return self._proposal_answer(decided, row)
 
     # ================================================================== the job (design 5.3)
-    def _resume(self, row: Mapping[str, Any]) -> None:
+    def _after_router(
+        self, row: Mapping[str, Any], settings: Mapping[str, Any], max_cost: Decimal
+    ) -> Decimal | None:
+        """What `max_cost` leaves for the run after the router call's worst case (the input
+        estimate and the whole output ceiling at the rate in force); None when the call is
+        refused: its worst case is above the cap, or the model has no rate and the client's
+        `unknown_cost_policy` is `deny` (`allow_unmeasured` leaves the cap unreduced)."""
+        call = _router_call(row)
+        cost = estimate.call_cost(
+            self._session,
+            self.sc.tenant_id,
+            settings["router_model_id"],
+            estimate.estimate_input_tokens([m.model_dump() for m in call.messages]),
+            ROUTER_MAX_TOKENS,
+        )
+        if cost is None:
+            policy = enforcement.unknown_cost_policy(self._session, self.sc.tenant_id)
+            return None if policy == "deny" else max_cost
+        return max_cost - cost.amount if cost.amount <= max_cost else None
+
+    def _resume(self, row: Mapping[str, Any], max_cost: Decimal | None) -> None:
         """An interrupted handover: the step 1-3 pre-checks again, then step 4 (the idempotency
         key returns the same run). A refusal fails the request with its code and starts no run
         (design 5.5 has no `handing_over -> refused`)."""
@@ -1247,18 +1297,31 @@ class AssistService:
                 row, ["handing_over"], "failed", checked.details(), status_reason=checked.code
             )
             return
-        self._hand_over(row, checked, settings)
+        if max_cost is not None and row["route_method"] == "model":
+            max_cost = self._after_router(row, settings, max_cost)
+            if max_cost is None:
+                self._transition(row, ["handing_over"], "failed", status_reason=BUDGET_DENIED)
+                return
+        self._hand_over(row, checked, settings, max_cost)
 
-    def route(self, row: Mapping[str, Any], database: Database) -> None:
+    def route(
+        self, row: Mapping[str, Any], database: Database, *, max_cost: Decimal | None = None
+    ) -> None:
         """The `assist.route` job's work for a `queued` or `handing_over` request, as the
-        requester: one router model call, then the handover of design 5.4."""
+        requester: one router model call, then the handover of design 5.4. `max_cost` is the cap
+        of `create_request`, for the router call and the run together."""
         if row["status"] == "handing_over":
-            self._resume(row)
+            self._resume(row, max_cost)
             return
         settings = self._settings()
         if settings["router_model_id"] is None:
             self._transition(row, ["queued"], "failed", status_reason="router_model_missing")
             return
+        if max_cost is not None:
+            max_cost = self._after_router(row, settings, max_cost)
+            if max_cost is None:  # nothing is held or sent
+                self._transition(row, ["queued"], "failed", status_reason=BUDGET_DENIED)
+                return
         candidates = _candidates(row)
         classifying = _change(
             self._session, self.sc.ctx, self.sc.tenant_id, row, ["queued"], "classifying"
@@ -1266,21 +1329,11 @@ class AssistService:
         if classifying is None:
             return
         # committed before the call: a job that finds it again never calls twice (design 5.3)
-        body = model_schemas.InvokeIn(
-            messages=[
-                model_schemas.ChatMessageIn(role="system", content=ROUTER_PROMPT),
-                model_schemas.ChatMessageIn(
-                    role="user",
-                    content=json.dumps({"text": row["text"], "candidates": list(candidates)}),
-                ),
-            ],
-            max_tokens=ROUTER_MAX_TOKENS,
-        )
         try:
             out = ModelService(self.sc, self.runtime, database).invoke_at(
                 _request_ref(self.sc.tenant_id, row),
                 settings["router_model_id"],
-                body,
+                _router_call(row),
                 usage_event_type="model_call",
             )
         except AppError as exc:
@@ -1320,7 +1373,7 @@ class AssistService:
             **chosen,
         )
         if handing is not None:
-            self._hand_over(handing, checked, settings)
+            self._hand_over(handing, checked, settings, max_cost)
 
 
 def record_proposal(
@@ -1479,7 +1532,10 @@ def run_route_job(
                 status_reason="access_revoked",
             )
             return None
-        AssistService(scope, runtime, TokenBudgetHooks()).route(row, database)
+        cap = payload.get("max_cost")
+        AssistService(scope, runtime, TokenBudgetHooks()).route(
+            row, database, max_cost=Decimal(cap) if cap is not None else None
+        )
         return None
     finally:
         session.close()

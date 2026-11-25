@@ -1,36 +1,36 @@
 {
-  "generated": "2026-11-24T18:47:29+00:00",
+  "generated": "2026-11-25T01:41:29+00:00",
   "note": "est_usd is an estimate at list price, not a bill",
   "totals": {
     "all": "all",
-    "input": 81456,
-    "output": 26109579,
-    "cache_write_5m": 160866344,
-    "cache_write_1h": 21231713,
-    "cache_read": 4001993299,
-    "requests": 39823,
-    "est_usd": 2164.121
+    "input": 83862,
+    "output": 27468195,
+    "cache_write_5m": 175221665,
+    "cache_write_1h": 22691347,
+    "cache_read": 4127570019,
+    "requests": 40999,
+    "est_usd": 2298.8317
   },
   "by_model": [
     {
       "model": "claude-opus-5-5",
-      "input": 71206,
-      "output": 23047024,
-      "cache_write_5m": 132332798,
-      "cache_write_1h": 20459191,
-      "cache_read": 3687537034,
-      "requests": 34855,
-      "est_usd": 2024.0702
+      "input": 73486,
+      "output": 24385700,
+      "cache_write_5m": 146385215,
+      "cache_write_1h": 21918825,
+      "cache_read": 3812280558,
+      "requests": 35968,
+      "est_usd": 2157.7407
     },
     {
       "model": "claude-sonnet-5-5",
-      "input": 9484,
-      "output": 2367384,
-      "cache_write_5m": 26528685,
+      "input": 9610,
+      "output": 2387324,
+      "cache_write_5m": 26831589,
       "cache_write_1h": 354601,
-      "cache_read": 284858174,
-      "requests": 4587,
-      "est_usd": 119.9187
+      "cache_read": 285691370,
+      "requests": 4650,
+      "est_usd": 120.959
     },
     {
       "model": "claude-fable-5-2",
@@ -56,23 +56,23 @@
   "by_agent_type": [
     {
       "agent_type": "builder",
-      "input": 22462,
-      "output": 8417077,
-      "cache_write_5m": 67788813,
+      "input": 23176,
+      "output": 9073468,
+      "cache_write_5m": 76532827,
       "cache_write_1h": 0,
-      "cache_read": 1221627426,
-      "requests": 11021,
-      "est_usd": 751.7009
+      "cache_read": 1262670945,
+      "requests": 11369,
+      "est_usd": 816.7604
     },
     {
       "agent_type": "lead",
-      "input": 20320,
-      "output": 4277232,
+      "input": 21164,
+      "output": 4511073,
       "cache_write_5m": 0,
-      "cache_write_1h": 21231713,
-      "cache_read": 1466245864,
-      "requests": 9803,
-      "est_usd": 552.296
+      "cache_write_1h": 22691347,
+      "cache_read": 1531458914,
+      "requests": 10214,
+      "est_usd": 581.6959
     },
     {
       "agent_type": "module-builder-critical",
@@ -86,23 +86,23 @@
     },
     {
       "agent_type": "spec-writer",
-      "input": 6582,
-      "output": 2780000,
-      "cache_write_5m": 12477102,
+      "input": 6738,
+      "output": 2945513,
+      "cache_write_5m": 13658646,
       "cache_write_1h": 0,
-      "cache_read": 161113467,
-      "requests": 3266,
-      "est_usd": 150.2345
+      "cache_read": 166672835,
+      "requests": 3342,
+      "est_usd": 160.565
     },
     {
       "agent_type": "isolation-reviewer",
-      "input": 5060,
-      "output": 1839991,
-      "cache_write_5m": 12551945,
+      "input": 5192,
+      "output": 1931012,
+      "cache_write_5m": 13599560,
       "cache_write_1h": 0,
-      "cache_read": 128522070,
-      "requests": 2504,
-      "est_usd": 125.2842
+      "cache_read": 131700950,
+      "requests": 2568,
+      "est_usd": 132.979
     },
     {
       "agent_type": "module-builder",
@@ -115,6 +115,16 @@
       "est_usd": 61.4673
     },
     {
+      "agent_type": "reviewer-code",
+      "input": 3246,
+      "output": 790926,
+      "cache_write_5m": 9872755,
+      "cache_write_1h": 0,
+      "cache_read": 48632119,
+      "requests": 1580,
+      "est_usd": 61.2208
+    },
+    {
       "agent_type": "general-purpose",
       "input": 3052,
       "output": 808699,
@@ -125,54 +135,44 @@
       "est_usd": 61.0598
     },
     {
-      "agent_type": "reviewer-code",
-      "input": 3088,
-      "output": 729056,
-      "cache_write_5m": 8869271,
-      "cache_write_1h": 0,
-      "cache_read": 45301167,
-      "requests": 1504,
-      "est_usd": 54.4714
-    },
-    {
       "agent_type": "approver",
-      "input": 2326,
-      "output": 580737,
-      "cache_write_5m": 6331963,
+      "input": 2500,
+      "output": 662701,
+      "cache_write_5m": 7557508,
       "cache_write_1h": 0,
-      "cache_read": 27251463,
-      "requests": 1161,
-      "est_usd": 48.7342
+      "cache_read": 31327831,
+      "requests": 1248,
+      "est_usd": 57.3171
     },
     {
       "agent_type": "reviewer-security",
-      "input": 2264,
-      "output": 525727,
-      "cache_write_5m": 6007366,
+      "input": 2354,
+      "output": 563540,
+      "cache_write_5m": 6744330,
       "cache_write_1h": 0,
-      "cache_read": 30080081,
-      "requests": 1125,
-      "est_usd": 46.5764
+      "cache_read": 31946831,
+      "requests": 1170,
+      "est_usd": 51.3912
     },
     {
       "agent_type": "intake",
-      "input": 2080,
-      "output": 381571,
-      "cache_write_5m": 3177976,
+      "input": 2154,
+      "output": 394780,
+      "cache_write_5m": 3329795,
       "cache_write_1h": 0,
-      "cache_read": 12092716,
-      "requests": 1039,
-      "est_usd": 12.9741
+      "cache_read": 12559035,
+      "requests": 1076,
+      "est_usd": 13.5325
     },
     {
       "agent_type": "reviewer-ux",
-      "input": 420,
-      "output": 77980,
-      "cache_write_5m": 961689,
+      "input": 444,
+      "output": 90406,
+      "cache_write_5m": 1131386,
       "cache_write_1h": 0,
-      "cache_read": 4976490,
-      "requests": 202,
-      "est_usd": 6.8981
+      "cache_read": 5545110,
+      "requests": 214,
+      "est_usd": 8.109
     },
     {
       "agent_type": "frontend-builder",
@@ -196,23 +196,23 @@
     },
     {
       "agent_type": "reviewer-ui",
-      "input": 298,
-      "output": 59076,
-      "cache_write_5m": 646396,
+      "input": 318,
+      "output": 61761,
+      "cache_write_5m": 686364,
       "cache_write_1h": 0,
-      "cache_read": 2102655,
-      "requests": 140,
-      "est_usd": 1.4536
+      "cache_read": 2248909,
+      "requests": 150,
+      "est_usd": 1.5951
     },
     {
       "agent_type": "verifier",
-      "input": 92,
-      "output": 14883,
-      "cache_write_5m": 323665,
+      "input": 112,
+      "output": 16766,
+      "cache_write_5m": 378336,
       "cache_write_1h": 0,
-      "cache_read": 2119024,
-      "requests": 45,
-      "est_usd": 1.1701
+      "cache_read": 2245664,
+      "requests": 55,
+      "est_usd": 1.3383
     },
     {
       "agent_type": "claude-code-guide",
@@ -258,13 +258,13 @@
     },
     {
       "unit": "lead",
-      "input": 20320,
-      "output": 4277232,
+      "input": 21164,
+      "output": 4511073,
       "cache_write_5m": 0,
-      "cache_write_1h": 21231713,
-      "cache_read": 1466245864,
-      "requests": 9803,
-      "est_usd": 552.296
+      "cache_write_1h": 22691347,
+      "cache_read": 1531458914,
+      "requests": 10214,
+      "est_usd": 581.6959
     },
     {
       "unit": "runtime",
@@ -437,6 +437,16 @@
       "est_usd": 16.4358
     },
     {
+      "unit": "172",
+      "input": 246,
+      "output": 127712,
+      "cache_write_5m": 2419669,
+      "cache_write_1h": 0,
+      "cache_read": 8425095,
+      "requests": 120,
+      "est_usd": 16.3386
+    },
+    {
       "unit": "sp3-5",
       "input": 332,
       "output": 124019,
@@ -477,6 +487,16 @@
       "est_usd": 14.0324
     },
     {
+      "unit": "178",
+      "input": 144,
+      "output": 95672,
+      "cache_write_5m": 2147200,
+      "cache_write_1h": 0,
+      "cache_read": 5619287,
+      "requests": 70,
+      "est_usd": 13.7188
+    },
+    {
       "unit": "f-03",
       "input": 402,
       "output": 100739,
@@ -505,6 +525,16 @@
       "cache_read": 29704237,
       "requests": 258,
       "est_usd": 11.8987
+    },
+    {
+      "unit": "180",
+      "input": 162,
+      "output": 140092,
+      "cache_write_5m": 1487072,
+      "cache_write_1h": 0,
+      "cache_read": 7997035,
+      "requests": 78,
+      "est_usd": 11.7771
     },
     {
       "unit": "017",
@@ -545,6 +575,16 @@
       "cache_read": 20731166,
       "requests": 161,
       "est_usd": 10.6246
+    },
+    {
+      "unit": "174",
+      "input": 146,
+      "output": 160585,
+      "cache_write_5m": 1240193,
+      "cache_write_1h": 0,
+      "cache_read": 6104359,
+      "requests": 72,
+      "est_usd": 10.4927
     },
     {
       "unit": "SP2-5",
@@ -627,6 +667,16 @@
       "est_usd": 8.7882
     },
     {
+      "unit": "175",
+      "input": 126,
+      "output": 98798,
+      "cache_write_5m": 989469,
+      "cache_write_1h": 0,
+      "cache_read": 8997286,
+      "requests": 62,
+      "est_usd": 8.7233
+    },
+    {
       "unit": "SP2-7",
       "input": 254,
       "output": 130118,
@@ -657,6 +707,36 @@
       "est_usd": 8.0761
     },
     {
+      "unit": "176",
+      "input": 90,
+      "output": 69008,
+      "cache_write_5m": 1097121,
+      "cache_write_1h": 0,
+      "cache_read": 3136032,
+      "requests": 45,
+      "est_usd": 7.4933
+    },
+    {
+      "unit": "181",
+      "input": 82,
+      "output": 83109,
+      "cache_write_5m": 1041177,
+      "cache_write_1h": 0,
+      "cache_read": 3385958,
+      "requests": 39,
+      "est_usd": 7.45
+    },
+    {
+      "unit": "182",
+      "input": 92,
+      "output": 71236,
+      "cache_write_5m": 1050105,
+      "cache_write_1h": 0,
+      "cache_read": 3185170,
+      "requests": 46,
+      "est_usd": 7.253
+    },
+    {
       "unit": "097",
       "input": 290,
       "output": 93562,
@@ -665,6 +745,16 @@
       "cache_read": 13027049,
       "requests": 140,
       "est_usd": 7.0318
+    },
+    {
+      "unit": "177",
+      "input": 84,
+      "output": 66716,
+      "cache_write_5m": 976587,
+      "cache_write_1h": 0,
+      "cache_read": 4040862,
+      "requests": 41,
+      "est_usd": 6.9504
     },
     {
       "unit": "096",
@@ -817,6 +907,16 @@
       "est_usd": 4.6201
     },
     {
+      "unit": "179",
+      "input": 104,
+      "output": 70214,
+      "cache_write_5m": 518578,
+      "cache_write_1h": 0,
+      "cache_read": 3022520,
+      "requests": 50,
+      "est_usd": 4.5385
+    },
+    {
       "unit": "065",
       "input": 164,
       "output": 69930,
@@ -947,6 +1047,16 @@
       "est_usd": 3.8549
     },
     {
+      "unit": "173",
+      "input": 100,
+      "output": 41281,
+      "cache_write_5m": 541487,
+      "cache_write_1h": 0,
+      "cache_read": 1882321,
+      "requests": 50,
+      "est_usd": 3.7417
+    },
+    {
       "unit": "142",
       "input": 186,
       "output": 55901,
@@ -955,6 +1065,16 @@
       "cache_read": 3942838,
       "requests": 88,
       "est_usd": 3.7408
+    },
+    {
+      "unit": "183",
+      "input": 100,
+      "output": 54385,
+      "cache_write_5m": 455982,
+      "cache_write_1h": 0,
+      "cache_read": 2717609,
+      "requests": 49,
+      "est_usd": 3.7319
     },
     {
       "unit": "sp4",
@@ -1015,6 +1135,16 @@
       "cache_read": 4923050,
       "requests": 83,
       "est_usd": 3.137
+    },
+    {
+      "unit": "184",
+      "input": 86,
+      "output": 45967,
+      "cache_write_5m": 390681,
+      "cache_write_1h": 0,
+      "cache_read": 1850136,
+      "requests": 43,
+      "est_usd": 3.1016
     },
     {
       "unit": "010-arch-m3",
@@ -1690,23 +1820,23 @@
   "by_sub_project": [
     {
       "sub_project": "sp1",
-      "input": 61136,
-      "output": 21832347,
-      "cache_write_5m": 160866344,
+      "input": 62698,
+      "output": 22957122,
+      "cache_write_5m": 175221665,
       "cache_write_1h": 0,
-      "cache_read": 2535747435,
-      "requests": 30020,
-      "est_usd": 1611.825
+      "cache_read": 2596111105,
+      "requests": 30785,
+      "est_usd": 1717.1359
     },
     {
       "sub_project": "lead",
-      "input": 20320,
-      "output": 4277232,
+      "input": 21164,
+      "output": 4511073,
       "cache_write_5m": 0,
-      "cache_write_1h": 21231713,
-      "cache_read": 1466245864,
-      "requests": 9803,
-      "est_usd": 552.296
+      "cache_write_1h": 22691347,
+      "cache_read": 1531458914,
+      "requests": 10214,
+      "est_usd": 581.6959
     }
   ],
   "by_day": [
@@ -1721,6 +1851,16 @@
       "est_usd": 464.4912
     },
     {
+      "day": "2026-11-24",
+      "input": 9608,
+      "output": 3403104,
+      "cache_write_5m": 27066755,
+      "cache_write_1h": 2828172,
+      "cache_read": 483700475,
+      "requests": 4709,
+      "est_usd": 314.1657
+    },
+    {
       "day": "2026-11-22",
       "input": 12170,
       "output": 3286528,
@@ -1729,16 +1869,6 @@
       "cache_read": 507941641,
       "requests": 5963,
       "est_usd": 272.2356
-    },
-    {
-      "day": "2026-11-24",
-      "input": 8082,
-      "output": 2572688,
-      "cache_write_5m": 18093530,
-      "cache_write_1h": 1610036,
-      "cache_read": 403122518,
-      "requests": 3964,
-      "est_usd": 227.3281
     },
     {
       "day": "2026-11-21",
@@ -1829,6 +1959,16 @@
       "cache_read": 97275410,
       "requests": 734,
       "est_usd": 64.2802
+    },
+    {
+      "day": "2026-11-25",
+      "input": 880,
+      "output": 528200,
+      "cache_write_5m": 5382096,
+      "cache_write_1h": 241498,
+      "cache_read": 44998763,
+      "requests": 431,
+      "est_usd": 47.8732
     }
   ],
   "rounds_per_unit": [
@@ -2544,6 +2684,15 @@
       "other": 4
     },
     {
+      "unit": "172",
+      "build": 2,
+      "verify": 0,
+      "fix": 0,
+      "review": 4,
+      "inventory": 0,
+      "other": 4
+    },
+    {
       "unit": "172-sp6-5-appgen-render",
       "build": 0,
       "verify": 0,
@@ -2553,6 +2702,15 @@
       "other": 1
     },
     {
+      "unit": "173",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 2,
+      "inventory": 0,
+      "other": 4
+    },
+    {
       "unit": "173-sp8-1-kinds-claims",
       "build": 0,
       "verify": 0,
@@ -2560,6 +2718,105 @@
       "review": 0,
       "inventory": 0,
       "other": 1
+    },
+    {
+      "unit": "174",
+      "build": 2,
+      "verify": 0,
+      "fix": 0,
+      "review": 6,
+      "inventory": 0,
+      "other": 1
+    },
+    {
+      "unit": "175",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 2,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "176",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 2,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "177",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "178",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 1,
+      "inventory": 0,
+      "other": 4
+    },
+    {
+      "unit": "179",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 1,
+      "inventory": 0,
+      "other": 4
+    },
+    {
+      "unit": "180",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 2,
+      "inventory": 0,
+      "other": 4
+    },
+    {
+      "unit": "181",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 0,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "182",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 2,
+      "inventory": 0,
+      "other": 2
+    },
+    {
+      "unit": "183",
+      "build": 2,
+      "verify": 0,
+      "fix": 0,
+      "review": 1,
+      "inventory": 0,
+      "other": 3
+    },
+    {
+      "unit": "184",
+      "build": 1,
+      "verify": 0,
+      "fix": 0,
+      "review": 1,
+      "inventory": 0,
+      "other": 4
     },
     {
       "unit": "SP2-5",

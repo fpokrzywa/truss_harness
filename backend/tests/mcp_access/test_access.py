@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from datetime import timedelta
+from typing import Any  # Any: JSON schemas
 from uuid import UUID
 
 import anyio
@@ -66,7 +67,7 @@ def test_mcp_is_not_mounted_when_the_installation_switch_is_off(
         assert c.get(f"{A}/mcp/settings", headers=h).status_code == 200
 
 
-def test_the_sdk_client_initializes_and_lists_exactly_the_nine_v1_tools(
+def test_the_sdk_client_initializes_and_lists_exactly_the_twelve_v1_tools(
     settings: Settings, world: World
 ) -> None:
     configured = mcp_settings(settings)
@@ -101,8 +102,14 @@ def test_the_sdk_client_initializes_and_lists_exactly_the_nine_v1_tools(
             app.state.db.dispose()
 
     tools, me = anyio.run(session)
-    assert {t["name"] for t in tools} == V1_TOOLS and len(tools) == 9
+    assert {t["name"] for t in tools} == V1_TOOLS and len(tools) == 12
     assert all(t["inputSchema"]["additionalProperties"] is False for t in tools)  # type: ignore[index]
+    nested: dict[str, Any] = {
+        str(t["name"]): t["inputSchema"].get("$defs", {})  # type: ignore[attr-defined]
+        for t in tools
+    }
+    assert {n: set(d) for n, d in nested.items() if d} == {"assist_ask": {"ContextIn"}}
+    assert nested["assist_ask"]["ContextIn"]["additionalProperties"] is False
     assert me["client_slug"] == ORG_A and me["key_name"] == "mcp key"
     assert "start_run" not in me["tools"]  # NULL allowed_tools: the default set
 

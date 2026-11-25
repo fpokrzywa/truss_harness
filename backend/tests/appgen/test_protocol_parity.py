@@ -1,7 +1,9 @@
 """SP5-5 (settled call S4): the rendered `agent_loop.py` speaks SETH's tool protocol. Its
 `PROTOCOL` and `MAX_CALLS_PER_RESPONSE` equal `shifde.runtime.agent`'s, its `parse_tool_calls` and
 `untrusted_block` behave the same on fixed corpora, and the system message it builds for the
-sample tools equals `AgentRunner._with_protocol` for the same tools (key = name = tool name)."""
+sample tools equals `AgentRunner._with_protocol` for the same tools (key = name = tool name).
+SP6-5: every check runs over both rendered loops, the Databricks app's `app/agent_loop.py` and the
+Snowflake package's `ui/agent_loop.py`, which are byte-identical."""
 
 from __future__ import annotations
 
@@ -23,6 +25,9 @@ from tests.appgen.rendered import (
     SAMPLE_DIGEST,
     SAMPLE_MANIFEST,
     SAMPLE_RESOLVED,
+    SNOWFLAKE_DIGEST,
+    SNOWFLAKE_MANIFEST,
+    SNOWFLAKE_RESOLVED,
     load_module,
     write_files,
 )
@@ -68,13 +73,23 @@ VALUES = [
 SOURCES = ["tool:orders_by_customer", 'tool:"quoted"&<x>']
 
 
-@pytest.fixture(scope="module")
-def loop(tmp_path_factory: pytest.TempPathFactory) -> ModuleType:
-    directory = write_files(
-        tmp_path_factory.mktemp("parity"),
-        render(SAMPLE_MANIFEST, SAMPLE_DIGEST, SAMPLE_RESOLVED),
-    )
-    return load_module(Path(directory, "app", "agent_loop.py"), "rendered_agent_loop_parity")
+# the rendered loop of each platform: (render arguments, path in the render)
+LOOPS = {
+    "databricks": ((SAMPLE_MANIFEST, SAMPLE_DIGEST, SAMPLE_RESOLVED), "app/agent_loop.py"),
+    "snowflake": ((SNOWFLAKE_MANIFEST, SNOWFLAKE_DIGEST, SNOWFLAKE_RESOLVED), "ui/agent_loop.py"),
+}
+
+
+@pytest.fixture(scope="module", params=sorted(LOOPS))
+def loop(request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory) -> ModuleType:
+    arguments, path = LOOPS[request.param]
+    directory = write_files(tmp_path_factory.mktemp("parity"), render(*arguments))
+    return load_module(Path(directory, path), f"rendered_agent_loop_parity_{request.param}")
+
+
+def test_the_two_rendered_loops_are_byte_identical() -> None:
+    [databricks, snowflake] = [render(*arguments)[path] for arguments, path in LOOPS.values()]
+    assert databricks == snowflake
 
 
 def test_the_protocol_text_and_call_cap_are_seths(loop: ModuleType) -> None:

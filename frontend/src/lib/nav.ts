@@ -1,4 +1,6 @@
 import {
+  assistHref,
+  assistSettingsHref,
   boardHref,
   buildHref,
   connectionsHref,
@@ -142,6 +144,14 @@ export const NAV_ITEMS: readonly NavItem[] = [
     requiresAny: ['mcp:settings:read'],
   },
   {
+    id: 'settings-assist',
+    feature: 'tenancy',
+    label: 'Assist settings',
+    group: 'Administer',
+    href: (s) => (s.org ? assistSettingsHref(s.org) : null),
+    requiresAny: ['assist:admin', 'assist:install'],
+  },
+  {
     id: 'organizations',
     feature: 'tenancy',
     label: 'Organizations',
@@ -220,6 +230,15 @@ export const NAV_ITEMS: readonly NavItem[] = [
   operate('approvals', 'Approvals', ['approval:read'], (s) =>
     s.org ? `${orgHref(s.org)}/approvals` : null,
   ),
+  // SP7-7: a project screen; one request and the settings are organization-level routes.
+  {
+    id: 'assist',
+    feature: 'tenancy',
+    label: 'Ask SETH',
+    group: 'Operate',
+    href: (s) => (s.org && s.ws && s.proj ? assistHref(s.org, s.ws, s.proj) : null),
+    requiresAny: ['assist:request:read'],
+  },
   // SP7-6: the release board, an organization-level screen filtered by `?ws=&proj=`.
   {
     ...deliver('board', 'Board', ['packaging:solution:read']),

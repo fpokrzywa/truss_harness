@@ -145,6 +145,33 @@ def _agent(h: Hdr, s: Stack, key: str, tools: list[str], **model: Any) -> str:
 
 def test_the_generator_version_is_appgens() -> None:
     assert packaging.APP_GENERATOR_VERSION == render.GENERATOR_VERSION
+    assert packaging.APP_GENERATOR_VERSIONS == render.GENERATOR_VERSIONS
+    for kind, version in render.GENERATOR_VERSIONS.items():
+        assert render.GENERATOR_VERSION_PATTERN.fullmatch(version), kind
+        assert render.generator_version_for(kind) == version
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "shifde.appgen/1",
+        "shifde.appgen.Snowflake/1.0",
+        "other/1.0",
+        "shifde.appgen/1.0.0",
+        "shifde.appgen./1.0",
+        "shifde.appgen.snowflake/v1.0",
+        "shifde.appgen/1.0\n",
+        " shifde.appgen/1.0",
+    ],
+)
+def test_a_malformed_generator_version_does_not_match_the_pattern(version: str) -> None:
+    assert render.GENERATOR_VERSION_PATTERN.fullmatch(version) is None
+    assert render.GENERATOR_VERSION_PATTERN.match(version) is None
+
+
+def test_an_unknown_target_kind_has_no_generator_version() -> None:
+    with pytest.raises(render.GeneratorVersionUnsupported):
+        render.generator_version_for("fabric.notebook/v1")
 
 
 def test_a_version_with_screens_seals_under_compiler_2(client: TestClient, world: World) -> None:

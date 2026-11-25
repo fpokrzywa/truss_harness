@@ -18,6 +18,7 @@ import {
   TextField,
   useAction,
 } from '../admin/ui';
+import { AskSethButton } from '../assist/AskSethButton';
 import { StatusBadge } from '../integrate/Maturity';
 import { useOrgParam } from '../security/useOrg';
 import { AppPreview } from './AppPreview';
@@ -74,6 +75,14 @@ function ReleaseBody({ org, release }: { org: string; release: ReleaseOut }) {
         description={statusDescription(release.status)}
         actions={
           <>
+            {release.workspace && release.project && (
+              <AskSethButton
+                org={org}
+                ws={release.workspace}
+                proj={release.project}
+                context={{ kind: 'release', id: release.id }}
+              />
+            )}
             {canEvaluate && (
               <button
                 type="button"

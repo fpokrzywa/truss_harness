@@ -1,5 +1,5 @@
-"""Scripted MCP access demo of SP8-2 (design 2026-11-23 sections 3.1 to 3.7): SETH as an MCP server
-at `/mcp`, called with the MCP SDK client.
+"""Scripted MCP access demo of SP8-2 and SP8-3 (design 2026-11-23 sections 3.1 to 3.7): SETH as an
+MCP server at `/mcp`, called with the MCP SDK client.
 
 Runs in-process: the API (`shifde.app.create_app`) with test settings and `SHIFDE_MCP_ENABLED` on,
 the fake model provider for the agent, and the MCP SDK client (`mcp.client.streamable_http`) over
@@ -13,12 +13,15 @@ The demo creates a scratch database `shifde_demo_<hex>` on the local cluster (cr
 `SHIFDE_TEST_*_DATABASE_URL`, environment first, then `.devdata/dev.env`), migrates it as the
 schema owner, seeds the demo organizations `demo-a` and `demo-b` and drops the database at the
 end, also on failure; it never uses the checkout's own database. A's administrator publishes an
-agent over a fake model, mints two API keys with `mcp:access` and switches MCP on for A (every v1
-tool but `get_deployment`, 20 calls a minute); B's administrator mints a key and leaves MCP off.
-Then, over MCP: A's key initializes, calls `whoami`, lists the nine tools, starts a run and reads
-it back; B's run, release, deployment, project and agent version are `not_found` to A, like an
-unknown id; B's key gets `mcp_disabled`; `get_deployment` is `tool_not_allowed`; A's second key
-is rate limited on its 21st call; a session cookie without a key gets 401 and any `Origin` 403.
+agent over a fake model, switches assist on and installs the `cost` specialist over another, mints
+two API keys with `mcp:access` and switches MCP on for A (every v1 tool but `get_deployment`, 40
+calls a minute); B's administrator mints a key and leaves MCP off. Then, over MCP: A's key
+initializes, calls `whoami`, lists the twelve tools, starts a run and reads it back, asks the
+project's specialists (`assist_ask`: routed, with a run), reads the same request and run
+(`assist_get`) and its project's board (`board_get`); B's run, release, deployment, project, agent
+version and assist request are `not_found` to A, like an unknown id; B's key gets `mcp_disabled`;
+`get_deployment` is `tool_not_allowed`; A's second key is rate limited on its 41st call; a session
+cookie without a key gets 401 and any `Origin` 403.
 
 Prints one line per step and ends with `MCP DEMO PASSED` (exit 0) or `MCP DEMO FAILED: <step>`
 (exit 1). Exit 2: the demo could not run (`MCP DEMO NOT RUN: <reason>`). It never prints a key,
@@ -53,7 +56,7 @@ URL_KEYS = (
     "SHIFDE_TEST_DATABASE_URL",
     "SHIFDE_TEST_MIGRATION_DATABASE_URL",
 )
-RATE = 20
+RATE = 40
 HOST = "testserver"
 
 
@@ -157,8 +160,11 @@ def drive(app_url: str, owner_url: str) -> None:
     from shifde.core.ids import uuid7
     from shifde.core.settings import Settings
     from shifde.identity.passwords import PasswordService
+    from tests._support.assist_fixtures import assist_model
     from tests._support.fullapp import World
+    from tests._support.p5util import user_session
     from tests._support.runs import add_agent_version, add_run
+    from tests.assist.helpers import enable, installed, seed_proposal
     from tests.delivery.releases import make_release
     from tests.delivery.routes import make_deployment
     from tests.mcp_access.helpers import (
@@ -226,16 +232,21 @@ def drive(app_url: str, owner_url: str) -> None:
                 _, version_b = add_agent_version(o, b)
                 run_b = add_run(o, b, workspace_id=ws_b, project_id=p_b)
                 o.commit()
+                request_b, _ = seed_proposal(o, ORG_B, "evaluation_run", {}, email=ADMIN_B)
             theirs = {
                 "run_id": str(run_b),
                 "release_id": str(make_release(owner_db, b, ws_b, p_b).id),
                 "deployment_id": str(make_deployment(owner_db, b)),
                 "project_id": str(p_b),
                 "agent_version_id": str(version_b),
+                "request_id": request_b,
             }
             with mcp_client(settings) as c:
                 h = sign_in(c, world, ADMIN_A)
                 published = agent(c, h, A, p_a)
+                own = user_session(c, world.passwords, ADMIN_A)
+                enable(own)
+                installed(own, assist_model(own.client, own), keys=["cost"])
                 _, key_a = make_key(c, world, ADMIN_A, A, name="demo key")
                 _, key_rate = make_key(c, world, ADMIN_A, A, name="demo rate key")
                 _, key_b = make_key(c, world, ADMIN_B, B, name="demo key")
@@ -255,7 +266,9 @@ def drive(app_url: str, owner_url: str) -> None:
                 "cookie": cookie,
             }
 
-        ctx = step("A: agent published, keys minted, MCP on; B: key minted, MCP off", setup)
+        ctx = step(
+            "A: agent published, assist on, keys minted, MCP on; B: key minted, MCP off", setup
+        )
 
         async def over_mcp() -> None:
             app = create_app(settings)
@@ -305,10 +318,10 @@ def drive(app_url: str, owner_url: str) -> None:
 
                         async def listed() -> None:
                             tools = (await mcp.list_tools()).tools
-                            need({t.name for t in tools} == V1_TOOLS and len(tools) == 9)
+                            need({t.name for t in tools} == V1_TOOLS and len(tools) == 12)
                             need(all(t.inputSchema["additionalProperties"] is False for t in tools))
 
-                        await astep("A's key: tools/list has exactly the nine v1 tools", listed)
+                        await astep("A's key: tools/list has exactly the twelve v1 tools", listed)
 
                         async def run() -> None:
                             is_error, started = await tool(
@@ -327,6 +340,37 @@ def drive(app_url: str, owner_url: str) -> None:
                             need(not is_error and got["run_id"] == started["run_id"])
 
                         await astep("A's key: start_run, then get_run reads the run", run)
+
+                        async def asked() -> None:
+                            ask = {
+                                "project_id": ctx["project_a"],
+                                "text": "how much did we spend last week",
+                            }
+                            is_error, made = await tool(mcp, "assist_ask", ask)
+                            need(not is_error and made["status"] == "routed")
+                            need(made["run_id"] is not None)
+                            is_error, got = await tool(
+                                mcp, "assist_get", {"request_id": made["id"]}
+                            )
+                            need(not is_error and got["id"] == made["id"])
+                            need(got["run_id"] == got["run"]["id"] == made["run_id"])
+
+                        await astep(
+                            "A's key: assist_ask is routed, then assist_get reads the request "
+                            "and its run",
+                            asked,
+                        )
+
+                        async def board() -> None:
+                            is_error, got = await tool(
+                                mcp, "board_get", {"project_id": ctx["project_a"]}
+                            )
+                            need(not is_error)
+                            need(
+                                [p["project"]["id"] for p in got["projects"]] == [ctx["project_a"]]
+                            )
+
+                        await astep("A's key: board_get reads A's project", board)
 
                         async def theirs() -> None:
                             t = ctx["theirs"]
@@ -357,6 +401,21 @@ def drive(app_url: str, owner_url: str) -> None:
                                         **run_args,
                                     },
                                 ),
+                                (
+                                    "board_get",
+                                    {"project_id": t["project_id"]},
+                                    {"project_id": unknown},
+                                ),
+                                (
+                                    "assist_ask",
+                                    {"project_id": t["project_id"], "text": "what did we spend"},
+                                    {"project_id": unknown, "text": "what did we spend"},
+                                ),
+                                (
+                                    "assist_get",
+                                    {"request_id": t["request_id"]},
+                                    {"request_id": unknown},
+                                ),
                             ]
                             for name, mine, missing in cases:
                                 answer = await tool(mcp, name, mine)
@@ -365,7 +424,11 @@ def drive(app_url: str, owner_url: str) -> None:
                             is_error, deployments = await tool(mcp, "list_deployments", {})
                             need(not is_error and t["deployment_id"] not in json.dumps(deployments))
 
-                        await astep("A's key: B's ids are not_found, like unknown ids", theirs)
+                        await astep(
+                            "A's key: B's ids, its project and assist request too, are not_found "
+                            "like unknown ids",
+                            theirs,
+                        )
 
                         async def not_allowed() -> None:
                             is_error, body = await tool(

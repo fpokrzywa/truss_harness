@@ -9368,7 +9368,7 @@
       },
       "McpSettingsPut": {
         "additionalProperties": false,
-        "description": "`PUT .../mcp/settings`: the whole settings document. `allowed_tools` null is the default\nset (every v1 tool except `start_run`), an empty list allows no tool.",
+        "description": "`PUT .../mcp/settings`: the whole settings document. `allowed_tools` null is the default\nset (every v1 tool except `start_run` and `assist_ask`), an empty list allows no tool.",
         "properties": {
           "allowed_tools": {
             "anyOf": [
@@ -9383,11 +9383,14 @@
                     "list_releases",
                     "get_release",
                     "list_deployments",
-                    "get_deployment"
+                    "get_deployment",
+                    "board_get",
+                    "assist_ask",
+                    "assist_get"
                   ],
                   "type": "string"
                 },
-                "maxItems": 9,
+                "maxItems": 12,
                 "type": "array"
               },
               {
