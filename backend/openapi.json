@@ -17608,6 +17608,9 @@
               },
               {
                 "$ref": "#/components/schemas/DockerBindings"
+              },
+              {
+                "$ref": "#/components/schemas/UnusableBindings"
               }
             ],
             "title": "Bindings"
@@ -17970,6 +17973,20 @@
           "attempts"
         ],
         "title": "ToolTestOut",
+        "type": "object"
+      },
+      "UnusableBindings": {
+        "additionalProperties": false,
+        "description": "Stands in for stored bindings that no longer validate: no stored value is shown, the target\ncan be archived, and nothing is planned, approved or run on it (`target_bindings_invalid`).",
+        "properties": {
+          "unusable": {
+            "const": true,
+            "default": true,
+            "title": "Unusable",
+            "type": "boolean"
+          }
+        },
+        "title": "UnusableBindings",
         "type": "object"
       },
       "UsageEventOut": {

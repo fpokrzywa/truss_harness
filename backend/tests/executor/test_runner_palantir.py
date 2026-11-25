@@ -77,6 +77,7 @@ from tests.delivery.routes import (
     deployment_row,
     journal_rows,
     make_due,
+    owner_sql,
     plan_row,
     register,
     sp8_body,
@@ -284,6 +285,59 @@ def test_palantir_schema_drift_between_plan_and_apply_writes_nothing(
         "no platform write was attempted",
     )
     assert stack.posts == [] and journal_rows(owner_db, flow.tenant) == []
+
+
+# ------------------------------------------------------------------ unreadable bindings (#406)
+def _non_public_origin(flow: Flow, target: dict[str, Any]) -> None:  # Any: a TargetOut body
+    """The stored row as a version before the public `frontend_origin` rule could have it."""
+    owner_sql(
+        flow.owner_db,
+        "UPDATE shifde.delivery_targets SET bindings = bindings || "
+        "jsonb_build_object('frontend_origin', 'https://localhost') WHERE id = :g",
+        g=target["id"],
+    )
+
+
+def test_a_plan_job_of_an_unreadable_palantir_target_fails_with_no_token_or_request(
+    flow: Flow, tmp_path: Path, owner_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target, stack, runner = _started(flow, tmp_path)
+    plan = _ask(flow, target)
+    _non_public_origin(flow, target)
+    codes: list[str] = []
+    read = GatewayClient.context
+
+    def recorded(self: GatewayClient, lease: JobLease) -> JobContext:
+        try:
+            return read(self, lease)
+        except GatewayError as exc:
+            codes.append(exc.code)
+            raise
+
+    monkeypatch.setattr(GatewayClient, "context", recorded)
+    assert runner.run_once()
+    assert codes == ["target_bindings_invalid"]
+    row = plan_row(owner_db, plan["id"])
+    assert (row["status"], row["status_reason"]) == (
+        "plan_failed",
+        "plan job failed: execution_failed",
+    )
+    assert stack.tokens == set() and stack.requests == []
+
+
+def test_an_apply_job_of_an_unreadable_palantir_target_writes_nothing(
+    flow: Flow, tmp_path: Path, owner_db: Database
+) -> None:
+    target, stack, runner = _started(flow, tmp_path)
+    deployment = _approved(flow, target, runner)
+    _non_public_origin(flow, target)
+    stack.tokens.clear()
+    stack.requests.clear()
+    assert runner.run_once()
+    row = deployment_row(owner_db, deployment)
+    assert (row["status"], row["status_reason"]) == ("failed", "no platform write was attempted")
+    assert stack.tokens == set() and stack.requests == []
+    assert journal_rows(owner_db, flow.tenant) == []
 
 
 # ------------------------------------------------------------------ the toolchain

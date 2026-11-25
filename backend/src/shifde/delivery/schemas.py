@@ -2,8 +2,10 @@
 DECISIONS B-2501, B-2664).
 
 `TargetOut` never carries the claim id or the address key: the claim is the organization's
-private bookkeeping of the one-platform rule. `PlanOut` never carries the artifact's content.
-`DeploymentDetail` (with the step journal) is returned only by the deployment item GET.
+private bookkeeping of the one-platform rule. Its `bindings` are `UnusableBindings` when the stored
+ones no longer validate (#406), so one such row breaks no list. `PlanOut` never carries the
+artifact's content. `DeploymentDetail` (with the step journal) is returned only by the deployment
+item GET.
 """
 
 from __future__ import annotations
@@ -138,6 +140,14 @@ BINDINGS: dict[str, type[Bindings]] = {
 }
 
 
+class UnusableBindings(BaseModel):
+    """Stands in for stored bindings that no longer validate: no stored value is shown, the target
+    can be archived, and nothing is planned, approved or run on it (`target_bindings_invalid`)."""
+
+    model_config = Strict
+    unusable: Literal[True] = True
+
+
 class TargetCreate(BaseModel):
     model_config = Strict
     workspace: str
@@ -166,7 +176,7 @@ class TargetOut(BaseModel):
     platform_kind: PlatformKind
     address: str
     environment: str
-    bindings: Bindings
+    bindings: Bindings | UnusableBindings
     credential_ref: str
     status: str
     revision: int

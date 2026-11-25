@@ -4,6 +4,12 @@ DECISIONS B-2501, lead ruling B-2524; SP6 design 6.4).
 `adapter_target` is the one mapping of a target row to the adapter's `Target`: the job context and
 a Palantir plan's descriptor both use it, so both give the same bindings digest.
 
+A stored row whose bindings no longer validate against its platform's model (a rule or a required
+binding added after it was registered, #406) breaks no read: `stored_bindings` logs its id (no
+binding value) and `TargetOut` shows `UnusableBindings`. `require_bindings` refuses it
+(409 `target_bindings_invalid`) at the plan request, the approval and the job context; archive
+works.
+
 A target is a Databricks workspace, a Snowflake account, a Fabric workspace, a Palantir Foundry
 stack or a Docker daemon (`platform_kind`). Its address is
 normalized and allow-listed by that platform's normalizer in `adapters.native.addresses` before
@@ -42,6 +48,7 @@ Every row is read and written for the caller's resolved client only (`TenantScop
 
 from __future__ import annotations
 
+import logging
 import re
 import secrets
 from collections.abc import Iterable, Mapping, Sequence
@@ -50,6 +57,7 @@ from datetime import datetime, timedelta
 from typing import Any, Literal  # Any: target, executor and credential rows
 from uuid import UUID
 
+from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -94,6 +102,8 @@ from shifde.packaging.service import COMPILER_VERSION_APP, release_record
 from shifde.tenancy import service as tenancy
 from shifde.tenancy.scope import TenantScope
 
+log = logging.getLogger(__name__)
+
 EXECUTOR_TOKEN_REJECTED = "delivery.executor.token.rejected"
 DEPLOYMENT_UNKNOWN_OUTCOME = "delivery.deployment.unknown_outcome"
 # A system event: it may happen inside an unrelated request, so it never names that caller
@@ -132,6 +142,17 @@ class DockerBindingInUse(AppError):
         )
 
 
+class TargetBindingsInvalid(AppError):
+    """The target's stored bindings no longer validate (#406); the detail names no binding."""
+
+    status, code, title = 409, "target_bindings_invalid", "Conflict"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "The target's stored bindings are no longer valid. Archive it and register it again."
+        )
+
+
 class PlanJobTargetMismatch(AppError):
     """A `plan` job's `target_id` is not its plan's target (B-2732)."""
 
@@ -147,6 +168,23 @@ def claim_key(platform_kind: str, address: str) -> str:
     if platform_kind == "snowflake":
         return address_key(snowflake_claim_identity(address))
     return address_key(address)
+
+
+def stored_bindings(row: Mapping[str, Any]) -> s.Bindings | None:
+    """The target row's bindings as its platform's model; None (and a warning that names the target
+    id and no binding value) when they no longer validate. The one reader of stored bindings, for
+    every platform."""
+    try:
+        return s.BINDINGS[row["platform_kind"]].model_validate(row["bindings"])
+    except ValidationError:
+        log.warning("delivery target %s: its stored bindings no longer validate", row["id"])
+        return None
+
+
+def require_bindings(row: Mapping[str, Any]) -> None:
+    """Refuse a target whose stored bindings no longer validate."""
+    if stored_bindings(row) is None:
+        raise TargetBindingsInvalid
 
 
 def adapter_target(row: Mapping[str, Any]) -> Target:
@@ -260,7 +298,7 @@ class TargetService:
             platform_kind=row["platform_kind"],
             address=row["address"],
             environment=row["environment"],
-            bindings=s.BINDINGS[row["platform_kind"]].model_validate(row["bindings"]),
+            bindings=stored_bindings(row) or s.UnusableBindings(),
             credential_ref=row["credential_ref"],
             status=row["status"],
             revision=row["revision"],

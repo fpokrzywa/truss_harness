@@ -6,6 +6,7 @@ is `tests/executor/test_runner_palantir.py`; isolation is `test_routes_cross_cli
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from typing import Any  # Any: JSON bodies, rows
 from uuid import UUID, uuid4
 
@@ -16,8 +17,11 @@ from shifde.adapters.native import planning
 from shifde.adapters.native.base import read_archive
 from shifde.adapters.native.contracts import Check, JobContext, Target
 from shifde.adapters.native.palantir import source as palantir_source
+from shifde.core.clock import utcnow
 from shifde.core.db import Database
+from shifde.core.settings import Settings
 from shifde.delivery import service
+from shifde.identity import apikeys
 from shifde.packaging.canonical import canonical
 from shifde.packaging.service import COMPILER_VERSION_APP
 from tests.board.conftest import add_project
@@ -45,6 +49,7 @@ from tests.delivery.routes import (
     lease_plan,
     make_due,
     plan_row,
+    plan_value,
     plans,
     proof,
     receipt_value,
@@ -53,10 +58,20 @@ from tests.delivery.routes import (
     sp8_body,
     targets,
 )
-from tests.tenancy.conftest import World
+from tests.tenancy.conftest import World, app_session
 from tests.tenancy.routes import project_slug
 
 NO_PREVIEW = {**DEPLOYABLE, "allow_preview_apis": False}
+KEY_SCOPES = [
+    "workspace:read",
+    "project:read",
+    "delivery:target:read",
+    "delivery:plan:read",
+    "delivery:plan:request",
+    "delivery:plan:approve",
+    "packaging:release:read",
+    "packaging:solution:read",
+]
 
 
 def _written(owner_db: Database, tenant: UUID) -> tuple[int, ...]:
@@ -158,6 +173,65 @@ def test_only_a_palantir_targets_bindings_are_mapped() -> None:
     for kind in ("databricks", "snowflake", "fabric", "docker"):
         plain = {**row, "platform_kind": kind, "bindings": {"name": "unchanged"}}
         assert service.adapter_target(plain).bindings == {"name": "unchanged"}
+
+
+# ------------------------------------------------------------------ the callers' API keys (#352)
+def _key(flow: Flow, app_db: Database, settings: Settings, email: str) -> tuple[UUID, str]:
+    """An API key of the person `email`, who made it: (id, secret)."""
+    with flow.owner_db.session() as o:
+        user = o.execute(
+            text("SELECT id FROM shifde.users WHERE primary_email = :e"), {"e": email}
+        ).scalar_one()
+    with app_session(app_db, flow.tenant, user) as s:
+        row, secret = apikeys.mint(
+            s,
+            settings,
+            tenant_id=flow.tenant,
+            name=f"key-{uuid4().hex[-12:]}",
+            principal_type="user",
+            principal_id=user,
+            scopes=KEY_SCOPES,
+            resource_scope=None,
+            expires_at=utcnow() + timedelta(days=1),
+            created_by=user,
+        )
+        made = (row.id, secret)
+        s.commit()
+    return made
+
+
+def test_a_palantir_plan_and_its_approval_record_the_callers_api_keys(
+    flow: Flow, app_db: Database, settings: Settings
+) -> None:
+    target = palantir_target(flow)
+    release = palantir_release(flow, target["id"])
+    asking, asking_secret = _key(flow, app_db, settings, flow.requester)
+    deciding, deciding_secret = _key(flow, app_db, settings, flow.approver)
+    made = request_plan(flow.client, bearer(asking_secret), flow.slug, target["id"], release.id)
+    assert plan_row(flow.owner_db, made["id"])["requested_api_key_id"] == asking
+    leased = lease_plan(flow.client, flow.token)
+    r = job_result(flow.client, flow.token, leased, status="succeeded", value=plan_value())
+    assert r.status_code == 200, r.text
+    sealed = flow.get_plan(made["id"])
+    r = flow.client.post(
+        f"{plans(flow.slug)}/{made['id']}/approve",
+        json={"plan_digest": sealed["digest"]},
+        headers=bearer(deciding_secret),
+    )
+    assert r.status_code == 200, r.text
+    with flow.owner_db.session() as o:
+        stored = o.execute(
+            text(
+                "SELECT decision, decided_api_key_id FROM shifde.delivery_approvals "
+                "WHERE plan_id = :p"
+            ),
+            {"p": made["id"]},
+        ).all()
+    assert [tuple(row) for row in stored] == [("approve", deciding)]
+    # a session names no key
+    on_session = flow.sealed(target["id"], "other-app", release_id=release.id)
+    flow.approve(on_session)
+    assert plan_row(flow.owner_db, on_session["id"])["requested_api_key_id"] is None
 
 
 # ------------------------------------------------------------------ refusals at the plan request

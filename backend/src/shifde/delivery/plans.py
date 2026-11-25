@@ -403,6 +403,7 @@ class PlanService:
         target = TargetService(self.sc).plannable(body.target_id)
         if target["status"] != "active":
             raise gateway.TargetUnavailable("the target is archived")
+        service.require_bindings(target)
         if repository.target_unresolved(self.sc.session, target["id"], tenant_id=self.sc.tenant_id):
             raise TargetUnresolved("the target has an unresolved unknown outcome")
         release, passing = self._gate(target, body.release_id)
@@ -636,8 +637,8 @@ class PlanService:
 
     def _recheck(self, row: Mapping[str, Any]) -> None:
         """At approval, under the plan row lock: the plan's release is still sealed, unchanged
-        and passed, and a Docker target's workspace is still this organization's. No packaging
-        permission is asked of the approver."""
+        and passed, the target's stored bindings still validate, and a Docker target's workspace is
+        still this organization's. No packaging permission is asked of the approver."""
         session = self.sc.session
         if row["release_id"] is None:
             raise EvaluationRequired("This release has no passing evaluation.")
@@ -653,6 +654,7 @@ class PlanService:
         target = repository.get_target(session, row["target_id"], tenant_id=self.sc.tenant_id)
         if target is None:  # pragma: no cover - `fk_delivery_plans__target`
             raise NotFound("plan not found")
+        service.require_bindings(target)
         if target["platform_kind"] == "docker" and not self._holds_workspace(target):
             raise WorkspaceNotClaimed
 
