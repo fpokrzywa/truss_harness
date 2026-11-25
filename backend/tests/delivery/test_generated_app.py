@@ -38,6 +38,7 @@ from tests.delivery.app_releases import (
     make_app_release,
 )
 from tests.delivery.conftest import make_executor
+from tests.delivery.docker import docker_target, sp8_target, workspace
 from tests.delivery.routes import (
     BOTH_CHECKS,
     Flow,
@@ -54,10 +55,9 @@ from tests.delivery.routes import (
     plan_value,
     register,
     request_plan,
-    sp8_address,
-    sp8_body,
     target_body,
 )
+from tests.delivery.snowflake import app_target as snowflake_target
 from tests.executor.support import ask_plan, credentials_file, fake_platform, make_runner
 from tests.tenancy.conftest import World
 from tests.tenancy.routes import People
@@ -222,28 +222,64 @@ def test_generator_version_unsupported_writes_nothing(flow: Flow) -> None:
 @pytest.mark.parametrize("app", DOCKER_SEALS.values(), ids=DOCKER_SEALS)
 @pytest.mark.parametrize("platform", ["databricks", "docker"])
 def test_a_docker_release_is_planned_on_no_target(flow: Flow, platform: str, app: Any) -> None:
-    """SP8-1: a `docker.compose/v1` release, however it was sealed, is refused before any write."""
+    """A `docker.compose/v1` release, however it was sealed, is refused on a Databricks target
+    before any write (SP8-1). On a Docker target only the release the Docker generator sealed is
+    planned (SP8-9)."""
     if platform == "databricks":
         target = app_target(flow)
-    else:
-        h = as_user(flow.client, flow.requester)
-        body = sp8_body("docker", flow.workspace, sp8_address("docker"))
-        target = register(flow.client, h, flow.slug, body)
-        flow.client.cookies.clear()
+        rel = _fake_release(flow, target, edit=on_docker(app))
+        _refused(flow, target, rel.id, "target_kind_mismatch")
+        return
+    target = docker_target(flow, workspace_host=workspace(flow))
     rel = _fake_release(flow, target, edit=on_docker(app))
-    _refused(flow, target, rel.id, "target_kind_mismatch")
+    if app == DOCKER_SEALS["docker"]:
+        before = _writes(flow.owner_db, flow.tenant)
+        assert _ask(flow, target, rel.id)["status"] == "requested"
+        after = tuple(n + 1 for n in before)
+        assert _writes(flow.owner_db, flow.tenant) == after
+        return
+    _refused(flow, target, rel.id, "generator_version_unsupported")
 
 
 def test_a_docker_release_past_the_kind_gate_is_not_rendered(
     flow: Flow, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """SP8-1: without the kind gate too, the render refuses a Docker release by name."""
+    """Without the kind gate too, a Docker release, however it was sealed (the one without an
+    `app` included), reaches no artifact on a Databricks target."""
     monkeypatch.setattr(plans, "check_target_kind", lambda manifest, platform_kind: None)
     target = app_target(flow)
-    for app in (a for a in DOCKER_SEALS.values() if a):
+    for app in DOCKER_SEALS.values():
         rel = _fake_release(flow, target, edit=on_docker(app))
         body = _refused(flow, target, rel.id, "generator_version_unsupported")
-        assert body["detail"] == "no app generator renders a Docker release"
+        assert body["detail"] == "no app generator renders this release for the target"
+
+
+@pytest.mark.parametrize("platform", ["databricks", "snowflake", "fabric", "palantir", "docker"])
+def test_a_pair_no_branch_names_is_refused_past_the_kind_gate(
+    flow: Flow, monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    """SP8-9: behind a patched-out kind gate, only the pairs a branch names make an artifact."""
+    monkeypatch.setattr(plans, "check_target_kind", lambda manifest, platform_kind: None)
+    target = {
+        "databricks": app_target,
+        "snowflake": snowflake_target,
+        "docker": lambda f: docker_target(f, workspace_host=workspace(f)),
+    }.get(platform, lambda f: sp8_target(f, platform))(flow)
+    for kind, named in {
+        "databricks.app/v1": "databricks",
+        "snowflake.native-app/v1": "snowflake",
+        "docker.compose/v1": "docker",
+        "fabric.solution/v1": None,
+        "databricks.job/v1": None,
+    }.items():
+        if named == platform:
+            continue
+
+        def on_kind(manifest: dict[str, Any], kind: str = kind) -> None:
+            manifest["target_kind"] = kind
+
+        rel = _fake_release(flow, target, edit=on_kind)
+        _refused(flow, target, rel.id, "generator_version_unsupported")
 
 
 # ------------------------------------------------------------------ accepted plans

@@ -95,6 +95,40 @@ def snowflake_binding_in_use(
     )
 
 
+def docker_binding_in_use(
+    session: Session, claim_id: UUID, project: str, port: int, *, tenant_id: UUID
+) -> bool:
+    """An active Docker target on the claim binds `project` or `port`."""
+    return bool(
+        session.execute(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM shifde.delivery_targets WHERE tenant_id = :t "
+                "AND claim_id = :c AND status = 'active' AND platform_kind = 'docker' "
+                "AND (bindings->>'project' = :p "
+                "OR bindings->'port' = to_jsonb(CAST(:n AS integer))))"
+            ),
+            {"c": claim_id, "t": tenant_id, "p": project, "n": port},
+        ).scalar_one()
+    )
+
+
+def holds_claim(session: Session, platform_kind: str, address_key: str, *, tenant_id: UUID) -> bool:
+    """The organization's own claim on the address has an active target of its kind. Read only:
+    no definer, no lock, no other organization's row."""
+    return bool(
+        session.execute(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM shifde.delivery_platform_claims c "
+                "JOIN shifde.delivery_targets d ON d.tenant_id = c.tenant_id "
+                "AND d.claim_id = c.id AND d.platform_kind = c.platform_kind "
+                "WHERE c.tenant_id = :t AND c.platform_kind = :k AND c.address_key = :a "
+                "AND d.status = 'active')"
+            ),
+            {"t": tenant_id, "k": platform_kind, "a": address_key},
+        ).scalar_one()
+    )
+
+
 def delete_claim(session: Session, claim_id: UUID, *, tenant_id: UUID) -> None:
     session.execute(
         text("DELETE FROM shifde.delivery_platform_claims WHERE id = :c AND tenant_id = :t"),
