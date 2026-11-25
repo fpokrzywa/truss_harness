@@ -6,10 +6,11 @@
   with one simple argument, #312, with a bound `IDENTIFIER(?)`/`IDENTIFIER(:name)` call no
   string param containing a refused function's name, #339, no `->>` flow operator, #358, no comment
   or quote mark in an unquoted stage path and no function of `SNOWFLAKE_REFUSED_FUNCTIONS`, #375,
-  no `//` directly after a `:` and no non-ASCII character in the code that is no letter or digit or
-  is an invisible letter, #398). These functions are refused by name; the function deny-list as a
-  whole is best-effort defense in depth, and the least-privileged read credential (B-1507) is the
-  real control.
+  no `//` directly after a `:` and no non-ASCII character in the code that is no letter or digit,
+  #398, or is one of the six letters that are blank by Unicode data, #425; every other non-ASCII
+  letter or digit passes, look-alikes included). These functions are refused by name; the function
+  deny-list as a whole is best-effort defense in depth, and the least-privileged read credential
+  (B-1507) is the real control.
 * `classify_status`: HTTP status -> `ErrorClass`, with fixed messages (never a body).
 * `send`: one request through an egress-guarded client, with one `Retry-After` retry on 429.
 * `run_statement`: submit, poll, cancel at the deadline.
@@ -36,6 +37,7 @@ from shifde.core.sqlrules import (
     CALL_GAP,
     FLOW_OPERATOR,
     FLOW_OPERATOR_MESSAGE,
+    SNOWFLAKE_BLANK_LETTERS,
     SNOWFLAKE_REFUSED_FUNCTIONS,
     SNOWFLAKE_REFUSED_WORDS,
     STAGE_PATH_ENDS,
@@ -76,9 +78,9 @@ _DATABRICKS_WORD = re.compile(r"[A-Za-z0-9_]+")
 _SNOWFLAKE_REFUSED_WORDS = SNOWFLAKE_REFUSED_WORDS | {"call"}
 # Snowflake reads `:1` as a positional bind reference; the runtime binds only `?` in order (#319)
 _SNOWFLAKE_POSITIONAL_BIND = re.compile(r":[0-9]")
-# Snowflake dialect: a non-ASCII character that is no letter or digit (no `\w`), or one of the four
-# invisible letters that are `\w` (with one, `get_ddl` is another word), #398
-_SNOWFLAKE_REFUSED_CHARACTER = re.compile(r"[^\w\x00-\x7f]|[\u115f\u1160\u3164\uffa0]")
+# Snowflake dialect: a non-ASCII character that is no letter or digit (no `\w`, #398), or one of the
+# six letters that are `\w` and blank by Unicode data (#425); any other non-ASCII `\w` passes
+_SNOWFLAKE_REFUSED_CHARACTER = re.compile(rf"[^\w\x00-\x7f]|[{SNOWFLAKE_BLANK_LETTERS}]")
 # Snowflake dialect tokens of `_code_of`'s `code` (comments already blanked): a `'...'` literal
 # (backslash escapes), a `"..."` identifier, a `$$...$$` string, a word, whitespace, one character
 _SNOWFLAKE_TOKEN = re.compile(r"""'(?:\\.|[^'\\])*'|"[^"]*"|\$\$.*?\$\$|[\w$]+|\s+|.""", re.S)
@@ -204,8 +206,9 @@ def check_read_only(sql: str, *, dialect: Dialect = "databricks", params: object
     a bound `IDENTIFIER(?)` or `IDENTIFIER(:name)` call, any string in `params` (list or tuple
     items, dict values) containing `system$` or one of those names in any case is refused too
     (#339); the Databricks dialect ignores `params`. Last, the Snowflake dialect refuses a non-ASCII
-    character in the code that is no letter or digit, or that is an invisible letter (#398); visible
-    letters pass, look-alikes included. The function deny-list as a whole is best-effort; the
+    character in the code that is no letter or digit (#398), or that is one of the six letters that
+    are blank by Unicode data (`SNOWFLAKE_BLANK_LETTERS`, #425); every other non-ASCII letter or
+    digit passes, look-alikes included. The function deny-list as a whole is best-effort; the
     least-privileged read credential (B-1507) is the limiting control."""
     code, semicolons, bare, identifiers = _code_of(sql, dialect)
     if dialect == "snowflake" and FLOW_OPERATOR in bare:

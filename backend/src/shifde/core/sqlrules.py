@@ -6,9 +6,9 @@ It lives in `core` (it imports nothing from `shifde`) so every layer can share i
 `statement_rules` at tool publish on a `connection.sql` template converted to the `:name` form,
 with the dialect of the tool's connection, and the runtime read checks of `adapters` refuse any
 word of `WRITE_KEYWORDS` in a `read` invoke (the Snowflake one also shares `FLOW_OPERATOR`,
-`SYSTEM_PREFIX`, `SNOWFLAKE_REFUSED_WORDS`, `SNOWFLAKE_REFUSED_FUNCTIONS` and the stage path
-constants). Every function takes any string and never raises; every issue is an error (callers add
-severity and path).
+`SYSTEM_PREFIX`, `SNOWFLAKE_REFUSED_WORDS`, `SNOWFLAKE_REFUSED_FUNCTIONS`, the stage path
+constants and `SNOWFLAKE_BLANK_LETTERS`). Every function takes any string and never raises; every
+issue is an error (callers add severity and path).
 
 `dialect="snowflake"` reads text as `adapters/dataplatforms/sqlapi._code_of` does for Snowflake:
 `'...'` takes backslash escapes, `$$...$$` is an opaque string, `"..."` is an identifier, `//` is
@@ -26,11 +26,13 @@ operator in code (`sql_flow_operator`), a word or a whole `"..."` identifier sta
 `IDENTIFIER(...)` whose argument is not one plain literal or name (`sql_dynamic_name`). Since #375
 both also refuse a comment or quote mark in an unquoted stage path (`sql_stage_path`; how Snowflake
 reads one is unconfirmed; a character directly after a backslash does not end the path, #398) and
-the functions of `SNOWFLAKE_REFUSED_FUNCTIONS` by name (`sql_refused_function`). The run-time check
-alone refuses, since #398, a `//` directly after a `:` with its own message (here it is a
-`sql_comment`) and a non-ASCII character in code that is no letter or digit or is an invisible
-letter. The function deny-list as a whole is best effort; the least-privileged credential (B-1507)
-is the limiting control. The statement rules are stricter in two places: a bound
+the functions of `SNOWFLAKE_REFUSED_FUNCTIONS` by name (`sql_refused_function`). Since #425 both
+refuse the six letters of `SNOWFLAKE_BLANK_LETTERS` in code (`sql_syntax`), which are blank by
+Unicode data; every other non-ASCII letter or digit passes both, look-alikes included. The run-time
+check alone refuses, since #398, a `//` directly after a `:` with its own message (here it is a
+`sql_comment`) and any other non-ASCII character in code that is no letter or digit. The function
+deny-list as a whole is best effort; the least-privileged credential (B-1507) is the limiting
+control. The statement rules are stricter in two places: a bound
 `IDENTIFIER(:name)` is refused (no value is known yet) and `TABLE(...)` keeps the rule of
 `IDENTIFIER(...)`. A word directly after a single `:` is a parameter name, never one of these
 words; in a published template a raw `:call` is no bound parameter, and `raw_word_rules` reads it
@@ -74,6 +76,9 @@ SNOWFLAKE_REFUSED_FUNCTIONS = frozenset(
 STAGE_PATH_ENDS = " \t\r\n"
 STAGE_PATH_MARKS = ("--", "//", "/*", "'", '"', "$$")
 STAGE_PATH_MESSAGE = "a comment or quote mark in an unquoted stage path is not allowed"
+# the letters `\w` matches that are blank by Unicode data, refused in code (#398, #425): with one,
+# `get_ddl` is another word
+SNOWFLAKE_BLANK_LETTERS = "\u115f\u1160\u3164\uffa0\U00013441\U00013442"
 PUNCTUATION = frozenset(".,();")
 Dialect = Literal["databricks", "snowflake"]
 # the content of a Snowflake quoted identifier that names exactly what the unquoted name does
@@ -82,6 +87,7 @@ _SNOWFLAKE_TABLE_PART = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
 # a word as the runtime check reads it: a maximal run of letters, digits, `_` and `$`
 _SNOWFLAKE_WORD = re.compile(r"[\w$]+")
 _SNOWFLAKE_WORD_CHAR = re.compile(r"[\w$]")
+_SNOWFLAKE_BLANK_LETTER = re.compile(f"[{SNOWFLAKE_BLANK_LETTERS}]")
 # what a word and its `(` may have between them and still be a call: no visible ASCII character
 # (whitespace, or a character the platform may skip and `\s` does not match)
 CALL_GAP = re.compile(r"[^!-~]*")
@@ -445,6 +451,17 @@ def _stage_path_mark(sql: str, tokens: list[Token]) -> bool:
     return False
 
 
+def _blank_letter(sql: str, tokens: list[Token]) -> bool:
+    """Whether a letter of `SNOWFLAKE_BLANK_LETTERS` stands in the code: it is never part of a
+    name token, so it is in the text between tokens. One pass."""
+    end = 0
+    for t in tokens:
+        if _SNOWFLAKE_BLANK_LETTER.search(sql, end, t.start):
+            return True
+        end = t.end
+    return _SNOWFLAKE_BLANK_LETTER.search(sql, end) is not None
+
+
 def _snowflake_rules(sql: str, tokens: list[Token]) -> list[SqlIssue]:
     issues: list[SqlIssue] = []
     if any(t == Token("syntax", "`") for t in tokens):
@@ -484,6 +501,10 @@ def _snowflake_rules(sql: str, tokens: list[Token]) -> list[SqlIssue]:
         issues.append(_REFUSED_FUNCTION)
     if _stage_path_mark(sql, tokens):
         issues.append(SqlIssue("sql_stage_path", STAGE_PATH_MESSAGE))
+    if _blank_letter(sql, tokens):
+        issues.append(
+            SqlIssue("sql_syntax", "invisible letters are not allowed outside quoted text")
+        )
     return issues
 
 
