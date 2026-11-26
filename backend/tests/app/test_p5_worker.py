@@ -134,24 +134,40 @@ def test_killed_worker_midway_through_a_read_tool_is_recovered_and_the_read_is_r
     server = HangServer()
     try:
         h, stack, _ = build(client, world, owner_session, server, "read", "GET")
-        run = start_run(client, h, stack.agent["id"], "go")
-        w1 = SubprocessWorker(settings, "w1")
+        # both workers boot before the run, so no process start is inside the run's deadline
+        w1 = SubprocessWorker(settings, "w1", owner=owner_session)
         try:
-            assert server.first_started.wait(60), "the tool call never started"
-            assert client.get(f"{A}/runs/{run['id']}", headers=h).json()["status"] == "running"
-            w1.kill()
+            w2 = SubprocessWorker(settings, "w2", owner=owner_session)
+            try:
+                w1.wait_ready(owner_session)
+                w2.wait_ready(owner_session)
+                run = start_run(client, h, stack.agent["id"], "go")
+                assert server.first_started.wait(60), "the tool call never started"
+                assert client.get(f"{A}/runs/{run['id']}", headers=h).json()["status"] == "running"
+                holder = owner_session.execute(
+                    text(
+                        "SELECT lease_owner FROM shifde.jobs "
+                        "WHERE run_id = :run AND status = 'leased'"
+                    ),
+                    {"run": run["id"]},
+                ).scalar_one()
+                owner_session.commit()
+                (w1 if holder == w1.worker_id else w2).kill()  # the other one recovers the run
+                done = wait_run(client, h, run["id"], timeout=90)
+            finally:
+                w2.stop()
         finally:
-            w1.kill() if w1.proc.poll() is None else None
-        w2 = SubprocessWorker(settings, "w2")
-        try:
-            done = wait_run(client, h, run["id"], timeout=90)
-        finally:
-            w2.stop()
-        assert done["status"] == "completed", done
-        assert done["attempt_count"] >= 2
+            w1.stop()
         types = [e["type"] for e in events(client, h, run["id"])]
-        assert "lease_lost" in types and "recovered" in types
         tool_steps = [s for s in steps(client, h, run["id"]) if s["kind"] == "tool_call"]
+        keys = ("status", "error_class", "error_message", "attempt_count")
+        times = ("created_at", "started_at", "deadline_at", "finished_at")
+        assert done["status"] == "completed", (
+            f"{ {k: done[k] for k in keys + times} } events={types} "
+            f"tool_steps={[(s['attempt'], s['status'], s['error_class']) for s in tool_steps]}"
+        )
+        assert done["attempt_count"] >= 2
+        assert "lease_lost" in types and "recovered" in types
         assert [(s["attempt"], s["status"]) for s in tool_steps] == [
             (1, "failed"),
             (2, "succeeded"),
