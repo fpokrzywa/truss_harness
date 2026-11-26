@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { bodyOf, list, stubApi } from '@/test/security';
+import { ALL_PERMS, bodyOf, CATALOG, list, stubApi } from '@/test/security';
 import { jsonResponse, renderWithClient } from '@/test/utils';
 import { ApiKeysPanel } from './ApiKeysPanel';
 
@@ -64,6 +64,38 @@ describe('API key creation', () => {
       resource_scope: { workspace_ids: ['ws-1'] },
       expires_in_days: 90,
     });
+  });
+
+  it('offers mcp:access to a user who holds it and sends it in the scopes', async () => {
+    const fetchMock = stubApi(
+      {
+        'GET /api/v1/orgs/acme/api-keys': () => list([]),
+        'GET /api/v1/orgs/acme/service-accounts': () => list([SA]),
+        'GET /api/v1/orgs/acme/users': () => list([]),
+        'GET /api/v1/permissions': () =>
+          list([
+            ...CATALOG,
+            { key: 'mcp:access', resource_type: 'mcp', action: 'access', is_privileged: false },
+          ]),
+        'POST /api/v1/orgs/acme/api-keys': () =>
+          jsonResponse(
+            { api_key: { ...META, scopes: ['mcp:access'] }, secret: SECRET },
+            { status: 201 },
+          ),
+      },
+      [...ALL_PERMS, 'mcp:access'],
+    );
+    renderWithClient(<ApiKeysPanel org="acme" />);
+    const dialog = await openCreate();
+    await userEvent.type(within(dialog).getByLabelText('Name'), 'mcp-key');
+    await waitFor(() =>
+      expect(within(dialog).getByRole('option', { name: 'CI bot' })).toBeInTheDocument(),
+    );
+    await userEvent.selectOptions(within(dialog).getByLabelText('Principal'), 'sa-1');
+    await userEvent.click(await within(dialog).findByRole('checkbox', { name: /mcp:access/ }));
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Create key' }));
+    await screen.findByText(SECRET);
+    expect(bodyOf(fetchMock, 'POST /api/v1/orgs/acme/api-keys').scopes).toEqual(['mcp:access']);
   });
 
   it('clears the secret when the dialog closes and never brings it back', async () => {

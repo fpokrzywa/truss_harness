@@ -83,7 +83,7 @@ describe('McpSettingsView', () => {
     expect(putBodies(fetchMock)).toEqual([]);
   });
 
-  it('lists the nine tools, the default set checked, and saves an explicit list', async () => {
+  it('lists the twelve tools, the default set checked, and saves an explicit list', async () => {
     const fetchMock = stubApi(
       {
         [SETTINGS]: () => jsonResponse(OFF),
@@ -95,12 +95,32 @@ describe('McpSettingsView', () => {
     renderWithClient(<McpSettingsView />);
     const tools = await screen.findByRole('group', { name: 'Allowed tools' });
     const boxes = within(tools).getAllByRole('checkbox');
-    expect(boxes).toHaveLength(9);
+    expect(boxes).toHaveLength(12);
+    expect(boxes.map((b) => b.closest('label')!.textContent)).toEqual([
+      'whoami',
+      'list_projects',
+      'list_agents',
+      'start_run',
+      'get_run',
+      'list_releases',
+      'get_release',
+      'list_deployments',
+      'get_deployment',
+      'board_get',
+      'assist_ask',
+      'assist_get',
+    ]);
     for (const tool of MCP_TOOLS) {
       const box = within(tools).getByRole('checkbox', { name: tool });
-      if (tool === 'start_run') expect(box).not.toBeChecked();
+      if (tool === 'start_run' || tool === 'assist_ask') expect(box).not.toBeChecked();
       else expect(box).toBeChecked();
     }
+    expect(
+      within(tools).getByText('The default set: every tool except start_run and assist_ask.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('Caps the cost of one start_run or assist_ask; at most 25.'),
+    ).toBeInTheDocument();
     await waitFor(() =>
       expect(within(tools).getByRole('checkbox', { name: 'whoami' })).toBeEnabled(),
     );
@@ -111,8 +131,9 @@ describe('McpSettingsView', () => {
     const sent = putBodies(fetchMock)[0];
     expect(sent.enabled).toBe(false);
     expect([...sent.allowed_tools].sort()).toEqual(
-      MCP_TOOLS.filter((t) => t !== 'get_deployment').sort(),
+      MCP_TOOLS.filter((t) => t !== 'get_deployment' && t !== 'assist_ask').sort(),
     );
+    expect(sent.allowed_tools).toEqual(expect.arrayContaining(['board_get', 'assist_get']));
   });
 
   it('is read-only without mcp:settings:write', async () => {

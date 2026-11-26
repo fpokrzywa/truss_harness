@@ -14,10 +14,15 @@ export const MCP_TOOLS = [
   'get_release',
   'list_deployments',
   'get_deployment',
+  'board_get',
+  'assist_ask',
+  'assist_get',
 ] as const;
 
-/** `allowed_tools: null` means this set: every v1 tool except the one that spends. */
-export const MCP_DEFAULT_TOOLS: readonly string[] = MCP_TOOLS.filter((t) => t !== 'start_run');
+/** `allowed_tools: null` means this set: every v1 tool except the two that spend. */
+export const MCP_DEFAULT_TOOLS: readonly string[] = MCP_TOOLS.filter(
+  (t) => t !== 'start_run' && t !== 'assist_ask',
+);
 
 export interface McpSettings {
   enabled: boolean;

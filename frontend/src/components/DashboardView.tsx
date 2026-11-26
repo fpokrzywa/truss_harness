@@ -1,11 +1,15 @@
 'use client';
 
+import { useQuery } from '@tanstack/react-query';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { useDashboard, usePermissions } from '@/lib/hooks';
-import { connectionsHref, projHref } from '@/lib/scope';
+import { endpoints } from '@/lib/api/endpoints';
+import { connectionsHref, projHref, settingsHref } from '@/lib/scope';
 import type { Dashboard } from '@/lib/api/types';
+import { ErrorMessage } from './ErrorMessage';
 import { QueryError } from './QueryError';
+import { formatDate } from './admin/ui';
 
 const COUNT_LABELS: [keyof Dashboard['counts'], string][] = [
   ['workspaces', 'Workspaces'],
@@ -62,6 +66,56 @@ export function DashboardContent({ data, heading }: { data: Dashboard; heading: 
   );
 }
 
+/** The organization's MCP access at a glance; the switch stays on the settings screen. */
+function McpAccessCard({ org }: { org: string }) {
+  const settings = useQuery({
+    queryKey: ['mcp-settings', org],
+    queryFn: () => endpoints.getMcpSettings(org),
+  });
+  return (
+    <section aria-labelledby="mcp-title" className="card mt-6 space-y-2">
+      <h2 id="mcp-title" className="text-base font-semibold text-slate-900">
+        MCP access
+      </h2>
+      {settings.isPending && (
+        <p role="status" className="text-sm text-slate-600">
+          Loading MCP settings...
+        </p>
+      )}
+      {settings.isError && (
+        <ErrorMessage error={settings.error} title="Could not load the MCP settings" />
+      )}
+      {settings.isSuccess && (
+        <dl className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-[10rem_1fr]">
+          <dt className="text-slate-600">Status</dt>
+          <dd>{settings.data.enabled ? 'On' : 'Off'}</dd>
+          {settings.data.updated_at && (
+            <>
+              <dt className="text-slate-600">Last changed</dt>
+              <dd>{formatDate(settings.data.updated_at)}</dd>
+            </>
+          )}
+          {settings.data.updated_by && (
+            <>
+              <dt className="text-slate-600">Changed by</dt>
+              <dd className="font-mono text-xs">{settings.data.updated_by}</dd>
+            </>
+          )}
+          <dt className="text-slate-600">Endpoint</dt>
+          <dd className="font-mono text-xs break-all">
+            {settings.data.endpoint_url ?? 'Not configured on this installation'}
+          </dd>
+        </dl>
+      )}
+      <p className="text-sm">
+        <Link className="text-blue-800 underline" href={settingsHref(org, 'mcp')}>
+          MCP settings
+        </Link>
+      </p>
+    </section>
+  );
+}
+
 /** Scope dashboard for /o/[org], /o/[org]/w/[ws], /o/[org]/w/[ws]/p/[proj] (FR-UI-002). */
 export function DashboardView() {
   const params = useParams<{ org: string; ws?: string; proj?: string }>();
@@ -75,6 +129,7 @@ export function DashboardView() {
     !!ws &&
     !!proj &&
     ['connection:read', 'model:read', 'delivery:target:read'].some((p) => permissions.data?.has(p));
+  const canMcp = !ws && !!permissions.data?.has('mcp:settings:read');
 
   if (query.isPending) {
     return (
@@ -102,6 +157,7 @@ export function DashboardView() {
         </p>
       )}
       <DashboardContent data={query.data} heading={heading} />
+      {canMcp && <McpAccessCard org={org} />}
     </>
   );
 }
