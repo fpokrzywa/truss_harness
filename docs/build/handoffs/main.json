@@ -1,8 +1,8 @@
 {
-  "session_id": "5b3fc0d2-71d8-4458-855c-bd0d77a7a40a",
-  "head_sha": "e45de97aef9f7fd6e2edc648a558e06d6f21199d",
+  "session_id": "f5c5c04a-99dc-4b36-ad3b-8ae636e4e3f2",
+  "head_sha": "4f8982bcc2582f22bef60e8afb989f4f194cbb19",
   "branch": "main",
-  "unit_in_progress": "208-docker-executor-short-version (review round 1, synced d0b6255)",
-  "next_step": "Per docs/build/HANDOFF.md: message seth-supervisor-14, spawn 208's code, security and isolation reviews on d0b6255, then approver",
-  "written_at": "2026-11-26T01:41:24Z"
+  "unit_in_progress": "main",
+  "next_step": "Per docs/build/HANDOFF.md: message seth-supervisor-14, run batch 16 gates on b841657 and merge, then the #397 migration d5f6d19 for S-075, then spawn builder 206",
+  "written_at": "2026-11-26T03:16:24Z"
 }
