@@ -28,6 +28,8 @@ from shifde.adapters.native.docker.source import PORT_MAX, PORT_MIN, PROJECT
 # Before Engine 28.0 a container with NET_RAW on the bridge can reach ports another project
 # publishes on 127.0.0.1 (`route_localnet`).
 MIN_ENGINE = (28, 0)
+# Seconds for each version check; the last one before a write runs after its `authorize()`.
+VERSION_TIMEOUT = 30
 HEALTH_PATHS = frozenset({"/health", "/health?deep=1"})
 MAX_BODY = 256 * 1024
 STAGING_PREFIX = "shifde-docker-"
@@ -172,7 +174,9 @@ class DockerCliRuntime:
         env["DOCKER_CONFIG"] = str(config)
         return env
 
-    def _run(self, args: list[str], *, cwd: Path | None = None) -> bytes:
+    def _run(
+        self, args: list[str], *, cwd: Path | None = None, timeout: float | None = None
+    ) -> bytes:
         for arg in args:
             if arg in FORBIDDEN_FLAGS or arg.split("=", 1)[0] in FORBIDDEN_FLAGS:
                 raise DockerRefused("forbidden_flag")
@@ -192,7 +196,7 @@ class DockerCliRuntime:
                     cwd=cwd,
                     env=env,
                     capture_output=True,
-                    timeout=self.timeout,
+                    timeout=self.timeout if timeout is None else timeout,
                     check=False,
                 )
             except subprocess.TimeoutExpired:
@@ -203,16 +207,28 @@ class DockerCliRuntime:
         return process.stdout
 
     def check_version(self) -> None:
-        client = self._run(["version", "--format", "{{.Client.Version}}"]).decode().strip()
+        """The client, engine and compose versions, each call cut off after `VERSION_TIMEOUT`
+        seconds (or the runtime's timeout when shorter): a hung version check before a write ends
+        in `TimeoutError` within 3 x 30 s of its `authorize()`, never 3 x 900 s."""
+        timeout = min(self.timeout, VERSION_TIMEOUT)
+        client = (
+            self._run(["version", "--format", "{{.Client.Version}}"], timeout=timeout)
+            .decode()
+            .strip()
+        )
         match = re.match(r"(\d+)\.", client)
         if not match or int(match.group(1)) < 24:
             raise ValueError("Docker 24 or later is required")
-        server = self._run(["version", "--format", "{{.Server.Version}}"]).decode().strip()
+        server = (
+            self._run(["version", "--format", "{{.Server.Version}}"], timeout=timeout)
+            .decode()
+            .strip()
+        )
         match = re.match(r"(\d+)\.(\d+)", server)
         # An unreadable version is refused too.
         if not match or (int(match.group(1)), int(match.group(2))) < MIN_ENGINE:
             raise DockerRefused("docker_engine_too_old")
-        compose = self._run(["compose", "version", "--short"]).decode().strip()
+        compose = self._run(["compose", "version", "--short"], timeout=timeout).decode().strip()
         match = re.match(r"v?(\d+)\.", compose)
         # Compose v2's successors kept its CLI and numbered on from 5; only v1 is refused.
         if not match or int(match.group(1)) < 2:
