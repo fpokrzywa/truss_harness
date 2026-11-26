@@ -380,3 +380,47 @@ def test_the_downgrade_drops_only_what_it_added_and_the_upgrade_restores_it(
                 assert _catalog(c) == UPGRADED
         finally:
             engine.dispose()
+
+
+def test_no_definer_writes_the_table_and_the_app_role_is_not_its_owner(owner_db: Database) -> None:
+    """The guard's owner exemption is safe only while no SECURITY DEFINER function (which runs as
+    the owner) mentions `delivery_targets` and `shifde_app` is no member of the table's owner."""
+    with owner_db.session() as o:
+        definers = o.execute(
+            text(
+                "SELECT p.proname FROM pg_catalog.pg_proc p "
+                "JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace "
+                "WHERE n.nspname = 'shifde' AND p.prosecdef "
+                "AND p.prosrc ILIKE '%delivery_targets%' ORDER BY p.proname"
+            )
+        ).all()
+        assert definers == []
+        member = o.execute(
+            text(
+                "SELECT pg_catalog.pg_has_role('shifde_app', c.relowner, 'MEMBER'), "
+                "pg_catalog.pg_has_role('shifde_app', c.relowner, 'USAGE') "
+                "FROM pg_catalog.pg_class c WHERE c.oid = 'shifde.delivery_targets'::regclass"
+            )
+        ).one()
+        assert tuple(member) == (False, False)
+
+
+def test_the_triggers_on_the_table_are_pinned(owner_db: Database) -> None:
+    """A later BEFORE UPDATE trigger that sorts after the guard could rewrite NEW.bindings after it
+    has checked them; adding any trigger to the table must revisit the guard."""
+    with owner_db.session() as o:
+        triggers = o.execute(
+            text(
+                "SELECT t.tgname, pg_catalog.pg_get_triggerdef(t.oid) FROM pg_catalog.pg_trigger t "
+                "WHERE t.tgrelid = 'shifde.delivery_targets'::regclass AND NOT t.tgisinternal "
+                "ORDER BY t.tgname"
+            )
+        ).all()
+    assert [tuple(r) for r in triggers] == [
+        ("trg_delivery_targets_bindings_guard", UPGRADED["trigger"][0]),
+        (
+            "trg_delivery_targets_updated_at",
+            "CREATE TRIGGER trg_delivery_targets_updated_at BEFORE UPDATE ON "
+            "shifde.delivery_targets FOR EACH ROW EXECUTE FUNCTION shifde.set_updated_at()",
+        ),
+    ]
