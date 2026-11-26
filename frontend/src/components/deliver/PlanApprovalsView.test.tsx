@@ -81,6 +81,34 @@ describe('PlanApprovalsView decisions', () => {
     expect(within(dialog).getByText('Could not approve the plan')).toBeInTheDocument();
   });
 
+  it.each([
+    [
+      'workspace_not_claimed',
+      "The Docker target's workspace is not a target of this organization.",
+      "The Docker target's Databricks workspace is not registered as a Databricks target of this organization. Register that workspace as a target first, then try again.",
+    ],
+    [
+      'target_bindings_invalid',
+      "The target's stored bindings are invalid.",
+      "This target's stored settings are no longer valid. Archive the target, register it again and request the plan on the new one.",
+    ],
+  ])(
+    'shows an approval refused with %s with its detail, code and hint',
+    async (code, detail, hint) => {
+      stubDelivery({
+        [`POST ${D}/plans/p-1/approve`]: () => problemResponse(409, code, { detail }),
+      });
+      renderWithClient(<PlanApprovalsView />);
+      await userEvent.click(await screen.findByRole('button', { name: /Approve/ }));
+      const dialog = screen.getByRole('dialog');
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Approve plan' }));
+      const alert = (await within(dialog).findByText(detail)).closest('[role="alert"]');
+      expect(alert).toHaveTextContent('Could not approve the plan');
+      expect(within(dialog).getByText(code)).toBeInTheDocument();
+      expect(within(dialog).getByText(hint)).toBeInTheDocument();
+    },
+  );
+
   it('disables both buttons with a visible reason on a plan the user requested', async () => {
     stubDelivery({ [`GET ${D}/plans`]: () => list([{ ...PLAN, requested_by: 'u-me' }]) });
     renderWithClient(<PlanApprovalsView />);

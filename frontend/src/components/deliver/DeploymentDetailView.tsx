@@ -26,6 +26,8 @@ import { AskSethButton } from '../assist/AskSethButton';
 import { MaturityBadge } from '../integrate/Maturity';
 import { useOrgParam } from '../security/useOrg';
 import { DeploymentStatusBadge } from './DeploymentStatusBadge';
+import { isUnusable } from './platformKinds';
+import { refusalHint } from './refusalHints';
 import { targetName } from './targetName';
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -47,6 +49,9 @@ function verificationChecks(d: DeploymentDetail): VerificationCheck[] | null {
 }
 
 const json = (v: unknown) => JSON.stringify(v, null, 2);
+
+/** The reason of a deployment whose apply found the target changed since the plan. */
+const PLAN_STALE_REASON = 'apply refused: plan_stale';
 
 /** One deployment: status, journal, receipt and verification. Server text is plain React text. */
 export function DeploymentDetailView({ id }: { id: string }) {
@@ -72,6 +77,7 @@ function DeploymentBody({ org, deployment: d }: { org: string; deployment: Deplo
   const canResolve = can('delivery:deployment:resolve');
   const checks = verificationChecks(d);
   const target = targets.data?.items.find((t) => t.id === d.target_id);
+  const unusable = target !== undefined && isUnusable(target.bindings);
 
   async function confirmCancel() {
     const res = await cancel.run(() => endpoints.cancelDeployment(org, d.id));
@@ -112,16 +118,24 @@ function DeploymentBody({ org, deployment: d }: { org: string; deployment: Deplo
             The platform write may or may not have taken effect. An operator must reconcile this
             deployment against the platform or mark it failed.
           </p>
+          {unusable && (
+            <p>
+              This target&apos;s stored settings are no longer valid, so this deployment cannot be
+              reconciled. Check the platform, then mark the deployment as failed.
+            </p>
+          )}
           {canResolve && (
             <div className="flex gap-2">
-              <button
-                type="button"
-                className="btn"
-                disabled={reconcile.busy}
-                onClick={() => void runReconcile()}
-              >
-                {reconcile.busy ? 'Working...' : 'Reconcile'}
-              </button>
+              {!unusable && (
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={reconcile.busy}
+                  onClick={() => void runReconcile()}
+                >
+                  {reconcile.busy ? 'Working...' : 'Reconcile'}
+                </button>
+              )}
               <button
                 type="button"
                 className="btn btn-danger"
@@ -143,7 +157,12 @@ function DeploymentBody({ org, deployment: d }: { org: string; deployment: Deplo
             {onFakePlatform(d) && <Badge tone="warn">Fake platform</Badge>}
           </dd>
           <dt className="text-slate-600">Status reason</dt>
-          <dd>{d.status_reason ?? '-'}</dd>
+          <dd>
+            {d.status_reason ?? '-'}
+            {d.status_reason === PLAN_STALE_REASON && (
+              <p className="mt-1">{refusalHint('plan_stale')}</p>
+            )}
+          </dd>
           <dt className="text-slate-600">Kind</dt>
           <dd className="flex flex-wrap items-center gap-2">
             {target ? (
@@ -247,7 +266,7 @@ function DeploymentBody({ org, deployment: d }: { org: string; deployment: Deplo
                         c.status === 'passed' ? 'good' : c.status === 'failed' ? 'bad' : 'neutral'
                       }
                     >
-                      {String(c.status)}
+                      {c.status === 'not_run' ? 'Not run' : String(c.status)}
                     </Badge>
                   </td>
                   <td className="td">{c.required === false ? 'No' : 'Yes'}</td>

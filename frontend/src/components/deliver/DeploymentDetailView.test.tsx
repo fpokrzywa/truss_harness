@@ -7,12 +7,15 @@ import {
   DELIVERY_PERMS,
   DEPLOYMENT,
   DEPLOYMENT_DETAIL,
+  deploymentWithSteps,
   PLAN,
   SNOWFLAKE_DEPLOYMENT_DETAIL,
   SNOWFLAKE_STEPS,
   SNOWFLAKE_TARGET,
   stubDelivery,
   TARGET,
+  TARGETS_OF_EACH_KIND,
+  unusable,
 } from '@/test/delivery';
 import { ORG, RELEASE } from '@/test/releases';
 import { bodyOf, list } from '@/test/security';
@@ -99,6 +102,41 @@ describe('DeploymentDetailView unknown outcome', () => {
     expect(bodyOf(fetchMock, `POST ${D}/deployments/dep-1/mark-failed`)).toEqual({
       note: 'App absent on the platform',
     });
+  });
+
+  it('offers only Mark as failed, with the reason, on a target whose settings are unusable', async () => {
+    const fetchMock = stubDelivery({
+      ...UNKNOWN,
+      [`GET ${D}/targets`]: () => list([unusable(TARGET)]),
+      [`POST ${D}/deployments/dep-1/mark-failed`]: () =>
+        jsonResponse({ ...DEPLOYMENT, status: 'resolved_failed' }),
+    });
+    renderWithClient(<DeploymentDetailView id="dep-1" />);
+    const alert = await screen.findByRole('alert');
+    expect(
+      await within(alert).findByText(
+        "This target's stored settings are no longer valid, so this deployment cannot be reconciled. Check the platform, then mark the deployment as failed.",
+      ),
+    ).toBeInTheDocument();
+    expect(within(alert).queryByRole('button', { name: 'Reconcile' })).not.toBeInTheDocument();
+    await userEvent.click(within(alert).getByRole('button', { name: 'Mark as failed' }));
+    const dialog = screen.getByRole('dialog');
+    await userEvent.type(within(dialog).getByLabelText(/Note/), 'App absent');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Mark as failed' }));
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, `POST ${D}/deployments/dep-1/mark-failed`)).toEqual({
+        note: 'App absent',
+      }),
+    );
+  });
+
+  it('keeps Reconcile and says nothing of unusable settings on a usable target', async () => {
+    stubDelivery({ ...UNKNOWN, [`GET ${D}/targets`]: () => list([TARGET]) });
+    renderWithClient(<DeploymentDetailView id="dep-1" />);
+    const alert = await screen.findByRole('alert');
+    expect(await within(alert).findByRole('button', { name: 'Reconcile' })).toBeInTheDocument();
+    expect(within(await loaded()).getByText(/^Databricks/)).toBeInTheDocument();
+    expect(screen.queryByText(/no longer valid/)).not.toBeInTheDocument();
   });
 
   it('has no Reconcile, Mark as failed or Cancel without delivery:deployment:resolve', async () => {
@@ -223,6 +261,57 @@ describe('DeploymentDetailView content', () => {
     expect(screen.getByText('App absent on the platform')).toBeInTheDocument();
   });
 
+  it('shows a not_run check as a neutral Not run, and the other states as before', async () => {
+    stubDelivery(
+      detail({
+        verification: {
+          checks: [
+            { name: 'app_running', status: 'passed', required: true, evidence: 'ok' },
+            { name: 'content-check', status: 'not_run', required: false, evidence: 'none' },
+            { name: 'frontend-asset', status: 'failed', required: true, evidence: 'differs' },
+            { name: 'extra', status: 'skipped', required: false, evidence: 'n/a' },
+            { name: 'later', status: 'pending_review', required: false, evidence: '' },
+          ],
+        },
+      }),
+    );
+    renderWithClient(<DeploymentDetailView id="dep-1" />);
+    expect(within(await loaded()).getByText('verified')).toHaveClass('badge');
+    const checks = screen.getByRole('table', { name: 'Verification checks' });
+    const cells = (name: string) =>
+      within(within(checks).getByText(name).closest('tr')!).getAllByRole('cell');
+    const notRun = cells('content-check');
+    expect(within(notRun[1]!).getByText('Not run')).toHaveClass('badge');
+    expect(within(notRun[1]!).getByText('Not run').className).toBe(
+      within(cells('extra')[1]!).getByText('skipped').className,
+    );
+    expect(notRun[2]).toHaveTextContent(/^No$/);
+    expect(within(checks).queryByText('not_run')).not.toBeInTheDocument();
+    expect(within(cells('app_running')[1]!).getByText('passed').className).toMatch(/green/);
+    expect(within(cells('frontend-asset')[1]!).getByText('failed').className).toMatch(/red/);
+    expect(within(cells('extra')[1]!).getByText('skipped').className).toMatch(/slate/);
+    expect(within(cells('later')[1]!).getByText('pending_review').className).toMatch(/slate/);
+  });
+
+  it('shows the plan_stale hint under an apply refused for a stale plan', async () => {
+    stubDelivery(detail({ status: 'failed', status_reason: 'apply refused: plan_stale' }));
+    renderWithClient(<DeploymentDetailView id="dep-1" />);
+    const reason = await screen.findByText('apply refused: plan_stale');
+    expect(reason.closest('dd')).toHaveTextContent(
+      'apply refused: plan_staleThe target changed after this plan was made. Request a new plan.',
+    );
+  });
+
+  it.each(['apply refused: plan_stale (retry)', 'plan job failed: plan_stale'])(
+    'shows no hint for the reason %j',
+    async (status_reason) => {
+      stubDelivery(detail({ status: 'failed', status_reason }));
+      renderWithClient(<DeploymentDetailView id="dep-1" />);
+      expect(await screen.findByText(status_reason)).toBeInTheDocument();
+      expect(screen.queryByText(/Request a new plan/)).not.toBeInTheDocument();
+    },
+  );
+
   it('renders markup in server values as literal text', async () => {
     const evil = '<img src=x onerror=alert(1)>';
     stubDelivery(detail({ status_reason: evil, receipt: { note: evil } }));
@@ -278,6 +367,30 @@ describe('DeploymentDetailView platform', () => {
       ]),
     );
     expect(SNOWFLAKE_STEPS).toHaveLength(8);
+  });
+
+  it.each([
+    ['Microsoft Fabric', 't-fab', ['lakehouse', 'notebook', 'fabric-finalize']],
+    ['Palantir Foundry', 't-pal', ['installation', 'palantir-finalize']],
+    ['Docker', 't-dock', ['image-build', 'image-verify', 'compose-up', 'container-ready']],
+  ])('shows %s, Experimental and the journal in server order', async (label, target_id, steps) => {
+    stubDelivery({
+      [`GET ${D}/targets`]: () => list(TARGETS_OF_EACH_KIND),
+      [GET_DETAIL]: () => jsonResponse(deploymentWithSteps(target_id, steps)),
+    });
+    renderWithClient(<DeploymentDetailView id="dep-1" />);
+    const row = await kind();
+    await waitFor(() => expect(row).toHaveTextContent(new RegExp(`^${label} Experimental$`)));
+    const journal = screen.getByRole('region', { name: 'Journal' });
+    const entries = within(journal)
+      .getAllByRole('listitem')
+      .map((li) => Array.from(li.querySelectorAll('span'), (s) => s.textContent).slice(0, 2));
+    expect(entries).toEqual(
+      steps.flatMap((step) => [
+        [step, 'intent'],
+        [step, 'complete'],
+      ]),
+    );
   });
 });
 

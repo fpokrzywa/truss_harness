@@ -36,11 +36,11 @@ const HINTS = {
   },
   model_not_in_target_workspace: {
     detail: "The release's model provider is not in the target's workspace.",
-    hint: "The release's model provider is not in the target's Databricks workspace. Use a release whose model provider is in the target's workspace (its address matches the target's address).",
+    hint: "The release's model provider is not in the target's Databricks workspace. Use a release whose model provider is in the target's workspace (its address matches the target's address, or a Docker target's Databricks workspace).",
   },
   target_kind_mismatch: {
     detail: 'The release target kind is not the platform of the target.',
-    hint: "The release is built for another platform than the target. Choose a target of the release's platform (Databricks or Snowflake), or a release built for this target's platform.",
+    hint: "The release is built for another platform than the target. Choose a target of the release's platform, or a release built for this target's platform.",
   },
   cortex_model_mismatch: {
     detail: "The release's model binding is not the target's Cortex model.",
@@ -53,6 +53,46 @@ const HINTS = {
   snowflake_patch_limit: {
     detail: 'The package of the target is full.',
     hint: 'This package has no free patch. Register a target with a new package and request the plan again.',
+  },
+  palantir_preview_not_allowed: {
+    detail: 'The target does not allow preview APIs.',
+    hint: 'This target does not allow Foundry preview APIs, which a Palantir install needs. Register a target with preview APIs allowed, or use one that has them.',
+  },
+  workspace_not_claimed: {
+    detail: "The Docker target's workspace is not a target of this organization.",
+    hint: "The Docker target's Databricks workspace is not registered as a Databricks target of this organization. Register that workspace as a target first, then try again.",
+  },
+  target_bindings_invalid: {
+    detail: "The target's stored bindings are invalid.",
+    hint: "This target's stored settings are no longer valid. Archive the target, register it again and request the plan on the new one.",
+  },
+  generator_version_unsupported: {
+    detail: 'The generator version is not supported for this target.',
+    hint: "This release cannot be built for the target's platform. Use a release sealed for that platform.",
+  },
+  target_unavailable: {
+    detail: 'The target is not active.',
+    hint: 'The target is archived. Choose an active target.',
+  },
+  target_unresolved: {
+    detail: UNRESOLVED,
+    hint: 'A deployment on this target has an unknown outcome. Resolve it on the Deployments screen first.',
+  },
+  release_withdrawn: {
+    detail: 'The release is withdrawn.',
+    hint: 'The release was withdrawn. Choose another release.',
+  },
+  release_target_mismatch: {
+    detail: 'The release and the target are in different scopes.',
+    hint: "The release belongs to another workspace or project than the target. Choose a target of the release's workspace and project.",
+  },
+  release_source_changed: {
+    detail: 'A source of the release changed.',
+    hint: 'Something the release was built from changed or can no longer be read. Seal a new release.',
+  },
+  release_not_renderable: {
+    detail: 'The release cannot be rendered.',
+    hint: 'An app cannot be generated from this release. Seal a new release.',
   },
 };
 const LATER = ['Project', 'Solution', 'Version', 'Release'];
@@ -394,8 +434,9 @@ describe('PlansView request', () => {
     expect(alert.closest('[role="alert"]')).toHaveTextContent('Could not request the plan');
     expect(within(dialog).getByText('target_unresolved')).toBeInTheDocument();
     expect(within(dialog).queryByRole('link', { name: 'Open the release' })).toBeNull();
-    for (const { hint } of Object.values(HINTS)) {
-      expect(within(dialog).queryByText(hint)).toBeNull();
+    expect(within(dialog).getByText(HINTS.target_unresolved.hint)).toBeInTheDocument();
+    for (const [code, { hint }] of Object.entries(HINTS)) {
+      if (code !== 'target_unresolved') expect(within(dialog).queryByText(hint)).toBeNull();
     }
   });
 });
