@@ -5,6 +5,7 @@ import type { TargetOut } from '@/lib/api/delivery-types';
 import {
   D,
   DELIVERY_READ_PERMS,
+  DOCKER_TARGET,
   list,
   PALANTIR_BINDINGS,
   PALANTIR_TARGET,
@@ -577,6 +578,29 @@ describe('TargetsView list of every platform', () => {
     expect(screen.queryByText('Validated')).not.toBeInTheDocument();
   });
 
+  it('scrolls sideways inside its card, keeps Archive in view and wraps long values in wide cells', async () => {
+    stubDelivery({ [`GET ${D}/targets`]: () => list(TARGETS_OF_EACH_KIND) });
+    renderWithClient(<TargetsView />);
+    const scroll = await screen.findByRole('region', { name: 'Deployment targets list' });
+    expect(scroll).toHaveClass('card', 'overflow-x-auto');
+    expect(scroll).toHaveAttribute('tabindex', '0');
+    const table = within(scroll).getByRole('table', { name: 'Deployment targets' });
+    const headers = within(table).getAllByRole('columnheader');
+    expect(headers.at(-1)).toHaveClass('sticky', 'right-0');
+    const address = headers.findIndex((h) => h.textContent === 'Address');
+    const bindings = headers.findIndex((h) => h.textContent === 'Bindings');
+    const buttons = within(table).getAllByRole('button', { name: /Archive/ });
+    expect(buttons).toHaveLength(TARGETS_OF_EACH_KIND.length);
+    for (const t of TARGETS_OF_EACH_KIND) {
+      const row = within(table).getByRole('cell', { name: t.name }).closest('tr')!;
+      const cells = within(row).getAllByRole('cell');
+      expect(cells.at(-1)).toHaveClass('sticky', 'right-0');
+      expect(within(cells.at(-1)!).getByRole('button', { name: /Archive/ })).toBeVisible();
+      expect(cells[address]).toHaveClass('min-w-48', 'break-all');
+      expect(cells[bindings]).toHaveClass('min-w-64');
+    }
+  });
+
   it('shows a target of an unknown kind with its raw kind, - and no binding or platform name', async () => {
     const mystery = {
       ...TARGET,
@@ -653,7 +677,10 @@ const PALANTIR: KindCase = {
 };
 const DOCKER: KindCase = {
   label: 'Docker',
-  address: ['Docker daemon address', 'docker://ABCD:EFGH:IJKL'],
+  address: [
+    'Docker daemon address',
+    'docker://ABCD:EFGH:IJKL:MNOP:QRST:UVWX:YZ23:4567:ABCD:EFGH:IJKL:MNOP',
+  ],
   fields: {
     Project: 'sales-app',
     Port: '8443',
@@ -866,6 +893,54 @@ describe('TargetsView register on Fabric, Palantir and Docker', () => {
       expect(fetchMock.calls.some((call) => call.key.startsWith('POST'))).toBe(false);
     },
   );
+
+  const DAEMON_HELP =
+    "docker://<daemon id>. The id is the output of docker info --format '{{.ID}}' on the host: a lowercase UUID, or twelve groups of four capital letters A-Z or digits 2-7 joined by colons.";
+  const DAEMON_RULE =
+    'Use docker:// and the daemon id: a lowercase UUID, or twelve groups of four capital letters A-Z or digits 2-7 joined by colons.';
+
+  it.each([
+    'docker://0a1b2c3d-1111-4222-8333-444455556666',
+    'docker://ABCD:EFGH:IJKL:MNOP:QRST:UVWX:YZ23:4567:ABCD:EFGH:IJKL:MNOP',
+  ])('posts the Docker daemon address %s as typed', async (address) => {
+    const fetchMock = stubDelivery({
+      ...WORKSPACES,
+      [`POST ${D}/targets`]: () => jsonResponse(DOCKER_TARGET, { status: 201 }),
+    });
+    renderWithClient(<TargetsView />);
+    const dialog = await fill(DOCKER, { 'Docker daemon address': ` ${address} ` });
+    expect(within(dialog).getByLabelText('Docker daemon address')).toHaveAccessibleDescription(
+      DAEMON_HELP,
+    );
+    await submit(dialog);
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(bodyOf(fetchMock, `POST ${D}/targets`).address).toBe(address);
+  });
+
+  it.each([
+    ['a free-form id', 'docker://walkdaemon123'],
+    ['an upper-case UUID', 'docker://0A1B2C3D-1111-4222-8333-444455556666'],
+    [
+      'a lower-case base32 id',
+      'docker://abcd:efgh:ijkl:mnop:qrst:uvwx:yz23:4567:abcd:efgh:ijkl:mnop',
+    ],
+    ['eleven base32 groups', 'docker://ABCD:EFGH:IJKL:MNOP:QRST:UVWX:YZ23:4567:ABCD:EFGH:IJKL'],
+    ['base32 with a 1', 'docker://ABC1:EFGH:IJKL:MNOP:QRST:UVWX:YZ23:4567:ABCD:EFGH:IJKL:MNOP'],
+    ['a UUID without hyphens', 'docker://0a1b2c3d111142228333444455556666'],
+    ['no scheme', '0a1b2c3d-1111-4222-8333-444455556666'],
+    ['another scheme', 'tcp://0a1b2c3d-1111-4222-8333-444455556666'],
+    ['a trailing path', 'docker://0a1b2c3d-1111-4222-8333-444455556666/'],
+  ])('refuses %s as the Docker daemon address before calling the API', async (_case, address) => {
+    const fetchMock = stubDelivery(WORKSPACES);
+    renderWithClient(<TargetsView />);
+    const dialog = await fill(DOCKER, { 'Docker daemon address': address });
+    await submit(dialog);
+    expect(await within(dialog).findByText(DAEMON_RULE)).toBeInTheDocument();
+    expect(within(dialog).getByLabelText('Docker daemon address')).toHaveAccessibleDescription(
+      `${DAEMON_HELP} ${DAEMON_RULE}`,
+    );
+    expect(fetchMock.calls.some((call) => call.key.startsWith('POST'))).toBe(false);
+  });
 
   it('posts no value typed for the kind it switched from and keeps the shared fields', async () => {
     const fetchMock = stubDelivery({

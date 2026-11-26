@@ -42,6 +42,9 @@ const COLUMNS = [
 const UNUSABLE_ACTIVE =
   "This target's stored settings are no longer valid, so nothing can be planned, deployed or reconciled on it. Archive it and register it again.";
 const UNUSABLE_ARCHIVED = "This target's stored settings are no longer valid.";
+/** The actions column stays in view while the table scrolls sideways inside its card. */
+const ACTIONS_CELL =
+  'sticky right-0 border-l border-slate-200 bg-slate-100 shadow-[-6px_0_6px_-4px_rgb(0_0_0/0.35)]';
 
 /** The bindings of the row's own kind, labelled; a hint for unusable ones, `-` for an unknown kind. */
 function BindingsCell({ target: t }: { target: TargetOut }) {
@@ -50,9 +53,9 @@ function BindingsCell({ target: t }: { target: TargetOut }) {
     return <p>{t.status === 'active' ? UNUSABLE_ACTIVE : UNUSABLE_ARCHIVED}</p>;
   }
   return (
-    <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-xs">
+    <dl className="space-y-1 text-xs">
       {(bindingRows(t) ?? []).map(([label, value]) => (
-        <div key={label} className="contents">
+        <div key={label}>
           <dt className="text-slate-600">{label}</dt>
           <dd className="font-mono break-all">{value}</dd>
         </div>
@@ -95,7 +98,12 @@ export function TargetsView() {
       <ActionError error={archive.error} title="Could not archive the target" />
       <QueryGate query={targets} noun="targets">
         {(data) => (
-          <div className="card overflow-x-auto p-0">
+          <div
+            role="region"
+            aria-label="Deployment targets list"
+            tabIndex={0}
+            className="card overflow-x-auto p-0"
+          >
             {data.items.length === 0 ? (
               <EmptyState>
                 No deployment targets yet.
@@ -111,7 +119,7 @@ export function TargetsView() {
                         {h}
                       </th>
                     ))}
-                    <th scope="col" className="th">
+                    <th scope="col" className={`th ${ACTIONS_CELL}`}>
                       <span className="sr-only">Actions</span>
                     </th>
                   </tr>
@@ -128,7 +136,7 @@ export function TargetsView() {
                           )}
                         </span>
                       </td>
-                      <td className="td font-mono text-xs break-all">{t.address}</td>
+                      <td className="td min-w-48 font-mono text-xs break-all">{t.address}</td>
                       <td className="td">{t.environment}</td>
                       <td className="td">
                         {t.workspace ?? '-'}
@@ -141,7 +149,7 @@ export function TargetsView() {
                       <td className="td">
                         <StatusBadge status={t.status} />
                       </td>
-                      <td className="td">
+                      <td className={`td ${ACTIONS_CELL}`}>
                         {canWrite && t.status === 'active' && (
                           <div className="flex justify-end">
                             <button type="button" className="btn" onClick={() => setArchiving(t)}>
@@ -207,7 +215,10 @@ function RegisterTargetDialog({ org, onClose }: { org: string; onClose: () => vo
     if (workspace === '') next.workspace = 'Choose a workspace.';
     const trimmed = Object.fromEntries(Object.entries(typed).map(([k, v]) => [k, v.trim()]));
     if (spec) {
-      if (!trimmed.address) next.address = `${spec.address.label} is required.`;
+      const address = trimmed.address ?? '';
+      const addressError =
+        address === '' ? `${spec.address.label} is required.` : spec.address.check?.(address);
+      if (addressError) next.address = addressError;
       for (const f of spec.fields) {
         if (f.checkbox) continue;
         const value = trimmed[f.key] ?? '';

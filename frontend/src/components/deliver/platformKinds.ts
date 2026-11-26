@@ -20,7 +20,8 @@ export interface BindingField {
 }
 
 interface KindSpec<K extends PlatformKind> {
-  address: { label: string; help: string };
+  /** Only required, unless `check` mirrors the server's rule for the kind. */
+  address: { label: string; help: string; check?: (value: string) => string | undefined };
   fields: BindingField[];
   /** The bindings from the trimmed form values; a checkbox reads `'true'` or `''`. */
   bindings: (v: Record<string, string>) => BindingsOf<K>;
@@ -244,7 +245,12 @@ export const PLATFORM_KINDS: { [K in PlatformKind]: KindSpec<K> } = {
   docker: {
     address: {
       label: 'Docker daemon address',
-      help: "docker://<daemon id>. The id is the output of docker info --format '{{.ID}}' on the host.",
+      help: "docker://<daemon id>. The id is the output of docker info --format '{{.ID}}' on the host: a lowercase UUID, or twelve groups of four capital letters A-Z or digits 2-7 joined by colons.",
+      // contracts.DOCKER_HOST: never case-folded, as the server reads it
+      check: rule(
+        /^docker:\/\/(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[A-Z2-7]{4}(?::[A-Z2-7]{4}){11})$/,
+        'Use docker:// and the daemon id: a lowercase UUID, or twelve groups of four capital letters A-Z or digits 2-7 joined by colons.',
+      ),
     },
     fields: [
       {

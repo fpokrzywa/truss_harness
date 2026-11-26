@@ -102,7 +102,7 @@ export const DOCKER_TARGET: TargetOut = {
   id: 't-dock',
   name: 'Docker prod',
   platform_kind: 'docker',
-  address: 'docker://ABCD:EFGH:IJKL',
+  address: 'docker://0a1b2c3d-1111-4222-8333-444455556666',
   bindings: {
     project: 'sales-app',
     port: 8443,
