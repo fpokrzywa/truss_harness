@@ -1,8 +1,8 @@
 {
-  "session_id": "e18207aa-0bd4-4a3a-83ff-1565e94b03d8",
-  "head_sha": "6e0ca88f33b9cc3254c9c9db609b032321eaaf30",
+  "session_id": "5b3fc0d2-71d8-4458-855c-bd0d77a7a40a",
+  "head_sha": "e45de97aef9f7fd6e2edc648a558e06d6f21199d",
   "branch": "main",
-  "unit_in_progress": "193-sp8-5-fabric-delivery (batch 13 to build)",
-  "next_step": "Per docs/build/HANDOFF.md: queue, message seth-supervisor-13, build lead/batch-13 (main + 193 at 6b1a239 + supervisor/rulings-s072), send its head, then gates, CI and seven demos",
-  "written_at": "2026-11-25T22:35:50Z"
+  "unit_in_progress": "208-docker-executor-short-version (review round 1, synced d0b6255)",
+  "next_step": "Per docs/build/HANDOFF.md: message seth-supervisor-14, spawn 208's code, security and isolation reviews on d0b6255, then approver",
+  "written_at": "2026-11-26T01:41:24Z"
 }
