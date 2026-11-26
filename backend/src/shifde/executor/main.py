@@ -4,7 +4,9 @@ B-2693, B-2694).
 Configured from the environment only (never `shifde.core.settings`, which reaches the database):
 `SHIFDE_EXECUTOR_API_URL`, `SHIFDE_EXECUTOR_TOKEN`, `SHIFDE_EXECUTOR_CREDENTIALS_FILE` and
 `SHIFDE_ENV` (`development`, `test` or, when unset, `production`). Outside development and test
-the API URL must be https and `--fake-platform` is refused. No message ever echoes the token.
+the API URL must be https and `--fake-platform` is refused. With `--fake-platform`, Fabric jobs run
+on the in-memory fake only when `SHIFDE_DEV_FAKE_DATA_PLATFORMS` is true (SP8-5). No message ever
+echoes the token.
 `SHIFDE_DELIVERY_PALANTIR_HOST_SUFFIXES` (optional) is the installation's list of extra Palantir
 host suffixes, read with the API's rules (`core.hostsuffixes`): an invalid list is exit 2, naming
 the variable only.
@@ -48,6 +50,7 @@ CREDENTIALS_FILE = "SHIFDE_EXECUTOR_CREDENTIALS_FILE"
 HEALTH_HOST = "SHIFDE_EXECUTOR_HEALTH_HOST"
 HEALTH_PORT = "SHIFDE_EXECUTOR_HEALTH_PORT"
 SHUTDOWN_GRACE = "SHIFDE_EXECUTOR_SHUTDOWN_GRACE_SECONDS"
+FAKE_DATA_PLATFORMS = "SHIFDE_DEV_FAKE_DATA_PLATFORMS"
 PALANTIR_SUFFIXES = "SHIFDE_DELIVERY_PALANTIR_HOST_SUFFIXES"
 REQUIRED = (API_URL, TOKEN, CREDENTIALS_FILE)
 DEV_ENVS = ("development", "test")
@@ -73,10 +76,11 @@ EPILOG = f"""environment:
                                     client_id, client_secret_file}}
                                     Docker {{tenant_id, host, platform: "docker"}}
                                     (a secret file holds one value; on POSIX mode 0600;
-                                    Palantir jobs run (experimental, not live
-                                    validated; on the fake with --fake-platform);
-                                    Fabric jobs fail closed until SP8-5)
+                                    Fabric and Palantir jobs run (experimental, not
+                                    live validated; on the fakes with --fake-platform))
   SHIFDE_ENV                        development | test | production (default production)
+  {FAKE_DATA_PLATFORMS}     true: with --fake-platform, Fabric jobs run on the
+                                    in-memory fake (they fail closed otherwise)
   {PALANTIR_SUFFIXES}
                                     extra Palantir stack host suffixes, comma-separated (the
                                     API's value; default none)
@@ -113,7 +117,8 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "run against the in-memory fake Databricks, Snowflake, Fabric, Palantir and Docker "
-            "platforms (development and test only; Fabric jobs fail closed until SP8-5)"
+            "platforms (development and test only; Fabric jobs run only with "
+            f"{FAKE_DATA_PLATFORMS}=true)"
         ),
     )
     return parser
@@ -173,8 +178,10 @@ def configure(argv: Sequence[str] | None, environ: Mapping[str, str]) -> Config:
     platform: Platform = RealPlatform()
     if args.fake_platform:
         fake = FakePlatform()
-        # the Snowflake, Palantir and Docker fakes refuse unless this is development or test
+        # the Snowflake, Fabric, Palantir and Docker fakes refuse unless this is development or test
         fake.environment = environ.get("SHIFDE_ENV") or "production"
+        # and the Fabric fake also refuses without this switch
+        fake.fabric_enabled = (environ.get(FAKE_DATA_PLATFORMS) or "").strip().lower() == "true"
         platform = fake
     return Config(
         api_url=api_url,

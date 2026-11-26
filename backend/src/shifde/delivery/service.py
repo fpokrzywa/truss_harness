@@ -15,9 +15,12 @@ stack or a Docker daemon (`platform_kind`). Its address is
 normalized and allow-listed by that platform's normalizer in `adapters.native.addresses` before
 anything is written (this module makes no outbound request). On one Snowflake claim, each package
 and each application is bound by at most one active target (`409 binding_in_use`, checked under
-the claim's advisory lock); on one Docker claim, each project and each port. A Docker target's
-`workspace_host` is normalized as a Databricks address. The organization's claim on the address
-(for Snowflake, on the account's claim identity; a locator-form address is refused) comes from the
+the claim's advisory lock); on one Fabric claim, each lakehouse and notebook item name, ignoring
+case; on one Docker claim, each project and each port. A Docker target's `workspace_host` is
+normalized as a Databricks address. No route changes a target's address, bindings or credential
+reference: a change is an archive (a new `revision`) and a new registration. The organization's
+claim on the address (for Snowflake, on the account's claim identity; a locator-form address is
+refused) comes from the
 `shifde.delivery_claim_platform` definer; when another organization holds the address the caller
 gets the fixed `409 platform_already_registered`, which names no organization, row,
 constraint or key. Archiving the last active target on a claim deletes the claim, so another
@@ -41,7 +44,9 @@ settle rules after the lost-job sweep. Every move to `unknown_outcome` (a failed
 journal step, a succeeded apply with an open intent, settle rule (a) for a lost apply) writes one
 `delivery.deployment.unknown_outcome` audit row in the same transaction, under the fixed system
 context `UNKNOWN_OUTCOME_CONTEXT` (no actor; B-2736). The deployment routes are
-`delivery.deployments`.
+`delivery.deployments`. A Fabric apply receipt is checked by `check_fabric_receipt` first (SP8-5):
+its resources are items of the target's workspace and, outside development and test, its platform
+is `fabric`.
 
 Every row is read and written for the caller's resolved client only (`TenantScope.tenant_id`).
 """
@@ -55,6 +60,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal  # Any: target, executor and credential rows
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -63,6 +69,7 @@ from sqlalchemy.orm import Session
 
 from shifde.adapters.native import planning
 from shifde.adapters.native.addresses import (
+    FABRIC_API_WORKSPACES,
     AddressRefused,
     address_key,
     normalize_address,
@@ -131,6 +138,16 @@ class BindingInUse(AppError):
         )
 
 
+class FabricBindingInUse(BindingInUse):
+    """Another active target on the claim binds one of the Fabric item names."""
+
+    def __init__(self) -> None:
+        AppError.__init__(
+            self,
+            "Another active target on this workspace already binds this lakehouse or notebook.",
+        )
+
+
 class DockerBindingInUse(AppError):
     """Another active target on the claim binds the same Docker project or port."""
 
@@ -189,20 +206,29 @@ def require_bindings(row: Mapping[str, Any]) -> None:
 
 def adapter_target(row: Mapping[str, Any]) -> Target:
     """The target `row` as its adapter takes it. Adapter bindings are strings: a Palantir target's
-    `allow_preview_apis` becomes `"true"` or `"false"` and a Docker target's `port` its digits; any
-    other kind's bindings are unchanged."""
-    bindings = row["bindings"]
-    if row["platform_kind"] == "palantir":
+    `allow_preview_apis` becomes `"true"` or `"false"` and a Docker target's `port` its digits. A
+    Fabric target's stored address is the API origin, its host, and the workspace GUID, its
+    `workspace` binding beside the stored ones (SP8-5; an address with no workspace gives none, and
+    the executor refuses it). A Databricks or Snowflake target's bindings are unchanged; a row of
+    another kind is refused."""
+    host, bindings = row["address"], row["bindings"]
+    if row["platform_kind"] == "fabric":
+        host, _, workspace = row["address"].partition(urlsplit(FABRIC_API_WORKSPACES).path)
+        if workspace:
+            bindings = {**bindings, "workspace": workspace}
+    elif row["platform_kind"] == "palantir":
         allowed = bindings.get("allow_preview_apis") is True
         bindings = {**bindings, "allow_preview_apis": "true" if allowed else "false"}
     elif row["platform_kind"] == "docker":
         bindings = {k: str(v) if k == "port" else v for k, v in bindings.items()}
+    elif row["platform_kind"] not in ("databricks", "snowflake"):
+        raise ValueError("no adapter target for this platform kind")
     return Target(
         tenant_id=row["tenant_id"],
         id=row["id"],
         revision=row["revision"],
         environment=row["environment"],
-        host=row["address"],
+        host=host,
         bindings=bindings,
     )
 
@@ -400,6 +426,18 @@ class TargetService:
             ):
                 session.rollback()
                 raise BindingInUse
+        if isinstance(bindings, s.FabricBindings):
+            # the claim's lock serializes this check with every register and archive on it
+            repository.lock_claim(session, claim_id, tenant_id=self.sc.tenant_id)
+            if repository.fabric_binding_in_use(
+                session,
+                claim_id,
+                bindings.lakehouse_name,
+                bindings.notebook_name,
+                tenant_id=self.sc.tenant_id,
+            ):
+                session.rollback()
+                raise FabricBindingInUse
         if isinstance(bindings, s.DockerBindings):
             repository.lock_claim(session, claim_id, tenant_id=self.sc.tenant_id)
             if repository.docker_binding_in_use(
@@ -1001,12 +1039,15 @@ POLL_DELAY = timedelta(seconds=15)  # settled call 5: the next observe/verify jo
 REQUIRED_CHECKS = ("native-runtime", "runtime-warehouse")
 APP_REQUIRED_CHECKS = (*REQUIRED_CHECKS, "app-deep-health")  # a generated app (SP5 6.6)
 SNOWFLAKE_REQUIRED_CHECKS = ("native-version", "runtime-health", "app-deep-health")  # SP6 6.4
+FABRIC_RESOURCE_TYPES = ("fabric.Lakehouse", "fabric.Notebook")
+FABRIC_REQUIRED_CHECKS = ("native-items", "runtime-health")  # SP8 design section 4
 PALANTIR_REQUIRED_CHECKS = ("native-version", "ontology-read", "frontend-asset")  # SP8-7
 DOCKER_REQUIRED_CHECKS = ("native-version", "runtime-health", "app-deep-health")  # SP8 section 6
 # target platform -> the checks of (a plan without, a plan with a generated app); None: no such plan
 REQUIRED_BY_PLATFORM: dict[str, tuple[tuple[str, ...] | None, tuple[str, ...] | None]] = {
     "databricks": (REQUIRED_CHECKS, APP_REQUIRED_CHECKS),
     "snowflake": (None, SNOWFLAKE_REQUIRED_CHECKS),
+    "fabric": (FABRIC_REQUIRED_CHECKS, None),
     "palantir": (PALANTIR_REQUIRED_CHECKS, None),
     "docker": (None, DOCKER_REQUIRED_CHECKS),
 }
@@ -1163,6 +1204,29 @@ def _receipt_refused(field: str, message: str) -> ValidationFailed:
     )
 
 
+def check_fabric_receipt(
+    session: Session, job: Mapping[str, Any], body: JobResultSubmission, env: str
+) -> None:
+    """A Fabric target's apply receipt is refused (422, nothing changes) when a resource is not a
+    Lakehouse or Notebook of the target's workspace, or, unless `env` is development or test, when
+    its platform is not `fabric` (the in-process fake's receipts are refused; SP8-5). Other
+    platforms' receipts, and failed results, pass."""
+    if body.status != "succeeded" or job["target_id"] is None:
+        return
+    target = repository.get_target(session, job["target_id"], tenant_id=job["tenant_id"])
+    if target is None or target["platform_kind"] != "fabric":
+        return
+    receipt = ApplyReceipt.model_validate(body.value)
+    if env not in ("development", "test") and receipt.operation_handles.get("platform") != "fabric":
+        raise _receipt_refused("operation_handles", "the receipt is not of the Fabric platform")
+    prefix = f"fabric:{target['address'].removeprefix(FABRIC_API_WORKSPACES)}:"
+    if any(
+        r.resource_type not in FABRIC_RESOURCE_TYPES or not r.native_id.startswith(prefix)
+        for r in receipt.resources
+    ):
+        raise _receipt_refused("resources", "a resource is not an item of the target's workspace")
+
+
 def on_apply_result(session: Session, job: Mapping[str, Any], body: JobResultSubmission) -> None:
     """The `apply` kind's result hook (B-2684). A receipt for another organization, target or
     artifact is refused (422, nothing changes). A succeeded apply with an unfinished step is an
@@ -1267,11 +1331,12 @@ def on_verify_result(session: Session, job: Mapping[str, Any], body: JobResultSu
     `native-runtime` and `runtime-warehouse` both passed, and for a generated app (the plan's
     release is `/2`, SP5 6.6) `app-deep-health` too, even when the report omits it. On a Snowflake
     target (SP6 6.4) or a Docker target (SP8 section 6): only when `native-version`,
-    `runtime-health` and `app-deep-health` all passed. On a Palantir target (SP8-7): only when
+    `runtime-health` and `app-deep-health` all passed. On a Fabric target (SP8 4): only when
+    `native-items` and `runtime-health` both passed. On a Palantir target (SP8-7): only when
     `native-version`, `ontology-read` and `frontend-asset` all passed (`content-check` is never
     enough). Otherwise `failed`. It fails closed: a target, plan or plan release that cannot be
-    read, a Snowflake or Docker deployment whose plan has no generated-app release, or a Palantir
-    one whose plan has one, is `failed`."""
+    read, a Snowflake or Docker deployment whose plan has no generated-app release, or a Fabric or
+    Palantir one whose plan has one, is `failed`."""
     row = _deployment(session, job, ("verifying",))
     if row is None:
         return
@@ -1300,7 +1365,8 @@ def on_verify_result(session: Session, job: Mapping[str, Any], body: JobResultSu
 def _required_checks(session: Session, row: Mapping[str, Any]) -> tuple[str, ...] | None:
     """The checks the deployment's verification needs, read in its organization only; None
     (never verified) when its target, plan or the plan's release cannot be read, a Snowflake or
-    Docker target's plan has no generated-app release or a Palantir target's plan has one."""
+    Docker target's plan has no generated-app release or a Fabric or Palantir target's plan has
+    one."""
     target = repository.get_target(session, row["target_id"], tenant_id=row["tenant_id"])
     plan = repository.get_plan(session, row["plan_id"], tenant_id=row["tenant_id"])
     if target is None or plan is None or target["platform_kind"] not in REQUIRED_BY_PLATFORM:
