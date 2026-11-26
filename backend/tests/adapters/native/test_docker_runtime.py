@@ -20,6 +20,7 @@ import shifde.adapters.native.docker.runtime as runtime_module
 from shifde.adapters.native.docker.runtime import (
     FORBIDDEN_FLAGS,
     MAX_BODY,
+    VERSION_TIMEOUT,
     DockerCliRuntime,
     DockerRefused,
 )
@@ -307,6 +308,50 @@ def test_docker_failure_hides_output_and_a_timeout_becomes_timeout_error(
     monkeypatch.setattr(runtime_module.subprocess, "run", hang)
     with pytest.raises(TimeoutError):
         DockerCliRuntime().daemon_id()
+
+
+def _is_version(call: dict[str, Any]) -> bool:
+    return call["args"][1:3] in (["version", "--format"], ["compose", "version"])
+
+
+def test_docker_version_checks_get_the_short_timeout_and_compose_up_the_long_one(
+    runs: _Runs, staged: Path
+) -> None:
+    DockerCliRuntime().compose_up(staged, project=PROJECT)
+    versions = [call["timeout"] for call in runs.calls if _is_version(call)]
+    assert versions == [VERSION_TIMEOUT] * 3 == [30] * 3
+    (up,) = [call for call in runs.calls if not _is_version(call)]
+    assert up["args"][1:7] == ["compose", "-p", PROJECT, "-f", "compose.yaml", "up"]
+    assert up["timeout"] == 900
+
+
+def test_a_hung_version_check_is_cut_off_at_the_short_timeout_before_compose_up(
+    monkeypatch: pytest.MonkeyPatch, staged: Path
+) -> None:
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    monkeypatch.setattr(runtime_module.shutil, "which", lambda name: "/usr/bin/docker")
+    calls: list[dict[str, Any]] = []
+
+    def hang(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        calls.append({"args": args, **kwargs})
+        raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+
+    monkeypatch.setattr(runtime_module.subprocess, "run", hang)
+    cli = DockerCliRuntime()
+    with pytest.raises(TimeoutError):
+        cli.compose_up(staged, project=PROJECT)
+    with pytest.raises(TimeoutError):
+        cli.check_version()
+    assert [call["args"][1:] for call in calls] == [
+        ["version", "--format", "{{.Client.Version}}"]
+    ] * 2
+    assert [call["timeout"] for call in calls] == [30, 30]
+
+
+def test_a_shorter_runtime_timeout_is_kept_for_the_version_checks(runs: _Runs) -> None:
+    DockerCliRuntime(timeout=5).daemon_id()
+    assert [call["timeout"] for call in runs.calls if _is_version(call)] == [5] * 3
+    assert [call["timeout"] for call in runs.calls if not _is_version(call)] == [5]
 
 
 def test_docker_image_labels_and_compose_ps(runs: _Runs) -> None:

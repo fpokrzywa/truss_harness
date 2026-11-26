@@ -1,27 +1,33 @@
-# Handoff — 2026-11-25, charter 7 factory run (lead session agt-trus-harness-98), context limit
+# Handoff — 2026-11-25 22:20 EST, charter 7 factory run (lead session agt-trus-harness-f4), context limit
 
 Read `docs/build/CHARTER.md` (sections 7, 10-12), then `docs/build/STATUS.md` (newest progress entry and sub-projects table), then this file.
 
-**State:** cluster running. Merged this session: batch 13 (PR #440, `3ad2b42`, job 193 Fabric SP8-5 with #406/#407, S-072) and batch 14 (PR #444, `7b828cf`, job 207 #438, S-073); both 18/18 and green CI on the exact head, plus their demos. No migration, no hosted setup due. Nothing of the lead is running.
+**State:** cluster running. Merged this session: batch 15 (PR #448, `0418229`, job 208 #421, S-074; 18/18 on the rerun, CI green, docker and delivery demos passed). Main is `77320ba` (STATUS). Nothing of the lead is running: no gate, no builder, no reviewer.
 
 ## Rulings
-- Supervisor: **seth-supervisor-14** (took over 18:28) rules; message it first. Next ruling id S-074. Never edit S-* rows; take its row by merging `supervisor/rulings-s0NN`. Any conflict other than DECISIONS.md goes to the supervisor as a diff. Poll CI with REST (`gh api repos/fpokrzywa/truss_harness/actions/runs?head_sha=...`).
-- Merge rule: 18/18 from one full `gates.py` run of the exact head (a targeted rerun of a failing file does NOT count: rerun the full gates, S-072 follow-up ruling), green CI of that head, the demos the ruling names; `--match-head-commit`, merge lock `python scripts/unit.py lock merge --unit <x>` and `unlock merge --unit <x>` (there is no `lock release`: it takes a lock named "release"). Send the batch head to the supervisor for a composition check before its gates.
-- A failure of test_r1_round5 or tests/runtime/test_worker.py (or any test) on any head goes to the supervisor before a merge. The supervisor accepted a factory-gate rerun after a WinError 10013 port-bind failure as a flake (S-073).
+- Supervisor: **seth-supervisor-14** rules; message it first (it asked to be told that it rules). Next ruling id S-075 (reserved for #397). Never edit S-* rows. Any conflict other than DECISIONS.md goes to the supervisor as a diff.
+- Merge rule: 18/18 from one full `gates.py` run of the exact head (a targeted rerun does not count), green CI of that head, the demos the ruling names; `gh pr merge <n> --merge --match-head-commit <FULL 40-char sha>` (a short or built-up sha fails with "Head branch was modified"); lock `python scripts/unit.py lock merge --unit <x>` / `unlock merge --unit <x>`. Approver APPROVE jobs also go through a lead batch with a composition check (209 did).
+- Any test failure on any head goes to the supervisor before a merge (batch 15's WinError 5 suite-lock error: supervisor ruled a full rerun; filed #449).
 
-## Exact next step: 208 (#421 Docker, PR #445)
-Round 1: built (B-4186; B-4187 to B-4189 unused), factory gate PASS on `7beb7ff` (pre-batch-14). The supervisor asked that it be synced on main `7b828cf` before review: the lead merged main into it (`d0b6255`, DECISIONS.md the only conflict, union, pushed) and ran `factory/bin/gate` on `d0b6255`: **GATE PASS** (`round-1/checks.md`, COMMIT `d0b6255`). The job is in stage `review` (round 1), no reviewer spawned yet.
-1. Spawn `reviewer-code` and `reviewer-security` (opus) on the synced head, plus `isolation-reviewer` (lead saves its review with `saverev.py` as `round-1/isolation-review-1.md`). Ask the security and isolation reviewers the S-060 questions (token cache, stored rows). The builder showed items 2 and 3 failing only under a temporary mutation (lead accepted the spec's assumption).
-2. All PASS: `job advance ... approve`, approver (tell it the facts: gate history, isolation review file). ESCALATE (likely by rule: executor credential handling): `job advance ... needs-human`, send the supervisor the file paths; it writes S-074 on `supervisor/rulings-s074`. Batch 15 = main + 208 head + S-074 row, composition check, gates, CI, demos the ruling names.
-- Lead decision ids: next free **B-4191** (B-4183 to B-4185, B-4187 to B-4189 unused).
+## Exact next step: batch 16 (job 209, #441, PR #453)
+Head `b841657` on `lead/batch-16` (worktree `.worktrees/batch-16`), composition checked by the supervisor. It merges on 18/18 of `gates.py --ref b841657 --name batch-16-merge` and green CI of `b841657`; no demos (tests only). Run the gates as a background Bash task: `python -u scripts/gates.py --ref b841657 --name batch-16-merge > .worktrees/_gate-logs/batch-16-gates.out 2>&1`. Then merge, send the supervisor the merge sha, and add a STATUS line.
 
-## After 208
-- Supervisor's order: **#397** (Palantir target PATCH, migration: escalates by rule; ruling plus hosted setup after merge), **206** (#295, SP8-10 front end; spec written, `job advance 206-sp8-10-front-end build`, builder port 7160; it first merges main and checks the Fabric names; note the front end lists nine MCP tools and the API has twelve), **#434** (Palantir clients.py), **#296** last (SP8-11 live tests, runbooks). #419 (no label, migration), #395 (owner's).
-- **#441** (flaky `test_p5_worker.py::test_killed_worker_midway...` ended `failed` under -n 8): no label; the supervisor triages it.
-- When SP8 finishes, run its done-when demo and record it in STATUS.md (sub-project 8 row).
-- #421, #434 and #438 (merged) before any live validation (Docker, Palantir, Fabric; SP8-11, #296).
+## Then: #397 lead migration (S-075)
+- `lead/397-migration` at `d5f6d19` (worktree `.worktrees/lead-397-migration`): `delivery_0010_palantir_version_binding.py` (GRANT UPDATE (bindings) only; BEFORE UPDATE OF bindings guard, SECURITY INVOKER, search_path pg_catalog, pg_temp; 42501 unless only a canonical-UUID `version_id` changes on a palantir target; owner-role early exit, accepted by the supervisor with pins), `tests/delivery/test_palantir_version_binding_db.py`, `tests/identity/test_schema.py` head pin, DECISIONS B-4192. The isolation review of `23b9775` is APPROVED (`.worktrees/_gate-logs/397-migration-isolation-review-1.md`). The delta `23b9775..d5f6d19` adds the pins the supervisor asked for (not a member of the owner role; no SECURITY DEFINER function mentions delivery_targets; the trigger list; prosecdef/proconfig), each shown to fail under a mutation (builder's report).
+- Next: full `gates.py --ref d5f6d19` (after batch 16's gates: one full run at a time), CI on it (open a PR for CI), then send the supervisor the head, the gate result and the delta `git diff 23b9775 d5f6d19` for S-075. After merge: the hosted database setup is re-run (owner's step, see S-054), and job 210 (#397, parked at **intake**, REJECT written because of the protected path) is redone: re-run intake telling it the migration is merged, or ask the supervisor how to move it. The route spec must check scope (workspace, project), status (active, not archived), the target administrator, the row version and the platform (supervisor).
+
+## After that
+- **206** (#295, SP8-10 front end): stage `build`, round 1, **no builder spawned**. Spawn `builder` named `builder-206-sp8-10-front-end`, port 7160; it first merges main and checks the Fabric names; the front end lists nine MCP tools and the API has twelve.
+- Then **#434** (Palantir clients.py), **#296** last (SP8-11 live tests, runbooks). New factory issues: #449 (suite lock WinError 5), #451 (runtime: deadline-cut tool call should end timed_out; isolation review), #452 (sibling killed-worker tests). #447 (N4 Docker daemon re-check before compose up; no label, due before SP8-11). #419 (no label, migration), #395 (owner's).
+- Lead decision ids: next free **B-4194** (B-4188, B-4189 unused; B-4192 is the 397 migration's).
 
 ## New this session
+- `cd` inside a Bash command still moved the session directory twice (once into `.worktrees/_gate-logs`). Use subshells `( cd X && ... )` or absolute paths.
+- A gate log with a reused `--name` is overwritten by the next run: #441's original failure log was lost. Use a new name for each rerun (`batch-15-merge2`).
+- Intake REJECTs any issue needing a migration (protected path); the route is lead hand work by a `module-builder-critical` on a `lead/` branch, isolation review with mutations, full gates, supervisor ruling (B-4089, S-054, #397).
+- Scratch: worktrees `batch-15`, `batch-15-merge`, `batch-15-merge2` may be removed by hand.
+
+## Earlier: learned by session agt-trus-harness-98
 - `cd` in a Bash call into a worktree or job folder moves the session's directory: use absolute paths in every command (it happened three times).
 - Demos from the main checkout on a gate worktree worked: `uv run --frozen --project $W/backend python $W/scripts/<demo>.py --fake`.
 - Scratch: worktrees `batch-13`, `batch-13-merge`, `batch-14`, `batch-14-merge` may be removed by hand; `.worktrees/_gate-logs/207-r1-gate1-checks.log` is the kept flake log.

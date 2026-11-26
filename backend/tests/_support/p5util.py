@@ -86,9 +86,18 @@ def thread_worker(
 
 
 class SubprocessWorker:
-    """`python -m shifde.runtime.worker` as a separate process against the test database."""
+    """`python -m shifde.runtime.worker` as a separate process against the test database.
 
-    def __init__(self, settings: Settings, worker_id: str, lease: int = 4) -> None:
+    With `owner`, it reads the database time before the spawn, for `wait_ready`."""
+
+    def __init__(
+        self, settings: Settings, worker_id: str, lease: int = 4, owner: Session | None = None
+    ) -> None:
+        self.worker_id = worker_id
+        self.spawned_after: Any = None  # Any: the database's timestamptz
+        if owner is not None:
+            self.spawned_after = owner.execute(text("SELECT clock_timestamp()")).scalar_one()
+            owner.commit()
         env = {
             **os.environ,
             "SHIFDE_ENV": "test",
@@ -122,6 +131,26 @@ class SubprocessWorker:
             env=env,
             creationflags=flags,
         )
+
+    def wait_ready(self, owner: Session, timeout: float = 60.0) -> None:
+        """Wait until the worker has upserted its `shifde.workers` row, which `Worker.run` does
+        before its heartbeat, claim and reap loops start (database clock)."""
+        assert self.spawned_after is not None, "construct the worker with owner= to wait for it"
+
+        def ready() -> bool:
+            started = owner.execute(
+                text("SELECT started_at FROM shifde.workers WHERE id = :id"),
+                {"id": self.worker_id},
+            ).scalar_one_or_none()
+            owner.commit()  # the next poll sees fresh data
+            return started is not None and started > self.spawned_after
+
+        try:
+            wait_for(ready, timeout)
+        except AssertionError:
+            raise AssertionError(
+                f"worker {self.worker_id} was not ready within {timeout} s"
+            ) from None
 
     def kill(self) -> None:
         self.proc.kill()  # TerminateProcess / SIGKILL: no cleanup runs
