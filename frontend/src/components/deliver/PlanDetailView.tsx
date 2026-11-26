@@ -9,11 +9,9 @@ import { useNow } from '@/lib/use-now';
 import { EmptyState, formatDate, PageHeader, QueryGate } from '../admin/ui';
 import { StatusBadge } from '../integrate/Maturity';
 import { useOrgParam } from '../security/useOrg';
-import { refusalHint } from './refusalHints';
+import { planNote } from './platformKinds';
+import { planFailureHint } from './refusalHints';
 import { targetName } from './targetName';
-
-/** The reason of a plan whose target's package has no free patch. */
-const PATCH_LIMIT_REASON = 'plan job failed: snowflake_patch_limit';
 
 /** One deployment plan: its sealed digest, steps and decision. Server text is plain React text. */
 export function PlanDetailView({ id }: { id: string }) {
@@ -30,18 +28,21 @@ export function PlanDetailView({ id }: { id: string }) {
 
 function PlanBody({ org, plan }: { org: string; plan: PlanOut }) {
   const targets = useTargets(org);
+  const target = targets.data?.items.find((t) => t.id === plan.target_id);
+  const note = target ? planNote(target.platform_kind) : undefined;
+  const failureHint =
+    plan.status === 'plan_failed' ? planFailureHint(plan.status_reason) : undefined;
   return (
     <>
       <PageHeader title={plan.display_name} description="Deployment plan" />
       <section aria-label="Plan" className="card space-y-4">
+        {note && <p className="text-sm">{note}</p>}
         <dl className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-[12rem_1fr]">
           <dt className="text-slate-600">Status</dt>
           <dd>
             <StatusBadge status={plan.status} />
             {plan.status_reason && <span className="ml-2">{plan.status_reason}</span>}
-            {plan.status === 'plan_failed' && plan.status_reason === PATCH_LIMIT_REASON && (
-              <p className="mt-1">{refusalHint('snowflake_patch_limit')}</p>
-            )}
+            {failureHint && <p className="mt-1">{failureHint}</p>}
           </dd>
           {plan.status === 'sealed' && (
             <>

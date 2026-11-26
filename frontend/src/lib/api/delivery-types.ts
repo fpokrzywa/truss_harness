@@ -15,12 +15,58 @@ export interface SnowflakeBindings {
   cortex_model: string;
 }
 
+export interface FabricBindings {
+  entra_tenant_id: string;
+  lakehouse_name: string;
+  notebook_name: string;
+}
+
+export interface PalantirBindings {
+  marketplace_rid: string;
+  product_id: string;
+  version_id: string;
+  namespace_rid: string;
+  parent_folder_rid: string;
+  ontology_rid: string;
+  object_type: string;
+  frontend_origin: string;
+  frontend_asset_sha256: string;
+  allow_preview_apis: boolean;
+}
+
+export interface DockerBindings {
+  project: string;
+  port: number;
+  workspace_host: string;
+  warehouse_id: string;
+  serving_endpoint: string;
+}
+
+/** Stands in for stored bindings that no longer validate: no stored value is shown. */
+export interface UnusableBindings {
+  unusable: true;
+}
+
 /** A target's platform and the bindings of that platform. */
 export type PlatformBindings =
   | { platform_kind: 'databricks'; bindings: TargetBindings }
-  | { platform_kind: 'snowflake'; bindings: SnowflakeBindings };
+  | { platform_kind: 'snowflake'; bindings: SnowflakeBindings }
+  | { platform_kind: 'fabric'; bindings: FabricBindings }
+  | { platform_kind: 'palantir'; bindings: PalantirBindings }
+  | { platform_kind: 'docker'; bindings: DockerBindings };
 
 export type PlatformKind = PlatformBindings['platform_kind'];
+
+/** The bindings of one platform kind. */
+export type BindingsOf<K extends PlatformKind> = Extract<
+  PlatformBindings,
+  { platform_kind: K }
+>['bindings'];
+
+/** As stored: any kind's bindings may be unusable, which a reader rules out before reading one. */
+export type StoredPlatformBindings = {
+  [K in PlatformKind]: { platform_kind: K; bindings: BindingsOf<K> | UnusableBindings };
+}[PlatformKind];
 
 export type TargetCreate = PlatformBindings & {
   workspace: string;
@@ -31,7 +77,7 @@ export type TargetCreate = PlatformBindings & {
   credential_ref: string;
 };
 
-export type TargetOut = PlatformBindings & {
+export type TargetOut = StoredPlatformBindings & {
   id: string;
   name: string;
   workspace: string | null;
@@ -151,7 +197,7 @@ export type DeploymentStatus =
 /** One entry of `verification.checks` (`shifde.adapters.native.contracts.Check`). */
 export interface VerificationCheck {
   name: string;
-  status: 'passed' | 'failed' | 'skipped';
+  status: 'passed' | 'failed' | 'skipped' | 'not_run';
   required: boolean;
   evidence: string;
 }

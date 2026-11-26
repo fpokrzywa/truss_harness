@@ -59,6 +59,73 @@ export const SNOWFLAKE_TARGET: TargetOut = {
   credential_ref: 'sf.prod',
 };
 
+export const FABRIC_TARGET: TargetOut = {
+  ...TARGET,
+  id: 't-fab',
+  name: 'Fabric prod',
+  platform_kind: 'fabric',
+  address: 'https://app.fabric.microsoft.com/groups/11111111-2222-4333-8444-555555555555',
+  bindings: {
+    entra_tenant_id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+    lakehouse_name: 'sales_lake',
+    notebook_name: 'sales_notebook',
+  },
+  credential_ref: 'fabric.prod',
+};
+
+/** Made-up RIDs and ids of a Foundry stack. */
+export const PALANTIR_BINDINGS = {
+  marketplace_rid: 'ri.marketplace.main.local.00000000-0000-4000-8000-000000000001',
+  product_id: '00000000-0000-4000-8000-000000000002',
+  version_id: '00000000-0000-4000-8000-000000000003',
+  namespace_rid: 'ri.compass.main.namespace.00000000-0000-4000-8000-000000000004',
+  parent_folder_rid: 'ri.compass.main.folder.00000000-0000-4000-8000-000000000005',
+  ontology_rid: 'ri.ontology.main.ontology.00000000-0000-4000-8000-000000000006',
+  object_type: 'sales.Order',
+  frontend_origin: 'https://sales.example.com',
+  frontend_asset_sha256: 'e'.repeat(64),
+  allow_preview_apis: true,
+};
+
+export const PALANTIR_TARGET: TargetOut = {
+  ...TARGET,
+  id: 't-pal',
+  name: 'Foundry prod',
+  platform_kind: 'palantir',
+  address: 'https://acme.palantirfoundry.com',
+  bindings: PALANTIR_BINDINGS,
+  credential_ref: 'foundry.prod',
+};
+
+export const DOCKER_TARGET: TargetOut = {
+  ...TARGET,
+  id: 't-dock',
+  name: 'Docker prod',
+  platform_kind: 'docker',
+  address: 'docker://0a1b2c3d-1111-4222-8333-444455556666',
+  bindings: {
+    project: 'sales-app',
+    port: 8443,
+    workspace_host: 'https://adb-123.azuredatabricks.net',
+    warehouse_id: 'wh-0042',
+    serving_endpoint: 'llama-serving',
+  },
+  credential_ref: 'docker.prod',
+};
+
+/** One target of each kind, in the register form's order. */
+export const TARGETS_OF_EACH_KIND = [
+  TARGET,
+  SNOWFLAKE_TARGET,
+  FABRIC_TARGET,
+  PALANTIR_TARGET,
+  DOCKER_TARGET,
+];
+
+/** The target with stored bindings that no longer validate, as the API reads it. */
+export const unusable = (t: TargetOut, over: Partial<TargetOut> = {}): TargetOut =>
+  ({ ...t, ...over, bindings: { unusable: true } }) as TargetOut;
+
 export const EXECUTOR: DeliveryExecutorOut = {
   id: 'e-1',
   name: 'edge-runner',
@@ -181,6 +248,23 @@ export const SNOWFLAKE_DEPLOYMENT_DETAIL: DeploymentDetail = {
     })),
   ),
 };
+
+/** A verified deployment on `target_id` whose journal holds each step's intent and complete entry. */
+export function deploymentWithSteps(target_id: string, steps: string[]): DeploymentDetail {
+  return {
+    ...DEPLOYMENT,
+    target_id,
+    journal: steps.flatMap((step_key, i) =>
+      (['intent', 'complete'] as const).map((state, j): DeploymentJournalStep => ({
+        step_key,
+        state,
+        input_digest: 'd'.repeat(64),
+        receipt: null,
+        recorded_at: `2026-11-18T10:02:${String(i * 2 + j).padStart(2, '0')}Z`,
+      })),
+    ),
+  };
+}
 
 /** A withdrawn release of the same version as `RELEASE`, never offered for a plan. */
 export const WITHDRAWN_RELEASE = {

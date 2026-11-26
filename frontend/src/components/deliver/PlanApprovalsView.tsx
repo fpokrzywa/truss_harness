@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useState, type FormEvent } from 'react';
 import { endpoints } from '@/lib/api/endpoints';
+import { ApiError } from '@/lib/api/errors';
 import type { PlanOut } from '@/lib/api/delivery-types';
 import { usePlans, useRefreshDelivery, useTargets } from '@/lib/delivery-hooks';
 import { useCan, useSession } from '@/lib/hooks';
@@ -20,6 +21,7 @@ import {
   useAction,
 } from '../admin/ui';
 import { useOrgParam } from '../security/useOrg';
+import { refusalHint } from './refusalHints';
 import { targetName } from './targetName';
 
 const COLUMNS = ['Plan', 'Target', 'Digest', 'Requested by', 'Time left'];
@@ -163,6 +165,7 @@ function DecisionDialog({
   const action = useAction();
   const [note, setNote] = useState('');
   const approve = decision === 'approve';
+  const hint = action.error instanceof ApiError ? refusalHint(action.error.code) : undefined;
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -202,6 +205,7 @@ function DecisionDialog({
           error={action.error}
           title={approve ? 'Could not approve the plan' : 'Could not reject the plan'}
         />
+        {hint && <p className="text-sm">{hint}</p>}
         <ModalActions
           onCancel={onClose}
           busy={action.busy}

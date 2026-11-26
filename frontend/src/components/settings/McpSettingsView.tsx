@@ -235,14 +235,14 @@ function SettingsForm({ org, saved }: { org: string; saved: McpSettings }) {
             value={maxCost}
             onChange={setMaxCost}
             readOnly={!writable}
-            help="Caps the cost of one start_run; at most 25."
+            help="Caps the cost of one start_run or assist_ask; at most 25."
           />
         </div>
         <fieldset>
           <legend className="label">Allowed tools</legend>
           {usesDefault && (
             <p className="mb-2 text-xs text-slate-600">
-              The default set: every tool except start_run.
+              The default set: every tool except start_run and assist_ask.
             </p>
           )}
           <ul className="grid gap-1 sm:grid-cols-3">
