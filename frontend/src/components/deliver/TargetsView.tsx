@@ -2,12 +2,7 @@
 
 import { useState, type FormEvent } from 'react';
 import { endpoints } from '@/lib/api/endpoints';
-import type {
-  DeliveryEnvironment,
-  PlatformBindings,
-  PlatformKind,
-  TargetOut,
-} from '@/lib/api/delivery-types';
+import type { DeliveryEnvironment, PlatformKind, TargetOut } from '@/lib/api/delivery-types';
 import { useRefreshDelivery, useTargets } from '@/lib/delivery-hooks';
 import { useCan, useProjects, useWorkspaces } from '@/lib/hooks';
 import { platformLabel } from '@/lib/platforms';
@@ -25,6 +20,14 @@ import {
 } from '../admin/ui';
 import { MaturityBadge, StatusBadge } from '../integrate/Maturity';
 import { useOrgParam } from '../security/useOrg';
+import {
+  bindingRows,
+  isKnownKind,
+  isUnusable,
+  PLATFORM_KINDS,
+  PLATFORMS,
+  platformBindings,
+} from './platformKinds';
 
 const COLUMNS = [
   'Name',
@@ -32,33 +35,31 @@ const COLUMNS = [
   'Address',
   'Environment',
   'Workspace / project',
-  'Warehouse',
-  'Serving endpoint',
-  'Package',
-  'Application',
-  'Cortex model',
+  'Bindings',
   'Credential reference',
   'Status',
 ];
-const PLATFORMS: PlatformKind[] = ['databricks', 'snowflake'];
-const SERVING_ENDPOINT = /^[A-Za-z0-9_-]{1,63}$/;
-const SNOWFLAKE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_$]{0,254}$/;
-const CORTEX_MODEL = /^[a-z0-9][a-z0-9._-]{0,63}$/;
-const IDENTIFIER_RULE = 'Use 1-255 letters, digits, _ or $, starting with a letter or _.';
-const CORTEX_MODEL_RULE =
-  'Use 1-64 lowercase letters, digits, dots, underscores or hyphens, starting with a letter or digit.';
+const UNUSABLE_ACTIVE =
+  "This target's stored settings are no longer valid, so nothing can be planned, deployed or reconciled on it. Archive it and register it again.";
+const UNUSABLE_ARCHIVED = "This target's stored settings are no longer valid.";
 
-/** The Warehouse to Cortex model cells; `-` where the target's platform has no such binding. */
-const bindingCells = (t: TargetOut): string[] =>
-  t.platform_kind === 'snowflake'
-    ? [
-        t.bindings.warehouse,
-        '-',
-        t.bindings.package,
-        t.bindings.application,
-        t.bindings.cortex_model,
-      ]
-    : [t.bindings.warehouse_id, t.bindings.serving_endpoint || '-', '-', '-', '-'];
+/** The bindings of the row's own kind, labelled; a hint for unusable ones, `-` for an unknown kind. */
+function BindingsCell({ target: t }: { target: TargetOut }) {
+  if (!isKnownKind(t.platform_kind)) return <>-</>;
+  if (isUnusable(t.bindings)) {
+    return <p>{t.status === 'active' ? UNUSABLE_ACTIVE : UNUSABLE_ARCHIVED}</p>;
+  }
+  return (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-xs">
+      {(bindingRows(t) ?? []).map(([label, value]) => (
+        <div key={label} className="contents">
+          <dt className="text-slate-600">{label}</dt>
+          <dd className="font-mono break-all">{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
 
 /** Deployment targets: list, register, archive. Server text renders as plain React text only. */
 export function TargetsView() {
@@ -122,7 +123,9 @@ export function TargetsView() {
                       <td className="td">
                         <span className="flex flex-wrap items-center gap-2">
                           {platformLabel(t.platform_kind)}
-                          <MaturityBadge maturity="experimental" />
+                          {isKnownKind(t.platform_kind) && (
+                            <MaturityBadge maturity="experimental" />
+                          )}
                         </span>
                       </td>
                       <td className="td font-mono text-xs break-all">{t.address}</td>
@@ -131,11 +134,9 @@ export function TargetsView() {
                         {t.workspace ?? '-'}
                         {t.project && <> / {t.project}</>}
                       </td>
-                      {bindingCells(t).map((value, i) => (
-                        <td key={i} className="td font-mono text-xs">
-                          {value}
-                        </td>
-                      ))}
+                      <td className="td min-w-64">
+                        <BindingsCell target={t} />
+                      </td>
                       <td className="td font-mono text-xs">{t.credential_ref}</td>
                       <td className="td">
                         <StatusBadge status={t.status} />
@@ -183,71 +184,52 @@ function RegisterTargetDialog({ org, onClose }: { org: string; onClose: () => vo
   const [name, setName] = useState('');
   const [workspace, setWorkspace] = useState('');
   const [project, setProject] = useState('');
-  const [platform, setPlatform] = useState<PlatformKind>('databricks');
-  const [address, setAddress] = useState('');
+  const [platform, setPlatform] = useState<PlatformKind | ''>('');
   const [environment, setEnvironment] = useState<DeliveryEnvironment>('dev');
-  const [warehouseId, setWarehouseId] = useState('');
-  const [servingEndpoint, setServingEndpoint] = useState('');
-  const [accountAddress, setAccountAddress] = useState('');
-  const [packageName, setPackageName] = useState('');
-  const [application, setApplication] = useState('');
-  const [warehouse, setWarehouse] = useState('');
-  const [cortexModel, setCortexModel] = useState('');
+  // The address and bindings typed for each kind; only the chosen kind's values are sent.
+  const [values, setValues] = useState<Partial<Record<PlatformKind, Record<string, string>>>>({});
   const [credentialRef, setCredentialRef] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const projects = useProjects(org, workspace || undefined);
+  const spec = platform === '' ? null : PLATFORM_KINDS[platform];
+  const typed = (platform === '' ? undefined : values[platform]) ?? {};
+
+  function setValue(key: string, value: string) {
+    if (platform === '') return;
+    setValues((prev) => ({ ...prev, [platform]: { ...prev[platform], [key]: value } }));
+  }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     const next: Record<string, string> = {};
     if (name.trim() === '') next.name = 'Name is required.';
+    if (platform === '') next.platform = 'Choose a platform.';
     if (workspace === '') next.workspace = 'Choose a workspace.';
-    const endpoint = servingEndpoint.trim();
-    const snowflake = {
-      package: packageName.trim(),
-      application: application.trim(),
-      warehouse: warehouse.trim(),
-      cortex_model: cortexModel.trim(),
-    };
-    if (platform === 'databricks') {
-      if (address.trim() === '') next.address = 'Address is required.';
-      if (warehouseId.trim() === '') next.warehouseId = 'Warehouse ID is required.';
-      if (endpoint !== '' && !SERVING_ENDPOINT.test(endpoint)) {
-        next.servingEndpoint = 'Use 1-63 letters, digits, underscores or hyphens.';
+    const trimmed = Object.fromEntries(Object.entries(typed).map(([k, v]) => [k, v.trim()]));
+    if (spec) {
+      if (!trimmed.address) next.address = `${spec.address.label} is required.`;
+      for (const f of spec.fields) {
+        if (f.checkbox) continue;
+        const value = trimmed[f.key] ?? '';
+        if (value === '') {
+          if (!f.optional) next[f.key] = `${f.label} is required.`;
+        } else {
+          const message = f.check?.(value, trimmed);
+          if (message) next[f.key] = message;
+        }
       }
-    } else {
-      if (accountAddress.trim() === '') next.accountAddress = 'Account address is required.';
-      if (snowflake.package === '') next.package = 'Package is required.';
-      else if (!SNOWFLAKE_IDENTIFIER.test(snowflake.package)) next.package = IDENTIFIER_RULE;
-      if (snowflake.application === '') next.application = 'Application is required.';
-      else if (!SNOWFLAKE_IDENTIFIER.test(snowflake.application))
-        next.application = IDENTIFIER_RULE;
-      if (snowflake.warehouse === '') next.warehouse = 'Warehouse is required.';
-      else if (!SNOWFLAKE_IDENTIFIER.test(snowflake.warehouse)) next.warehouse = IDENTIFIER_RULE;
-      if (snowflake.cortex_model === '') next.cortexModel = 'Cortex model is required.';
-      else if (!CORTEX_MODEL.test(snowflake.cortex_model)) next.cortexModel = CORTEX_MODEL_RULE;
     }
     if (credentialRef.trim() === '') next.credentialRef = 'Credential reference is required.';
     setErrors(next);
-    if (Object.keys(next).length > 0) return;
+    if (Object.keys(next).length > 0 || platform === '') return;
 
-    const platformBindings: PlatformBindings =
-      platform === 'databricks'
-        ? {
-            platform_kind: 'databricks',
-            bindings: {
-              warehouse_id: warehouseId.trim(),
-              ...(endpoint ? { serving_endpoint: endpoint } : {}),
-            },
-          }
-        : { platform_kind: 'snowflake', bindings: snowflake };
     const res = await action.run(() =>
       endpoints.registerTarget(org, {
         workspace,
         ...(project ? { project } : {}),
         name: name.trim(),
-        ...platformBindings,
-        address: (platform === 'databricks' ? address : accountAddress).trim(),
+        ...platformBindings(platform, trimmed),
+        address: trimmed.address ?? '',
         environment,
         credential_ref: credentialRef.trim(),
       }),
@@ -277,21 +259,29 @@ function RegisterTargetDialog({ org, onClose }: { org: string; onClose: () => vo
           error={errors.name}
           maxLength={200}
         />
-        <div className="flex flex-wrap items-end gap-2">
-          <SelectField
-            label="Platform"
-            value={platform}
-            disabled={action.busy}
-            onChange={(v) => {
-              setPlatform(v as PlatformKind);
-              setErrors({});
-              action.reset();
-            }}
-            options={PLATFORMS.map((value) => ({ value, label: platformLabel(value) }))}
-          />
-          <span className="pb-2">
-            <MaturityBadge maturity="experimental" />
-          </span>
+        <div>
+          <div className="flex flex-wrap items-end gap-2">
+            <SelectField
+              label="Platform"
+              value={platform}
+              disabled={action.busy}
+              onChange={(v) => {
+                setPlatform(v as PlatformKind | '');
+                setErrors({});
+                action.reset();
+              }}
+              options={[
+                { value: '', label: 'Select...' },
+                ...PLATFORMS.map((value) => ({ value, label: platformLabel(value) })),
+              ]}
+            />
+            {spec && (
+              <span className="pb-2">
+                <MaturityBadge maturity="experimental" />
+              </span>
+            )}
+          </div>
+          {errors.platform && <p className="mt-1 text-sm text-red-700">{errors.platform}</p>}
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <div>
@@ -314,27 +304,16 @@ function RegisterTargetDialog({ org, onClose }: { org: string; onClose: () => vo
             options={[{ value: '', label: 'None (whole workspace)' }, ...projectOptions]}
           />
         </div>
-        {platform === 'databricks' ? (
+        {spec && (
           <TextField
-            key="address"
-            label="Address"
-            value={address}
-            onChange={setAddress}
+            key={`${platform}-address`}
+            label={spec.address.label}
+            value={typed.address ?? ''}
+            onChange={(v) => setValue('address', v)}
             error={errors.address}
             maxLength={2048}
             monospace
-            help="The Databricks workspace URL."
-          />
-        ) : (
-          <TextField
-            key="account-address"
-            label="Account address"
-            value={accountAddress}
-            onChange={setAccountAddress}
-            error={errors.accountAddress}
-            maxLength={2048}
-            monospace
-            help="The Snowflake account URL: https://<account>.snowflakecomputing.com"
+            help={spec.address.help}
           />
         )}
         <SelectField
@@ -347,60 +326,35 @@ function RegisterTargetDialog({ org, onClose }: { org: string; onClose: () => vo
             { value: 'prod', label: 'prod' },
           ]}
         />
-        {platform === 'databricks' ? (
-          <div key="databricks" className="grid gap-3 sm:grid-cols-2">
-            <TextField
-              label="Warehouse ID"
-              value={warehouseId}
-              onChange={setWarehouseId}
-              error={errors.warehouseId}
-              maxLength={64}
-              monospace
-            />
-            <TextField
-              label="Serving endpoint (optional)"
-              value={servingEndpoint}
-              onChange={setServingEndpoint}
-              error={errors.servingEndpoint}
-              maxLength={63}
-              monospace
-              help="The model serving endpoint a generated app queries. Needed to deploy a generated app."
-            />
-          </div>
-        ) : (
-          <div key="snowflake" className="grid gap-3 sm:grid-cols-2">
-            <TextField
-              label="Package"
-              value={packageName}
-              onChange={setPackageName}
-              error={errors.package}
-              maxLength={255}
-              monospace
-            />
-            <TextField
-              label="Application"
-              value={application}
-              onChange={setApplication}
-              error={errors.application}
-              maxLength={255}
-              monospace
-            />
-            <TextField
-              label="Warehouse"
-              value={warehouse}
-              onChange={setWarehouse}
-              error={errors.warehouse}
-              maxLength={255}
-              monospace
-            />
-            <TextField
-              label="Cortex model"
-              value={cortexModel}
-              onChange={setCortexModel}
-              error={errors.cortexModel}
-              maxLength={64}
-              monospace
-            />
+        {spec && (
+          <div key={platform} className="grid gap-3 sm:grid-cols-2">
+            {spec.fields.map((f) =>
+              f.checkbox ? (
+                <div key={f.key} className="sm:col-span-2">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={typed[f.key] === 'true'}
+                      disabled={action.busy}
+                      onChange={(e) => setValue(f.key, e.target.checked ? 'true' : '')}
+                    />
+                    {f.checkbox.label}
+                  </label>
+                  <p className="mt-1 text-sm text-slate-600">{f.checkbox.help}</p>
+                </div>
+              ) : (
+                <TextField
+                  key={f.key}
+                  label={f.optional ? `${f.label} (optional)` : f.label}
+                  value={typed[f.key] ?? ''}
+                  onChange={(v) => setValue(f.key, v)}
+                  error={errors[f.key]}
+                  maxLength={f.maxLength}
+                  monospace
+                  help={f.help}
+                />
+              ),
+            )}
           </div>
         )}
         <TextField
