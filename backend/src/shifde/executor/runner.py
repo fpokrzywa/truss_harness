@@ -723,10 +723,17 @@ class Runner:
 
     def _recheck[T](self, state: LeaseState, target: Target, check: Callable[..., T]) -> T:
         """The broker's `check` of the job's grant and identities, made again on every use; an
-        expired grant is refreshed first. Any refusal propagates."""
+        expired grant is refreshed first. Any refusal propagates; a malformed grant answer is
+        `execution_failed`."""
         grant = state.grant
         if grant is None or grant.expires_at <= utcnow():
-            grant = state.grant = self.client.credential_grant(state.lease)
+            try:
+                grant = self.client.credential_grant(state.lease)
+            except ValueError:  # a decode or validation error carries the answer
+                grant = None
+            if grant is None:
+                raise JobFailure("execution_failed")
+            state.grant = grant
         return check(
             grant,
             job_id=state.lease.job.id,
