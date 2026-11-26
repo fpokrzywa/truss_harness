@@ -667,6 +667,35 @@ def test_a_grant_that_ran_out_is_refreshed_and_the_apply_goes_on(
     assert codes == []
 
 
+@pytest.mark.parametrize("field", ["job_id", "executor_id", "target_id"])
+def test_a_refreshed_grant_of_another_job_executor_or_target_stops_the_apply(
+    docker: Docker, owner_db: Database, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    """The refreshed grant is checked against the job's own ids, never the grant's: one naming
+    another job, executor or target ends the apply before compose-up."""
+    deployment = docker.approved()
+    codes = _refusals(monkeypatch)
+    refresh = GatewayClient.credential_grant
+
+    def other(self: GatewayClient, lease: JobLease) -> CredentialGrant:
+        return refresh(self, lease).model_copy(update={field: uuid4()})
+
+    def change(docker: Docker) -> None:
+        _expire_grant(docker)
+        monkeypatch.setattr(GatewayClient, "credential_grant", other)
+
+    made = _after(docker, monkeypatch, "build", change)
+    docker.run(deployment, "apply")
+    assert made == []
+    assert [action for action, _ in docker.fake.actions] == ["build"]
+    assert docker.fake.projects == {}
+    journal = {s["step_key"]: s["state"] for s in docker.flow.get(deployment)["journal"]}
+    assert journal == {"image-build": "complete"}
+    (apply,) = deployment_jobs(owner_db, deployment, "apply")
+    assert apply["result"] == {"status": "failed", "error_code": "credential_unavailable"}
+    assert codes == []
+
+
 # ------------------------------------------------------------------ client A against client B
 def test_bs_runner_leases_and_changes_nothing_of_as_docker_jobs(
     client: TestClient,
