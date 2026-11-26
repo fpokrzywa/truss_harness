@@ -6,9 +6,9 @@ followed, the process environment's proxy settings are ignored and a long-runnin
 
 The executor's token callable is `CheckedTokens`: its `authorize` raises unless the job may still
 use the target, and runs before every use of a token, a cached one included, and again before a new
-one is kept. A token is used only while the credentials are those it was minted with. A token
-request that gives no usable token is `FabricAuthError`, and no error of this module carries a
-secret, a token or the text of an answer.
+one is kept. A token is used only while the credentials are those it was minted with. Every failure
+of a token request is a bare `FabricAuthError`, with no cause and no context, and no error of this
+module carries a secret, a token or the text of an answer.
 """
 
 from __future__ import annotations
@@ -83,6 +83,33 @@ class EntraTokenProvider:
             return self._token
 
     def _fetch(self) -> tuple[str, float]:
+        failed = False
+        try:
+            data = self._send()
+        except (httpx.HTTPError, httpx.InvalidURL, UnicodeError):  # they hold the request or answer
+            failed = True
+        if failed:
+            raise FabricAuthError
+        try:
+            body = json.loads(data)
+        except (ValueError, RecursionError):  # a decode error carries the answer
+            failed = True
+        if failed:
+            raise FabricAuthError
+        token = body.get("access_token") if isinstance(body, dict) else None
+        lifetime = body.get("expires_in") if isinstance(body, dict) else None
+        if (
+            not isinstance(token, str)
+            or not _TOKEN.fullmatch(token)
+            or isinstance(lifetime, bool)
+            or not isinstance(lifetime, int | float)
+            or not lifetime > 0  # NaN is refused too
+        ):
+            raise FabricAuthError
+        return token, float(min(lifetime, TOKEN_SECONDS_MAX))
+
+    def _send(self) -> bytearray:
+        """The token answer's bytes; `FabricAuthError` for a non-200 or an oversized answer."""
         with (
             httpx.Client(
                 timeout=TIMEOUT, follow_redirects=False, trust_env=False, transport=self.transport
@@ -101,28 +128,11 @@ class EntraTokenProvider:
             if response.status_code != 200:
                 raise FabricAuthError
             data = bytearray()
-            try:
-                for block in response.iter_bytes():
-                    data.extend(block)
-                    if len(data) > TOKEN_RESPONSE_MAX:
-                        raise FabricAuthError
-            except httpx.DecodingError:
-                raise FabricAuthError from None
-        try:
-            body = json.loads(data)
-        except (ValueError, RecursionError):
-            raise FabricAuthError from None
-        token = body.get("access_token") if isinstance(body, dict) else None
-        lifetime = body.get("expires_in") if isinstance(body, dict) else None
-        if (
-            not isinstance(token, str)
-            or not _TOKEN.fullmatch(token)
-            or isinstance(lifetime, bool)
-            or not isinstance(lifetime, int | float)
-            or not lifetime > 0  # NaN is refused too
-        ):
-            raise FabricAuthError
-        return token, float(min(lifetime, TOKEN_SECONDS_MAX))
+            for block in response.iter_bytes():
+                data.extend(block)
+                if len(data) > TOKEN_RESPONSE_MAX:
+                    raise FabricAuthError
+            return data
 
 
 class CheckedTokens[T]:
@@ -150,7 +160,8 @@ class CheckedTokens[T]:
 
 class FabricClient:
     """Fabric REST calls on `ORIGIN` with a bearer token from `token_provider`, asked again for
-    every request: each attempt, poll turn and page."""
+    every request: each attempt, poll turn and page, except a write's first attempt when it is given
+    the token its apply `begin` checked."""
 
     def __init__(
         self,
@@ -175,14 +186,18 @@ class FabricClient:
         params: dict[str, str] | None = None,
         execution: bool = False,
         read: bool = False,
+        token: str | None = None,
     ) -> dict[str, Any]:
-        """One request; only reads are retried (on 429, honouring `Retry-After` up to 3 times)."""
+        """One request; only reads are retried (on 429, honouring `Retry-After` up to 3 times).
+        A given `token` (the one an apply's `begin` checked before the step's intent) is used for
+        the first attempt instead of asking `token_provider`; any later attempt asks it again."""
         if not path.startswith("/v1/") or ".." in path or "?" in path or "#" in path:
             raise ValueError("invalid canonical Fabric path")
         for attempt in range(4):
             if utcnow() >= self.deadline:
                 raise TimeoutError("Fabric operation deadline exceeded")
-            token = self.token_provider()
+            if attempt or token is None:
+                token = self.token_provider()
             with (
                 httpx.Client(
                     base_url=ORIGIN,

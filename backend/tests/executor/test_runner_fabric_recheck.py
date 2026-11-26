@@ -498,6 +498,11 @@ def _undecodable(status: int = 200) -> httpx.Response:
     )
 
 
+def _redirect(location: str) -> httpx.Response:
+    """A 302 whose `Location` httpx cannot turn into the next request."""
+    return httpx.Response(302, headers={"Location": location})
+
+
 def _given(token: object, lifetime: str = "3600") -> Callable[[httpx.Request], httpx.Response]:
     body = f'{{"access_token": {token}, "expires_in": {lifetime}}}'.encode()
     return lambda _request: httpx.Response(200, content=body)
@@ -507,6 +512,8 @@ NO_TOKEN: dict[str, Callable[[httpx.Request], httpx.Response]] = {
     "4xx": lambda _r: httpx.Response(401, text=MARK),
     "5xx": lambda _r: httpx.Response(503, text=MARK),
     "redirect": lambda _r: httpx.Response(302, headers={"Location": f"https://{MARK}.example"}),
+    "redirect-unparsable": lambda _r: _redirect(f"https://{MARK}\x00.example"),
+    "redirect-bad-idna": lambda _r: _redirect(f"https://xn--{MARK}-zz.example/"),
     "not-json": lambda _r: httpx.Response(200, text=MARK),
     "not-utf8": lambda _r: httpx.Response(200, content=MARK.encode() + b"\xff\xfe"),
     "not-an-object": lambda _r: httpx.Response(200, json=[MARK]),
@@ -574,6 +581,49 @@ def test_a_fabric_token_refused_later_leaves_no_open_intent_of_a_write(
     _clean(caplog, real.flow, owner_db, deployment)
 
 
+def _rotating(mid: Mid) -> Callable[[httpx.Request], httpx.Response]:
+    """A token answer whose mint sees the secret rotated: the second check refuses it."""
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        _rotate(mid)
+        return _short_token(request)
+
+    return answer
+
+
+# the token request after begin()'s mint for the lakehouse write
+AFTER_BEGIN: dict[str, Callable[[Mid], Callable[[httpx.Request], httpx.Response]]] = {
+    "redirect": lambda _mid: NO_TOKEN["redirect"],
+    "redirect-unparsable": lambda _mid: NO_TOKEN["redirect-unparsable"],
+    "secret-rotated-inside-the-mint": _rotating,
+}
+
+
+@pytest.mark.parametrize("refusal", AFTER_BEGIN)
+def test_a_fabric_write_is_sent_with_the_token_its_begin_checked(
+    real: Mid, owner_db: Database, caplog: pytest.LogCaptureFixture, refusal: str
+) -> None:
+    """Every use mints: the token request after begin()'s mint is refused. The write went out with
+    begin's token, so the refusal comes at the next `begin`, before its intent."""
+    caplog.set_level(logging.INFO)
+    deployment = real.approved()
+    real.token_answer = _short_token
+
+    def change(mid: Mid) -> None:
+        mid.token_answer = AFTER_BEGIN[refusal](mid)
+
+    real.in_mint(3, change)  # the workspace, the items, then begin()'s mint for the write
+    real.job(deployment)
+    assert real.changed and len(real.fake.writes) == 1
+    assert real.sent[1:] == ["token"] and real.sent[0] != "token"  # the write, with begin's token
+    journal = {s["step_key"]: s["state"] for s in real.flow.get(deployment)["journal"]}
+    assert "intent" not in journal.values()
+    assert journal == {f"{LAKE}-submit": "complete"}
+    (apply,) = deployment_jobs(owner_db, deployment, "apply")
+    assert apply["result"] == {"status": "failed", "error_code": "execution_failed"}
+    _clean(caplog, real.flow, owner_db, deployment)
+
+
 @pytest.mark.parametrize("answer", NO_TOKEN)
 def test_a_fabric_token_refused_inside_verify_is_the_jobs_failure(
     real: Mid, owner_db: Database, caplog: pytest.LogCaptureFixture, answer: str
@@ -596,6 +646,31 @@ def test_a_fabric_token_refused_inside_verify_is_the_jobs_failure(
     assert (row["status"], row["status_reason"]) == ("failed", "verification failed")
     assert row["verification"] is None
     _clean(caplog, real.flow, owner_db, deployment)
+
+
+@pytest.mark.parametrize("body", ["{}", "x"])
+def test_a_malformed_grant_answer_inside_verify_is_the_jobs_failure(
+    mid: Mid, owner_db: Database, monkeypatch: pytest.MonkeyPatch, body: str
+) -> None:
+    """The gateway answers the grant refresh 200 with no grant: not a failed check."""
+    deployment = mid.approved()
+    for _ in ("apply", "observe"):
+        mid.job(deployment)
+    send = GatewayClient._send
+
+    def answered(self: GatewayClient, method: str, path: str, **options: Any) -> httpx.Response:
+        if mid.changed and path.endswith("/credential-grant"):
+            return httpx.Response(200, content=body.encode())
+        return send(self, method, path, **options)
+
+    monkeypatch.setattr(GatewayClient, "_send", answered)
+    mid.after(1, lambda mid: mid.expire_grant())
+    row = mid.job(deployment)
+    assert mid.changed
+    (job,) = deployment_jobs(owner_db, deployment, "verify")
+    assert job["result"] == {"status": "failed", "error_code": "execution_failed"}
+    assert row["verification"] is None
+    assert (row["status"], row["status_reason"]) == ("failed", "verification failed")
 
 
 @pytest.mark.parametrize("answer", NO_TOKEN)
@@ -622,8 +697,9 @@ def test_no_fabric_token_error_carries_the_answer(answer: str) -> None:
         lambda: SP8_SECRET,
         transport=httpx.MockTransport(NO_TOKEN[answer]),
     )
-    with pytest.raises((FabricAuthError, httpx.TransportError)) as failed:
+    with pytest.raises(FabricAuthError) as failed:
         provider()
+    assert failed.value.__cause__ is None and failed.value.__context__ is None
     error: BaseException | None = failed.value
     while error is not None:
         for text in (repr(error), str(error), str(vars(error))):

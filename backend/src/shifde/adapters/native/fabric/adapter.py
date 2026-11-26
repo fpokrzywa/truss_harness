@@ -12,9 +12,10 @@ details without a platform request.
 
 An apply asks the client for its token (with the executor's re-check, and a mint when there is none)
 before the intent of every step, so a refusal there leaves no intent: before the first one the
-deployment is `failed`, not an unknown outcome. A refusal that comes only at the step's own request,
-after the intent, leaves it open with no write sent and is an unknown outcome. In plan, observe and
-verify a refused check or token is the job's failure, never a check that failed.
+deployment is `failed`, not an unknown outcome. Each write is sent with the token its `begin`
+checked, so a refusal after that mint comes at the next `begin`, before that intent, and never
+leaves an intent open with no write sent. In plan, observe and verify a refused check or token is
+the job's failure, never a check that failed.
 """
 
 from __future__ import annotations
@@ -566,11 +567,14 @@ class FabricAdapter:
         if len(json.dumps(preview.model_dump(mode="json"))) > RECEIPT_BUDGET:
             raise ValueError("Fabric receipt exceeds hosted checkpoint budget; split the solution")
 
-        def begin(key: str) -> None:
+        def begin(key: str) -> str:
+            """The checked token for the step's write, got before its intent is posted; a refusal
+            after it comes at the next `begin`, before that intent."""
             ctx.check_deadline()
-            client.token_provider()
+            token = client.token_provider()
             if not ctx.journal.intent(key, {"plan": plan.digest}):
                 raise NeedsAttention("Fabric native step was already submitted")
+            return token
 
         def complete(key: str, native_handles: dict[str, str] | None = None) -> None:
             ctx.journal.complete(
@@ -593,7 +597,7 @@ class FabricAdapter:
             for phase in ["metadata", "definition"] if existing and wanted else ["metadata"]:
                 submit_key = fabric_step(item.key, phase + "-submit")
                 complete_key = fabric_step(item.key, phase + "-complete")
-                begin(submit_key)
+                token = begin(submit_key)
                 base = f"/v1/workspaces/{workspace}/{COLLECTIONS[item.item_type]}"
                 if phase == "definition":
                     accepted = client.request(
@@ -601,9 +605,12 @@ class FabricAdapter:
                         f"{base}/{ids[item.key]}/updateDefinition",
                         {"definition": wanted},
                         params={"updateMetadata": "false"},
+                        token=token,
                     )
                 elif existing:
-                    accepted = client.request("PATCH", f"{base}/{ids[item.key]}", metadata)
+                    accepted = client.request(
+                        "PATCH", f"{base}/{ids[item.key]}", metadata, token=token
+                    )
                 else:
                     payload: dict[str, Any] = dict(metadata)
                     if wanted:
@@ -612,7 +619,7 @@ class FabricAdapter:
                         "enableSchemas", True
                     ):
                         payload["creationPayload"] = {"enableSchemas": True}
-                    accepted = client.request("POST", base, payload)
+                    accepted = client.request("POST", base, payload, token=token)
                     if accepted["status"] != 202:
                         identity = self._check_native(
                             accepted["body"], item, workspace, names[item.key]
@@ -651,13 +658,14 @@ class FabricAdapter:
                 if canonical_definition(readback, item.item_type) != expected:
                     raise NeedsAttention("Fabric definition readback differs from deployed source")
                 handles[item.key + ":definition"] = expected
-        begin(VERIFICATION)
+        token = begin(VERIFICATION)
         identity = ids[spec.verification_notebook]
         accepted = client.request(
             "POST",
             f"/v1/workspaces/{workspace}/items/{identity}/jobs/RunNotebook/instances",
             {},
             execution=True,
+            token=token,
         )
         if accepted["status"] != 202:
             raise NeedsAttention("Fabric notebook execution acceptance is unknown")
