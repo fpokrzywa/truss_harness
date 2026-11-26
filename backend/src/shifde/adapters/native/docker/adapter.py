@@ -9,6 +9,7 @@ must carry this target's label (`foreign_project`). There is no down and no imag
 
 `authorize` raises unless the job may still use the target's daemon. It runs before every runtime
 call, and for a step of an apply before the step's journal intent, so a refusal leaves no intent.
+The runtime call's three version checks run after it, each cut off after 30 s (`VERSION_TIMEOUT`).
 """
 
 from __future__ import annotations
